@@ -1414,25 +1414,6 @@ app.get('/email-verif-services', (req, res) => {
   res.json({ services: enabled });
 });
 
-// GET /api/platform-provider-status — admin-level custom provider flags.
-// Returns { email_verif_custom, llm_custom } based on admin configs.
-// No API keys are exposed — only boolean flags.
-app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req, res) => {
-  // Email verif: check if any non-default provider is enabled with a key
-  const evCfg = loadEmailVerifConfig();
-  const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
-    const c = evCfg[svc] || {};
-    return c.enabled === 'enabled' && !!c.api_key;
-  });
-  // LLM: check if a non-default (non-gemini) provider is enabled with a key
-  const llmCfg = _readFullLlmConfig();
-  const llmCustom = ['openai', 'anthropic'].some(p => {
-    const c = llmCfg[p] || {};
-    return c.enabled === 'enabled' && !!c.api_key;
-  });
-  res.json({ email_verif_custom: emailVerifCustom, llm_custom: llmCustom });
-});
-
 const pool = new Pool({
   user: process.env.PGUSER || 'postgres',
   host: process.env.PGHOST || 'localhost',
@@ -2113,7 +2094,26 @@ const requireCsrfHeader = (req, res, next) => {
 // Apply CSRF header check globally for all mutation requests
 app.use(requireCsrfHeader);
 
-// ========================= AUTH ROUTES ========================= 
+// ========================= AUTH ROUTES =========================
+
+// GET /api/platform-provider-status — admin-level custom provider flags.
+// Returns { email_verif_custom, llm_custom } based on admin configs.
+// No API keys are exposed — only boolean flags.
+app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req, res) => {
+  // Email verif: check if any non-default provider is enabled with a key
+  const evCfg = loadEmailVerifConfig();
+  const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
+    const c = evCfg[svc] || {};
+    return c.enabled === 'enabled' && !!c.api_key;
+  });
+  // LLM: check if a non-default (non-gemini) provider is enabled with a key
+  const llmCfg = _readFullLlmConfig();
+  const llmCustom = ['openai', 'anthropic'].some(p => {
+    const c = llmCfg[p] || {};
+    return c.enabled === 'enabled' && !!c.api_key;
+  });
+  res.json({ email_verif_custom: emailVerifCustom, llm_custom: llmCustom });
+});
 
 app.post('/login', userRateLimit('login'), async (req, res) => {
   const { username, password } = req.body;
