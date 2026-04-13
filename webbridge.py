@@ -1121,7 +1121,8 @@ def admin_save_contact_gen_config():
         _save_contact_gen_config(current)
         return jsonify({"ok": True}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error("Failed to save contact-gen config: %s", e)
+        return jsonify({"error": "Failed to save configuration"}), 500
 
 @app.get("/contact-gen-services")
 def get_contact_gen_services():

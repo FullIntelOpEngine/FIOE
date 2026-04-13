@@ -7421,7 +7421,8 @@ app.post('/generate-email', requireLogin, async (req, res) => {
           });
         });
         r.on('error', reject);
-        r.setTimeout(15000, () => { r.destroy(); reject(new Error('ContactUs API timeout')); });
+        const CONTACTUS_API_TIMEOUT_MS = 15000;
+        r.setTimeout(CONTACTUS_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactUs API timeout')); });
         r.write(contactPayload);
         r.end();
       });
