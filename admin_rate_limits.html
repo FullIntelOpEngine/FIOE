@@ -4305,6 +4305,7 @@ function renderApiKeysCard() {
           keyField.appendChild(badge);
         }
         toast('ContactUs settings saved', 'success');
+        _notifyConfigChanged({ source: 'contact-gen-config' });
       } catch (err) {
         toast(err.message, 'error');
       } finally {

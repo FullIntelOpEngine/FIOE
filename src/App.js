@@ -7705,13 +7705,14 @@ export default function App() {
 
   useEffect(() => {
     _refreshSvcConfig();
-    const onFocus = () => _refreshSvcConfig();
-    const onVisible = () => { if (document.visibilityState === 'visible') _refreshSvcConfig(); };
+    _fetchContactGenServices();
+    const onFocus = () => { _refreshSvcConfig(); _fetchContactGenServices(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') { _refreshSvcConfig(); _fetchContactGenServices(); } };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     // Poll every 30 s so dynamic key changes in api_porting.html / admin_rate_limits.html
     // propagate even when BroadcastChannel cannot cross origins (port 4000 → 3000).
-    const poll = setInterval(_refreshSvcConfig, 30000);
+    const poll = setInterval(() => { _refreshSvcConfig(); _fetchContactGenServices(); }, 30000);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
@@ -7729,6 +7730,8 @@ export default function App() {
       _refreshSvcConfig();
       // Re-fetch email verification services list
       if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
+      // Re-fetch contact generation services list (ContactUs)
+      if (typeof _fetchContactGenServices === 'function') _fetchContactGenServices();
       // Re-fetch token config
       fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         .then(r => r.ok ? r.json() : null)
