@@ -385,6 +385,12 @@ app.get('/LookerDashboard', dashboardRateLimit, (req, res) => {
 app.get('/upload.html', dashboardRateLimit, (req, res) => {
   res.sendFile(path.join(__dirname, 'upload.html'));
 });
+// Serve login.html so that pages on port 4000 (e.g. api_porting.html) can redirect to
+// /login.html with a relative URL.  All auth endpoints (/login, /auth/check, etc.) are
+// also on this server so the login flow works end-to-end without cross-origin issues.
+app.get('/login.html', dashboardRateLimit, (req, res) => {
+  res.sendFile(path.join(__dirname, 'login.html'));
+});
 app.get('/api_porting.html', dashboardRateLimit, (req, res) => {
   res.sendFile(path.join(__dirname, 'api_porting.html'));
 });

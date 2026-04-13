@@ -1696,7 +1696,9 @@
       sessionStorage.getItem('userid'), localStorage.getItem('userid'), readCookie('userid')
     );
     if (!storedUsername || !storedUserid) {
-      const next = encodeURIComponent(location.pathname + location.search + location.hash);
+      // Use the full href so that after login the redirect comes back to the correct
+      // origin (port), regardless of whether this page was served from port 4000 or 8091.
+      const next = encodeURIComponent(location.href);
       location.replace('/login.html?next=' + next);
       return;
     }
