@@ -1118,6 +1118,12 @@
 // ── Constants ────────────────────────────────────────────────────────────────
 const API = '';  // same origin
 
+// BroadcastChannel for notifying App.js about config changes
+const _cfgChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('fioe_api_config') : null;
+function _notifyConfigChanged(detail) {
+  if (_cfgChannel) try { _cfgChannel.postMessage({ type: 'api-config-changed', detail }); } catch (_) { /* ignore */ }
+}
+
 // ── Feature labels (with tab assignment) ─────────────────────────────────────
 // tab: 'autosourcing' | 'talent' | 'cms' | 'dashboard'
 const FEATURES = [
@@ -2804,6 +2810,7 @@ async function saveAll() {
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Save failed', 'error'); return; }
     toast('Rate limits saved successfully ✓', 'success');
+    _notifyConfigChanged('rate-limits');
   } catch (err) {
     toast('Network error: ' + err.message, 'error');
   }
@@ -3763,6 +3770,7 @@ function renderApiKeysCard() {
         _emailVerifConfig[svc] = { api_key_set: newKey ? true : cfg.api_key_set, enabled };
         keyInput.value = '';
         keyInput.placeholder = _emailVerifConfig[svc].api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        _notifyConfigChanged('email-verif');
         toast(`${_SVC_LABELS[svc]} settings saved`, 'success');
       } catch (err) {
         toast(err.message, 'error');
@@ -3892,6 +3900,7 @@ function renderApiKeysCard() {
         const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = _serperConfig.dataforseo.login_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…'; }
         const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = _serperConfig.dataforseo.password_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…'; }
         const labels = { serper: 'Serper.dev', dataforseo: 'DataforSEO', cse: 'Google CSE' };
+        _notifyConfigChanged('search-provider');
         toast(`${labels[_activeProvider] || 'Google CSE'} is now active`, 'success');
       } catch (err) {
         toast(err.message, 'error');
@@ -4101,6 +4110,7 @@ function renderApiKeysCard() {
         if (oaiApiKey) { const el = document.getElementById('apikey-openai'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         if (antApiKey) { const el = document.getElementById('apikey-anthropic'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         const labels = { gemini: 'Gemini', openai: 'ChatGPT (OpenAI)', anthropic: 'Claude (Anthropic)' };
+        _notifyConfigChanged('llm-provider');
         toast(`${labels[_activeLlmProvider] || 'Gemini'} is now the active LLM`, 'success');
       } catch (err) {
         toast(err.message, 'error');

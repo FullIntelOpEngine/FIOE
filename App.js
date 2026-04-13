@@ -7634,24 +7634,61 @@ export default function App() {
   }, [user]);
 
   // Fetch per-user service config to detect custom email verification activation
+  const _refreshServiceConfig = useCallback(() => {
+    if (!user || !user.username) return;
+    fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(res => res.ok ? res.json() : null)
+      .then(svcData => {
+        if (svcData && svcData.active && svcData.providers) {
+          const ep = (svcData.providers.email_verif || '').toLowerCase();
+          setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
+          const lp = (svcData.providers.llm || '').toLowerCase();
+          setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
+        } else {
+          setHasCustomEmailVerif(false);
+          setHasCustomLlm(false);
+        }
+      })
+      .catch(() => {});
+  }, [user]);
+  useEffect(() => { _refreshServiceConfig(); }, [_refreshServiceConfig]);
+
+  // Listen for config changes from admin_rate_limits.html / api_porting.html via BroadcastChannel
   useEffect(() => {
-    if (user && user.username) {
-      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-        .then(res => res.ok ? res.json() : null)
-        .then(svcData => {
-          if (svcData && svcData.active && svcData.providers) {
-            const ep = (svcData.providers.email_verif || '').toLowerCase();
-            setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
-            const lp = (svcData.providers.llm || '').toLowerCase();
-            setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
-          } else {
-            setHasCustomEmailVerif(false);
-            setHasCustomLlm(false);
-          }
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed') return;
+      // Re-fetch service config (custom email verif & LLM flags)
+      _refreshServiceConfig();
+      // Re-fetch email verification services list
+      if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
+      // Re-fetch rate limits
+      if (user) {
+        fetch('http://localhost:4000/user/rate-limits', { credentials: 'include' })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (!data || !data.limits) return;
+            const cvLimit = data.limits.analytic_cv_limit ? data.limits.analytic_cv_limit.requests : 10;
+            const batchSize = data.limits.analytic_batch_size ? data.limits.analytic_batch_size.requests : 3;
+            setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
+          })
+          .catch(() => {});
+      }
+      // Re-fetch token config
+      fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (!cfg) return;
+          const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+          if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+          if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
         })
         .catch(() => {});
-    }
-  }, [user]);
+    };
+    return () => ch.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, _refreshServiceConfig]);
 
   const handleAddStatus = (newStat) => {
     if (!user || !user.username) return;

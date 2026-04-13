@@ -1832,6 +1832,12 @@ window.__AP_IS_BYOK  = false;
   } catch (_) {}
 })();
 
+// BroadcastChannel for notifying App.js about config changes
+const _cfgChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('fioe_api_config') : null;
+function _notifyConfigChanged(detail) {
+  if (_cfgChannel) try { _cfgChannel.postMessage({ type: 'api-config-changed', detail }); } catch (_) { /* ignore */ }
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(tabId) {
   const btn = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
@@ -2562,6 +2568,7 @@ byokActivateBtn.addEventListener('click', async () => {
     // Clear input fields for security
     Object.values(BYOK_FIELD_MAP).forEach(id => { document.getElementById(id).value = ''; });
     Object.values(BYOK_ADMIN_FIELD_MAP).forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+    _notifyConfigChanged('byok-activate');
   } catch (err) {
     showStatus(byokStatusEl, 'Network error: ' + err.message, 'error');
   } finally {
@@ -2582,6 +2589,7 @@ byokDeactivateBtn.addEventListener('click', async () => {
     if (!r.ok) { showStatus(byokStatusEl, data.error || 'Deactivation failed.', 'error'); return; }
     showStatus(byokStatusEl, 'BYOK mode deactivated. Your keys have been removed.', 'success');
     updateByokStatusBadge(false);
+    _notifyConfigChanged('byok-deactivate');
   } catch (err) {
     showStatus(byokStatusEl, 'Network error: ' + err.message, 'error');
   }
@@ -2954,6 +2962,7 @@ window._selectOptionIfActive = function(opt) { _selectOption(opt); };
       showStatus(svcStatusEl, '✓ Service configuration activated and encrypted.', 'success');
       _updateSvcStatusBadge(true);
       _svcValidated = false;
+      _notifyConfigChanged('user-service-config-activate');
       // svcActivateBtn stays disabled until deactivation
     } catch (err) {
       showStatus(svcStatusEl, 'Network error: ' + err.message, 'error');
@@ -2982,6 +2991,7 @@ window._selectOptionIfActive = function(opt) { _selectOption(opt); };
       }
       showStatus(svcStatusEl, '✓ Service configuration removed. Platform defaults are now active.', 'success');
       _updateSvcStatusBadge(false);
+      _notifyConfigChanged('user-service-config-deactivate');
       _svcValidated = false;
       svcActivateBtn.disabled = true;
       svcValidationPanel.style.display = 'none';
