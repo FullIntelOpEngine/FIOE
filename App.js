@@ -8337,9 +8337,82 @@ export default function App() {
   // Handler for generating emails for resume candidate
   const handleGenerateResumeEmails = async () => {
     if (!resumeCandidate) return;
-    const { name, organisation, company, country, id } = resumeCandidate;
+    const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
+
+    // ContactUs (ContactOut) path – requires LinkedIn URL
+    if (emailGenProvider === 'contactus') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for ContactUs lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'contactus', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'ContactUs request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        // Map ContactOut fields into candidate
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        // Comment: combine github + personal_email
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          const newComment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          updates.comment = newComment;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+          // Also add email to the email list if returned
+          if (data.email) {
+            setResumeEmailList(prev => {
+              const exists = prev.some(item => item.value === data.email);
+              if (exists) return prev;
+              return [...prev, { value: data.email, checked: false, confidence: 'ContactUs' }];
+            });
+          }
+        }
+
+        // Summary message box
+        const summary = [
+          `✅ ContactUs API Response Summary`,
+          `──────────────────────────────`,
+          data.email          ? `Email: ${data.email}` : 'Email: (not found)',
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].join('\n');
+        alert(summary);
+      } catch (e) {
+        console.error('ContactUs error:', e);
+        alert('Failed to generate contacts via ContactUs.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return;
+    }
     
+    // Gemini / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
       return;
@@ -8348,7 +8421,7 @@ export default function App() {
     setGeneratingEmails(true);
 
     try {
-      const res = await fetch('http://localhost:4000/generate-email', {
+      const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ name, company: org, country, provider: emailGenProvider }),
@@ -9116,7 +9189,7 @@ export default function App() {
                                                     className="btn-primary"
                                                     style={{ fontSize: 12, padding: '6px 12px' }}
                                                 >
-                                                    {generatingEmails ? 'Generating...' : 'Generate Email'}
+                                                    {generatingEmails ? 'Generating...' : (emailGenProvider === 'contactus' ? 'Generate Contacts' : 'Generate Email')}
                                                 </button>
                                             ) : (
                                                 <button 
@@ -9150,7 +9223,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · Generate Email · ${emailGenProvider === 'contactus' ? 'ContactUs' : 'Gemini'}`
+                                                                ? ` · ${emailGenProvider === 'contactus' ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactus' ? 'ContactUs' : 'Gemini'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}

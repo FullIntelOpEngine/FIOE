@@ -7377,16 +7377,34 @@ async function smtpVerify(email, mxHost) {
   });
 }
 
-// ========== NEW ENDPOINT: Generate Emails via Gemini (Ranked, No Verification yet) ==========
+// ========== ContactUs service discovery (reads contact_gen_config.json) ==========
+app.get('/contact-gen-services', requireLogin, (req, res) => {
+  try {
+    const cgCfgPath = path.join(__dirname, 'contact_gen_config.json');
+    let config = {};
+    try { config = JSON.parse(fs.readFileSync(cgCfgPath, 'utf-8')); } catch (_e) { /* no config yet */ }
+    const enabled = [];
+    for (const svc of ['contactus']) {
+      const entry = config[svc] || {};
+      if (entry.enabled === 'enabled' && entry.api_key) enabled.push(svc);
+    }
+    res.json({ services: enabled });
+  } catch (err) {
+    console.error('/contact-gen-services error:', err);
+    res.json({ services: [] });
+  }
+});
+
+// ========== NEW ENDPOINT: Generate Emails / Generate Contacts ==========
 app.post('/generate-email', requireLogin, async (req, res) => {
   try {
-    const { name, company, country, provider } = req.body;
-    if (!name || !company) {
-      return res.status(400).json({ error: 'Name and Company are required.' });
-    }
+    const { name, company, country, provider, linkedinurl } = req.body;
 
-    // ── ContactUs provider path ──────────────────────────────────────────
+    // ── ContactUs (ContactOut) provider path ─────────────────────────────
     if (provider === 'contactus') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for ContactUs lookup.' });
+      }
       const cgCfgPath = path.join(__dirname, 'contact_gen_config.json');
       let cgCfg;
       try {
@@ -7398,36 +7416,50 @@ app.post('/generate-email', requireLogin, async (req, res) => {
       if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
         return res.status(400).json({ error: 'ContactUs is not enabled or API key is missing.' });
       }
-      // Call ContactUs API (POST https://api.contactus.com/v1/find-emails)
-      const contactPayload = JSON.stringify({ name, company, country: country || '' });
+      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true
       const contactRes = await new Promise((resolve, reject) => {
-        const url = new URL('https://api.contactus.com/v1/find-emails');
+        const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
+        apiUrl.searchParams.set('profile', linkedinurl);
+        apiUrl.searchParams.set('include_phone', 'true');
         const reqOpts = {
-          hostname: url.hostname,
+          hostname: apiUrl.hostname,
           port: 443,
-          path: url.pathname,
-          method: 'POST',
+          path: apiUrl.pathname + apiUrl.search,
+          method: 'GET',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${cusCfg.api_key}`,
-            'Content-Length': Buffer.byteLength(contactPayload),
+            'Accept': 'application/json',
+            'token': cusCfg.api_key,
           },
         };
         const r = https.request(reqOpts, (resp) => {
           let body = '';
           resp.on('data', d => body += d);
           resp.on('end', () => {
-            try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('Invalid JSON from ContactUs API')); }
+            try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('Invalid JSON from ContactOut API')); }
           });
         });
         r.on('error', reject);
         const CONTACTUS_API_TIMEOUT_MS = 15000;
-        r.setTimeout(CONTACTUS_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactUs API timeout')); });
-        r.write(contactPayload);
+        r.setTimeout(CONTACTUS_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactOut API timeout')); });
         r.end();
       });
-      const emails = contactRes.emails || contactRes.data || [];
-      return res.json({ emails: Array.isArray(emails) ? emails : [] });
+      // Map ContactOut response → structured contact data
+      const profile = contactRes.profile || contactRes || {};
+      const result = {
+        provider: 'contactus',
+        email: profile.email || '',
+        phone: profile.phone || '',
+        work_email: profile.work_email || '',
+        github: profile.github || '',
+        personal_email: profile.personal_email || '',
+      };
+      return res.json(result);
+    }
+
+    // ── Default Gemini/LLM path needs name + company ─────────────────────
+    if (!name || !company) {
+      return res.status(400).json({ error: 'Name and Company are required.' });
     }
 
     // ── Default Gemini/LLM path ──────────────────────────────────────────
