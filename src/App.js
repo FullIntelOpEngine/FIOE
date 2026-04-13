@@ -7321,7 +7321,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
             </svg>
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: loginExpanded ? '300px' : undefined }}>
-            <li><a href="/" className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
+            <li><a href={`${_LOGIN_BASE}/login.html`} className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
             <li><a href={`${_LOGIN_BASE}/sales_rep_register.html`} className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
           </ul>
         </li>
@@ -8715,8 +8715,8 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif or custom LLM is active) */}
-      {!(hasCustomEmailVerif || hasCustomLlm) && <div style={{
+      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when BOTH custom LLM and custom email verif are active) */}
+      {!(hasCustomEmailVerif && hasCustomLlm) && <div style={{
         width: '100%',
         margin: '0 0 24px 0',
         padding: '12px 18px',
