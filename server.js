@@ -9081,13 +9081,22 @@ app.post('/api/porting/byok/validate', requireLogin, dashboardRateLimit, async (
   }
 });
 
-// ========== User Service Config: per-user encrypted provider keys ==========
-// File stored at: path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.enc`)
+// ========== User Service Config: per-user provider keys ==========
+// Encrypted file (when PORTING_SECRET is set):
+//   path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.enc`)
+// Plaintext JSON fallback (when PORTING_SECRET is not set):
+//   path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.json`)
 
-function userServiceConfigPath(username) {
+function _userSvcDir() {
   const dir = path.join(PORTING_INPUT_DIR, 'user-services');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${safeName(username)}.enc`);
+  return dir;
+}
+function userServiceConfigPath(username) {
+  return path.join(_userSvcDir(), `${safeName(username)}.enc`);
+}
+function _userServiceJsonPath(username) {
+  return path.join(_userSvcDir(), `${safeName(username)}.json`);
 }
 
 function decryptBuffer(buf) {
@@ -9102,17 +9111,55 @@ function decryptBuffer(buf) {
   return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
 
+/**
+ * Read the per-user service config. Tries encrypted .enc first, then plaintext .json.
+ * Returns the parsed config object, or null if no config exists.
+ */
+function readUserServiceConfig(username) {
+  const encPath  = userServiceConfigPath(username);
+  const jsonPath = _userServiceJsonPath(username);
+  if (fs.existsSync(encPath)) {
+    const raw = decryptBuffer(fs.readFileSync(encPath));
+    return JSON.parse(raw.toString('utf8'));
+  }
+  if (fs.existsSync(jsonPath)) {
+    return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  }
+  return null;
+}
+
+/**
+ * Write the per-user service config. Uses encryption when PORTING_SECRET is set,
+ * otherwise writes a plaintext JSON file so the system works without a secret.
+ */
+function writeUserServiceConfig(username, cfg) {
+  const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
+  if (process.env.PORTING_SECRET) {
+    fs.writeFileSync(userServiceConfigPath(username), encryptBuffer(raw));
+  } else {
+    // Plaintext fallback — no sensitive data stored in clear text beyond what
+    // the operator has already consented to by not setting PORTING_SECRET.
+    fs.writeFileSync(_userServiceJsonPath(username), raw);
+  }
+}
+
+/**
+ * Remove all config files for the user (both encrypted and plaintext).
+ */
+function deleteUserServiceConfig(username) {
+  [userServiceConfigPath(username), _userServiceJsonPath(username)].forEach(fp => {
+    try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (_) {}
+  });
+}
+
 // GET /api/user-service-config/status
 // Returns { active: bool, providers: { search, llm, email_verif } } (masked — no key values)
 app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (!fs.existsSync(fp)) {
+    const cfg = readUserServiceConfig(req.user.username);
+    if (!cfg) {
       return res.json({ active: false, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default' } });
     }
-    const enc = fs.readFileSync(fp);
-    const raw = decryptBuffer(enc);
-    const cfg = JSON.parse(raw.toString('utf8'));
     res.json({
       active: true,
       providers: {
@@ -9183,9 +9230,7 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     if (email_verif.provider === 'zerobounce')  cfg.email_verif.ZEROBOUNCE_API_KEY  = email_verif.ZEROBOUNCE_API_KEY.trim();
     if (email_verif.provider === 'bouncer')     cfg.email_verif.BOUNCER_API_KEY     = email_verif.BOUNCER_API_KEY.trim();
 
-    const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
-    const encrypted = encryptBuffer(raw);
-    await fs.promises.writeFile(userServiceConfigPath(req.user.username), encrypted);
+    writeUserServiceConfig(req.user.username, cfg);
     res.json({ ok: true, active: true });
   } catch (err) {
     console.error('[user-service-config/activate]', err);
@@ -9194,11 +9239,10 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
 });
 
 // DELETE /api/user-service-config/deactivate
-// Removes the encrypted config file for the current user.
+// Removes the config file(s) for the current user.
 app.delete('/api/user-service-config/deactivate', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    deleteUserServiceConfig(req.user.username);
     res.json({ ok: true, active: false });
   } catch (err) {
     console.error('[user-service-config/deactivate]', err);
@@ -9211,13 +9255,8 @@ app.delete('/api/user-service-config/deactivate', requireLogin, dashboardRateLim
 // Used by AutoSourcing.html to inject per-user search keys into the /start_job payload.
 app.get('/api/user-service-config/search-keys', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (!fs.existsSync(fp)) {
-      return res.json({ provider: 'google_cse' });
-    }
-    const enc = fs.readFileSync(fp);
-    const raw = decryptBuffer(enc);
-    const cfg = JSON.parse(raw.toString('utf8'));
+    const cfg = readUserServiceConfig(req.user.username);
+    if (!cfg) return res.json({ provider: 'google_cse' });
     const search = cfg.search || {};
     const result = { provider: search.provider || 'google_cse' };
     if (search.provider === 'serper'     && search.SERPER_API_KEY)     result.SERPER_API_KEY    = search.SERPER_API_KEY;
