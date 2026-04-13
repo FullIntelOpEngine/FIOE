@@ -2136,6 +2136,7 @@ function CandidatesTable({
   appTokenCost = _APP_ANALYTIC_TOKEN_COST, // Dynamic analytic token cost from admin config
   dockOutRef, // ref that App sets so it can trigger executeDockOut on session timeout
   onRefresh, // callback to refresh candidate list from server
+  hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -3606,9 +3607,9 @@ function CandidatesTable({
           // single-candidate assessments don't appear as "no loading animation".
           await new Promise(r => setTimeout(r, 2000));
           // Deduct 1 token per eligible new record once assessment is complete.
-          // Skip deduction for BYOK users (token deduction disabled except for Verify Selected).
+          // Skip deduction for BYOK users or when a custom LLM provider (Option A) is active.
           const tokenCost = eligibleForAnalysis.length;
-          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok') {
+          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm) {
             try {
               const tokenRes = await fetch('http://localhost:4000/candidates/token-deduct', {
                 method: 'POST',
@@ -8359,7 +8360,7 @@ export default function App() {
         if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;       setAppTokenCost(t.analytic_token_cost); }
       }
     } catch (_) {}
-    if (!(hasCustomEmailVerif || hasCustomLlm) && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
+    if (!hasCustomEmailVerif && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
     setPendingVerifyEmail(selected[0].value);
     setTokenConfirmOpen(true);
   };
@@ -8381,8 +8382,8 @@ export default function App() {
       if (!res.ok) throw new Error('Verification failed');
       const data = await res.json();
       setVerifyModalData(data);
-      // Deduct 2 tokens on successful verification (skipped when custom email verif API or custom LLM is active)
-      if (!(hasCustomEmailVerif || hasCustomLlm)) {
+      // Deduct 2 tokens on successful verification (skipped when custom email verif API is active)
+      if (!hasCustomEmailVerif) {
         fetch('http://localhost:4000/deduct-tokens', { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(r => r.json())
           .then(t => {
@@ -8727,8 +8728,8 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif or custom LLM is active) */}
-      {!(hasCustomEmailVerif || hasCustomLlm) && <div style={{
+      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when BOTH custom email verif AND custom LLM are active) */}
+      {!(hasCustomEmailVerif && hasCustomLlm) && <div style={{
         width: '100%',
         margin: '0 0 24px 0',
         padding: '12px 18px',
@@ -8855,6 +8856,7 @@ export default function App() {
                 appTokenCost={appTokenCost}
                 dockOutRef={dockOutRef}
                 onRefresh={() => { isRefreshingRef.current = true; window.location.reload(); }}
+                hasCustomLlm={hasCustomLlm}
               />
           }
         </div>
