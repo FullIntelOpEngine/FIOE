@@ -3295,7 +3295,7 @@ function CandidatesTable({
             if (dockInSelectedPair && dockInSelectedPair.roleTag) {
               formData.append('role_tag', dockInSelectedPair.roleTag);
             }
-            const cvUploadRes = await fetch(`http://localhost:${API_PORT}/process/upload_multiple_cvs`, {
+            const cvUploadRes = await fetch(`http://localhost:${LOGIN_PORT}/process/upload_multiple_cvs`, {
               method: 'POST',
               credentials: 'include',
               body: formData,
@@ -3490,7 +3490,7 @@ function CandidatesTable({
               setDockInAnalyticProgress(`Assessing ${batch.length} record(s)${batchLabel}…`);
               setDockInAnalyticPct(ASSESS_BASE + Math.round((totalProcessed / totalCands) * ASSESS_RANGE));
               try {
-                const bulkRes = await fetch(`http://localhost:${API_PORT}/process/bulk_assess`, {
+                const bulkRes = await fetch(`http://localhost:${LOGIN_PORT}/process/bulk_assess`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   credentials: 'include',
@@ -3523,7 +3523,7 @@ function CandidatesTable({
                       const settle = () => { if (!completed) { completed = true; resolve(); } };
 
                       // ── SSE: real-time progress display only (no completion logic) ──
-                      const sseUrl = `http://localhost:${API_PORT}/process/bulk_assess_stream/${jobId}`;
+                      const sseUrl = `http://localhost:${LOGIN_PORT}/process/bulk_assess_stream/${jobId}`;
                       let eventSource = null;
                       try {
                         eventSource = new EventSource(sseUrl);
@@ -3568,7 +3568,7 @@ function CandidatesTable({
                           return;
                         }
                         try {
-                          const statusRes = await fetch(`http://localhost:${API_PORT}/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
+                          const statusRes = await fetch(`http://localhost:${LOGIN_PORT}/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
                           if (statusRes.ok) {
                             const statusData = await statusRes.json();
                             const batchProcessed = statusData.processed || 0;
@@ -3849,7 +3849,7 @@ function CandidatesTable({
         const enrichedPairs = await Promise.all(roleTagPairs.map(async pair => {
           if (!pair.roleTag) return pair;
           try {
-            const r = await fetch(`http://localhost:${API_PORT}/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
+            const r = await fetch(`http://localhost:${LOGIN_PORT}/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
               credentials: 'include',
             });
             if (r.ok) {
@@ -7323,7 +7323,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: loginExpanded ? '300px' : undefined }}>
             <li><a href="/" className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
-            <li><a href="/sales_rep_register.html" className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/sales_rep_register.html`} className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
           </ul>
         </li>
 
@@ -7368,10 +7368,10 @@ function NavSidebar({ activePage = 'candidate-management' }) {
             </svg>
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: servicesExpanded ? '300px' : undefined }}>
-            <li><a href="/AutoSourcing.html" className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
-            <li><a href="/SourcingVerify.html" className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/AutoSourcing.html`} className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/SourcingVerify.html`} className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
             <li><a href="/" className={'nav-sidebar__submenu-link' + (activePage === 'candidate-management' ? ' active' : '')} role="menuitem">Candidate Management</a></li>
-            <li><a href="/LookerDashboard.html" className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
+            <li><a href={`http://localhost:${API_PORT}/LookerDashboard.html`} className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
           </ul>
         </li>
 
@@ -7387,7 +7387,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="/api_porting.html" className="nav-sidebar__link">
+          <a href={`http://localhost:${LOGIN_PORT}/api_porting.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
               <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
@@ -7397,7 +7397,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="/community.html" className="nav-sidebar__link">
+          <a href={`http://localhost:${API_PORT}/community.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
               <circle cx="9" cy="7" r="4"/>
@@ -9443,7 +9443,7 @@ export default function App() {
                                                                 if (resumeCandidate.linkedinurl) params.set('linkedin', resumeCandidate.linkedinurl);
                                                                 if (resumeCandidate.name) params.set('name', resumeCandidate.name);
                                                                 if (!resumeCandidate.linkedinurl && resumeCandidate.id) params.set('process_id', resumeCandidate.id);
-                                                                return `/sourcing/download_report?${params.toString()}`;
+                                                                return `http://localhost:${LOGIN_PORT}/sourcing/download_report?${params.toString()}`;
                                                             })()}
                                                             download
                                                             title="Click to download the assessment report as a Word document"
