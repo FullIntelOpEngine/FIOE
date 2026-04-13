@@ -1417,7 +1417,7 @@ app.get('/email-verif-services', (req, res) => {
 // GET /api/platform-provider-status — admin-level custom provider flags.
 // Returns { email_verif_custom, llm_custom } based on admin configs.
 // No API keys are exposed — only boolean flags.
-app.get('/api/platform-provider-status', (req, res) => {
+app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req, res) => {
   // Email verif: check if any non-default provider is enabled with a key
   const evCfg = loadEmailVerifConfig();
   const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
