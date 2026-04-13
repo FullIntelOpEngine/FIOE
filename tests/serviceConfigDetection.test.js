@@ -5,9 +5,9 @@
  *
  * Validates that:
  *  - App.js reads BOTH api_porting.html (per-user) and admin_rate_limits.html (platform) configs.
- *  - Only per-user Email Verification keys (api_porting.html) suppress Verify Select token deduction.
- *  - Only per-user LLM keys (api_porting.html) suppress DB Dockin Analytic token deduction.
- *  - Token UI is hidden only when BOTH per-user email verif AND LLM are active.
+ *  - Per-user Email Verification keys (api_porting.html) hide Token UI and suppress ALL deduction.
+ *  - Per-user LLM keys (api_porting.html) suppress DB Dockin Analytic token deduction.
+ *  - Token UI is hidden when per-user email verif keys are active.
  *  - Admin keys (admin_rate_limits.html) do NOT override token deduction or visibility rules.
  *
  * How to run (from repo root):
@@ -49,10 +49,11 @@ function computeFlags(svcData, platformData) {
 
 /**
  * Given the flags, determines whether the Token UI should be visible.
- * Mirrors the JSX condition: !(hasCustomEmailVerif && hasCustomLlm)
+ * Mirrors the JSX condition: !hasCustomEmailVerif
+ * When email verification keys are present → tokens hidden.
  */
 function isTokenUIVisible(flags) {
-  return !(flags.hasCustomEmailVerif && flags.hasCustomLlm);
+  return !flags.hasCustomEmailVerif;
 }
 
 /**
@@ -65,10 +66,10 @@ function shouldVerifySelectDeduct(flags) {
 
 /**
  * Given the flags, determines whether DB Dockin Analytic should deduct tokens.
- * Mirrors the condition: !hasCustomLlm
+ * Mirrors the condition: !hasCustomLlm && !hasCustomEmailVerif
  */
 function shouldAnalyticDeduct(flags) {
-  return !flags.hasCustomLlm;
+  return !flags.hasCustomLlm && !flags.hasCustomEmailVerif;
 }
 
 // ── Test Cases ──────────────────────────────────────────────────────────────
@@ -107,16 +108,16 @@ describe('Service Config Detection — api_porting.html vs admin_rate_limits.htm
 
   // ── Scenario 3: Only Email Verif in api_porting.html ──────────────────────
 
-  test('Email Verif only in api_porting.html → tokens visible, Verify Select skips deduction', () => {
+  test('Email Verif only in api_porting.html → tokens hidden, no deduction', () => {
     const svcData = { active: true, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'zerobounce' } };
     const platformData = { email_verif_custom: false, llm_custom: false };
     const flags = computeFlags(svcData, platformData);
 
     expect(flags.hasCustomEmailVerif).toBe(true);
     expect(flags.hasCustomLlm).toBe(false);
-    expect(isTokenUIVisible(flags)).toBe(true);          // Visible
-    expect(shouldVerifySelectDeduct(flags)).toBe(false);  // No deduction
-    expect(shouldAnalyticDeduct(flags)).toBe(true);       // Deduction continues
+    expect(isTokenUIVisible(flags)).toBe(false);          // Hidden (email verif keys present)
+    expect(shouldVerifySelectDeduct(flags)).toBe(false);   // No deduction
+    expect(shouldAnalyticDeduct(flags)).toBe(false);       // No deduction (email verif keys suppress all)
   });
 
   // ── Scenario 4: Only LLM in api_porting.html ─────────────────────────────
@@ -128,9 +129,9 @@ describe('Service Config Detection — api_porting.html vs admin_rate_limits.htm
 
     expect(flags.hasCustomEmailVerif).toBe(false);
     expect(flags.hasCustomLlm).toBe(true);
-    expect(isTokenUIVisible(flags)).toBe(true);           // Visible
+    expect(isTokenUIVisible(flags)).toBe(true);           // Visible (no email verif keys)
     expect(shouldVerifySelectDeduct(flags)).toBe(true);    // Deduction continues
-    expect(shouldAnalyticDeduct(flags)).toBe(false);       // No deduction
+    expect(shouldAnalyticDeduct(flags)).toBe(false);       // No deduction (LLM active)
   });
 
   // ── Scenario 5: Admin keys ONLY (admin_rate_limits.html) ─────────────────

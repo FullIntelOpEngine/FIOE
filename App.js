@@ -2137,6 +2137,7 @@ function CandidatesTable({
   dockOutRef, // ref that App sets so it can trigger executeDockOut on session timeout
   onRefresh, // callback to refresh candidate list from server
   hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
+  hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -3607,9 +3608,9 @@ function CandidatesTable({
           // single-candidate assessments don't appear as "no loading animation".
           await new Promise(r => setTimeout(r, 2000));
           // Deduct 1 token per eligible new record once assessment is complete.
-          // Skip deduction for BYOK users or when a custom LLM provider (Option A) is active.
+          // Skip deduction for BYOK users, when a custom LLM provider is active, or when custom email verif keys are present.
           const tokenCost = eligibleForAnalysis.length;
-          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm) {
+          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm && !hasCustomEmailVerif) {
             try {
               const tokenRes = await fetch('http://localhost:4000/candidates/token-deduct', {
                 method: 'POST',
@@ -8752,8 +8753,8 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when BOTH custom email verif AND custom LLM are active) */}
-      {!(hasCustomEmailVerif && hasCustomLlm) && <div style={{
+      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif keys are active via api_porting.html) */}
+      {!hasCustomEmailVerif && <div style={{
         width: '100%',
         margin: '0 0 24px 0',
         padding: '12px 18px',
@@ -8881,6 +8882,7 @@ export default function App() {
                 dockOutRef={dockOutRef}
                 onRefresh={() => { isRefreshingRef.current = true; window.location.reload(); }}
                 hasCustomLlm={hasCustomLlm}
+                hasCustomEmailVerif={hasCustomEmailVerif}
               />
           }
         </div>

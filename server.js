@@ -9119,8 +9119,13 @@ function readUserServiceConfig(username) {
   const encPath  = userServiceConfigPath(username);
   const jsonPath = _userServiceJsonPath(username);
   if (fs.existsSync(encPath)) {
-    const raw = decryptBuffer(fs.readFileSync(encPath));
-    return JSON.parse(raw.toString('utf8'));
+    try {
+      const raw = decryptBuffer(fs.readFileSync(encPath));
+      return JSON.parse(raw.toString('utf8'));
+    } catch (err) {
+      // Decryption may fail if PORTING_SECRET is missing/changed — fall through to .json
+      console.error('[readUserServiceConfig] .enc decrypt failed for', username, ':', err.message);
+    }
   }
   if (fs.existsSync(jsonPath)) {
     return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
