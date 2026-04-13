@@ -7378,7 +7378,7 @@ async function smtpVerify(email, mxHost) {
 }
 
 // ========== ContactUs service discovery (reads contact_gen_config.json) ==========
-app.get('/contact-gen-services', requireLogin, (req, res) => {
+app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) => {
   try {
     const cgCfgPath = path.join(__dirname, 'contact_gen_config.json');
     let config = {};
@@ -7396,7 +7396,7 @@ app.get('/contact-gen-services', requireLogin, (req, res) => {
 });
 
 // ========== NEW ENDPOINT: Generate Emails / Generate Contacts ==========
-app.post('/generate-email', requireLogin, async (req, res) => {
+app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
     const { name, company, country, provider, linkedinurl } = req.body;
 
