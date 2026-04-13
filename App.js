@@ -7672,7 +7672,17 @@ export default function App() {
       })
       .catch(() => {});
   }, [user]);
-  useEffect(() => { _refreshServiceConfig(); }, [_refreshServiceConfig]);
+  useEffect(() => {
+    _refreshServiceConfig();
+    const onFocus = () => _refreshServiceConfig();
+    const onVisible = () => { if (document.visibilityState === 'visible') _refreshServiceConfig(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [_refreshServiceConfig]);
 
   // Listen for config changes from admin_rate_limits.html / api_porting.html via BroadcastChannel
   useEffect(() => {

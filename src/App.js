@@ -83,7 +83,7 @@ const EMAIL_TAG_GROUPS = [
     { tag: '[Date of Interview]',    desc: 'Selected interview date (from calendar slot)' },
     { tag: '[Time of Interview]',    desc: 'Selected interview time (from calendar slot)' },
     { tag: '[Video Conference Link]', desc: 'Google Meet or Teams link (after creating event)' },
-    { tag: '[Scheduler]',            desc: 'Self-scheduler booking page (/scheduler.html)' },
+    { tag: '[Scheduler]',            desc: 'Self-scheduler booking page (localhost:4000/scheduler.html)' },
   ]},
 ];
 
@@ -1536,10 +1536,10 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 // Admin-facing modal: generate available slots from Google Calendar, review and
 // select which ones to publish, then share the public booking link with invitees.
 
-// Build the scheduler booking URL using the current origin so it works across
-// localhost, staging, and production.
+// Build the scheduler booking URL using the current hostname so it works across
+// localhost, staging, and production (scheduler.html is served on port 4000).
 const getSchedulerBookingUrl = () =>
-  `${window.location.origin}/scheduler.html`;
+  `${window.location.protocol}//${window.location.hostname}:${API_PORT}/scheduler.html`;
 
 function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' }) {
   const [startDate, setStartDate] = useState('');
