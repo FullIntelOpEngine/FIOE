@@ -2100,19 +2100,24 @@ app.use(requireCsrfHeader);
 // Returns { email_verif_custom, llm_custom } based on admin configs.
 // No API keys are exposed — only boolean flags.
 app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req, res) => {
-  // Email verif: check if any non-default provider is enabled with a key
-  const evCfg = loadEmailVerifConfig();
-  const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
-    const c = evCfg[svc] || {};
-    return c.enabled === 'enabled' && !!c.api_key;
-  });
-  // LLM: check if a non-default (non-gemini) provider is enabled with a key
-  const llmCfg = _readFullLlmConfig();
-  const llmCustom = ['openai', 'anthropic'].some(p => {
-    const c = llmCfg[p] || {};
-    return c.enabled === 'enabled' && !!c.api_key;
-  });
-  res.json({ email_verif_custom: emailVerifCustom, llm_custom: llmCustom });
+  try {
+    // Email verif: check if any non-default provider is enabled with a key
+    const evCfg = loadEmailVerifConfig();
+    const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
+      const c = evCfg[svc] || {};
+      return c.enabled === 'enabled' && !!c.api_key;
+    });
+    // LLM: check if a non-default (non-gemini) provider is enabled with a key
+    const llmCfg = _readFullLlmConfig();
+    const llmCustom = ['openai', 'anthropic'].some(p => {
+      const c = llmCfg[p] || {};
+      return c.enabled === 'enabled' && !!c.api_key;
+    });
+    res.json({ email_verif_custom: emailVerifCustom, llm_custom: llmCustom });
+  } catch (err) {
+    console.error('[platform-provider-status]', err);
+    res.status(500).json({ error: 'Could not read platform provider config' });
+  }
 });
 
 app.post('/login', userRateLimit('login'), async (req, res) => {

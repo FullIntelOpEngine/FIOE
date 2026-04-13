@@ -7662,7 +7662,7 @@ export default function App() {
       fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('http://localhost:4000/api/platform-provider-status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]).then(([svcData, platformData]) => {
-      // Per-user flags (from api_porting.html)
+      // Per-user flags (from api_porting.html) — these control token deduction & visibility.
       let userEmailVerif = false, userLlm = false;
       if (svcData && svcData.active && svcData.providers) {
         const ep = (svcData.providers.email_verif || '').toLowerCase();
@@ -7670,17 +7670,17 @@ export default function App() {
         const lp = (svcData.providers.llm || '').toLowerCase();
         userLlm = lp === 'openai' || lp === 'anthropic';
       }
-      // Admin platform flags (from admin_rate_limits.html) — detected for
-      // diagnostics but intentionally excluded from token logic.  Only per-user
-      // keys (api_porting.html) should suppress token deduction / hide the UI.
-      // eslint-disable-next-line no-unused-vars
+      // Admin platform flags (from admin_rate_limits.html) — detected so App.js
+      // can confirm it reads both config sources, but intentionally excluded from
+      // token logic.  Only per-user keys (api_porting.html) suppress deduction / hide UI.
       const platEmailVerif = !!(platformData && platformData.email_verif_custom);
-      // eslint-disable-next-line no-unused-vars
       const platLlm = !!(platformData && platformData.llm_custom);
+      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s | admin emailVerif=%s llm=%s',
+        userEmailVerif, userLlm, platEmailVerif, platLlm);
       // Only per-user flags control token deduction and visibility
       setHasCustomEmailVerif(userEmailVerif);
       setHasCustomLlm(userLlm);
-    });
+    }).catch(err => console.error('[ServiceConfig] refresh failed:', err));
   }, [user]);
   useEffect(() => {
     _refreshServiceConfig();
@@ -7688,9 +7688,13 @@ export default function App() {
     const onVisible = () => { if (document.visibilityState === 'visible') _refreshServiceConfig(); };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
+    // Poll every 30 s so dynamic key changes in api_porting.html / admin_rate_limits.html
+    // propagate even when BroadcastChannel cannot cross origins (port 4000 → 3000).
+    const poll = setInterval(_refreshServiceConfig, 30000);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(poll);
     };
   }, [_refreshServiceConfig]);
 
