@@ -1018,7 +1018,7 @@ def user_token_update():
             # Skip token deduction (negative delta) for BYOK users
             if delta_int < 0:
                 cur.execute(
-                    "SELECT COALESCE(token, 0) AS t, useraccess, username FROM login WHERE userid = %s",
+                    "SELECT COALESCE(token, 0) AS t, useraccess FROM login WHERE userid = %s",
                     (userid,)
                 )
                 _byok_row = cur.fetchone()
@@ -1027,7 +1027,7 @@ def user_token_update():
                     conn.close()
                     return jsonify({"ok": True, "token": int(_byok_row[0])}), 200
                 # Skip deduction when user has custom provider keys (server-side guard)
-                _uname_for_check = (_byok_row[2] or "") if _byok_row else ""
+                _uname_for_check = getattr(request, '_session_user', '') or ''
                 if _uname_for_check:
                     _cp = _user_has_custom_providers(_uname_for_check)
                     if _cp.get("email_verif") or _cp.get("llm"):
@@ -1088,7 +1088,7 @@ def user_token_update():
         )
         cur = conn.cursor()
         # Skip token deduction for BYOK users (absolute set path)
-        cur.execute("SELECT COALESCE(token, 0) AS t, useraccess, username FROM login WHERE userid = %s", (userid,))
+        cur.execute("SELECT COALESCE(token, 0) AS t, useraccess FROM login WHERE userid = %s", (userid,))
         _byok_check = cur.fetchone()
         if _byok_check and (_byok_check[1] or "").strip().lower() == "byok":
             cur.close()
@@ -1096,11 +1096,13 @@ def user_token_update():
             return jsonify({"ok": True, "token": int(_byok_check[0]), "skipped": True}), 200
         # Skip token deduction (lower balance) when user has custom provider keys
         if _byok_check and token_int < int(_byok_check[0]):
-            _cp = _user_has_custom_providers((_byok_check[2] or ""))
-            if _cp.get("email_verif") or _cp.get("llm"):
-                cur.close()
-                conn.close()
-                return jsonify({"ok": True, "token": int(_byok_check[0]), "skipped": True}), 200
+            _uname_for_check = getattr(request, '_session_user', '') or ''
+            if _uname_for_check:
+                _cp = _user_has_custom_providers(_uname_for_check)
+                if _cp.get("email_verif") or _cp.get("llm"):
+                    cur.close()
+                    conn.close()
+                    return jsonify({"ok": True, "token": int(_byok_check[0]), "skipped": True}), 200
         try:
             if result_count_int is not None:
                 # Ensure idempotency columns exist — run at most once per process

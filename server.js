@@ -2443,8 +2443,8 @@ function _userHasCustomProviders(username) {
   try {
     const cfg = readUserServiceConfig(username);
     if (!cfg) return { emailVerif: false, llm: false };
-    const ep = (cfg.email_verif && cfg.email_verif.provider || '').toLowerCase();
-    const lp = (cfg.llm && cfg.llm.provider || '').toLowerCase();
+    const ep = ((cfg.email_verif && cfg.email_verif.provider) || '').toLowerCase();
+    const lp = ((cfg.llm && cfg.llm.provider) || '').toLowerCase();
     return {
       emailVerif: ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer',
       llm:        lp === 'openai' || lp === 'anthropic',

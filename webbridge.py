@@ -493,7 +493,8 @@ def _require_admin(f):
             if (row[0] or "").strip().lower() != "admin":
                 return jsonify({"error": "Admin access required"}), 403
         except Exception as e:
-            return jsonify({"error": f"Auth check failed: {e}"}), 500
+            logger.error("[_require_admin] Auth check failed: %s", e)
+            return jsonify({"error": "Authentication service temporarily unavailable"}), 500
         return f(*args, **kwargs)
     return wrapper
 
@@ -553,7 +554,8 @@ def _require_session(f):
             request._session_user   = username
             request._session_userid = userid or str(row[0] or "")
         except Exception as e:
-            return jsonify({"error": f"Auth check failed: {e}"}), 500
+            logger.error("[_require_session] Auth check failed: %s", e)
+            return jsonify({"error": "Authentication service temporarily unavailable"}), 500
         return f(*args, **kwargs)
     return wrapped
 
