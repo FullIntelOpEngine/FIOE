@@ -225,11 +225,13 @@ async function llmGenerateText(prompt, opts = {}) {
   const { username, label = 'llm' } = opts;
   const cfg = _readFullLlmConfig();
 
-  // Find the first enabled provider with an API key
+  // Find the first enabled provider with an API key AND an installed SDK
   let activeProvider = 'gemini'; // default
   for (const p of ['openai', 'anthropic', 'gemini']) {
     const pcfg = cfg[p] || {};
     if (pcfg.enabled && pcfg.api_key) {
+      if (p === 'openai' && !OpenAIClass) continue;
+      if (p === 'anthropic' && !AnthropicClass) continue;
       activeProvider = p;
       break;
     }
