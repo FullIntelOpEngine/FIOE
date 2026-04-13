@@ -1006,6 +1006,9 @@ def admin_save_search_provider_config():
             # Mutual exclusion: enabling Serper disables DataforSEO
             if entry["enabled"] == "enabled":
                 current["dataforseo"]["enabled"] = "disabled"
+                # Clear disabled provider's credentials so no traces remain
+                current["dataforseo"]["login"] = ""
+                current["dataforseo"]["password"] = ""
 
     if "dataforseo" in body:
         entry = body["dataforseo"]
@@ -1022,6 +1025,8 @@ def admin_save_search_provider_config():
             # Mutual exclusion: enabling DataforSEO disables Serper
             if entry["enabled"] == "enabled":
                 current["serper"]["enabled"] = "disabled"
+                # Clear disabled provider's credentials so no traces remain
+                current["serper"]["api_key"] = ""
 
     try:
         _save_search_provider_config(current)
@@ -1101,6 +1106,8 @@ def admin_save_llm_provider_config():
                         if other not in current:
                             current[other] = copy.deepcopy(_LLM_PROVIDER_DEFAULTS[other])
                         current[other]["enabled"] = "disabled"
+                        # Clear disabled provider's API key so no traces remain
+                        current[other]["api_key"] = ""
 
     # Update top-level active_provider from body if explicitly provided
     if "active_provider" in body:

@@ -3767,9 +3767,16 @@ function renderApiKeysCard() {
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
         // Update local state
-        _emailVerifConfig[svc] = { api_key_set: newKey ? true : cfg.api_key_set, enabled };
+        // When disabled, the backend clears the API key, so reflect that in local state
+        const keyStillSet = enabled === 'disabled' ? false : (newKey ? true : cfg.api_key_set);
+        _emailVerifConfig[svc] = { api_key_set: keyStillSet, enabled };
         keyInput.value = '';
         keyInput.placeholder = _emailVerifConfig[svc].api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        // Remove the key-set badge if service was disabled
+        if (enabled === 'disabled') {
+          const badge = keyInput.closest('.apikey-row')?.querySelector('.apikey-set-badge');
+          if (badge) badge.remove();
+        }
         _notifyConfigChanged('email-verif');
         toast(`${_SVC_LABELS[svc]} settings saved`, 'success');
       } catch (err) {
@@ -3895,10 +3902,16 @@ function renderApiKeysCard() {
         if (serperKey) _serperConfig.serper.api_key_set = true;
         if (dfsLogin)  _serperConfig.dataforseo.login_set    = true;
         if (dfsPass)   _serperConfig.dataforseo.password_set = true;
-        // Clear inputs
+        // Clear disabled provider's key-set flags (backend clears actual keys)
+        if (enabledSp !== 'serper')    { _serperConfig.serper.api_key_set = false; }
+        if (enabledSp !== 'dataforseo') { _serperConfig.dataforseo.login_set = false; _serperConfig.dataforseo.password_set = false; }
+        // Clear inputs and update placeholders
         const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = _serperConfig.serper.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…'; }
         const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = _serperConfig.dataforseo.login_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…'; }
         const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = _serperConfig.dataforseo.password_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…'; }
+        // Remove key-set badges for disabled providers
+        if (enabledSp !== 'serper') { const b = document.querySelector('#serper-section .apikey-set-badge'); if (b) b.remove(); }
+        if (enabledSp !== 'dataforseo') { document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove()); }
         const labels = { serper: 'Serper.dev', dataforseo: 'DataforSEO', cse: 'Google CSE' };
         _notifyConfigChanged('search-provider');
         toast(`${labels[_activeProvider] || 'Google CSE'} is now active`, 'success');
@@ -4105,10 +4118,18 @@ function renderApiKeysCard() {
         });
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        // Update local state
+        // Update local state — clear input fields for providers that had new keys entered
         if (gemApiKey) { const el = document.getElementById('apikey-gemini'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         if (oaiApiKey) { const el = document.getElementById('apikey-openai'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         if (antApiKey) { const el = document.getElementById('apikey-anthropic'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
+        // Clear disabled providers' input placeholders and key-set badges (backend clears actual keys)
+        for (const prov of ['gemini', 'openai', 'anthropic']) {
+          if (prov === _activeLlmProvider) continue;
+          const el = document.getElementById('apikey-' + prov);
+          if (el) { el.value = ''; el.placeholder = `Enter ${prov === 'gemini' ? 'Gemini' : prov === 'openai' ? 'ChatGPT (OpenAI)' : 'Claude (Anthropic)'} API key…`; }
+          const badge = document.querySelector(`#llm-${prov}-section .apikey-set-badge`);
+          if (badge) badge.remove();
+        }
         const labels = { gemini: 'Gemini', openai: 'ChatGPT (OpenAI)', anthropic: 'Claude (Anthropic)' };
         _notifyConfigChanged('llm-provider');
         toast(`${labels[_activeLlmProvider] || 'Gemini'} is now the active LLM`, 'success');
