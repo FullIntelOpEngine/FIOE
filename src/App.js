@@ -27,6 +27,14 @@ const _API_BASE = (() => {
   // Use the same protocol as the current page to avoid mixed-content errors (http vs https).
   return `${window.location.protocol}//localhost:${API_PORT}`;
 })();
+// Analogous to _API_BASE but for the login/sourcing server on LOGIN_PORT (8091).
+// Returns '' when already on that port (or on default HTTP/HTTPS ports in production)
+// so nav links stay same-origin in production but resolve correctly in dev.
+const _LOGIN_BASE = (() => {
+  const p = window.location.port;
+  if (!p || p === String(LOGIN_PORT) || p === '80' || p === '443') return '';
+  return `${window.location.protocol}//localhost:${LOGIN_PORT}`;
+})();
 // Central login redirect URL — used by auth check, handleLogout, performSessionExpiry, fetchCandidates
 const FIOE_LOGIN_REDIRECT =
   `http://localhost:${LOGIN_PORT}/login.html?next=` + encodeURIComponent(window.location.origin + '/');
@@ -7314,7 +7322,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: loginExpanded ? '300px' : undefined }}>
             <li><a href="/" className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
-            <li><a href="/sales_rep_register.html" className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
+            <li><a href={`${_LOGIN_BASE}/sales_rep_register.html`} className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
           </ul>
         </li>
 
@@ -7359,10 +7367,10 @@ function NavSidebar({ activePage = 'candidate-management' }) {
             </svg>
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: servicesExpanded ? '300px' : undefined }}>
-            <li><a href="/AutoSourcing.html" className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
-            <li><a href="/SourcingVerify.html" className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
+            <li><a href={`${_LOGIN_BASE}/AutoSourcing.html`} className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
+            <li><a href={`${_LOGIN_BASE}/SourcingVerify.html`} className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
             <li><a href="/" className={'nav-sidebar__submenu-link' + (activePage === 'candidate-management' ? ' active' : '')} role="menuitem">Candidate Management</a></li>
-            <li><a href="/LookerDashboard.html" className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
+            <li><a href={`${_API_BASE}/LookerDashboard.html`} className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
           </ul>
         </li>
 
@@ -7378,7 +7386,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="/api_porting.html" className="nav-sidebar__link">
+          <a href={`${_LOGIN_BASE}/api_porting.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
               <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
@@ -7388,7 +7396,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="/community.html" className="nav-sidebar__link">
+          <a href={`${_API_BASE}/community.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
               <circle cx="9" cy="7" r="4"/>
