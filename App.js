@@ -7670,12 +7670,16 @@ export default function App() {
         const lp = (svcData.providers.llm || '').toLowerCase();
         userLlm = lp === 'openai' || lp === 'anthropic';
       }
-      // Admin platform flags (from admin_rate_limits.html)
+      // Admin platform flags (from admin_rate_limits.html) — detected for
+      // diagnostics but intentionally excluded from token logic.  Only per-user
+      // keys (api_porting.html) should suppress token deduction / hide the UI.
+      // eslint-disable-next-line no-unused-vars
       const platEmailVerif = !!(platformData && platformData.email_verif_custom);
+      // eslint-disable-next-line no-unused-vars
       const platLlm = !!(platformData && platformData.llm_custom);
-      // Union: active at either level
-      setHasCustomEmailVerif(userEmailVerif || platEmailVerif);
-      setHasCustomLlm(userLlm || platLlm);
+      // Only per-user flags control token deduction and visibility
+      setHasCustomEmailVerif(userEmailVerif);
+      setHasCustomLlm(userLlm);
     });
   }, [user]);
   useEffect(() => {
