@@ -7688,7 +7688,7 @@ export default function App() {
     };
     return () => ch.close();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, _refreshServiceConfig]);
+  }, [user]);
 
   const handleAddStatus = (newStat) => {
     if (!user || !user.username) return;
