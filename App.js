@@ -7654,23 +7654,29 @@ export default function App() {
     }
   }, [user]);
 
-  // Fetch per-user service config to detect custom email verification activation
+  // Fetch per-user service config AND admin platform-level config to detect custom providers.
+  // Tokens are hidden / deductions skipped when custom providers are active at EITHER level.
   const _refreshServiceConfig = useCallback(() => {
     if (!user || !user.username) return;
-    fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(res => res.ok ? res.json() : null)
-      .then(svcData => {
-        if (svcData && svcData.active && svcData.providers) {
-          const ep = (svcData.providers.email_verif || '').toLowerCase();
-          setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
-          const lp = (svcData.providers.llm || '').toLowerCase();
-          setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
-        } else {
-          setHasCustomEmailVerif(false);
-          setHasCustomLlm(false);
-        }
-      })
-      .catch(() => {});
+    Promise.all([
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/platform-provider-status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([svcData, platformData]) => {
+      // Per-user flags (from api_porting.html)
+      let userEmailVerif = false, userLlm = false;
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
+        const lp = (svcData.providers.llm || '').toLowerCase();
+        userLlm = lp === 'openai' || lp === 'anthropic';
+      }
+      // Admin platform flags (from admin_rate_limits.html)
+      const platEmailVerif = !!(platformData && platformData.email_verif_custom);
+      const platLlm = !!(platformData && platformData.llm_custom);
+      // Union: active at either level
+      setHasCustomEmailVerif(userEmailVerif || platEmailVerif);
+      setHasCustomLlm(userLlm || platLlm);
+    });
   }, [user]);
   useEffect(() => {
     _refreshServiceConfig();

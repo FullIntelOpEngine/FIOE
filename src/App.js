@@ -6147,7 +6147,7 @@ criteriaSheets.map((cf, idx) => {
                                     }}
                                   >
                                     <img
-                                      src={`/bulletin/image/${encodeURIComponent(fname)}`}
+                                      src={`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`}
                                       alt={fname}
                                       style={{ width: '100%', height: 70, objectFit: 'cover', display: 'block' }}
                                       title={fname}
@@ -7654,23 +7654,29 @@ export default function App() {
     }
   }, [user]);
 
-  // Fetch per-user service config to detect custom email verification / LLM activation
+  // Fetch per-user service config AND admin platform-level config to detect custom providers.
+  // Tokens are hidden / deductions skipped when custom providers are active at EITHER level.
   const _refreshSvcConfig = useCallback(() => {
     if (!user || !user.username) return;
-    fetch(`http://localhost:${API_PORT}/api/user-service-config/status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(res => res.ok ? res.json() : null)
-      .then(svcData => {
-        if (svcData && svcData.active && svcData.providers) {
-          const ep = (svcData.providers.email_verif || '').toLowerCase();
-          setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
-          const lp = (svcData.providers.llm || '').toLowerCase();
-          setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
-        } else {
-          setHasCustomEmailVerif(false);
-          setHasCustomLlm(false);
-        }
-      })
-      .catch(() => {});
+    Promise.all([
+      fetch(`http://localhost:${API_PORT}/api/user-service-config/status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`http://localhost:${API_PORT}/api/platform-provider-status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([svcData, platformData]) => {
+      // Per-user flags (from api_porting.html)
+      let userEmailVerif = false, userLlm = false;
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
+        const lp = (svcData.providers.llm || '').toLowerCase();
+        userLlm = lp === 'openai' || lp === 'anthropic';
+      }
+      // Admin platform flags (from admin_rate_limits.html)
+      const platEmailVerif = !!(platformData && platformData.email_verif_custom);
+      const platLlm = !!(platformData && platformData.llm_custom);
+      // Union: active at either level
+      setHasCustomEmailVerif(userEmailVerif || platEmailVerif);
+      setHasCustomLlm(userLlm || platLlm);
+    });
   }, [user]);
 
   useEffect(() => {
