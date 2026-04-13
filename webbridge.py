@@ -462,11 +462,13 @@ def _check_user_rate(feature: str):
     return decorator
 
 def _require_admin(f):
-    """Decorator: reject request with 403 unless the caller is an admin."""
+    """Decorator: reject request with 403 unless the caller is an admin.
+    Also validates session_id against the DB to prevent forged cookies."""
     import functools
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
-        username = (request.cookies.get("username") or "").strip()
+        username   = (request.cookies.get("username") or "").strip()
+        session_id = (request.cookies.get("session_id") or "").strip()
         if not username:
             return jsonify({"error": "Authentication required"}), 401
         try:
@@ -479,10 +481,16 @@ def _require_admin(f):
                 dbname=os.getenv("PGDATABASE", "candidate_db"),
             )
             cur = conn.cursor()
-            cur.execute("SELECT useraccess FROM login WHERE username=%s LIMIT 1", (username,))
+            if session_id:
+                cur.execute("SELECT useraccess FROM login WHERE username=%s AND session_id=%s LIMIT 1", (username, session_id))
+            else:
+                # Legacy fallback: just confirm the username exists
+                cur.execute("SELECT useraccess FROM login WHERE username=%s LIMIT 1", (username,))
             row = cur.fetchone()
             cur.close(); conn.close()
-            if not row or (row[0] or "").strip().lower() != "admin":
+            if not row:
+                return jsonify({"error": "Session expired or invalid"}), 401
+            if (row[0] or "").strip().lower() != "admin":
                 return jsonify({"error": "Admin access required"}), 403
         except Exception as e:
             return jsonify({"error": f"Auth check failed: {e}"}), 500
@@ -500,6 +508,96 @@ def _csrf_required(f):
                 return jsonify({"error": "Missing required header (X-Requested-With or X-CSRF-Token)"}), 403
         return f(*args, **kwargs)
     return wrapped
+
+def _require_session(f):
+    """Decorator: validate session_id cookie against the DB.
+    Mirrors the server.js requireLogin middleware — don't trust a raw username
+    cookie alone.  The opaque session_id must match the value stored in the
+    login table.  If no session_id cookie is present (legacy session) we fall
+    back to a lightweight DB existence check so active sessions aren't broken.
+    On success, sets ``request._session_user`` (username) and
+    ``request._session_userid`` (userid str) for downstream handlers."""
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        username   = (request.cookies.get("username") or "").strip()
+        userid     = (request.cookies.get("userid") or "").strip()
+        session_id = (request.cookies.get("session_id") or "").strip()
+        if not username:
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            import psycopg2
+            conn = psycopg2.connect(
+                host=os.getenv("PGHOST", "localhost"),
+                port=int(os.getenv("PGPORT", "5432")),
+                user=os.getenv("PGUSER", "postgres"),
+                password=os.getenv("PGPASSWORD", ""),
+                dbname=os.getenv("PGDATABASE", "candidate_db"),
+            )
+            cur = conn.cursor()
+            if session_id:
+                cur.execute(
+                    "SELECT userid FROM login WHERE username = %s AND session_id = %s LIMIT 1",
+                    (username, session_id),
+                )
+                row = cur.fetchone()
+                cur.close(); conn.close()
+                if not row:
+                    return jsonify({"error": "Session expired or invalid"}), 401
+            else:
+                # Legacy fallback: just confirm the username exists
+                cur.execute("SELECT userid FROM login WHERE username = %s LIMIT 1", (username,))
+                row = cur.fetchone()
+                cur.close(); conn.close()
+                if not row:
+                    return jsonify({"error": "Authentication required"}), 401
+            request._session_user   = username
+            request._session_userid = userid or str(row[0] or "")
+        except Exception as e:
+            return jsonify({"error": f"Auth check failed: {e}"}), 500
+        return f(*args, **kwargs)
+    return wrapped
+
+def _user_has_custom_providers(username: str) -> dict:
+    """Read per-user service config (porting_input/user-services/<username>.json|.enc)
+    and return {'email_verif': bool, 'llm': bool} indicating custom provider keys.
+    Mirrors the server.js _userHasCustomProviders helper.  On any error, returns
+    safe defaults (False) so tokens are still deducted."""
+    try:
+        _svc_dir = os.path.join(BASE_DIR, "porting_input", "user-services")
+        # Sanitise username to a filesystem-safe slug (same as server.js safeName)
+        import re as _re
+        _safe = _re.sub(r'[^a-zA-Z0-9._@-]', '_', username)
+        _enc_path  = os.path.join(_svc_dir, f"{_safe}.enc")
+        _json_path = os.path.join(_svc_dir, f"{_safe}.json")
+        cfg = None
+        if os.path.exists(_enc_path):
+            _secret = os.getenv("PORTING_SECRET", "")
+            if _secret:
+                try:
+                    import cryptography  # noqa: F401 — optional dependency
+                    # server.js uses AES-256-GCM with 16-byte IV + 16-byte tag + ciphertext
+                    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                    raw = open(_enc_path, "rb").read()
+                    iv, tag, ct = raw[:16], raw[16:32], raw[32:]
+                    key = (_secret.ljust(32, "!")[:32]).encode()
+                    aes = AESGCM(key)
+                    # AESGCM expects nonce + ciphertext||tag concatenated (tag at end)
+                    plaintext = aes.decrypt(iv, ct + tag, None)
+                    cfg = json.loads(plaintext.decode("utf-8"))
+                except Exception:
+                    pass  # fall through to .json
+        if cfg is None and os.path.exists(_json_path):
+            cfg = json.loads(open(_json_path, "r", encoding="utf-8").read())
+        if not cfg:
+            return {"email_verif": False, "llm": False}
+        ep = (cfg.get("email_verif", {}).get("provider") or "").lower()
+        lp = (cfg.get("llm", {}).get("provider") or "").lower()
+        return {
+            "email_verif": ep in ("neverbounce", "zerobounce", "bouncer"),
+            "llm":         lp in ("openai", "anthropic"),
+        }
+    except Exception:
+        return {"email_verif": False, "llm": False}
 
 # ── Admin: rate-limit management API ──────────────────────────────────────────
 

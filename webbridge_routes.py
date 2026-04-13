@@ -46,7 +46,8 @@ from webbridge import (
     ASSESSMENT_EXCELLENT_THRESHOLD, ASSESSMENT_GOOD_THRESHOLD, ASSESSMENT_MODERATE_THRESHOLD,
     CITY_TO_COUNTRY_DATA,
     _CV_ANALYZE_SEMAPHORE, _SINGLE_FILE_MAX,
-    _rate, _check_user_rate, _csrf_required, _require_admin,
+    _rate, _check_user_rate, _csrf_required, _require_admin, _require_session,
+    _user_has_custom_providers,
     _is_pdf_bytes,
     _extract_json_object, _extract_confirmed_skills,
     translate_text_pipeline,
@@ -133,14 +134,38 @@ def login_account():
 
         log_identity(userid=str(userid or ""), username=username,
                      ip_address=_ip, mfa_status="N/A")
+
+        # Generate a cryptographic session_id and store it in the DB — same
+        # pattern as server.js so either service can validate the session.
+        new_session_id = secrets.token_hex(32)
+        try:
+            import psycopg2 as _pg2
+            _sc = _pg2.connect(
+                host=os.getenv("PGHOST", "localhost"),
+                port=int(os.getenv("PGPORT", "5432")),
+                user=os.getenv("PGUSER", "postgres"),
+                password=os.getenv("PGPASSWORD", ""),
+                dbname=os.getenv("PGDATABASE", "candidate_db"),
+            )
+            _cc = _sc.cursor()
+            _cc.execute("UPDATE login SET session_id = %s WHERE username = %s", (new_session_id, username))
+            _sc.commit()
+            _cc.close(); _sc.close()
+        except Exception as _sess_err:
+            logger.error("[login] Failed to store session_id: %s", _sess_err)
+
         resp = jsonify({"ok": True, "userid": userid or "", "username": username, "cemail": cemail or "", "fullname": fullname or "", "role_tag": role_tag or "", "token": int(token_val or 0)})
-        # httponly=False: AutoSourcing.html (and other pages) read the username
-        # cookie via document.cookie to identify the logged-in user.  This
-        # matches the behaviour of chatbot_api.py which also sets httponly=False.
+        _is_secure = os.getenv("FORCE_HTTPS", "0") == "1"
+        # username and userid: httponly=False so AutoSourcing.html can read them
+        # via document.cookie for UI display.
         _cookie_opts = dict(max_age=2592000, path="/", httponly=False, samesite="lax",
-                            secure=os.getenv("FORCE_HTTPS", "0") == "1")
+                            secure=_is_secure)
         resp.set_cookie("username", username, **_cookie_opts)
         resp.set_cookie("userid", str(userid or ""), **_cookie_opts)
+        # session_id: httpOnly=True — not readable by JS, prevents forgery.
+        resp.set_cookie("session_id", new_session_id,
+                        max_age=2592000, path="/", httponly=True, samesite="lax",
+                        secure=_is_secure)
         return resp, 200
     except Exception as e:
         log_error(source="login", message=str(e), severity="error",
@@ -150,9 +175,28 @@ def login_account():
 @app.post("/logout")
 @_csrf_required
 def logout_account():
+    # Invalidate the server-side session so the session_id can no longer be used.
+    username = (request.cookies.get("username") or "").strip()
+    if username:
+        try:
+            import psycopg2 as _pg2
+            _sc = _pg2.connect(
+                host=os.getenv("PGHOST", "localhost"),
+                port=int(os.getenv("PGPORT", "5432")),
+                user=os.getenv("PGUSER", "postgres"),
+                password=os.getenv("PGPASSWORD", ""),
+                dbname=os.getenv("PGDATABASE", "candidate_db"),
+            )
+            _cc = _sc.cursor()
+            _cc.execute("UPDATE login SET session_id = NULL WHERE username = %s", (username,))
+            _sc.commit()
+            _cc.close(); _sc.close()
+        except Exception as _sess_err:
+            logger.error("[logout] Failed to clear session_id: %s", _sess_err)
     resp = jsonify({"ok": True})
     resp.delete_cookie("username", path="/")
     resp.delete_cookie("userid", path="/")
+    resp.delete_cookie("session_id", path="/")
     return resp
 
 @app.post("/register")
@@ -925,6 +969,7 @@ _role_tag_session_column_ensured = False
 
 @app.post("/user/token_update")
 @_csrf_required
+@_require_session
 def user_token_update():
     """
     POST /user/token_update
@@ -973,7 +1018,7 @@ def user_token_update():
             # Skip token deduction (negative delta) for BYOK users
             if delta_int < 0:
                 cur.execute(
-                    "SELECT COALESCE(token, 0) AS t, useraccess FROM login WHERE userid = %s",
+                    "SELECT COALESCE(token, 0) AS t, useraccess, username FROM login WHERE userid = %s",
                     (userid,)
                 )
                 _byok_row = cur.fetchone()
@@ -981,6 +1026,14 @@ def user_token_update():
                     cur.close()
                     conn.close()
                     return jsonify({"ok": True, "token": int(_byok_row[0])}), 200
+                # Skip deduction when user has custom provider keys (server-side guard)
+                _uname_for_check = (_byok_row[2] or "") if _byok_row else ""
+                if _uname_for_check:
+                    _cp = _user_has_custom_providers(_uname_for_check)
+                    if _cp.get("email_verif") or _cp.get("llm"):
+                        cur.close()
+                        conn.close()
+                        return jsonify({"ok": True, "token": int(_byok_row[0]) if _byok_row else 0, "skipped": True}), 200
             cur.execute(
                 "UPDATE login SET token = COALESCE(token, 0) + %s WHERE userid = %s RETURNING token, username",
                 (delta_int, userid)
@@ -1035,12 +1088,19 @@ def user_token_update():
         )
         cur = conn.cursor()
         # Skip token deduction for BYOK users (absolute set path)
-        cur.execute("SELECT COALESCE(token, 0) AS t, useraccess FROM login WHERE userid = %s", (userid,))
+        cur.execute("SELECT COALESCE(token, 0) AS t, useraccess, username FROM login WHERE userid = %s", (userid,))
         _byok_check = cur.fetchone()
         if _byok_check and (_byok_check[1] or "").strip().lower() == "byok":
             cur.close()
             conn.close()
             return jsonify({"ok": True, "token": int(_byok_check[0]), "skipped": True}), 200
+        # Skip token deduction (lower balance) when user has custom provider keys
+        if _byok_check and token_int < int(_byok_check[0]):
+            _cp = _user_has_custom_providers((_byok_check[2] or ""))
+            if _cp.get("email_verif") or _cp.get("llm"):
+                cur.close()
+                conn.close()
+                return jsonify({"ok": True, "token": int(_byok_check[0]), "skipped": True}), 200
         try:
             if result_count_int is not None:
                 # Ensure idempotency columns exist — run at most once per process

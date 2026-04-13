@@ -2433,11 +2433,42 @@ app.post('/smtp-config', requireLogin, async (req, res) => {
   }
 });
 
+// ── Server-side custom-provider check ──────────────────────────────────────────
+// Reads the per-user service config (same source as /api/user-service-config/status)
+// and returns { emailVerif: bool, llm: bool } indicating whether the user has
+// their own API keys for email verification or LLM.  When active, the server
+// skips token deduction — this is the authoritative guard (the frontend check is
+// a UX optimisation only; the server MUST enforce the rule).
+function _userHasCustomProviders(username) {
+  try {
+    const cfg = readUserServiceConfig(username);
+    if (!cfg) return { emailVerif: false, llm: false };
+    const ep = (cfg.email_verif && cfg.email_verif.provider || '').toLowerCase();
+    const lp = (cfg.llm && cfg.llm.provider || '').toLowerCase();
+    return {
+      emailVerif: ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer',
+      llm:        lp === 'openai' || lp === 'anthropic',
+    };
+  } catch (err) {
+    console.error('[_userHasCustomProviders]', err.message);
+    return { emailVerif: false, llm: false };
+  }
+}
+
 // POST /deduct-tokens - Deduct tokens from the authenticated user (called on Verified Selection)
 app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), async (req, res) => {
   try {
     const username = req.user.username;
     const userid   = String(req.user.id || '');
+
+    // Skip deduction when the user has custom email verification keys (server-side guard)
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.emailVerif) {
+      const curRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
+      const current = curRes.rows.length ? parseInt(curRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
+    }
+
     const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
     const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
     const result = await pool.query(
@@ -2472,6 +2503,12 @@ app.post('/candidates/token-deduct', requireLogin, userRateLimit('upload_multipl
     if (accessRes.rows.length > 0 && (accessRes.rows[0].useraccess || '').toLowerCase() === 'byok') {
       const current = parseInt(accessRes.rows[0].t, 10);
       return res.json({ tokensLeft: current, accountTokens: current });
+    }
+    // Skip deduction when custom LLM or email verif keys are active (server-side guard)
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.llm || customProviders.emailVerif) {
+      const current = accessRes.rows.length ? parseInt(accessRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
     const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
     const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
