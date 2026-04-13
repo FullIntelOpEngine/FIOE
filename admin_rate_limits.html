@@ -1199,6 +1199,7 @@ let _session = null;
 let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled' }, zerobounce: { api_key_set: false, enabled: 'disabled' }, bouncer: { api_key_set: false, enabled: 'disabled' } };
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
+let _contactGenConfig = { contactus: { api_key_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1258,12 +1259,13 @@ async function loadData() {
   const mainEl = document.getElementById('mainContent');
   mainEl.innerHTML = '<div class="page-msg">Loading…</div>';
   try {
-    const [rlRes, appRes, evRes, spRes, llmRes] = await Promise.all([
+    const [rlRes, appRes, evRes, spRes, llmRes, cgRes] = await Promise.all([
       fetch(`${API}/admin/rate-limits`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/appeals`,     { credentials: 'same-origin' }),
       fetch(`${API}/admin/email-verif-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/search-provider-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/llm-provider-config`, { credentials: 'same-origin' }),
+      fetch(`${API}/admin/contact-gen-config`, { credentials: 'same-origin' }),
     ]);
     if (rlRes.status === 401) { location.reload(); return; }
     if (rlRes.status === 403) {
@@ -1301,6 +1303,11 @@ async function loadData() {
     if (llmRes.ok) {
       const llmData = await llmRes.json();
       _llmConfig = llmData || _llmConfig;
+    }
+
+    if (cgRes.ok) {
+      const cgData = await cgRes.json();
+      _contactGenConfig = cgData.config || _contactGenConfig;
     }
 
     renderPage(mainEl);
@@ -3639,6 +3646,7 @@ function renderApiKeysCard() {
     { id: 'apikeys-email-verif',    label: '📧 Email Verification' },
     { id: 'apikeys-search-provider', label: '🔍 Search Provider'   },
     { id: 'apikeys-llm-model',       label: '🤖 LLM Model'         },
+    { id: 'apikeys-contact-gen',     label: '📇 Contact Generation' },
   ];
   function _switchApiKeySubTab(tabId) {
     subTabBar.querySelectorAll('.apikey-sub-tab').forEach(b => b.classList.toggle('active', b.dataset.subTab === tabId));
@@ -3683,6 +3691,16 @@ function renderApiKeysCard() {
   llmPanelDesc.textContent = 'Select the active LLM provider (Gemini, ChatGPT, or Claude) and the model to use. Only one provider is active at a time. Gemini 2.5 Flash Lite is the default.';
   llmPanel.appendChild(llmPanelDesc);
   card.appendChild(llmPanel);
+
+  // ── Contact Generation panel ──────────────────────────────────────────
+  const contactGenPanel = document.createElement('div');
+  contactGenPanel.id = 'apikeys-contact-gen';
+  contactGenPanel.className = 'apikey-sub-panel';
+  const contactGenPanelDesc = document.createElement('p');
+  contactGenPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
+  contactGenPanelDesc.textContent = 'Configure the ContactUs API for contact email generation. When enabled and keys are set, App.js "Generate Email" mode can use ContactUs as an alternative to the default Gemini provider.';
+  contactGenPanel.appendChild(contactGenPanelDesc);
+  card.appendChild(contactGenPanel);
 
   const SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
 
@@ -4198,6 +4216,106 @@ function renderApiKeysCard() {
 
     // Apply initial toggle style after sections are in DOM
     setTimeout(() => { _applyLlmToggleStyle(); _syncDefaultModelField(); }, 0);
+  })();
+
+  // ── Contact Generation service section ──────────────────────────────────
+  (function renderContactGenSection() {
+    const cusCfg = (_contactGenConfig && _contactGenConfig.contactus) || { api_key_set: false, enabled: 'disabled' };
+
+    const sec = document.createElement('div');
+    sec.className = 'apikey-service';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = 'ContactUs';
+    sec.appendChild(h3);
+
+    const row = document.createElement('div');
+    row.className = 'apikey-row';
+
+    // API Key input
+    const keyField = document.createElement('div');
+    keyField.className = 'apikey-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.htmlFor = 'apikey-contactus';
+    keyLabel.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = 'apikey-contactus';
+    keyInput.className = 'apikey-input';
+    keyInput.placeholder = cusCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+    keyInput.autocomplete = 'off';
+    if (cusCfg.api_key_set) {
+      const badge = document.createElement('div');
+      badge.className = 'apikey-set-badge';
+      badge.textContent = '✅ API key saved';
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+      keyField.appendChild(badge);
+    } else {
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+    }
+    row.appendChild(keyField);
+
+    // Enable/Disable dropdown
+    const enableField = document.createElement('div');
+    enableField.className = 'apikey-field';
+    enableField.style.maxWidth = '180px';
+    const enableLabel = document.createElement('label');
+    enableLabel.htmlFor = 'apikey-contactus-enable';
+    enableLabel.textContent = 'Status';
+    const enableSelect = document.createElement('select');
+    enableSelect.id = 'apikey-contactus-enable';
+    enableSelect.className = 'apikey-input';
+    enableSelect.innerHTML = '<option value="enabled">Enabled</option><option value="disabled">Disabled</option>';
+    enableSelect.value = cusCfg.enabled || 'disabled';
+    enableField.appendChild(enableLabel);
+    enableField.appendChild(enableSelect);
+    row.appendChild(enableField);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'apikey-save-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.addEventListener('click', async () => {
+      const apiKey  = keyInput.value.trim();
+      const enabled = enableSelect.value;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const payload = { contactus: { enabled } };
+        if (apiKey) payload.contactus.api_key = apiKey;
+        const r = await fetch(`${API}/admin/contact-gen-config`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        const keyStillSet = !!(apiKey || cusCfg.api_key_set);
+        _contactGenConfig.contactus = { api_key_set: keyStillSet, enabled };
+        keyInput.value = '';
+        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        // Update badge
+        const existingBadge = keyField.querySelector('.apikey-set-badge');
+        if (keyStillSet && !existingBadge) {
+          const badge = document.createElement('div');
+          badge.className = 'apikey-set-badge';
+          badge.textContent = '✅ API key saved';
+          keyField.appendChild(badge);
+        }
+        toast('ContactUs settings saved', 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save';
+      }
+    });
+    row.appendChild(saveBtn);
+
+    sec.appendChild(row);
+    contactGenPanel.appendChild(sec);
   })();
 
   return card;

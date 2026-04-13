@@ -7380,11 +7380,56 @@ async function smtpVerify(email, mxHost) {
 // ========== NEW ENDPOINT: Generate Emails via Gemini (Ranked, No Verification yet) ==========
 app.post('/generate-email', requireLogin, async (req, res) => {
   try {
-    const { name, company, country } = req.body;
+    const { name, company, country, provider } = req.body;
     if (!name || !company) {
       return res.status(400).json({ error: 'Name and Company are required.' });
     }
 
+    // ── ContactUs provider path ──────────────────────────────────────────
+    if (provider === 'contactus') {
+      const cgCfgPath = path.join(__dirname, 'contact_gen_config.json');
+      let cgCfg;
+      try {
+        cgCfg = JSON.parse(fs.readFileSync(cgCfgPath, 'utf-8'));
+      } catch (_e) {
+        return res.status(400).json({ error: 'ContactUs is not configured. Set the API key in admin_rate_limits.html.' });
+      }
+      const cusCfg = cgCfg.contactus || {};
+      if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'ContactUs is not enabled or API key is missing.' });
+      }
+      // Call ContactUs API (POST https://api.contactus.com/v1/find-emails)
+      const contactPayload = JSON.stringify({ name, company, country: country || '' });
+      const contactRes = await new Promise((resolve, reject) => {
+        const url = new URL('https://api.contactus.com/v1/find-emails');
+        const reqOpts = {
+          hostname: url.hostname,
+          port: 443,
+          path: url.pathname,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cusCfg.api_key}`,
+            'Content-Length': Buffer.byteLength(contactPayload),
+          },
+        };
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('Invalid JSON from ContactUs API')); }
+          });
+        });
+        r.on('error', reject);
+        r.setTimeout(15000, () => { r.destroy(); reject(new Error('ContactUs API timeout')); });
+        r.write(contactPayload);
+        r.end();
+      });
+      const emails = contactRes.emails || contactRes.data || [];
+      return res.json({ emails: Array.isArray(emails) ? emails : [] });
+    }
+
+    // ── Default Gemini/LLM path ──────────────────────────────────────────
     // Request strictly 3 ranked emails
     const genPrompt = `
       Generate a list of exactly 3 most likely business email address permutations for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.

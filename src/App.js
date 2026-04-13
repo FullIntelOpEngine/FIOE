@@ -7478,6 +7478,11 @@ export default function App() {
   // Email verification service selection
   const [emailVerifService, setEmailVerifService] = useState('default');
   const [availableEmailServices, setAvailableEmailServices] = useState([]);
+  // Verif Engine toggle: 'verify' = Verify Selected, 'generate' = Generate Email
+  const [verifEngineMode, setVerifEngineMode] = useState('verify');
+  // Generate Email provider selection
+  const [emailGenProvider, setEmailGenProvider] = useState('gemini');
+  const [availableContactGenServices, setAvailableContactGenServices] = useState([]);
   // State for calculating unmatched skills
   const [calculatingUnmatched, setCalculatingUnmatched] = useState(false);
   const [unmatchedCalculated, setUnmatchedCalculated] = useState({});  // Store by candidate ID
@@ -7518,6 +7523,20 @@ export default function App() {
   };
   useEffect(() => { _fetchEmailVerifServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchEmailVerifServices(); }, [verifBarExpanded]); // on bar open
+
+  // Load available contact generation services (ContactUs) configured by admin.
+  const _fetchContactGenServices = () => {
+    fetch(`http://localhost:${API_PORT}/contact-gen-services`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && Array.isArray(data.services)) {
+          setAvailableContactGenServices(data.services);
+        }
+      })
+      .catch(() => {});
+  };
+  useEffect(() => { _fetchContactGenServices(); }, []); // on mount
+  useEffect(() => { if (verifBarExpanded) _fetchContactGenServices(); }, [verifBarExpanded]); // on bar open
 
   // Refresh token cost/deduction config when user logs in so JSX renders live values.
   useEffect(() => {
@@ -8333,7 +8352,7 @@ export default function App() {
       const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ name, company: org, country }),
+        body: JSON.stringify({ name, company: org, country, provider: emailGenProvider }),
         credentials: 'include'
       });
       if (!res.ok) throw new Error('Request failed');
@@ -9091,22 +9110,25 @@ export default function App() {
                                     <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
                                         {/* Action row: Generate · Verify Selected · Update & Save */}
                                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                            <button 
-                                                onClick={handleGenerateResumeEmails} 
-                                                disabled={generatingEmails}
-                                                className="btn-primary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {generatingEmails ? 'Generating...' : 'Generate Emails'}
-                                            </button>
-                                            <button 
-                                                onClick={handleVerifySelectedEmail} 
-                                                disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
-                                                className="btn-secondary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
-                                            </button>
+                                            {verifEngineMode === 'generate' ? (
+                                                <button 
+                                                    onClick={handleGenerateResumeEmails} 
+                                                    disabled={generatingEmails}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {generatingEmails ? 'Generating...' : 'Generate Email'}
+                                                </button>
+                                            ) : (
+                                                <button 
+                                                    onClick={handleVerifySelectedEmail} 
+                                                    disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
+                                                </button>
+                                            )}
                                             <button 
                                                 onClick={handleUpdateResumeEmail}
                                                 className="btn-secondary"
@@ -9126,9 +9148,13 @@ export default function App() {
                                                 </svg>
                                                 <span className="email-verif-bar__label">
                                                     Verif. Engine
-                                                    {!verifBarExpanded && emailVerifService !== 'default' && (
+                                                    {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
-                                                            {emailVerifService === 'neverbounce' ? ' · Neverbounce' : emailVerifService === 'zerobounce' ? ' · ZeroBounce' : emailVerifService === 'bouncer' ? ' · Bouncer' : ''}
+                                                            {verifEngineMode === 'generate'
+                                                                ? ` · Generate Email · ${emailGenProvider === 'contactus' ? 'ContactUs' : 'Gemini'}`
+                                                                : emailVerifService !== 'default'
+                                                                    ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
+                                                                    : ' · Verify Selected'}
                                                         </span>
                                                     )}
                                                 </span>
@@ -9136,19 +9162,61 @@ export default function App() {
                                             </div>
                                             {verifBarExpanded && (
                                                 <div className="email-verif-bar__body">
-                                                    <select
-                                                        className="email-verif-bar__select"
-                                                        value={emailVerifService}
-                                                        onChange={e => setEmailVerifService(e.target.value)}
-                                                        title="Select email verification service"
-                                                    >
-                                                        <option value="default">Default (App Verification)</option>
-                                                        {availableEmailServices.map(svc => (
-                                                            <option key={svc} value={svc}>
-                                                                {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                                    {/* Mode toggle: Verify Selected / Generate Email */}
+                                                    <div style={{ display: 'flex', gap: 0, marginBottom: 8, border: '1px solid var(--neutral-border)', borderRadius: 6, overflow: 'hidden' }}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('verify')}
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                background: verifEngineMode === 'verify' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'verify' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'verify' ? 600 : 400,
+                                                            }}
+                                                        >
+                                                            Verify Selected
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('generate')}
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                borderLeft: '1px solid var(--neutral-border)',
+                                                                background: verifEngineMode === 'generate' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'generate' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'generate' ? 600 : 400,
+                                                            }}
+                                                        >
+                                                            Generate Email
+                                                        </button>
+                                                    </div>
+                                                    {verifEngineMode === 'verify' ? (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailVerifService}
+                                                            onChange={e => setEmailVerifService(e.target.value)}
+                                                            title="Select email verification service"
+                                                        >
+                                                            <option value="default">Default (App Verification)</option>
+                                                            {availableEmailServices.map(svc => (
+                                                                <option key={svc} value={svc}>
+                                                                    {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    ) : (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailGenProvider}
+                                                            onChange={e => setEmailGenProvider(e.target.value)}
+                                                            title="Select email generation provider"
+                                                        >
+                                                            <option value="gemini">Gemini</option>
+                                                            {availableContactGenServices.includes('contactus') && (
+                                                                <option value="contactus">ContactUs</option>
+                                                            )}
+                                                        </select>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
