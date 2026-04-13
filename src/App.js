@@ -53,7 +53,7 @@ const isInternalNavigation = () => {
 let _APP_ANALYTIC_TOKEN_COST        = 1;
 let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
 (function _loadAppTokenConfig() {
-  fetch(`/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+  fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     .then(r => r.ok ? r.json() : null)
     .then(cfg => {
       if (!cfg) return;
@@ -209,7 +209,7 @@ function inferSeniority(candidate) {
 }
 async function fetchSkillsetMapping() {
   try {
-    const res = await fetch('/skillset-mapping');
+    const res = await fetch('http://localhost:4000/skillset-mapping');
     if (!res.ok) return {};
     return await res.json();
   } catch {
@@ -230,7 +230,7 @@ function LoginScreen({ onLoginSuccess }) {
     setError('');
     
     try {
-      const res = await fetch('/login', {
+      const res = await fetch(`http://localhost:${API_PORT}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ username, password }),
@@ -715,7 +715,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     setAiLoading(true);
     try {
       // Pass 'from' context as well
-      const res = await fetch('/draft-email', {
+      const res = await fetch('http://localhost:4000/draft-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ 
@@ -742,7 +742,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   // Calendar helpers
   const handleConnectCalendar = () => {
     // Open Google OAuth connect in popup
-    const url = '/auth/google/calendar/connect';
+    const url = 'http://localhost:4000/auth/google/calendar/connect';
     const w = 600, h = 700;
     const left = (window.screen.width / 2) - (w / 2);
     const top = (window.screen.height / 2) - (h / 2);
@@ -751,7 +751,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
   const handleConnectMicrosoft = () => {
     // Open Microsoft OAuth connect in popup
-    const url = '/auth/microsoft/calendar/connect';
+    const url = 'http://localhost:4000/auth/microsoft/calendar/connect';
     const w = 600, h = 700;
     const left = (window.screen.width / 2) - (w / 2);
     const top = (window.screen.height / 2) - (h / 2);
@@ -785,7 +785,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       } else {
         endISO = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
       }
-      const res = await fetch('/calendar/freebusy', {
+      const res = await fetch('http://localhost:4000/calendar/freebusy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider }),
@@ -830,7 +830,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         sendUpdates: 'none',
         provider: calendarProvider
       };
-      const res = await fetch('/calendar/create-event', {
+      const res = await fetch('http://localhost:4000/calendar/create-event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify(payload),
@@ -938,7 +938,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
           }
           if (attachments.length > 0) payload.attachments = attachments;
           try {
-            const res = await fetch('/send-email', {
+            const res = await fetch('http://localhost:4000/send-email', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify(payload),
@@ -976,7 +976,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         };
         if (icsString) payload.ics = icsString;
         if (attachments.length > 0) payload.attachments = attachments;
-        const res = await fetch('/send-email', {
+        const res = await fetch('http://localhost:4000/send-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           body: JSON.stringify(payload),
@@ -1587,7 +1587,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
     try {
       const startISO = new Date(startDate + 'T00:00:00').toISOString();
       const endISO = new Date(endDate + 'T23:59:59').toISOString();
-      const res = await fetch('/calendar/freebusy', {
+      const res = await fetch('http://localhost:4000/calendar/freebusy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider }),
@@ -1616,7 +1616,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
     setError('');
     setCleared(false);
     try {
-      const res = await fetch('/scheduler/publish-slots', {
+      const res = await fetch('http://localhost:4000/scheduler/publish-slots', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ slots: toPublish, durationMinutes: Number(duration) }),
@@ -1640,7 +1640,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
   const handleClear = async () => {
     if (!window.confirm('Clear all published slots? Invitees will no longer be able to book.')) return;
     try {
-      const res = await fetch('/scheduler/slots', {
+      const res = await fetch('http://localhost:4000/scheduler/slots', {
         method: 'DELETE',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include'
@@ -2199,7 +2199,7 @@ function CandidatesTable({
     if (!bulletinAiPrompt.trim()) return;
     setBulletinAiLoading(true);
     try {
-      const res = await fetch('/candidates/bulletin-draft', {
+      const res = await fetch('http://localhost:4000/candidates/bulletin-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ prompt: bulletinAiPrompt, context }),
@@ -2311,7 +2311,7 @@ function CandidatesTable({
       setSmtpConfig(user.smtpConfig);
       return;
     }
-    fetch('/smtp-config', { credentials: 'include' })
+    fetch('http://localhost:4000/smtp-config', { credentials: 'include' })
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data && data.ok && data.config) {
@@ -2393,7 +2393,7 @@ function CandidatesTable({
   // Fetch analytic rate-limit config (cv limit + batch size) whenever user opens the wizard with analytic mode
   useEffect(() => {
     if (!user) return;
-    fetch('/user/rate-limits', { credentials: 'include' })
+    fetch('http://localhost:4000/user/rate-limits', { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data || !data.limits) return;
@@ -2411,7 +2411,7 @@ function CandidatesTable({
     const ch = new BroadcastChannel('fioe_api_config');
     ch.onmessage = (evt) => {
       if (!evt.data || evt.data.type !== 'api-config-changed' || !user) return;
-      fetch('/user/rate-limits', { credentials: 'include' })
+      fetch('http://localhost:4000/user/rate-limits', { credentials: 'include' })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (!data || !data.limits) return;
@@ -2544,7 +2544,7 @@ function CandidatesTable({
       // Load the user's ML profile from disk so Sync Entries can apply highest-confidence values
       let mlProfile = null;
       try {
-        const mlRes = await fetch('/candidates/ml-profile', {
+        const mlRes = await fetch('http://localhost:4000/candidates/ml-profile', {
           credentials: 'include',
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -2554,7 +2554,7 @@ function CandidatesTable({
         }
       } catch (_) { /* non-fatal — proceed without ML profile */ }
 
-      const res = await fetch('/verify-data', {
+      const res = await fetch('http://localhost:4000/verify-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ rows, ...(mlProfile ? { mlProfile } : {}) }),
@@ -2617,7 +2617,7 @@ function CandidatesTable({
         })
         .filter(u => Object.keys(u).length > 1);
       if (bulkUpdatePayload.length) {
-        fetch('/candidates/bulk-update', {
+        fetch('http://localhost:4000/candidates/bulk-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           body: JSON.stringify({ rows: bulkUpdatePayload }),
@@ -2642,7 +2642,7 @@ function CandidatesTable({
         ? { selectAll: true }
         : { ids: selectedIds };
 
-      const res = await fetch('/ai-comp', {
+      const res = await fetch('http://localhost:4000/ai-comp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify(body),
@@ -3265,7 +3265,7 @@ function CandidatesTable({
             .filter(n => Number.isFinite(n) && n > 0)
         : [];
       if (analyticMode) { setDockInAnalyticProgress('Deploying candidates to database…'); setDockInAnalyticPct(8); }
-      fetch('/candidates/bulk', {
+      fetch('http://localhost:4000/candidates/bulk', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({
@@ -3295,7 +3295,7 @@ function CandidatesTable({
             if (dockInSelectedPair && dockInSelectedPair.roleTag) {
               formData.append('role_tag', dockInSelectedPair.roleTag);
             }
-            const cvUploadRes = await fetch('/process/upload_multiple_cvs', {
+            const cvUploadRes = await fetch('http://localhost:4000/process/upload_multiple_cvs', {
               method: 'POST',
               credentials: 'include',
               body: formData,
@@ -3374,7 +3374,7 @@ function CandidatesTable({
                 })
               : criteriaFilesToWrite;
             if (userCriteriaFiles.length > 0) {
-              fetch('/candidates/dock-in-criteria', {
+              fetch('http://localhost:4000/candidates/dock-in-criteria', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3399,8 +3399,8 @@ function CandidatesTable({
             let content;
             try { content = JSON.parse(rawJson); } catch (_) { continue; }
             const endpoint = stateSheetName === 'orgchart'
-              ? '/orgchart/save-state'
-              : '/dashboard/save-state';
+              ? 'http://localhost:4000/orgchart/save-state'
+              : 'http://localhost:4000/dashboard/save-state';
             const body = stateSheetName === 'orgchart'
               ? { overrides: content.overrides, candidates: content.candidates }
               : { dashboard: content.dashboard, slide: content.slide };
@@ -3442,7 +3442,7 @@ function CandidatesTable({
               mlContent = Object.keys(obj).length ? obj : null;
             }
             if (mlContent != null) {
-              fetch('/candidates/ml-restore', {
+              fetch('http://localhost:4000/candidates/ml-restore', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3490,7 +3490,7 @@ function CandidatesTable({
               setDockInAnalyticProgress(`Assessing ${batch.length} record(s)${batchLabel}…`);
               setDockInAnalyticPct(ASSESS_BASE + Math.round((totalProcessed / totalCands) * ASSESS_RANGE));
               try {
-                const bulkRes = await fetch('/process/bulk_assess', {
+                const bulkRes = await fetch('http://localhost:4000/process/bulk_assess', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   credentials: 'include',
@@ -3523,7 +3523,7 @@ function CandidatesTable({
                       const settle = () => { if (!completed) { completed = true; resolve(); } };
 
                       // ── SSE: real-time progress display only (no completion logic) ──
-                      const sseUrl = `/process/bulk_assess_stream/${jobId}`;
+                      const sseUrl = `http://localhost:${API_PORT}/process/bulk_assess_stream/${jobId}`;
                       let eventSource = null;
                       try {
                         eventSource = new EventSource(sseUrl);
@@ -3568,7 +3568,7 @@ function CandidatesTable({
                           return;
                         }
                         try {
-                          const statusRes = await fetch(`/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
+                          const statusRes = await fetch(`http://localhost:${API_PORT}/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
                           if (statusRes.ok) {
                             const statusData = await statusRes.json();
                             const batchProcessed = statusData.processed || 0;
@@ -3611,7 +3611,7 @@ function CandidatesTable({
           const tokenCost = eligibleForAnalysis.length;
           if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm) {
             try {
-              const tokenRes = await fetch('/candidates/token-deduct', {
+              const tokenRes = await fetch('http://localhost:4000/candidates/token-deduct', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3849,7 +3849,7 @@ function CandidatesTable({
         const enrichedPairs = await Promise.all(roleTagPairs.map(async pair => {
           if (!pair.roleTag) return pair;
           try {
-            const r = await fetch(`/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
+            const r = await fetch(`http://localhost:${API_PORT}/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
               credentials: 'include',
             });
             if (r.ok) {
@@ -3895,7 +3895,7 @@ function CandidatesTable({
     // If bulletin is ON and user has finalized selections, write bulletin JSON first
     if (dockOutBulletinOn && bulletinFinalized) {
       try {
-        const bRes = await fetch('/candidates/bulletin-export', {
+        const bRes = await fetch('http://localhost:4000/candidates/bulletin-export', {
           method: 'POST',
           headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
           credentials: 'include',
@@ -3912,7 +3912,7 @@ function CandidatesTable({
     // Fetch Search Criteria files BEFORE XLS generation so they can be added as sheets
     let criteriaSheets = [];
     try {
-      const cRes = await fetch('/candidates/dock-out-criteria', {
+      const cRes = await fetch('http://localhost:4000/candidates/dock-out-criteria', {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3930,7 +3930,7 @@ function CandidatesTable({
     // Fetch orgchart + dashboard save-state so they can be embedded in the XLS
     let orgchartStateData = null;
     try {
-      const ocRes = await fetch('/orgchart/load-state', {
+      const ocRes = await fetch('http://localhost:4000/orgchart/load-state', {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3943,7 +3943,7 @@ function CandidatesTable({
     }
     let dashboardStateData = null;
     try {
-      const dsRes = await fetch('/dashboard/load-state', {
+      const dsRes = await fetch('http://localhost:4000/dashboard/load-state', {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3961,7 +3961,7 @@ function CandidatesTable({
     // the DB Copy sheet.
     let freshExportCandidates = null;
     try {
-      const freshRes = await fetch('/candidates', { credentials: 'include' });
+      const freshRes = await fetch('http://localhost:4000/candidates', { credentials: 'include' });
       if (freshRes.ok) {
         const freshRaw = await freshRes.json();
         freshExportCandidates = Array.isArray(freshRaw) ? freshRaw : null;
@@ -3973,7 +3973,7 @@ function CandidatesTable({
     // as a visible "ML" worksheet. This must happen before handleDbPortExport.
     let mlSummaryData = null;
     try {
-      const mlRes = await fetch('/candidates/ml-summary', {
+      const mlRes = await fetch('http://localhost:4000/candidates/ml-summary', {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
@@ -4001,7 +4001,7 @@ function CandidatesTable({
       localStorage.removeItem('orgChartManualOverrides');
       localStorage.removeItem('dismissedNewCandidateIds');
     } catch (cacheErr) { console.warn('[DB Dock Out] Failed to clear cache:', cacheErr); }
-    fetch('/candidates/clear-user', {
+    fetch('http://localhost:4000/candidates/clear-user', {
       method: 'DELETE',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       credentials: 'include',
@@ -4035,7 +4035,7 @@ function CandidatesTable({
     if (next) {
       localStorage.setItem('dockOutBulletinOn', '1');
       setBulletinLoading(true);
-      fetch('/candidates/bulletin-preview', {
+      fetch('http://localhost:4000/candidates/bulletin-preview', {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       })
@@ -4095,7 +4095,7 @@ function CandidatesTable({
     // This key is used as the worksheet protection password for all non-candidate sheets.
     let wsProtectHash = '0000';
     try {
-      const pkRes = await fetch('/candidates/dock-protection-key', {
+      const pkRes = await fetch('http://localhost:4000/candidates/dock-protection-key', {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -5214,7 +5214,7 @@ criteriaSheets.map((cf, idx) => {
           setSmtpConfig(cfg);
           setSmtpModalOpen(false);
           // Persist to server so config survives page reloads
-          fetch('/smtp-config', {
+          fetch('http://localhost:4000/smtp-config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'include',
@@ -6079,7 +6079,7 @@ criteriaSheets.map((cf, idx) => {
                           setBulletinImageGalleryOpen(true);
                           if (bulletinImageGallery.length === 0) {
                             setBulletinImageGalleryLoading(true);
-                            fetch('/bulletin/images', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                            fetch('http://localhost:4000/bulletin/images', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
                               .then(r => r.json())
                               .then(d => setBulletinImageGallery(d.images || []))
                               .catch(() => setBulletinImageGallery([]))
@@ -6128,7 +6128,7 @@ criteriaSheets.map((cf, idx) => {
                                     key={fname}
                                     onClick={() => {
                                       // Fetch the image and convert to base64
-                                      fetch(`/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
+                                      fetch(`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
                                         .then(r => r.blob())
                                         .then(blob => {
                                           const reader = new FileReader();
@@ -6825,7 +6825,7 @@ function OrgChartDisplay({
       id: c.id, name: c.name, jobtitle: c.jobtitle, company: c.company,
       seniority: c.seniority, jobfamily: c.jobfamily
     }));
-    fetch('/orgchart/save-state', {
+    fetch('http://localhost:4000/orgchart/save-state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       credentials: 'include',
@@ -7196,7 +7196,7 @@ function CandidateUpload({ onUpload }) {
       });
       // ─────────────────────────────────────────────────────────────────────────
 
-      fetch('/candidates/bulk', {
+      fetch('http://localhost:4000/candidates/bulk', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ candidates }),
@@ -7503,7 +7503,7 @@ export default function App() {
   // Re-fetch whenever the Verif. Engine bar is expanded so freshly-configured
   // services (Neverbounce / ZeroBounce / Bouncer) appear without a page reload.
   const _fetchEmailVerifServices = () => {
-    fetch('/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data && Array.isArray(data.services)) {
@@ -7521,7 +7521,7 @@ export default function App() {
   // Refresh token cost/deduction config when user logs in so JSX renders live values.
   useEffect(() => {
     if (!user) return;
-    fetch(`/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(r => r.ok ? r.json() : null)
       .then(cfg => {
         if (!cfg) return;
@@ -7640,7 +7640,7 @@ export default function App() {
   // Fetch account tokens from login table when user logs in
   useEffect(() => {
     if (user && user.username) {
-      fetch('/user-tokens', { credentials: 'include' })
+      fetch('http://localhost:4000/user-tokens', { credentials: 'include' })
         .then(res => res.json())
         .then(data => {
           if (data.accountTokens !== undefined) {
@@ -7657,7 +7657,7 @@ export default function App() {
   // Fetch per-user service config to detect custom email verification / LLM activation
   const _refreshSvcConfig = useCallback(() => {
     if (!user || !user.username) return;
-    fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(res => res.ok ? res.json() : null)
       .then(svcData => {
         if (svcData && svcData.active && svcData.providers) {
@@ -7696,7 +7696,7 @@ export default function App() {
       // Re-fetch email verification services list
       if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
       // Re-fetch token config
-      fetch(`/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         .then(r => r.ok ? r.json() : null)
         .then(cfg => {
           if (!cfg) return;
@@ -7759,7 +7759,7 @@ export default function App() {
         });
     };
 
-    fetch('/user/resolve', { credentials: 'include' })
+    fetch(`http://localhost:${API_PORT}/user/resolve`, { credentials: 'include' })
       .then(res => res.json())
       .then(data => {
         if (data.ok) {
@@ -7780,7 +7780,7 @@ export default function App() {
       try { await dockOutRef.current(); } catch (_) {}
     }
     try {
-      await fetch(`/logout`, {
+      await fetch(`http://localhost:${API_PORT}/logout`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -7817,7 +7817,7 @@ export default function App() {
     }
     // Invalidate server-side session so stale cookies cannot re-authenticate.
     try {
-      await fetch(`/logout`, {
+      await fetch(`http://localhost:${API_PORT}/logout`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -7869,7 +7869,7 @@ export default function App() {
   const handleSessionStayLoggedIn = () => {
     clearSessionTimers();
     setSessionWarnOpen(false);
-    fetch(`/auth/extend-session`, {
+    fetch(`http://localhost:${API_PORT}/auth/extend-session`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -7929,7 +7929,7 @@ export default function App() {
         // Use relative URL or environment-based URL
         // For production, use the same protocol/host without explicit port
         const sseUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-          ? `/api/events`
+          ? `http://localhost:${API_PORT}/api/events`
           : `${window.location.protocol}//${window.location.host}/api/events`;
 
         const eventSource = new EventSource(sseUrl);
@@ -8016,7 +8016,7 @@ export default function App() {
         const isExisting = Number.isInteger(numId) && numId > 0;
         if (isExisting) {
           // existing row -> update
-          const res = await fetch(`/candidates/${numId}`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates/${numId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify(partialData),
@@ -8031,7 +8031,7 @@ export default function App() {
           setEditRows(prev => ({ ...(prev||{}), [updated.id]: { ...updated, ...(prev?.[updated.id]||{}) } }));
         } else {
           // no numeric id -> create new process row
-          const res = await fetch(`/candidates`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify(partialData),
@@ -8076,7 +8076,7 @@ export default function App() {
     if (!user) return;
     if (!silent) setLoading(true);
     try{
-      const res=await fetch('/candidates', { credentials: 'include' });
+      const res=await fetch('http://localhost:4000/candidates', { credentials: 'include' });
       if (res.status === 401) {
         // Session cookie is missing or expired — clear stale client-side auth so
         clearClientAuthState();
@@ -8217,7 +8217,7 @@ export default function App() {
       return;
     }
     try{
-      const res=await fetch('/candidates/bulk-delete',{
+      const res=await fetch('http://localhost:4000/candidates/bulk-delete',{
         method:'POST',
         headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
         body: JSON.stringify({ ids:numericIds }),
@@ -8244,7 +8244,7 @@ export default function App() {
     const isExisting = Number.isInteger(numId) && numId > 0;
     try{
       if (isExisting) {
-        const res=await fetch(`/candidates/${numId}`,{
+        const res=await fetch(`http://localhost:${API_PORT}/candidates/${numId}`,{
           method:'PUT',
           headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
           body: JSON.stringify(data),
@@ -8256,7 +8256,7 @@ export default function App() {
         setEditRows(prev => ({ ...(prev || {}), [updated.id]: { ...updated, ...(prev[updated.id] || {}) } }));
       } else {
         // Create new
-        const res=await fetch('/candidates',{
+        const res=await fetch('http://localhost:4000/candidates',{
           method:'POST',
           headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
           body: JSON.stringify(data),
@@ -8315,7 +8315,7 @@ export default function App() {
     setGeneratingEmails(true);
 
     try {
-      const res = await fetch('/generate-email', {
+      const res = await fetch('http://localhost:4000/generate-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ name, company: org, country }),
@@ -8363,7 +8363,7 @@ export default function App() {
     if (selected.length > 1) { alert('Please verify one email at a time.'); return; }
     // Re-fetch token config so the confirmation popup always shows the current admin value.
     try {
-      const r = await fetch(`/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
       if (r.ok) {
         const cfg = await r.json();
         const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
@@ -8384,7 +8384,7 @@ export default function App() {
     setVerifyModalEmail(emailToVerify);
     setVerifyModalData(null);
     try {
-      const res = await fetch('/verify-email-details', {
+      const res = await fetch('http://localhost:4000/verify-email-details', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ email: emailToVerify, service: emailVerifService }),
@@ -8395,7 +8395,7 @@ export default function App() {
       setVerifyModalData(data);
       // Deduct 2 tokens on successful verification (skipped when custom email verif API or custom LLM is active)
       if (!(hasCustomEmailVerif || hasCustomLlm)) {
-        fetch('/deduct-tokens', { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        fetch('http://localhost:4000/deduct-tokens', { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(r => r.json())
           .then(t => {
             if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
@@ -8415,7 +8415,7 @@ export default function App() {
       if (!resumeCandidate || !resumeCandidate.id) return;
       setCalculatingUnmatched(true);
       try {
-          const res = await fetch(`/candidates/${resumeCandidate.id}/calculate-unmatched`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates/${resumeCandidate.id}/calculate-unmatched`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               credentials: 'include'
@@ -8959,14 +8959,14 @@ export default function App() {
                            <button 
                                 onClick={() => {
                                     if(resumeCandidate.linkedinurl) {
-                                        window.open('/process/download_cv?linkedin=' + encodeURIComponent(resumeCandidate.linkedinurl), '_blank');
+                                        window.open('http://localhost:4000/process/download_cv?linkedin=' + encodeURIComponent(resumeCandidate.linkedinurl), '_blank');
                                     } else if(resumeCandidate.cv) {
                                         // Fallback if no linkedinurl but CV blob/path exists somehow
                                         // (e.g. from /candidates/:id/cv)
                                         if (typeof resumeCandidate.cv === 'string' && resumeCandidate.cv.startsWith('http')) {
                                             window.open(resumeCandidate.cv, '_blank');
                                         } else {
-                                            window.open(`/candidates/${resumeCandidate.id}/cv`, '_blank');
+                                            window.open(`http://localhost:4000/candidates/${resumeCandidate.id}/cv`, '_blank');
                                         }
                                     } else {
                                         alert('No CV available for this candidate.');
