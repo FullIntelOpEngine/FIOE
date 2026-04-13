@@ -850,6 +850,24 @@ def admin_sales_rep_transactions(username):
     return jsonify({"transactions": transactions}), 200
 
 
+@app.get("/auth/check")
+@_rate(_make_flask_limit("login"))
+def auth_check():
+    """Lightweight session validity check used by login.html when it is served from
+    this Flask server (port 8091).  Validates that the username and userid cookies are
+    present — these are set by the /login endpoint on successful authentication.
+
+    Returns 200 { ok: true } when authenticated, 401 otherwise.
+    Note: server.js (port 4000) has a stronger version that also validates session_id
+    against the database; this version covers the Flask-side cookie-only flow.
+    """
+    username = (request.cookies.get("username") or "").strip()
+    userid   = (request.cookies.get("userid")   or "").strip()
+    if not username or not userid:
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+    return jsonify({"ok": True, "username": username}), 200
+
+
 @app.get("/token-config")
 def token_config():
     """Return the token credit/deduction configuration from rate_limits.json.

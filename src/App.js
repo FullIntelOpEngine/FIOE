@@ -16,6 +16,17 @@ const SSE_RECONNECT_MAX_DELAY_MS = 30000;
 const SSE_MAX_RECONNECT_ATTEMPTS = 5;
 const API_PORT = 4000;
 const LOGIN_PORT = 8091;
+// When App.js is served from a different port than the API (e.g. CRA dev server on 3000
+// while server.js runs on 4000), relative fetch() URLs resolve to the wrong server and
+// return an HTML page instead of JSON, causing "Unexpected token '<'" errors.  This
+// helper prefixes API calls with the correct origin only when needed; in production the
+// app and API share the same origin so an empty string keeps everything same-origin.
+const _API_BASE = (() => {
+  const p = window.location.port;
+  if (!p || p === String(API_PORT) || p === '80' || p === '443') return '';
+  // Use the same protocol as the current page to avoid mixed-content errors (http vs https).
+  return `${window.location.protocol}//localhost:${API_PORT}`;
+})();
 // Central login redirect URL — used by auth check, handleLogout, performSessionExpiry, fetchCandidates
 const FIOE_LOGIN_REDIRECT =
   `http://localhost:${LOGIN_PORT}/login.html?next=` + encodeURIComponent(window.location.origin + '/');
@@ -230,7 +241,7 @@ function LoginScreen({ onLoginSuccess }) {
     setError('');
     
     try {
-      const res = await fetch('/login', {
+      const res = await fetch(`${_API_BASE}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ username, password }),
@@ -7714,7 +7725,7 @@ export default function App() {
         });
     };
 
-    fetch('/user/resolve', { credentials: 'include' })
+    fetch(`${_API_BASE}/user/resolve`, { credentials: 'include' })
       .then(res => res.json())
       .then(data => {
         if (data.ok) {
