@@ -2405,6 +2405,26 @@ function CandidatesTable({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // Re-fetch analytic rate-limit config when admin changes it via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed' || !user) return;
+      fetch('/user/rate-limits', { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data || !data.limits) return;
+          const cvLimit = data.limits.analytic_cv_limit ? data.limits.analytic_cv_limit.requests : 10;
+          const batchSize = data.limits.analytic_batch_size ? data.limits.analytic_batch_size.requests : 3;
+          setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
+        })
+        .catch(() => {});
+    };
+    return () => ch.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
   // When candidate list becomes empty, reset inline wizard to Step 1
   useEffect(() => {
     if (!allCandidates || allCandidates.length === 0) {
@@ -7664,6 +7684,31 @@ export default function App() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [_refreshSvcConfig]);
+
+  // Listen for config changes from admin_rate_limits.html / api_porting.html via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed') return;
+      // Re-fetch service config (custom email verif & LLM flags)
+      _refreshSvcConfig();
+      // Re-fetch email verification services list
+      if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
+      // Re-fetch token config
+      fetch(`/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (!cfg) return;
+          const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+          if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+          if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+        })
+        .catch(() => {});
+    };
+    return () => ch.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const handleAddStatus = (newStat) => {
     if (!user || !user.username) return;
