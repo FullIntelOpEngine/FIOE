@@ -7381,67 +7381,6 @@ async function smtpVerify(email, mxHost) {
   });
 }
 
-// ========== Contact Generation config (ContactUs API) ==========
-const CONTACT_GEN_SERVICES = ['contactus'];
-const _CONTACT_GEN_CONFIG_PATH = path.join(__dirname, 'contact_gen_config.json');
-
-function loadContactGenConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(_CONTACT_GEN_CONFIG_PATH, 'utf-8'));
-  } catch (_) {
-    return { contactus: { api_key: '', enabled: 'disabled' } };
-  }
-}
-
-function saveContactGenConfig(config) {
-  const tmp = _CONTACT_GEN_CONFIG_PATH + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
-  fs.renameSync(tmp, _CONTACT_GEN_CONFIG_PATH);
-}
-
-// Admin GET: return masked config (no raw keys)
-app.get('/admin/contact-gen-config', dashboardRateLimit, requireAdmin, (req, res) => {
-  const config = loadContactGenConfig();
-  const safe = {};
-  for (const svc of CONTACT_GEN_SERVICES) {
-    const cfg = config[svc] || {};
-    safe[svc] = { api_key_set: !!cfg.api_key, enabled: cfg.enabled || 'disabled' };
-  }
-  res.json({ config: safe });
-});
-
-// Admin POST: save config
-app.post('/admin/contact-gen-config', dashboardRateLimit, requireAdmin, (req, res) => {
-  const body = req.body;
-  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
-  const current = loadContactGenConfig();
-  for (const svc of CONTACT_GEN_SERVICES) {
-    if (body[svc] && typeof body[svc] === 'object') {
-      const entry = body[svc];
-      if (!current[svc]) current[svc] = { api_key: '', enabled: 'disabled' };
-      if (typeof entry.api_key === 'string' && entry.api_key !== '') {
-        current[svc].api_key = entry.api_key;
-      }
-      if (entry.enabled !== undefined) {
-        if (!['enabled', 'disabled'].includes(entry.enabled)) {
-          return res.status(400).json({ error: `Invalid enabled value for ${svc}` });
-        }
-        current[svc].enabled = entry.enabled;
-        // Clear the API key when a service is disabled so no traces remain
-        if (entry.enabled === 'disabled') {
-          current[svc].api_key = '';
-        }
-      }
-    }
-  }
-  try {
-    saveContactGenConfig(current);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ========== ContactUs service discovery (reads email_verif_config.json for contactus entry) ==========
 app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) => {
   try {

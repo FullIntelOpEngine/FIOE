@@ -295,27 +295,7 @@ def _save_email_verif_config(config: dict) -> None:
         json.dump(config, fh, indent=2)
     os.replace(tmp, _EMAIL_VERIF_CONFIG_PATH)
 
-# ── Contact Generation config (ContactUs API) ───────────────────────────────
-_CONTACT_GEN_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "contact_gen_config.json"
-)
-
-def _load_contact_gen_config() -> dict:
-    """Return parsed contact_gen_config.json; returns empty defaults on error."""
-    try:
-        with open(_CONTACT_GEN_CONFIG_PATH, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {
-            "contactus": {"api_key": "", "enabled": "disabled"},
-        }
-
-def _save_contact_gen_config(config: dict) -> None:
-    """Atomically write contact_gen_config.json."""
-    tmp = _CONTACT_GEN_CONFIG_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(config, fh, indent=2)
-    os.replace(tmp, _CONTACT_GEN_CONFIG_PATH)
+# ContactUs keys are now stored in email_verif_config.json (alongside neverbounce/zerobounce/bouncer).
 
 # ── Search provider config (Serper.dev vs Google CSE) ────────────────────────
 _SEARCH_PROVIDER_CONFIG_PATH = os.path.join(
@@ -1077,57 +1057,11 @@ def get_email_verif_services():
     ]
     return jsonify({"services": enabled}), 200
 
-# ── Contact Generation admin endpoints ────────────────────────────────────────
-
-@app.get("/admin/contact-gen-config")
-@_rate(_make_flask_limit("admin_endpoints"))
-@_require_admin
-def admin_get_contact_gen_config():
-    """Return contact generation service configuration (API keys masked)."""
-    config = _load_contact_gen_config()
-    safe = {}
-    for svc in ("contactus",):
-        cfg = config.get(svc, {})
-        safe[svc] = {
-            "api_key_set": bool(cfg.get("api_key")),
-            "enabled": cfg.get("enabled", "disabled"),
-        }
-    return jsonify({"config": safe}), 200
-
-@app.post("/admin/contact-gen-config")
-@_rate(_make_flask_limit("admin_endpoints"))
-@_csrf_required
-@_require_admin
-def admin_save_contact_gen_config():
-    """Save contact generation service configuration."""
-    body = request.get_json(force=True, silent=True)
-    if not isinstance(body, dict):
-        return jsonify({"error": "JSON object required"}), 400
-    current = _load_contact_gen_config()
-    for svc in ("contactus",):
-        if svc in body:
-            entry = body[svc]
-            if not isinstance(entry, dict):
-                return jsonify({"error": f"Invalid config for {svc}"}), 400
-            if svc not in current:
-                current[svc] = {"api_key": "", "enabled": "disabled"}
-            if entry.get("api_key") is not None and entry["api_key"] != "":
-                current[svc]["api_key"] = str(entry["api_key"])
-            if entry.get("enabled") is not None:
-                if entry["enabled"] not in ("enabled", "disabled"):
-                    return jsonify({"error": f"Invalid enabled value for {svc}"}), 400
-                current[svc]["enabled"] = entry["enabled"]
-    try:
-        _save_contact_gen_config(current)
-        return jsonify({"ok": True}), 200
-    except Exception as e:
-        app.logger.error("Failed to save contact-gen config: %s", e)
-        return jsonify({"error": "Failed to save configuration"}), 500
-
 @app.get("/contact-gen-services")
 def get_contact_gen_services():
-    """Return list of enabled contact generation services (no API keys)."""
-    config = _load_contact_gen_config()
+    """Return list of enabled contact generation services (no API keys).
+    ContactUs keys are stored in email_verif_config.json."""
+    config = _load_email_verif_config()
     enabled = [
         svc for svc in ("contactus",)
         if config.get(svc, {}).get("enabled") == "enabled" and config.get(svc, {}).get("api_key")
