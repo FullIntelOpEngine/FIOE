@@ -806,7 +806,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
 
   if (body.serper && typeof body.serper === 'object') {
     const e = body.serper;
-    if (e.api_key)   current.serper.api_key  = String(e.api_key);
+    if (typeof e.api_key === 'string' && e.api_key.trim()) current.serper.api_key = e.api_key.trim();
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
       current.serper.enabled = e.enabled;
@@ -815,8 +815,8 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   }
   if (body.dataforseo && typeof body.dataforseo === 'object') {
     const e = body.dataforseo;
-    if (e.login)    current.dataforseo.login    = String(e.login);
-    if (e.password) current.dataforseo.password = String(e.password);
+    if (typeof e.login    === 'string' && e.login.trim())    current.dataforseo.login    = e.login.trim();
+    if (typeof e.password === 'string' && e.password.trim()) current.dataforseo.password = e.password.trim();
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
       current.dataforseo.enabled = e.enabled;
@@ -825,12 +825,9 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   }
   if (body.google_cse && typeof body.google_cse === 'object') {
     const e = body.google_cse;
-    if (typeof e.api_key    === 'string' && e.api_key)    current.google_cse.api_key    = e.api_key.trim();
-    if (typeof e.cx         === 'string' && e.cx)         current.google_cse.cx         = e.cx.trim();
-    if (typeof e.gemini_key === 'string' && e.gemini_key) current.google_cse.gemini_key = e.gemini_key.trim();
-    if (e.api_key    === '') current.google_cse.api_key    = '';
-    if (e.cx         === '') current.google_cse.cx         = '';
-    if (e.gemini_key === '') current.google_cse.gemini_key = '';
+    if (typeof e.api_key    === 'string') current.google_cse.api_key    = e.api_key.trim();
+    if (typeof e.cx         === 'string') current.google_cse.cx         = e.cx.trim();
+    if (typeof e.gemini_key === 'string') current.google_cse.gemini_key = e.gemini_key.trim();
   }
   try {
     saveSearchProviderConfig(current);
