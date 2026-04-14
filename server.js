@@ -10077,21 +10077,61 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
       if (!key) {
         results.push({ label: 'ContactOut', status: 'error', detail: 'CONTACTOUT_API_KEY is required.' });
       } else {
-        results.push({ label: 'ContactOut', status: 'ok', detail: 'API key provided — will be validated on first use.' });
+        try {
+          // Use email_type=none so no credits are consumed — this only checks auth
+          const { status } = await httpsGet(
+            'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
+            { headers: { 'Content-Type': 'application/json', Accept: 'application/json', token: key } }
+          );
+          if (status === 401 || status === 403) {
+            results.push({ label: 'ContactOut', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your CONTACTOUT_API_KEY.` });
+          } else {
+            // 200 = found, 404 = not found but key accepted, 422 = invalid URL but key accepted
+            results.push({ label: 'ContactOut', status: 'ok', detail: `API key accepted (HTTP ${status}).` });
+          }
+        } catch (e) {
+          results.push({ label: 'ContactOut', status: 'warn', detail: `Could not reach ContactOut API: ${e.message}` });
+        }
       }
     } else if (contact_gen.provider === 'apollo') {
       const key = (contact_gen.APOLLO_API_KEY || '').trim();
       if (!key) {
         results.push({ label: 'Apollo', status: 'error', detail: 'APOLLO_API_KEY is required.' });
       } else {
-        results.push({ label: 'Apollo', status: 'ok', detail: 'API key provided — will be validated on first use.' });
+        try {
+          const { status } = await httpsGet('https://api.apollo.io/api/v1/auth/health', {
+            headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
+          });
+          if (status === 200) {
+            results.push({ label: 'Apollo', status: 'ok', detail: 'API key is valid.' });
+          } else if (status === 401 || status === 403) {
+            results.push({ label: 'Apollo', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your APOLLO_API_KEY.` });
+          } else {
+            results.push({ label: 'Apollo', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
+          }
+        } catch (e) {
+          results.push({ label: 'Apollo', status: 'warn', detail: `Could not reach Apollo API: ${e.message}` });
+        }
       }
     } else if (contact_gen.provider === 'rocketreach') {
       const key = (contact_gen.ROCKETREACH_API_KEY || '').trim();
       if (!key) {
         results.push({ label: 'RocketReach', status: 'error', detail: 'ROCKETREACH_API_KEY is required.' });
       } else {
-        results.push({ label: 'RocketReach', status: 'ok', detail: 'API key provided — will be validated on first use.' });
+        try {
+          const { status } = await httpsGet('https://api.rocketreach.co/api/v1/checkStatus', {
+            headers: { 'Api-Key': key },
+          });
+          if (status === 200) {
+            results.push({ label: 'RocketReach', status: 'ok', detail: 'API key is valid.' });
+          } else if (status === 401 || status === 403) {
+            results.push({ label: 'RocketReach', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your ROCKETREACH_API_KEY.` });
+          } else {
+            results.push({ label: 'RocketReach', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
+          }
+        } catch (e) {
+          results.push({ label: 'RocketReach', status: 'warn', detail: `Could not reach RocketReach API: ${e.message}` });
+        }
       }
     }
 
