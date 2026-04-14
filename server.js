@@ -10085,9 +10085,11 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
           );
           if (status === 401 || status === 403) {
             results.push({ label: 'ContactOut', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your CONTACTOUT_API_KEY.` });
+          } else if (status === 200 || status === 404 || status === 422) {
+            // 200 = profile found, 404 = profile not found (key valid), 422 = invalid URL (key valid)
+            results.push({ label: 'ContactOut', status: 'ok', detail: 'API key accepted.' });
           } else {
-            // 200 = found, 404 = not found but key accepted, 422 = invalid URL but key accepted
-            results.push({ label: 'ContactOut', status: 'ok', detail: `API key accepted (HTTP ${status}).` });
+            results.push({ label: 'ContactOut', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your account or try again.` });
           }
         } catch (e) {
           results.push({ label: 'ContactOut', status: 'warn', detail: `Could not reach ContactOut API: ${e.message}` });
@@ -10106,6 +10108,8 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
             results.push({ label: 'Apollo', status: 'ok', detail: 'API key is valid.' });
           } else if (status === 401 || status === 403) {
             results.push({ label: 'Apollo', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your APOLLO_API_KEY.` });
+          } else if (status >= 500) {
+            results.push({ label: 'Apollo', status: 'warn', detail: `Apollo API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
           } else {
             results.push({ label: 'Apollo', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
           }
@@ -10126,6 +10130,8 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
             results.push({ label: 'RocketReach', status: 'ok', detail: 'API key is valid.' });
           } else if (status === 401 || status === 403) {
             results.push({ label: 'RocketReach', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your ROCKETREACH_API_KEY.` });
+          } else if (status >= 500) {
+            results.push({ label: 'RocketReach', status: 'warn', detail: `RocketReach API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
           } else {
             results.push({ label: 'RocketReach', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
           }
