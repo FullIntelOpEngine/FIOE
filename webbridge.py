@@ -1069,7 +1069,7 @@ def get_contact_gen_services():
     ContactOut keys are stored in email_verif_config.json."""
     config = _load_email_verif_config()
     enabled = [
-        svc for svc in ("contactout",)
+        svc for svc in _CONTACT_GEN_SERVICES
         if config.get(svc, {}).get("enabled") == "enabled" and config.get(svc, {}).get("api_key")
     ]
     return jsonify({"services": enabled}), 200

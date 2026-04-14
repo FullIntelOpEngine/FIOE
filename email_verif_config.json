@@ -14,5 +14,9 @@
   "contactout": {
     "api_key": "",
     "enabled": "disabled"
+  },
+  "apollo": {
+    "api_key": "",
+    "enabled": "disabled"
   }
 }
