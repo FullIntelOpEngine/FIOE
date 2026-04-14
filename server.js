@@ -7735,6 +7735,83 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       const allEmails = emailStrs.filter((v, i, a) => v && a.indexOf(v) === i);
 
+      // ── Call LLM to structure the full profile into a clean comment ──────
+      let structured_comment = '';
+      try {
+        const jobHistoryText = Array.isArray(rrRes.job_history) && rrRes.job_history.length > 0
+          ? rrRes.job_history.map(j => {
+              const start = j.start_date ? j.start_date.slice(0, 7) : '?';
+              const end   = j.end_date   === 'Present' ? 'Present' : (j.end_date || '?').slice(0, 7);
+              return `  - ${j.title || '?'} @ ${j.company_name || j.company || '?'} (${start} – ${end})`;
+            }).join('\n')
+          : '  (none)';
+
+        const educationText = Array.isArray(rrRes.education) && rrRes.education.length > 0
+          ? rrRes.education.map(e => `  - ${e.degree || ''} in ${e.major || ''} @ ${e.school || ''} (${e.start || '?'} – ${e.end || '?'})`).join('\n')
+          : '  (none)';
+
+        const contactEmailsText = allEmails.length > 0 ? allEmails.join(', ') : '(not found)';
+        const contactPhoneText  = phoneStr || '(not found)';
+
+        const rrStructurePrompt = `You are a data structuring assistant. Given the following raw profile information from a RocketReach API response, produce a clean plain-text summary organized under exactly four subheaders. Do NOT use markdown, asterisks, or bullet symbols — use plain dashes for list items. Keep each section concise.
+
+Profile:
+  Name: ${rrRes.name || '?'}
+  Title: ${rrRes.current_title || '?'}
+  Employer: ${rrRes.current_employer || '?'}
+  Location: ${rrRes.location || (rrRes.city ? `${rrRes.city}, ${rrRes.country_code || ''}` : '?')}
+  LinkedIn: ${rrRes.linkedin_url || '?'}
+
+Employment history:
+${jobHistoryText}
+
+Education:
+${educationText}
+
+Contact:
+  Emails: ${contactEmailsText}
+  Phone: ${contactPhoneText}
+
+Produce the output in this exact format (keep subheader names exactly as shown, plain text only):
+
+[Profile]
+Name: ...
+Title: ...
+Employer: ...
+Location: ...
+LinkedIn: ...
+
+[Employment]
+(one entry per line: Title @ Company (start – end))
+
+[Education]
+(one entry per line: Degree in Major @ School (start – end))
+
+[Contact]
+Email: ...
+Phone: ...`;
+
+        const llmText = await llmGenerateText(rrStructurePrompt, { username: req.user && req.user.username, label: 'llm/rocketreach-structure' });
+        structured_comment = llmText.trim();
+        console.log('[RocketReach] LLM structured comment generated, length:', structured_comment.length);
+      } catch (llmErr) {
+        console.error('[RocketReach] LLM structuring failed (non-fatal):', llmErr.message);
+        // Fall back to a simple plain-text structure
+        const fallbackParts = [
+          `[Profile]`,
+          rrRes.name           ? `Name: ${rrRes.name}` : null,
+          rrRes.current_title  ? `Title: ${rrRes.current_title}` : null,
+          rrRes.current_employer ? `Employer: ${rrRes.current_employer}` : null,
+          rrRes.location       ? `Location: ${rrRes.location}` : null,
+          rrRes.linkedin_url   ? `LinkedIn: ${rrRes.linkedin_url}` : null,
+          '',
+          `[Contact]`,
+          allEmails.length > 0 ? `Email: ${allEmails.join(', ')}` : null,
+          phoneStr             ? `Phone: ${phoneStr}` : null,
+        ].filter(v => v !== null);
+        structured_comment = fallbackParts.join('\n');
+      }
+
       const result = {
         provider: 'rocketreach',
         email,
@@ -7743,6 +7820,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         github,
         personal_email,
         all_emails: allEmails,
+        structured_comment,
       };
       console.log('[RocketReach] Mapped result:', JSON.stringify(result));
       return res.json(result);

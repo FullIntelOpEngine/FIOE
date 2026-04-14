@@ -8526,12 +8526,18 @@ export default function App() {
         if (data.email)          updates.email = data.email;
         if (data.phone)          updates.mobile = data.phone;
         if (data.work_email)     updates.office = data.work_email;
-        const commentParts = [];
-        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
-        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
-        if (commentParts.length > 0) {
+        // Use LLM-structured comment if available, otherwise fall back to key fields
+        if (data.structured_comment) {
           const existing = resumeCandidate.comment || '';
-          updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          updates.comment = existing ? `${existing}\n\n${data.structured_comment}` : data.structured_comment;
+        } else {
+          const commentParts = [];
+          if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+          if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+          if (commentParts.length > 0) {
+            const existing = resumeCandidate.comment || '';
+            updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          }
         }
 
         if (Object.keys(updates).length > 0) {
@@ -9387,7 +9393,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'Lookup' : 'Gemini'}`
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'Gemini'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}
@@ -9455,7 +9461,7 @@ export default function App() {
                                                                 <option value="apollo">Apollo</option>
                                                             )}
                                                             {availableContactGenServices.includes('rocketreach') && (
-                                                                <option value="rocketreach">Lookup</option>
+                                                                <option value="rocketreach">RocketReach</option>
                                                             )}
                                                         </select>
                                                     )}
