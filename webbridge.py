@@ -1082,6 +1082,7 @@ def admin_get_search_provider_config():
     config = _load_search_provider_config()
     serper = config.get("serper", {})
     dataforseo = config.get("dataforseo", {})
+    google_cse = config.get("google_cse", {})
     return jsonify({
         "config": {
             "serper": {
@@ -1092,6 +1093,11 @@ def admin_get_search_provider_config():
                 "login_set": bool(dataforseo.get("login")),
                 "password_set": bool(dataforseo.get("password")),
                 "enabled": dataforseo.get("enabled", "disabled"),
+            },
+            "google_cse": {
+                "api_key_set": bool(google_cse.get("api_key")),
+                "cx_set": bool(google_cse.get("cx")),
+                "gemini_key_set": bool(google_cse.get("gemini_key")),
             },
         }
     }), 200
@@ -1106,11 +1112,13 @@ def admin_save_search_provider_config():
     if not isinstance(body, dict):
         return jsonify({"error": "JSON object required"}), 400
     current = _load_search_provider_config()
-    # Ensure both provider keys exist with defaults
+    # Ensure all provider keys exist with defaults
     if "serper" not in current:
         current["serper"] = {"api_key": "", "enabled": "disabled"}
     if "dataforseo" not in current:
         current["dataforseo"] = {"login": "", "password": "", "enabled": "disabled"}
+    if "google_cse" not in current:
+        current["google_cse"] = {"api_key": "", "cx": "", "gemini_key": ""}
 
     if "serper" in body:
         entry = body["serper"]
@@ -1146,6 +1154,17 @@ def admin_save_search_provider_config():
                 current["serper"]["enabled"] = "disabled"
                 # Clear disabled provider's credentials so no traces remain
                 current["serper"]["api_key"] = ""
+
+    if "google_cse" in body:
+        entry = body["google_cse"]
+        if not isinstance(entry, dict):
+            return jsonify({"error": "Invalid config for google_cse"}), 400
+        if isinstance(entry.get("api_key"), str):
+            current["google_cse"]["api_key"] = entry["api_key"].strip()
+        if isinstance(entry.get("cx"), str):
+            current["google_cse"]["cx"] = entry["cx"].strip()
+        if isinstance(entry.get("gemini_key"), str):
+            current["google_cse"]["gemini_key"] = entry["gemini_key"].strip()
 
     try:
         _save_search_provider_config(current)

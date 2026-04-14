@@ -1197,7 +1197,7 @@ let _users   = [];
 let _appeals = [];
 let _session = null;
 let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled' }, zerobounce: { api_key_set: false, enabled: 'disabled' }, bouncer: { api_key_set: false, enabled: 'disabled' } };
-let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' } };
+let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
 
@@ -3905,13 +3905,20 @@ function renderApiKeysCard() {
       const serperKey  = document.getElementById('apikey-serper')?.value.trim() || '';
       const dfsLogin   = document.getElementById('apikey-dataforseo-login')?.value.trim()   || '';
       const dfsPass    = document.getElementById('apikey-dataforseo-password')?.value.trim() || '';
+      const cseApiKey  = document.getElementById('apikey-cse-key')?.value.trim()    || '';
+      const cseCx      = document.getElementById('apikey-cse-cx')?.value.trim()     || '';
+      const cseGemini  = document.getElementById('apikey-cse-gemini')?.value.trim() || '';
       const payload = {
         serper:    { enabled: _activeProvider === 'serper'    ? 'enabled' : 'disabled' },
         dataforseo: { enabled: _activeProvider === 'dataforseo' ? 'enabled' : 'disabled' },
+        google_cse: {},
       };
       if (serperKey) payload.serper.api_key  = serperKey;
       if (dfsLogin)  payload.dataforseo.login    = dfsLogin;
       if (dfsPass)   payload.dataforseo.password = dfsPass;
+      if (cseApiKey) payload.google_cse.api_key    = cseApiKey;
+      if (cseCx)     payload.google_cse.cx         = cseCx;
+      if (cseGemini) payload.google_cse.gemini_key = cseGemini;
       saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
       try {
         const r = await fetch(`${API}/admin/search-provider-config`, {
@@ -3927,6 +3934,9 @@ function renderApiKeysCard() {
         if (serperKey) _serperConfig.serper.api_key_set = true;
         if (dfsLogin)  _serperConfig.dataforseo.login_set    = true;
         if (dfsPass)   _serperConfig.dataforseo.password_set = true;
+        if (cseApiKey) _serperConfig.google_cse.api_key_set  = true;
+        if (cseCx)     _serperConfig.google_cse.cx_set       = true;
+        if (cseGemini) _serperConfig.google_cse.gemini_key_set = true;
         // Clear disabled provider's key-set flags (backend clears actual keys)
         if (enabledSp !== 'serper')    { _serperConfig.serper.api_key_set = false; }
         if (enabledSp !== 'dataforseo') { _serperConfig.dataforseo.login_set = false; _serperConfig.dataforseo.password_set = false; }
@@ -3934,6 +3944,9 @@ function renderApiKeysCard() {
         const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = _serperConfig.serper.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…'; }
         const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = _serperConfig.dataforseo.login_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…'; }
         const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = _serperConfig.dataforseo.password_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…'; }
+        const ck = document.getElementById('apikey-cse-key');    if (ck) { ck.value = ''; ck.placeholder = _serperConfig.google_cse.api_key_set   ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
+        const cc = document.getElementById('apikey-cse-cx');     if (cc) { cc.value = ''; cc.placeholder = _serperConfig.google_cse.cx_set         ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…'; }
+        const cg = document.getElementById('apikey-cse-gemini'); if (cg) { cg.value = ''; cg.placeholder = _serperConfig.google_cse.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
         // Remove key-set badges for disabled providers
         if (enabledSp !== 'serper') { const b = document.querySelector('#serper-section .apikey-set-badge'); if (b) b.remove(); }
         if (enabledSp !== 'dataforseo') { document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove()); }
@@ -4008,6 +4021,60 @@ function renderApiKeysCard() {
 
     dfsSec.appendChild(dfsRow);
     searchPanel.appendChild(dfsSec);
+
+    // ── Google CSE credentials ─────────────────────────────────────────────
+    const cseCfg = (_serperConfig && _serperConfig.google_cse) || { api_key_set: false, cx_set: false, gemini_key_set: false };
+    const cseSec = document.createElement('div');
+    cseSec.className = 'apikey-service';
+    cseSec.id = 'google-cse-section';
+    cseSec.style.marginTop = '18px';
+    const cseH3 = document.createElement('h3'); cseH3.textContent = 'Google CSE'; cseSec.appendChild(cseH3);
+    const cseRow = document.createElement('div'); cseRow.className = 'apikey-row'; cseRow.style.flexWrap = 'wrap';
+
+    // GOOGLE_CSE_API_KEY
+    const cseKeyField = document.createElement('div'); cseKeyField.className = 'apikey-field';
+    const cseKeyLabel = document.createElement('label'); cseKeyLabel.htmlFor = 'apikey-cse-key'; cseKeyLabel.textContent = 'GOOGLE_CSE_API_KEY';
+    const cseKeyInput = document.createElement('input');
+    cseKeyInput.type = 'password'; cseKeyInput.id = 'apikey-cse-key'; cseKeyInput.className = 'apikey-input';
+    cseKeyInput.placeholder = cseCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+    cseKeyInput.autocomplete = 'off';
+    cseKeyField.appendChild(cseKeyLabel); cseKeyField.appendChild(cseKeyInput);
+    if (cseCfg.api_key_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ API key saved';
+      cseKeyField.appendChild(b);
+    }
+    cseRow.appendChild(cseKeyField);
+
+    // GOOGLE_CSE_CX
+    const cseCxField = document.createElement('div'); cseCxField.className = 'apikey-field';
+    const cseCxLabel = document.createElement('label'); cseCxLabel.htmlFor = 'apikey-cse-cx'; cseCxLabel.textContent = 'GOOGLE_CSE_CX';
+    const cseCxInput = document.createElement('input');
+    cseCxInput.type = 'text'; cseCxInput.id = 'apikey-cse-cx'; cseCxInput.className = 'apikey-input';
+    cseCxInput.placeholder = cseCfg.cx_set ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…';
+    cseCxInput.autocomplete = 'off';
+    cseCxField.appendChild(cseCxLabel); cseCxField.appendChild(cseCxInput);
+    if (cseCfg.cx_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ CX saved';
+      cseCxField.appendChild(b);
+    }
+    cseRow.appendChild(cseCxField);
+
+    // Gemini API Key (for use with CSE)
+    const cseGeminiField = document.createElement('div'); cseGeminiField.className = 'apikey-field';
+    const cseGeminiLabel = document.createElement('label'); cseGeminiLabel.htmlFor = 'apikey-cse-gemini'; cseGeminiLabel.textContent = 'GEMINI_API_KEY (for CSE)';
+    const cseGeminiInput = document.createElement('input');
+    cseGeminiInput.type = 'password'; cseGeminiInput.id = 'apikey-cse-gemini'; cseGeminiInput.className = 'apikey-input';
+    cseGeminiInput.placeholder = cseCfg.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+    cseGeminiInput.autocomplete = 'off';
+    cseGeminiField.appendChild(cseGeminiLabel); cseGeminiField.appendChild(cseGeminiInput);
+    if (cseCfg.gemini_key_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ Gemini key saved';
+      cseGeminiField.appendChild(b);
+    }
+    cseRow.appendChild(cseGeminiField);
+
+    cseSec.appendChild(cseRow);
+    searchPanel.appendChild(cseSec);
   })();
 
   // ── LLM Model provider section ──────────────────────────────────────────────

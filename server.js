@@ -748,6 +748,98 @@ app.post('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, re
   }
 });
 
+// ── Admin: search-provider-config (Serper / DataforSEO / Google CSE) ──────────
+const _SEARCH_PROVIDER_CONFIG_PATHS = [
+  path.join(__dirname, 'search_provider_config.json'),
+  path.join(__dirname, '..', 'search_provider_config.json'),
+  path.join(__dirname, '..', '..', 'search_provider_config.json'),
+].filter(Boolean);
+
+function _resolveSearchProviderConfigPath() {
+  for (const p of _SEARCH_PROVIDER_CONFIG_PATHS) {
+    try { fs.accessSync(p, fs.constants.R_OK); return p; } catch (_) {}
+  }
+  return _SEARCH_PROVIDER_CONFIG_PATHS[0];
+}
+
+function loadSearchProviderConfig() {
+  try {
+    const raw = fs.readFileSync(_resolveSearchProviderConfigPath(), 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return {
+      serper: { api_key: '', enabled: 'disabled' },
+      dataforseo: { login: '', password: '', enabled: 'disabled' },
+      google_cse: { api_key: '', cx: '', gemini_key: '' },
+    };
+  }
+}
+
+function saveSearchProviderConfig(config) {
+  const p = _resolveSearchProviderConfigPath();
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const config = loadSearchProviderConfig();
+  const serper = config.serper || {};
+  const dfs    = config.dataforseo || {};
+  const cse    = config.google_cse || {};
+  res.json({
+    config: {
+      serper:     { api_key_set: !!serper.api_key, enabled: serper.enabled || 'disabled' },
+      dataforseo: { login_set: !!dfs.login, password_set: !!dfs.password, enabled: dfs.enabled || 'disabled' },
+      google_cse: { api_key_set: !!cse.api_key, cx_set: !!cse.cx, gemini_key_set: !!cse.gemini_key },
+    },
+  });
+});
+
+app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
+  const current = loadSearchProviderConfig();
+  if (!current.serper)     current.serper     = { api_key: '', enabled: 'disabled' };
+  if (!current.dataforseo) current.dataforseo = { login: '', password: '', enabled: 'disabled' };
+  if (!current.google_cse) current.google_cse = { api_key: '', cx: '', gemini_key: '' };
+
+  if (body.serper && typeof body.serper === 'object') {
+    const e = body.serper;
+    if (e.api_key)   current.serper.api_key  = String(e.api_key);
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
+      current.serper.enabled = e.enabled;
+      if (e.enabled === 'enabled') { current.dataforseo.enabled = 'disabled'; }
+    }
+  }
+  if (body.dataforseo && typeof body.dataforseo === 'object') {
+    const e = body.dataforseo;
+    if (e.login)    current.dataforseo.login    = String(e.login);
+    if (e.password) current.dataforseo.password = String(e.password);
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
+      current.dataforseo.enabled = e.enabled;
+      if (e.enabled === 'enabled') { current.serper.enabled = 'disabled'; }
+    }
+  }
+  if (body.google_cse && typeof body.google_cse === 'object') {
+    const e = body.google_cse;
+    if (typeof e.api_key    === 'string' && e.api_key)    current.google_cse.api_key    = e.api_key.trim();
+    if (typeof e.cx         === 'string' && e.cx)         current.google_cse.cx         = e.cx.trim();
+    if (typeof e.gemini_key === 'string' && e.gemini_key) current.google_cse.gemini_key = e.gemini_key.trim();
+    if (e.api_key    === '') current.google_cse.api_key    = '';
+    if (e.cx         === '') current.google_cse.cx         = '';
+    if (e.gemini_key === '') current.google_cse.gemini_key = '';
+  }
+  try {
+    saveSearchProviderConfig(current);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── User-facing: list enabled email verification services ───────────────────
 // NOTE: registered again after the CORS middleware so cross-origin App.js calls succeed.
 // This placeholder is intentionally left blank (route moved below the cors setup).
@@ -9659,6 +9751,7 @@ app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (re
         search:      cfg.search?.provider      || 'google_cse',
         llm:         cfg.llm?.provider         || 'gemini',
         email_verif: cfg.email_verif?.provider || 'default',
+        contact_gen: cfg.contact_gen?.provider || 'gemini',
       },
     });
   } catch (err) {
@@ -9670,14 +9763,16 @@ app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (re
 // POST /api/user-service-config/activate
 // Body: { search: { provider, SERPER_API_KEY?, DATAFORSEO_LOGIN?, DATAFORSEO_PASSWORD? },
 //         llm:    { provider, OPENAI_API_KEY?, ANTHROPIC_API_KEY? },
-//         email_verif: { provider, NEVERBOUNCE_API_KEY?, ZEROBOUNCE_API_KEY?, BOUNCER_API_KEY? } }
+//         email_verif: { provider, NEVERBOUNCE_API_KEY?, ZEROBOUNCE_API_KEY?, BOUNCER_API_KEY? },
+//         contact_gen: { provider, CONTACTOUT_API_KEY?, APOLLO_API_KEY?, ROCKETREACH_API_KEY? } }
 // Encrypts and stores config per user.
 app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    const { search, llm, email_verif } = req.body || {};
-    const VALID_SEARCH = ['google_cse', 'serper', 'dataforseo'];
-    const VALID_LLM    = ['gemini', 'openai', 'anthropic'];
-    const VALID_EMAIL  = ['default', 'neverbounce', 'zerobounce', 'bouncer'];
+    const { search, llm, email_verif, contact_gen } = req.body || {};
+    const VALID_SEARCH      = ['google_cse', 'serper', 'dataforseo'];
+    const VALID_LLM         = ['gemini', 'openai', 'anthropic'];
+    const VALID_EMAIL       = ['default', 'neverbounce', 'zerobounce', 'bouncer'];
+    const VALID_CONTACT_GEN = ['gemini', 'contactout', 'apollo', 'rocketreach'];
 
     if (!search?.provider || !VALID_SEARCH.includes(search.provider)) {
       return res.status(400).json({ error: 'Invalid or missing search provider' });
@@ -9687,6 +9782,9 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     }
     if (!email_verif?.provider || !VALID_EMAIL.includes(email_verif.provider)) {
       return res.status(400).json({ error: 'Invalid or missing email_verif provider' });
+    }
+    if (contact_gen && !VALID_CONTACT_GEN.includes(contact_gen.provider)) {
+      return res.status(400).json({ error: 'Invalid contact_gen provider' });
     }
 
     // Validate that required keys are present for non-default providers
@@ -9701,6 +9799,9 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     if (email_verif.provider === 'neverbounce' && !email_verif.NEVERBOUNCE_API_KEY?.trim()) missing.push('NEVERBOUNCE_API_KEY');
     if (email_verif.provider === 'zerobounce'  && !email_verif.ZEROBOUNCE_API_KEY?.trim())  missing.push('ZEROBOUNCE_API_KEY');
     if (email_verif.provider === 'bouncer'     && !email_verif.BOUNCER_API_KEY?.trim())     missing.push('BOUNCER_API_KEY');
+    if (contact_gen?.provider === 'contactout'  && !contact_gen.CONTACTOUT_API_KEY?.trim())  missing.push('CONTACTOUT_API_KEY');
+    if (contact_gen?.provider === 'apollo'      && !contact_gen.APOLLO_API_KEY?.trim())      missing.push('APOLLO_API_KEY');
+    if (contact_gen?.provider === 'rocketreach' && !contact_gen.ROCKETREACH_API_KEY?.trim()) missing.push('ROCKETREACH_API_KEY');
     if (missing.length > 0) {
       return res.status(400).json({ error: `Missing required keys: ${missing.join(', ')}` });
     }
@@ -9711,6 +9812,7 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
       search:   { provider: search.provider },
       llm:      { provider: llm.provider },
       email_verif: { provider: email_verif.provider },
+      contact_gen: { provider: contact_gen?.provider || 'gemini' },
     };
     if (search.provider === 'serper')     cfg.search.SERPER_API_KEY = search.SERPER_API_KEY.trim();
     if (search.provider === 'dataforseo') {
@@ -9722,6 +9824,9 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     if (email_verif.provider === 'neverbounce') cfg.email_verif.NEVERBOUNCE_API_KEY = email_verif.NEVERBOUNCE_API_KEY.trim();
     if (email_verif.provider === 'zerobounce')  cfg.email_verif.ZEROBOUNCE_API_KEY  = email_verif.ZEROBOUNCE_API_KEY.trim();
     if (email_verif.provider === 'bouncer')     cfg.email_verif.BOUNCER_API_KEY     = email_verif.BOUNCER_API_KEY.trim();
+    if (contact_gen?.provider === 'contactout')  cfg.contact_gen.CONTACTOUT_API_KEY  = contact_gen.CONTACTOUT_API_KEY.trim();
+    if (contact_gen?.provider === 'apollo')      cfg.contact_gen.APOLLO_API_KEY      = contact_gen.APOLLO_API_KEY.trim();
+    if (contact_gen?.provider === 'rocketreach') cfg.contact_gen.ROCKETREACH_API_KEY = contact_gen.ROCKETREACH_API_KEY.trim();
 
     writeUserServiceConfig(req.user.username, cfg);
     res.json({ ok: true, active: true });
@@ -9767,7 +9872,7 @@ app.get('/api/user-service-config/search-keys', requireLogin, dashboardRateLimit
 // Returns { ok: bool, results: [{label, status, detail}] }
 app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    const { search, llm, email_verif } = req.body || {};
+    const { search, llm, email_verif, contact_gen } = req.body || {};
 
     function httpsGet(url, opts = {}) {
       return new Promise((resolve, reject) => {
@@ -9964,6 +10069,32 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
         } catch (e) {
           results.push({ label: 'Bouncer', status: 'warn', detail: `Could not reach Bouncer API: ${e.message}` });
         }
+      }
+    }
+
+    // ── Contact Generation ────────────────────────────────────────────────────
+    if (!contact_gen || contact_gen.provider === 'gemini') {
+      results.push({ label: 'Contact Generation', status: 'ok', detail: 'Using platform Gemini — no custom key required.' });
+    } else if (contact_gen.provider === 'contactout') {
+      const key = (contact_gen.CONTACTOUT_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'ContactOut', status: 'error', detail: 'CONTACTOUT_API_KEY is required.' });
+      } else {
+        results.push({ label: 'ContactOut', status: 'ok', detail: 'API key provided — will be validated on first use.' });
+      }
+    } else if (contact_gen.provider === 'apollo') {
+      const key = (contact_gen.APOLLO_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'Apollo', status: 'error', detail: 'APOLLO_API_KEY is required.' });
+      } else {
+        results.push({ label: 'Apollo', status: 'ok', detail: 'API key provided — will be validated on first use.' });
+      }
+    } else if (contact_gen.provider === 'rocketreach') {
+      const key = (contact_gen.ROCKETREACH_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'RocketReach', status: 'error', detail: 'ROCKETREACH_API_KEY is required.' });
+      } else {
+        results.push({ label: 'RocketReach', status: 'ok', detail: 'API key provided — will be validated on first use.' });
       }
     }
 
