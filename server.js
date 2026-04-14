@@ -467,7 +467,7 @@ const EMAIL_VERIF_SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
 // ContactOut (contact generation) key is stored alongside email verif services in email_verif_config.json
 // so that the same path-resolution logic (multi-path search) is used for all provider configs.
 // It is intentionally NOT in EMAIL_VERIF_SERVICES so it does not affect hasCustomEmailVerif / token deduction.
-const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout'];
+const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout', 'apollo'];
 
 function _resolveEmailVerifConfigPath() {
   // Use env override if set.
@@ -7531,6 +7531,118 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         all_emails: allEmails,
       };
       console.log('[ContactOut] Mapped result:', JSON.stringify(result));
+      return res.json(result);
+    }
+
+    // ── Apollo provider path ─────────────────────────────────────────────
+    if (provider === 'apollo') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for Apollo lookup.' });
+      }
+      const apolloCfg = (loadEmailVerifConfig().apollo) || {};
+      if (!apolloCfg.api_key || apolloCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'Apollo is not enabled or API key is missing.' });
+      }
+
+      // Normalize LinkedIn URL
+      let apolloUrl = (linkedinurl || '').trim();
+      if (apolloUrl && !apolloUrl.startsWith('https://') && !apolloUrl.startsWith('http://')) {
+        apolloUrl = 'https://' + apolloUrl;
+      }
+
+      console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
+      const apolloRes = await new Promise((resolve, reject) => {
+        const bodyStr = JSON.stringify({ linkedin_url: apolloUrl });
+        const reqOpts = {
+          hostname: 'api.apollo.io',
+          port: 443,
+          path: '/v1/people/match',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'x-api-key': apolloCfg.api_key,
+            'Content-Length': Buffer.byteLength(bodyStr),
+          },
+        };
+        console.log('[Apollo] Request: POST https://api.apollo.io/v1/people/match body:', bodyStr);
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            console.log('[Apollo] HTTP status:', resp.statusCode);
+            console.log('[Apollo] Raw response body:', body);
+            try {
+              const parsed = JSON.parse(body);
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) {
+              console.error('[Apollo] Failed to parse response JSON:', e.message, '| Body:', body);
+              reject(new Error('Invalid JSON from Apollo API'));
+            }
+          });
+        });
+        r.on('error', (err) => {
+          console.error('[Apollo] Network error:', err.message);
+          reject(err);
+        });
+        r.setTimeout(20000, () => {
+          console.error('[Apollo] Request timed out');
+          r.destroy();
+          reject(new Error('Apollo API timeout'));
+        });
+        r.write(bodyStr);
+        r.end();
+      });
+
+      if (apolloRes._http_status && apolloRes._http_status !== 200) {
+        const apiMsg = apolloRes.message || apolloRes.error || `Apollo API returned status ${apolloRes._http_status}`;
+        console.error('[Apollo] API error — status:', apolloRes._http_status, '| message:', apiMsg);
+        return res.status(400).json({ error: apiMsg });
+      }
+
+      const person = apolloRes.person || {};
+      console.log('[Apollo] person fields — keys:', Object.keys(person));
+      console.log('[Apollo] person.email:', JSON.stringify(person.email));
+      console.log('[Apollo] person.phone_numbers:', JSON.stringify(person.phone_numbers));
+
+      const _first = (arrOrStr) => {
+        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
+        return typeof arrOrStr === 'string' ? arrOrStr : '';
+      };
+
+      const email = person.email || '';
+      // phone_numbers is an array of objects with sanitized_number
+      const phoneObj = Array.isArray(person.phone_numbers) && person.phone_numbers.length > 0
+        ? person.phone_numbers[0]
+        : null;
+      const phone = (phoneObj && (phoneObj.sanitized_number || phoneObj.raw_number)) || '';
+      const work_email = person.work_email || _first(person.work_emails) || '';
+      const personal_email = person.personal_email || _first(person.personal_emails) || '';
+      const github = person.github_url || '';
+
+      const _toArr = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
+
+      const allEmails = [
+        ..._toArr(email),
+        ..._toArr(work_email),
+        ..._toArr(personal_email),
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+      const result = {
+        provider: 'apollo',
+        email,
+        phone,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
+      };
+      console.log('[Apollo] Mapped result:', JSON.stringify(result));
       return res.json(result);
     }
 
