@@ -7747,7 +7747,10 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           : '  (none)';
 
         const educationText = Array.isArray(rrRes.education) && rrRes.education.length > 0
-          ? rrRes.education.map(e => `  - ${e.degree || ''} in ${e.major || ''} @ ${e.school || ''} (${e.start || '?'} – ${e.end || '?'})`).join('\n')
+          ? rrRes.education.map(e => {
+              const majorPart = e.major ? ` in ${e.major}` : '';
+              return `  - ${e.degree || '?'}${majorPart} @ ${e.school || '?'} (${e.start || '?'} – ${e.end || '?'})`;
+            }).join('\n')
           : '  (none)';
 
         const contactEmailsText = allEmails.length > 0 ? allEmails.join(', ') : '(not found)';
