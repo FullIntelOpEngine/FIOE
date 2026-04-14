@@ -7415,7 +7415,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       // Normalize LinkedIn URL: ensure https:// prefix and clean trailing slashes
       let normalizedUrl = (linkedinurl || '').trim();
-      if (normalizedUrl && !normalizedUrl.startsWith('http')) {
+      if (normalizedUrl && !normalizedUrl.startsWith('https://') && !normalizedUrl.startsWith('http://')) {
         normalizedUrl = 'https://' + normalizedUrl;
       }
       // Warn and reject Sales Navigator / Recruiter URLs (not supported by ContactOut)
@@ -7481,9 +7481,11 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       const personal_email = _first(profile.personal_emails) || _first(profile.personal_email) || '';
 
       // Collect all unique emails for the frontend email list
-      // Include both array fields and scalar fallbacks so no email is missed regardless of API plan
+      // Handle both array fields and scalar fields (profile.emails may be array or scalar;
+      // profile.email is the primary scalar field). Include all sources to cover all API plan variants.
       const allEmails = [
-        ...(Array.isArray(profile.emails) ? profile.emails : (profile.email ? [profile.email] : [])),
+        ...(Array.isArray(profile.emails) ? profile.emails : (typeof profile.emails === 'string' && profile.emails ? [profile.emails] : [])),
+        ...(profile.email && typeof profile.email === 'string' ? [profile.email] : []),
         ...(Array.isArray(profile.work_emails) ? profile.work_emails : (profile.work_email ? [profile.work_email] : [])),
         ...(Array.isArray(profile.personal_emails) ? profile.personal_emails : (profile.personal_email ? [profile.personal_email] : [])),
       ].filter((v, i, a) => v && a.indexOf(v) === i);
