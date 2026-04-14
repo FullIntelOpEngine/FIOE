@@ -277,7 +277,7 @@ _EMAIL_VERIF_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__
 _EMAIL_VERIF_SERVICES = ("neverbounce", "zerobounce", "bouncer")
 # ContactOut (contact generation) key lives in email_verif_config.json alongside the email verif
 # providers.  Kept separate so it is NOT counted as an email-verif service (token-deduction guards).
-_CONTACT_GEN_SERVICES = ("contactout", "apollo")
+_CONTACT_GEN_SERVICES = ("contactout", "apollo", "rocketreach")
 
 def _load_email_verif_config() -> dict:
     """Return parsed email_verif_config.json; returns empty defaults on error."""

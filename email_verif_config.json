@@ -18,5 +18,9 @@
   "apollo": {
     "api_key": "",
     "enabled": "disabled"
+  },
+  "rocketreach": {
+    "api_key": "",
+    "enabled": "disabled"
   }
 }

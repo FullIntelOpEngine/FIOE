@@ -8500,6 +8500,81 @@ export default function App() {
       return;
     }
 
+    if (emailGenProvider === 'rocketreach') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for RocketReach lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'rocketreach', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'RocketReach request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'RocketReach' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ RocketReach API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+      } catch (e) {
+        console.error('RocketReach error:', e);
+        alert('Failed to generate contacts via RocketReach.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return;
+    }
+
     // Gemini / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
@@ -9277,7 +9352,7 @@ export default function App() {
                                                     className="btn-primary"
                                                     style={{ fontSize: 12, padding: '6px 12px' }}
                                                 >
-                                                    {generatingEmails ? 'Generating...' : (['contactout','apollo'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email')}
+                                                    {generatingEmails ? 'Generating...' : (['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email')}
                                                 </button>
                                             ) : (
                                                 <button 
@@ -9311,7 +9386,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · ${['contactout','apollo'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : 'Gemini'}`
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'Lookup' : 'Gemini'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}
@@ -9377,6 +9452,9 @@ export default function App() {
                                                             )}
                                                             {availableContactGenServices.includes('apollo') && (
                                                                 <option value="apollo">Apollo</option>
+                                                            )}
+                                                            {availableContactGenServices.includes('rocketreach') && (
+                                                                <option value="rocketreach">Lookup</option>
                                                             )}
                                                         </select>
                                                     )}

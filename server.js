@@ -467,7 +467,7 @@ const EMAIL_VERIF_SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
 // ContactOut (contact generation) key is stored alongside email verif services in email_verif_config.json
 // so that the same path-resolution logic (multi-path search) is used for all provider configs.
 // It is intentionally NOT in EMAIL_VERIF_SERVICES so it does not affect hasCustomEmailVerif / token deduction.
-const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout', 'apollo'];
+const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout', 'apollo', 'rocketreach'];
 
 function _resolveEmailVerifConfigPath() {
   // Use env override if set.
@@ -7643,6 +7643,108 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         all_emails: allEmails,
       };
       console.log('[Apollo] Mapped result:', JSON.stringify(result));
+      return res.json(result);
+    }
+
+    if (provider === 'rocketreach') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for RocketReach lookup.' });
+      }
+      const rrCfg = (loadEmailVerifConfig().rocketreach) || {};
+      if (!rrCfg.api_key || rrCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'RocketReach is not enabled or API key is missing.' });
+      }
+
+      let rrUrl = (linkedinurl || '').trim();
+      if (rrUrl && !rrUrl.startsWith('https://') && !rrUrl.startsWith('http://')) {
+        rrUrl = 'https://' + rrUrl;
+      }
+
+      console.log('[RocketReach] Starting API call — linkedin_url:', rrUrl);
+      const rrRes = await new Promise((resolve, reject) => {
+        const rrPath = `/api/v2/person/lookup?linkedin_url=${encodeURIComponent(rrUrl)}`;
+        const reqOpts = {
+          hostname: 'api.rocketreach.co',
+          port: 443,
+          path: rrPath,
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'Api-Key': rrCfg.api_key,
+          },
+        };
+        console.log('[RocketReach] Request: GET https://api.rocketreach.co' + rrPath);
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            console.log('[RocketReach] HTTP status:', resp.statusCode);
+            console.log('[RocketReach] Raw response body:', body);
+            try {
+              const parsed = JSON.parse(body);
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) {
+              console.error('[RocketReach] Failed to parse response JSON:', e.message, '| Body:', body);
+              reject(new Error('Invalid JSON from RocketReach API'));
+            }
+          });
+        });
+        r.on('error', (err) => {
+          console.error('[RocketReach] Network error:', err.message);
+          reject(err);
+        });
+        r.setTimeout(20000, () => {
+          console.error('[RocketReach] Request timed out');
+          r.destroy();
+          reject(new Error('RocketReach API timeout'));
+        });
+        r.end();
+      });
+
+      if (rrRes._http_status && rrRes._http_status !== 200) {
+        const apiMsg = rrRes.message || rrRes.detail || rrRes.error || `RocketReach API returned status ${rrRes._http_status}`;
+        console.error('[RocketReach] API error — status:', rrRes._http_status, '| message:', apiMsg);
+        return res.status(400).json({ error: apiMsg });
+      }
+
+      console.log('[RocketReach] emails:', JSON.stringify(rrRes.emails));
+      console.log('[RocketReach] phones:', JSON.stringify(rrRes.phones));
+
+      const _toArrRR = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
+
+      const emailObjs = _toArrRR(rrRes.emails);
+      const emailStrs = emailObjs.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+
+      const phoneObjs = _toArrRR(rrRes.phones);
+      const phoneStr = phoneObjs.length > 0
+        ? (typeof phoneObjs[0] === 'object' ? (phoneObjs[0].number || phoneObjs[0].raw_number || '') : String(phoneObjs[0]))
+        : '';
+
+      const workEmails = emailObjs.filter(e => typeof e === 'object' && e.type === 'professional').map(e => e.email).filter(Boolean);
+      const personalEmails = emailObjs.filter(e => typeof e === 'object' && e.type !== 'professional').map(e => e.email).filter(Boolean);
+
+      const email = emailStrs[0] || '';
+      const work_email = workEmails[0] || '';
+      const personal_email = personalEmails[0] || '';
+      const github = (rrRes.links && rrRes.links.github) ? rrRes.links.github : '';
+
+      const allEmails = emailStrs.filter((v, i, a) => v && a.indexOf(v) === i);
+
+      const result = {
+        provider: 'rocketreach',
+        email,
+        phone: phoneStr,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
+      };
+      console.log('[RocketReach] Mapped result:', JSON.stringify(result));
       return res.json(result);
     }
 
