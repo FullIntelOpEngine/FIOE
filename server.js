@@ -7412,11 +7412,13 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
         return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
       }
-      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true
+      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true&email_type=work
+      // email_type=work requests real-time verified work email (may increase response time)
       const contactRes = await new Promise((resolve, reject) => {
         const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
         apiUrl.searchParams.set('profile', linkedinurl);
         apiUrl.searchParams.set('include_phone', 'true');
+        apiUrl.searchParams.set('email_type', 'work');
         const reqOpts = {
           hostname: apiUrl.hostname,
           port: 443,
@@ -7432,23 +7434,58 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           let body = '';
           resp.on('data', d => body += d);
           resp.on('end', () => {
-            try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('Invalid JSON from ContactOut API')); }
+            try {
+              const parsed = JSON.parse(body);
+              // Attach HTTP status for error checking
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) { reject(new Error('Invalid JSON from ContactOut API')); }
           });
         });
         r.on('error', reject);
-        const CONTACTOUT_API_TIMEOUT_MS = 15000;
+        const CONTACTOUT_API_TIMEOUT_MS = 20000;
         r.setTimeout(CONTACTOUT_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactOut API timeout')); });
         r.end();
       });
+
+      // Check for API-level errors (status != 200)
+      if (contactRes._http_status && contactRes._http_status !== 200) {
+        const apiMsg = contactRes.message || contactRes.error || `ContactOut API returned status ${contactRes._http_status}`;
+        return res.status(400).json({ error: apiMsg });
+      }
+
       // Map ContactOut response → structured contact data
+      // The API may return arrays (emails[], phones[], work_emails[], personal_emails[])
+      // or scalar fields (email, phone, work_email, personal_email) depending on the plan.
       const profile = contactRes.profile || contactRes || {};
+
+      // Helper: safely get first non-empty value from array or string field
+      const _first = (arrOrStr) => {
+        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
+        return arrOrStr || '';
+      };
+
+      const email        = _first(profile.emails) || _first(profile.email) || '';
+      const phone        = _first(profile.phones) || _first(profile.phone) || '';
+      const work_email   = _first(profile.work_emails) || _first(profile.work_email) || '';
+      const github       = _first(profile.github) || '';
+      const personal_email = _first(profile.personal_emails) || _first(profile.personal_email) || '';
+
+      // Collect all unique emails for the frontend email list
+      const allEmails = [
+        ...(Array.isArray(profile.emails) ? profile.emails : (profile.emails ? [profile.emails] : [])),
+        ...(Array.isArray(profile.work_emails) ? profile.work_emails : (profile.work_email ? [profile.work_email] : [])),
+        ...(Array.isArray(profile.personal_emails) ? profile.personal_emails : (profile.personal_email ? [profile.personal_email] : [])),
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
       const result = {
         provider: 'contactout',
-        email: profile.email || '',
-        phone: profile.phone || '',
-        work_email: profile.work_email || '',
-        github: profile.github || '',
-        personal_email: profile.personal_email || '',
+        email,
+        phone,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
       };
       return res.json(result);
     }

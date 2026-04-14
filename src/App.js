@@ -8384,28 +8384,37 @@ export default function App() {
         if (Object.keys(updates).length > 0) {
           setResumeCandidate(prev => ({ ...prev, ...updates }));
           saveCandidateDebounced(id, updates);
-          // Also add email to the email list if returned
-          if (data.email) {
-            setResumeEmailList(prev => {
-              const exists = prev.some(item => item.value === data.email);
-              if (exists) return prev;
-              return [...prev, { value: data.email, checked: false, confidence: 'ContactOut' }];
-            });
-          }
+        }
+
+        // Add all returned emails (including work_email, personal_email) to the email list
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'ContactOut' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
         }
 
         // Summary message box
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
         const summary = [
           `✅ ContactOut API Response Summary`,
           `──────────────────────────────`,
-          data.email          ? `Email: ${data.email}` : 'Email: (not found)',
+          `Emails: ${allEmailsDisplay}`,
           data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
           data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
           data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
-          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : '',
           `──────────────────────────────`,
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
-        ].join('\n');
+        ].filter(Boolean).join('\n');
         alert(summary);
       } catch (e) {
         console.error('ContactOut error:', e);
