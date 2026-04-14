@@ -275,6 +275,9 @@ def _make_flask_limit(key: str, default_req: int = None, default_win: int = None
 # ── Email Verification Service Config ─────────────────────────────────────────
 _EMAIL_VERIF_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "email_verif_config.json")
 _EMAIL_VERIF_SERVICES = ("neverbounce", "zerobounce", "bouncer")
+# ContactOut (contact generation) key lives in email_verif_config.json alongside the email verif
+# providers.  Kept separate so it is NOT counted as an email-verif service (token-deduction guards).
+_CONTACT_GEN_SERVICES = ("contactout",)
 
 def _load_email_verif_config() -> dict:
     """Return parsed email_verif_config.json; returns empty defaults on error."""
@@ -1010,7 +1013,7 @@ def admin_get_email_verif_config():
     """Return email verification service configuration (API keys masked)."""
     config = _load_email_verif_config()
     safe = {}
-    for svc in _EMAIL_VERIF_SERVICES:
+    for svc in (*_EMAIL_VERIF_SERVICES, *_CONTACT_GEN_SERVICES):
         cfg = config.get(svc, {})
         safe[svc] = {
             "api_key_set": bool(cfg.get("api_key")),
@@ -1028,7 +1031,7 @@ def admin_save_email_verif_config():
     if not isinstance(body, dict):
         return jsonify({"error": "JSON object required"}), 400
     current = _load_email_verif_config()
-    for svc in _EMAIL_VERIF_SERVICES:
+    for svc in (*_EMAIL_VERIF_SERVICES, *_CONTACT_GEN_SERVICES):
         if svc in body:
             entry = body[svc]
             if not isinstance(entry, dict):
@@ -1041,6 +1044,9 @@ def admin_save_email_verif_config():
                 if entry["enabled"] not in ("enabled", "disabled"):
                     return jsonify({"error": f"Invalid enabled value for {svc}"}), 400
                 current[svc]["enabled"] = entry["enabled"]
+                # Clear the API key when a service is disabled so no traces remain
+                if entry["enabled"] == "disabled":
+                    current[svc]["api_key"] = ""
     try:
         _save_email_verif_config(current)
         return jsonify({"ok": True}), 200
