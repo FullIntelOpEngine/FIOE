@@ -8411,7 +8411,7 @@ export default function App() {
           data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
           data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
           data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
-          data.personal_email ? `Personal Email: ${data.personal_email}` : '',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
           `──────────────────────────────`,
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
