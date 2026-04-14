@@ -7412,13 +7412,22 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
         return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
       }
-      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true&email_type=work
-      // email_type=work requests real-time verified work email (may increase response time)
+
+      // Normalize LinkedIn URL: ensure https:// prefix and clean trailing slashes
+      let normalizedUrl = (linkedinurl || '').trim();
+      if (normalizedUrl && !normalizedUrl.startsWith('http')) {
+        normalizedUrl = 'https://' + normalizedUrl;
+      }
+      // Warn and reject Sales Navigator / Recruiter URLs (not supported by ContactOut)
+      if (/linkedin\.com\/(sales|talent)\//.test(normalizedUrl)) {
+        return res.status(400).json({ error: 'ContactOut does not support Sales Navigator or Recruiter URLs. Please use a standard linkedin.com/in/ profile URL.' });
+      }
+
+      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true
       const contactRes = await new Promise((resolve, reject) => {
         const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
-        apiUrl.searchParams.set('profile', linkedinurl);
+        apiUrl.searchParams.set('profile', normalizedUrl);
         apiUrl.searchParams.set('include_phone', 'true');
-        apiUrl.searchParams.set('email_type', 'work');
         const reqOpts = {
           hostname: apiUrl.hostname,
           port: 443,
@@ -7472,8 +7481,9 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       const personal_email = _first(profile.personal_emails) || _first(profile.personal_email) || '';
 
       // Collect all unique emails for the frontend email list
+      // Include both array fields and scalar fallbacks so no email is missed regardless of API plan
       const allEmails = [
-        ...(Array.isArray(profile.emails) ? profile.emails : (profile.emails ? [profile.emails] : [])),
+        ...(Array.isArray(profile.emails) ? profile.emails : (profile.email ? [profile.email] : [])),
         ...(Array.isArray(profile.work_emails) ? profile.work_emails : (profile.work_email ? [profile.work_email] : [])),
         ...(Array.isArray(profile.personal_emails) ? profile.personal_emails : (profile.personal_email ? [profile.personal_email] : [])),
       ].filter((v, i, a) => v && a.indexOf(v) === i);
