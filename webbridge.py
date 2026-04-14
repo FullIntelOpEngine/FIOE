@@ -295,7 +295,7 @@ def _save_email_verif_config(config: dict) -> None:
         json.dump(config, fh, indent=2)
     os.replace(tmp, _EMAIL_VERIF_CONFIG_PATH)
 
-# ContactUs keys are now stored in email_verif_config.json (alongside neverbounce/zerobounce/bouncer).
+# ContactOut keys are now stored in email_verif_config.json (alongside neverbounce/zerobounce/bouncer).
 
 # ── Search provider config (Serper.dev vs Google CSE) ────────────────────────
 _SEARCH_PROVIDER_CONFIG_PATH = os.path.join(
@@ -1060,10 +1060,10 @@ def get_email_verif_services():
 @app.get("/contact-gen-services")
 def get_contact_gen_services():
     """Return list of enabled contact generation services (no API keys).
-    ContactUs keys are stored in email_verif_config.json."""
+    ContactOut keys are stored in email_verif_config.json."""
     config = _load_email_verif_config()
     enabled = [
-        svc for svc in ("contactus",)
+        svc for svc in ("contactout",)
         if config.get(svc, {}).get("enabled") == "enabled" and config.get(svc, {}).get("api_key")
     ]
     return jsonify({"services": enabled}), 200

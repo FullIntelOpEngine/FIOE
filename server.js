@@ -464,10 +464,10 @@ const _EMAIL_VERIF_CONFIG_PATHS = [
 ].filter(Boolean);
 
 const EMAIL_VERIF_SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
-// ContactUs (contact generation) key is stored alongside email verif services in email_verif_config.json
+// ContactOut (contact generation) key is stored alongside email verif services in email_verif_config.json
 // so that the same path-resolution logic (multi-path search) is used for all provider configs.
 // It is intentionally NOT in EMAIL_VERIF_SERVICES so it does not affect hasCustomEmailVerif / token deduction.
-const CONTACT_GEN_IN_EMAIL_VERIF = ['contactus'];
+const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout'];
 
 function _resolveEmailVerifConfigPath() {
   // Use env override if set.
@@ -7381,7 +7381,7 @@ async function smtpVerify(email, mxHost) {
   });
 }
 
-// ========== ContactUs service discovery (reads email_verif_config.json for contactus entry) ==========
+// ========== ContactOut service discovery (reads email_verif_config.json for contactout entry) ==========
 app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) => {
   try {
     const config = loadEmailVerifConfig();
@@ -7402,15 +7402,15 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
   try {
     const { name, company, country, provider, linkedinurl } = req.body;
 
-    // ── ContactUs (ContactOut) provider path ─────────────────────────────
-    if (provider === 'contactus') {
+    // ── ContactOut provider path ─────────────────────────────
+    if (provider === 'contactout') {
       if (!linkedinurl) {
-        return res.status(400).json({ error: 'LinkedIn URL is required for ContactUs lookup.' });
+        return res.status(400).json({ error: 'LinkedIn URL is required for ContactOut lookup.' });
       }
       const cgCfg = loadEmailVerifConfig();
-      const cusCfg = cgCfg.contactus || {};
+      const cusCfg = cgCfg.contactout || {};
       if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
-        return res.status(400).json({ error: 'ContactUs is not enabled or API key is missing.' });
+        return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
       }
       // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true
       const contactRes = await new Promise((resolve, reject) => {
@@ -7436,14 +7436,14 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           });
         });
         r.on('error', reject);
-        const CONTACTUS_API_TIMEOUT_MS = 15000;
-        r.setTimeout(CONTACTUS_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactOut API timeout')); });
+        const CONTACTOUT_API_TIMEOUT_MS = 15000;
+        r.setTimeout(CONTACTOUT_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactOut API timeout')); });
         r.end();
       });
       // Map ContactOut response → structured contact data
       const profile = contactRes.profile || contactRes || {};
       const result = {
-        provider: 'contactus',
+        provider: 'contactout',
         email: profile.email || '',
         phone: profile.phone || '',
         work_email: profile.work_email || '',

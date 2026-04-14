@@ -7524,7 +7524,7 @@ export default function App() {
   useEffect(() => { _fetchEmailVerifServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchEmailVerifServices(); }, [verifBarExpanded]); // on bar open
 
-  // Load available contact generation services (ContactUs) configured by admin.
+  // Load available contact generation services (ContactOut) configured by admin.
   const _fetchContactGenServices = () => {
     fetch(`http://localhost:${API_PORT}/contact-gen-services`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(r => r.ok ? r.json() : null)
@@ -7730,7 +7730,7 @@ export default function App() {
       _refreshSvcConfig();
       // Re-fetch email verification services list
       if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
-      // Re-fetch contact generation services list (ContactUs)
+      // Re-fetch contact generation services list (ContactOut)
       if (typeof _fetchContactGenServices === 'function') _fetchContactGenServices();
       // Re-fetch token config
       fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -8344,10 +8344,10 @@ export default function App() {
     const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
 
-    // ContactUs (ContactOut) path – requires LinkedIn URL
-    if (emailGenProvider === 'contactus') {
+    // ContactOut path – requires LinkedIn URL
+    if (emailGenProvider === 'contactout') {
       if (!linkedinurl) {
-        alert('LinkedIn URL is required for ContactUs lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        alert('LinkedIn URL is required for ContactOut lookup. Please ensure this candidate has a LinkedIn profile URL.');
         return;
       }
       setGeneratingEmails(true);
@@ -8355,12 +8355,12 @@ export default function App() {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ provider: 'contactus', linkedinurl }),
+          body: JSON.stringify({ provider: 'contactout', linkedinurl }),
           credentials: 'include'
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          alert(err.error || 'ContactUs request failed');
+          alert(err.error || 'ContactOut request failed');
           return;
         }
         const data = await res.json();
@@ -8389,14 +8389,14 @@ export default function App() {
             setResumeEmailList(prev => {
               const exists = prev.some(item => item.value === data.email);
               if (exists) return prev;
-              return [...prev, { value: data.email, checked: false, confidence: 'ContactUs' }];
+              return [...prev, { value: data.email, checked: false, confidence: 'ContactOut' }];
             });
           }
         }
 
         // Summary message box
         const summary = [
-          `✅ ContactUs API Response Summary`,
+          `✅ ContactOut API Response Summary`,
           `──────────────────────────────`,
           data.email          ? `Email: ${data.email}` : 'Email: (not found)',
           data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
@@ -8408,8 +8408,8 @@ export default function App() {
         ].join('\n');
         alert(summary);
       } catch (e) {
-        console.error('ContactUs error:', e);
-        alert('Failed to generate contacts via ContactUs.');
+        console.error('ContactOut error:', e);
+        alert('Failed to generate contacts via ContactOut.');
       } finally {
         setGeneratingEmails(false);
       }
@@ -9193,7 +9193,7 @@ export default function App() {
                                                     className="btn-primary"
                                                     style={{ fontSize: 12, padding: '6px 12px' }}
                                                 >
-                                                    {generatingEmails ? 'Generating...' : (emailGenProvider === 'contactus' ? 'Generate Contacts' : 'Generate Email')}
+                                                    {generatingEmails ? 'Generating...' : (emailGenProvider === 'contactout' ? 'Generate Contacts' : 'Generate Email')}
                                                 </button>
                                             ) : (
                                                 <button 
@@ -9227,7 +9227,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · ${emailGenProvider === 'contactus' ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactus' ? 'ContactUs' : 'Gemini'}`
+                                                                ? ` · ${emailGenProvider === 'contactout' ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : 'Gemini'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}
@@ -9288,8 +9288,8 @@ export default function App() {
                                                             title="Select email generation provider"
                                                         >
                                                             <option value="gemini">Gemini</option>
-                                                            {availableContactGenServices.includes('contactus') && (
-                                                                <option value="contactus">ContactUs</option>
+                                                            {availableContactGenServices.includes('contactout') && (
+                                                                <option value="contactout">ContactOut</option>
                                                             )}
                                                         </select>
                                                     )}

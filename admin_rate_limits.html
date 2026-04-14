@@ -1199,7 +1199,7 @@ let _session = null;
 let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled' }, zerobounce: { api_key_set: false, enabled: 'disabled' }, bouncer: { api_key_set: false, enabled: 'disabled' } };
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
-let _contactGenConfig = { contactus: { api_key_set: false, enabled: 'disabled' } };
+let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1292,9 +1292,12 @@ async function loadData() {
     if (evRes.ok) {
       const evData = await evRes.json();
       _emailVerifConfig = evData.config || _emailVerifConfig;
-      // ContactUs key is stored in email_verif_config.json alongside email verif providers
-      if (_emailVerifConfig.contactus) {
-        _contactGenConfig = { contactus: _emailVerifConfig.contactus };
+      // ContactOut key is stored in email_verif_config.json alongside email verif providers
+      if (_emailVerifConfig.contactout) {
+        _contactGenConfig = { contactout: _emailVerifConfig.contactout };
+      } else if (_emailVerifConfig.contactus) {
+        // migrate legacy contactus key to contactout
+        _contactGenConfig = { contactout: _emailVerifConfig.contactus };
       }
     }
 
@@ -3696,7 +3699,7 @@ function renderApiKeysCard() {
   contactGenPanel.className = 'apikey-sub-panel';
   const contactGenPanelDesc = document.createElement('p');
   contactGenPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  contactGenPanelDesc.textContent = 'Configure the ContactUs API for contact email generation. When enabled and keys are set, App.js "Generate Email" mode can use ContactUs as an alternative to the default Gemini provider.';
+  contactGenPanelDesc.textContent = 'Configure the ContactOut API for contact generation. When enabled and keys are set, App.js "Generate Email" mode can use ContactOut as an alternative to the default Gemini provider.';
   contactGenPanel.appendChild(contactGenPanelDesc);
   card.appendChild(contactGenPanel);
 
@@ -4218,13 +4221,13 @@ function renderApiKeysCard() {
 
   // ── Contact Generation service section ──────────────────────────────────
   (function renderContactGenSection() {
-    const cusCfg = (_contactGenConfig && _contactGenConfig.contactus) || { api_key_set: false, enabled: 'disabled' };
+    const cusCfg = (_contactGenConfig && _contactGenConfig.contactout) || { api_key_set: false, enabled: 'disabled' };
 
     const sec = document.createElement('div');
     sec.className = 'apikey-service';
 
     const h3 = document.createElement('h3');
-    h3.textContent = 'ContactUs';
+    h3.textContent = 'ContactOut';
     sec.appendChild(h3);
 
     const row = document.createElement('div');
@@ -4234,11 +4237,11 @@ function renderApiKeysCard() {
     const keyField = document.createElement('div');
     keyField.className = 'apikey-field';
     const keyLabel = document.createElement('label');
-    keyLabel.htmlFor = 'apikey-contactus';
+    keyLabel.htmlFor = 'apikey-contactout';
     keyLabel.textContent = 'API Key';
     const keyInput = document.createElement('input');
     keyInput.type = 'password';
-    keyInput.id = 'apikey-contactus';
+    keyInput.id = 'apikey-contactout';
     keyInput.className = 'apikey-input';
     keyInput.placeholder = cusCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
     keyInput.autocomplete = 'off';
@@ -4260,10 +4263,10 @@ function renderApiKeysCard() {
     enableField.className = 'apikey-field';
     enableField.style.maxWidth = '180px';
     const enableLabel = document.createElement('label');
-    enableLabel.htmlFor = 'apikey-contactus-enable';
+    enableLabel.htmlFor = 'apikey-contactout-enable';
     enableLabel.textContent = 'Status';
     const enableSelect = document.createElement('select');
-    enableSelect.id = 'apikey-contactus-enable';
+    enableSelect.id = 'apikey-contactout-enable';
     enableSelect.className = 'apikey-input';
     enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
     enableSelect.value = cusCfg.enabled || 'disabled';
@@ -4283,9 +4286,9 @@ function renderApiKeysCard() {
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
       try {
-        const payload = { contactus: { enabled } };
-        if (apiKey) payload.contactus.api_key = apiKey;
-        // ContactUs key is stored in email_verif_config.json (same path-resolution as email verif providers)
+        const payload = { contactout: { enabled } };
+        if (apiKey) payload.contactout.api_key = apiKey;
+        // ContactOut key is stored in email_verif_config.json (same path-resolution as email verif providers)
         const r = await fetch(`${API}/admin/email-verif-config`, {
           method: 'POST',
           credentials: 'same-origin',
@@ -4295,8 +4298,8 @@ function renderApiKeysCard() {
         if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
         // When disabled, the backend clears the API key, so reflect that in local state
         const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || cusCfg.api_key_set);
-        _contactGenConfig.contactus = { api_key_set: keyStillSet, enabled };
-        _emailVerifConfig.contactus = { api_key_set: keyStillSet, enabled };
+        _contactGenConfig.contactout = { api_key_set: keyStillSet, enabled };
+        _emailVerifConfig.contactout = { api_key_set: keyStillSet, enabled };
         keyInput.value = '';
         keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
         // Update badge
@@ -4308,7 +4311,7 @@ function renderApiKeysCard() {
           keyField.appendChild(badge);
         }
         if (!keyStillSet && existingBadge) existingBadge.remove();
-        toast('ContactUs settings saved', 'success');
+        toast('ContactOut settings saved', 'success');
         _notifyConfigChanged({ source: 'contact-gen-config' });
       } catch (err) {
         toast(err.message, 'error');
