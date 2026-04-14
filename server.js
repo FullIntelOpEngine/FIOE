@@ -7423,11 +7423,14 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: 'ContactOut does not support Sales Navigator or Recruiter URLs. Please use a standard linkedin.com/in/ profile URL.' });
       }
 
-      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true
+      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true&email_type=work
+      // email_type=work triggers real-time work email lookup per ContactOut docs
+      console.log('[ContactOut] Starting API call — profile:', normalizedUrl, '| key configured:', !!cusCfg.api_key);
       const contactRes = await new Promise((resolve, reject) => {
         const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
         apiUrl.searchParams.set('profile', normalizedUrl);
         apiUrl.searchParams.set('include_phone', 'true');
+        apiUrl.searchParams.set('email_type', 'work');
         const reqOpts = {
           hostname: apiUrl.hostname,
           port: 443,
@@ -7439,55 +7442,83 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
             'token': cusCfg.api_key,
           },
         };
+        console.log('[ContactOut] Request URL:', `https://${apiUrl.hostname}${apiUrl.pathname}${apiUrl.search}`);
         const r = https.request(reqOpts, (resp) => {
           let body = '';
           resp.on('data', d => body += d);
           resp.on('end', () => {
+            console.log('[ContactOut] HTTP status:', resp.statusCode);
+            console.log('[ContactOut] Raw response body:', body);
             try {
               const parsed = JSON.parse(body);
               // Attach HTTP status for error checking
               parsed._http_status = resp.statusCode;
               resolve(parsed);
-            } catch (e) { reject(new Error('Invalid JSON from ContactOut API')); }
+            } catch (e) {
+              console.error('[ContactOut] Failed to parse response JSON:', e.message, '| Body was:', body);
+              reject(new Error('Invalid JSON from ContactOut API'));
+            }
           });
         });
-        r.on('error', reject);
+        r.on('error', (err) => {
+          console.error('[ContactOut] Network error:', err.message);
+          reject(err);
+        });
         const CONTACTOUT_API_TIMEOUT_MS = 20000;
-        r.setTimeout(CONTACTOUT_API_TIMEOUT_MS, () => { r.destroy(); reject(new Error('ContactOut API timeout')); });
+        r.setTimeout(CONTACTOUT_API_TIMEOUT_MS, () => {
+          console.error('[ContactOut] Request timed out after', CONTACTOUT_API_TIMEOUT_MS, 'ms');
+          r.destroy();
+          reject(new Error('ContactOut API timeout'));
+        });
         r.end();
       });
 
       // Check for API-level errors (status != 200)
       if (contactRes._http_status && contactRes._http_status !== 200) {
         const apiMsg = contactRes.message || contactRes.error || `ContactOut API returned status ${contactRes._http_status}`;
+        console.error('[ContactOut] API error response — status:', contactRes._http_status, '| message:', apiMsg);
         return res.status(400).json({ error: apiMsg });
       }
 
       // Map ContactOut response → structured contact data
-      // The API may return arrays (emails[], phones[], work_emails[], personal_emails[])
-      // or scalar fields (email, phone, work_email, personal_email) depending on the plan.
-      const profile = contactRes.profile || contactRes || {};
+      // Per the API docs, all fields (email, work_email, personal_email, phone, github)
+      // are returned as ARRAYS inside a top-level "profile" object.
+      const profile = contactRes.profile || {};
+      console.log('[ContactOut] Parsed profile fields — keys:', Object.keys(profile));
+      console.log('[ContactOut] profile.email:', JSON.stringify(profile.email));
+      console.log('[ContactOut] profile.work_email:', JSON.stringify(profile.work_email));
+      console.log('[ContactOut] profile.personal_email:', JSON.stringify(profile.personal_email));
+      console.log('[ContactOut] profile.phone:', JSON.stringify(profile.phone));
+      console.log('[ContactOut] profile.github:', JSON.stringify(profile.github));
 
       // Helper: safely get first non-empty value from array or string field
       const _first = (arrOrStr) => {
         if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
-        return arrOrStr || '';
+        return typeof arrOrStr === 'string' ? arrOrStr : '';
       };
 
-      const email        = _first(profile.emails) || _first(profile.email) || '';
-      const phone        = _first(profile.phones) || _first(profile.phone) || '';
-      const work_email   = _first(profile.work_emails) || _first(profile.work_email) || '';
-      const github       = _first(profile.github) || '';
-      const personal_email = _first(profile.personal_emails) || _first(profile.personal_email) || '';
+      // Per API docs all fields are arrays; fall back to legacy plural/scalar names for safety
+      const email          = _first(profile.email) || _first(profile.emails) || '';
+      const phone          = _first(profile.phone) || _first(profile.phones) || '';
+      const work_email     = _first(profile.work_email) || _first(profile.work_emails) || '';
+      const github         = _first(profile.github) || '';
+      const personal_email = _first(profile.personal_email) || _first(profile.personal_emails) || '';
+
+      // Helper: flatten any field (array or scalar string) into an array of non-empty strings
+      const _toArr = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
 
       // Collect all unique emails for the frontend email list
-      // Handle both array fields and scalar fields (profile.emails may be array or scalar;
-      // profile.email is the primary scalar field). Include all sources to cover all API plan variants.
       const allEmails = [
-        ...(Array.isArray(profile.emails) ? profile.emails : (typeof profile.emails === 'string' && profile.emails ? [profile.emails] : [])),
-        ...(profile.email && typeof profile.email === 'string' ? [profile.email] : []),
-        ...(Array.isArray(profile.work_emails) ? profile.work_emails : (profile.work_email ? [profile.work_email] : [])),
-        ...(Array.isArray(profile.personal_emails) ? profile.personal_emails : (profile.personal_email ? [profile.personal_email] : [])),
+        ..._toArr(profile.email),
+        ..._toArr(profile.emails),
+        ..._toArr(profile.work_email),
+        ..._toArr(profile.work_emails),
+        ..._toArr(profile.personal_email),
+        ..._toArr(profile.personal_emails),
       ].filter((v, i, a) => v && a.indexOf(v) === i);
 
       const result = {
@@ -7499,6 +7530,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         personal_email,
         all_emails: allEmails,
       };
+      console.log('[ContactOut] Mapped result:', JSON.stringify(result));
       return res.json(result);
     }
 
@@ -7537,8 +7569,9 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
     res.json({ emails: candidates });
 
   } catch (err) {
-    console.error('/generate-email error:', err);
-    res.status(500).json({ error: 'Generation failed' });
+    console.error('[generate-email] Unhandled error:', err.message || err);
+    if (err.stack) console.error('[generate-email] Stack:', err.stack);
+    res.status(500).json({ error: 'Generation failed. Check server logs for details.' });
   }
 });
 
