@@ -7423,6 +7423,10 @@ app.post('/admin/contact-gen-config', dashboardRateLimit, requireAdmin, (req, re
           return res.status(400).json({ error: `Invalid enabled value for ${svc}` });
         }
         current[svc].enabled = entry.enabled;
+        // Clear the API key when a service is disabled so no traces remain
+        if (entry.enabled === 'disabled') {
+          current[svc].api_key = '';
+        }
       }
     }
   }
