@@ -10,5 +10,9 @@
   "bouncer": {
     "api_key": "",
     "enabled": "enabled"
+  },
+  "contactus": {
+    "api_key": "",
+    "enabled": "disabled"
   }
 }

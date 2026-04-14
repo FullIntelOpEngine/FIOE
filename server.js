@@ -464,6 +464,10 @@ const _EMAIL_VERIF_CONFIG_PATHS = [
 ].filter(Boolean);
 
 const EMAIL_VERIF_SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
+// ContactUs (contact generation) key is stored alongside email verif services in email_verif_config.json
+// so that the same path-resolution logic (multi-path search) is used for all provider configs.
+// It is intentionally NOT in EMAIL_VERIF_SERVICES so it does not affect hasCustomEmailVerif / token deduction.
+const CONTACT_GEN_IN_EMAIL_VERIF = ['contactus'];
 
 function _resolveEmailVerifConfigPath() {
   // Use env override if set.
@@ -706,7 +710,7 @@ app.get('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, res
   const config = loadEmailVerifConfig();
   // Return masked view — never expose raw keys to the client
   const safe = {};
-  for (const svc of EMAIL_VERIF_SERVICES) {
+  for (const svc of [...EMAIL_VERIF_SERVICES, ...CONTACT_GEN_IN_EMAIL_VERIF]) {
     const cfg = config[svc] || {};
     safe[svc] = { api_key_set: !!cfg.api_key, enabled: cfg.enabled || 'disabled' };
   }
@@ -717,7 +721,7 @@ app.post('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, re
   const body = req.body;
   if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
   const current = loadEmailVerifConfig();
-  for (const svc of EMAIL_VERIF_SERVICES) {
+  for (const svc of [...EMAIL_VERIF_SERVICES, ...CONTACT_GEN_IN_EMAIL_VERIF]) {
     if (body[svc] && typeof body[svc] === 'object') {
       const entry = body[svc];
       if (!current[svc]) current[svc] = { api_key: '', enabled: 'disabled' };
@@ -7438,12 +7442,12 @@ app.post('/admin/contact-gen-config', dashboardRateLimit, requireAdmin, (req, re
   }
 });
 
-// ========== ContactUs service discovery (reads contact_gen_config.json) ==========
+// ========== ContactUs service discovery (reads email_verif_config.json for contactus entry) ==========
 app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const config = loadContactGenConfig();
+    const config = loadEmailVerifConfig();
     const enabled = [];
-    for (const svc of CONTACT_GEN_SERVICES) {
+    for (const svc of CONTACT_GEN_IN_EMAIL_VERIF) {
       const entry = config[svc] || {};
       if (entry.enabled === 'enabled' && entry.api_key) enabled.push(svc);
     }
@@ -7464,7 +7468,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!linkedinurl) {
         return res.status(400).json({ error: 'LinkedIn URL is required for ContactUs lookup.' });
       }
-      const cgCfg = loadContactGenConfig();
+      const cgCfg = loadEmailVerifConfig();
       const cusCfg = cgCfg.contactus || {};
       if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
         return res.status(400).json({ error: 'ContactUs is not enabled or API key is missing.' });

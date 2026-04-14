@@ -1259,13 +1259,12 @@ async function loadData() {
   const mainEl = document.getElementById('mainContent');
   mainEl.innerHTML = '<div class="page-msg">Loading…</div>';
   try {
-    const [rlRes, appRes, evRes, spRes, llmRes, cgRes] = await Promise.all([
+    const [rlRes, appRes, evRes, spRes, llmRes] = await Promise.all([
       fetch(`${API}/admin/rate-limits`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/appeals`,     { credentials: 'same-origin' }),
       fetch(`${API}/admin/email-verif-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/search-provider-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/llm-provider-config`, { credentials: 'same-origin' }),
-      fetch(`${API}/admin/contact-gen-config`, { credentials: 'same-origin' }),
     ]);
     if (rlRes.status === 401) { location.reload(); return; }
     if (rlRes.status === 403) {
@@ -1293,6 +1292,10 @@ async function loadData() {
     if (evRes.ok) {
       const evData = await evRes.json();
       _emailVerifConfig = evData.config || _emailVerifConfig;
+      // ContactUs key is stored in email_verif_config.json alongside email verif providers
+      if (_emailVerifConfig.contactus) {
+        _contactGenConfig = { contactus: _emailVerifConfig.contactus };
+      }
     }
 
     if (spRes.ok) {
@@ -1303,11 +1306,6 @@ async function loadData() {
     if (llmRes.ok) {
       const llmData = await llmRes.json();
       _llmConfig = llmData || _llmConfig;
-    }
-
-    if (cgRes.ok) {
-      const cgData = await cgRes.json();
-      _contactGenConfig = cgData.config || _contactGenConfig;
     }
 
     renderPage(mainEl);
@@ -4287,7 +4285,8 @@ function renderApiKeysCard() {
       try {
         const payload = { contactus: { enabled } };
         if (apiKey) payload.contactus.api_key = apiKey;
-        const r = await fetch(`${API}/admin/contact-gen-config`, {
+        // ContactUs key is stored in email_verif_config.json (same path-resolution as email verif providers)
+        const r = await fetch(`${API}/admin/email-verif-config`, {
           method: 'POST',
           credentials: 'same-origin',
           headers: csrfHeaders(),
@@ -4297,6 +4296,7 @@ function renderApiKeysCard() {
         // When disabled, the backend clears the API key, so reflect that in local state
         const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || cusCfg.api_key_set);
         _contactGenConfig.contactus = { api_key_set: keyStillSet, enabled };
+        _emailVerifConfig.contactus = { api_key_set: keyStillSet, enabled };
         keyInput.value = '';
         keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
         // Update badge
