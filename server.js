@@ -9216,14 +9216,41 @@ app.get('/api/events', (req, res) => {
 // Storage directory for uploaded env / API-key files.
 // Defaults to  <project>/porting_input  but can be overridden in .env:
 //   PORTING_INPUT_DIR="F:\Recruiting Tools\Autosourcing\input"
-const PORTING_INPUT_DIR = process.env.PORTING_INPUT_DIR
-  ? path.resolve(process.env.PORTING_INPUT_DIR)
-  : path.join(__dirname, 'porting_input');
+//
+// Two-level-up fallback: server.js may live in <root>/Candidate Analyser/backend/
+// while porting_input/ sits at <root>/ (same dir as webbridge.py).
+// Search upward for an existing porting_input/ dir, then for the directory
+// containing webbridge.py as the Autosourcing root marker — same reasoning
+// as _EMAIL_VERIF_CONFIG_PATHS.
+const PORTING_INPUT_DIR = (() => {
+  if (process.env.PORTING_INPUT_DIR) return path.resolve(process.env.PORTING_INPUT_DIR);
+  const levels = [__dirname, path.join(__dirname, '..'), path.join(__dirname, '..', '..')];
+  // Prefer an existing porting_input directory.
+  for (const d of levels) {
+    const p = path.join(d, 'porting_input');
+    if (fs.existsSync(p)) return p;
+  }
+  // Fall back to the directory that contains webbridge.py (Autosourcing root).
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_input');
+  }
+  return path.join(__dirname, 'porting_input');
+})();
 
 // Confirmed field-mappings per user, persisted as JSON on disk.
-const PORTING_MAPPINGS_DIR = process.env.PORTING_MAPPINGS_DIR
-  ? path.resolve(process.env.PORTING_MAPPINGS_DIR)
-  : path.join(__dirname, 'porting_mappings');
+// Same search-up pattern as PORTING_INPUT_DIR.
+const PORTING_MAPPINGS_DIR = (() => {
+  if (process.env.PORTING_MAPPINGS_DIR) return path.resolve(process.env.PORTING_MAPPINGS_DIR);
+  const levels = [__dirname, path.join(__dirname, '..'), path.join(__dirname, '..', '..')];
+  for (const d of levels) {
+    const p = path.join(d, 'porting_mappings');
+    if (fs.existsSync(p)) return p;
+  }
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_mappings');
+  }
+  return path.join(__dirname, 'porting_mappings');
+})();
 
 // All columns present in the `process` table – used for Gemini mapping.
 const PROCESS_TABLE_FIELDS = [
