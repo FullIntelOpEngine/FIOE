@@ -10110,7 +10110,7 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
           if (status === 200) {
             results.push({ label: 'Apollo', status: 'ok', detail: 'API key is valid.' });
           } else if (status === 401) {
-            results.push({ label: 'Apollo', status: 'error', detail: `Authentication failed (HTTP 401). Check your APOLLO_API_KEY.` });
+            results.push({ label: 'Apollo', status: 'error', detail: 'Authentication failed (HTTP 401). Check your APOLLO_API_KEY.' });
           } else if (status === 403) {
             results.push({ label: 'Apollo', status: 'warn', detail: 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.' });
           } else if (status >= 500) {
@@ -10134,7 +10134,7 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
           if (status === 200) {
             results.push({ label: 'RocketReach', status: 'ok', detail: 'API key is valid.' });
           } else if (status === 401) {
-            results.push({ label: 'RocketReach', status: 'error', detail: `Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.` });
+            results.push({ label: 'RocketReach', status: 'error', detail: 'Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.' });
           } else if (status === 403) {
             results.push({ label: 'RocketReach', status: 'warn', detail: 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.' });
           } else if (status >= 500) {
