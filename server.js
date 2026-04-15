@@ -46,6 +46,7 @@ const _TOKENS = (() => {
 // Configurable token credit/deduction constants (env var > rate_limits.json tokens > hardcoded default)
 const _APPEAL_APPROVE_CREDIT     = parseInt(process.env.APPEAL_APPROVE_CREDIT, 10)     || _TOKENS.appeal_approve_credit     || 1;
 const _VERIFIED_SELECTION_DEDUCT = parseInt(process.env.VERIFIED_SELECTION_DEDUCT, 10) || _TOKENS.verified_selection_deduct || 2;
+const _CONTACT_GEN_DEDUCT        = parseInt(process.env.CONTACT_GEN_DEDUCT, 10)        || _TOKENS.contact_gen_deduct        || 2;
 const _TOKEN_COST_SGD            = parseFloat(process.env.TOKEN_COST_SGD)               || _TOKENS.token_cost_sgd            || 0.10;
 
 // Configurable server parameters (env var takes highest priority, then rate_limits.json system, then default)
@@ -2444,6 +2445,7 @@ app.get('/token-config', requireLogin, (req, res) => {
     res.json({
       appeal_approve_credit:     t.appeal_approve_credit     ?? 1,
       verified_selection_deduct: t.verified_selection_deduct ?? 2,
+      contact_gen_deduct:        t.contact_gen_deduct        ?? 2,
       rebate_credit_per_profile: t.rebate_credit_per_profile ?? 1,
       analytic_token_cost:       t.analytic_token_cost       ?? 1,
       initial_token_display:     t.initial_token_display     ?? 5000,
@@ -2580,6 +2582,42 @@ app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), a
     res.json({ tokensLeft: remaining, accountTokens: remaining });
   } catch (err) {
     console.error('Error deducting tokens:', err);
+    res.status(500).json({ error: 'Failed to deduct tokens' });
+  }
+});
+
+// POST /deduct-tokens-contact-gen - Deduct tokens for Generate Email/Contact actions (ContactOut/Apollo/RocketReach)
+app.post('/deduct-tokens-contact-gen', requireLogin, userRateLimit('upload_multiple_cvs'), async (req, res) => {
+  try {
+    const username = req.user.username;
+    const userid   = String(req.user.id || '');
+
+    // Read current deduct amount from rate_limits.json (always fresh, matches /token-config)
+    let deductAmt = _CONTACT_GEN_DEDUCT;
+    try {
+      const cfg = JSON.parse(fs.readFileSync(RATE_LIMITS_PATH, 'utf8'));
+      const v = (cfg.tokens || {}).contact_gen_deduct;
+      if (typeof v === 'number') deductAmt = v;
+    } catch (_) {}
+
+    const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
+    const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
+    const result = await pool.query(
+      'UPDATE login SET token = GREATEST(0, COALESCE(token, 0) - $2) WHERE username = $1 RETURNING token',
+      [username, deductAmt]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const remaining = result.rows[0].token;
+    _writeFinancialLog({
+      username, userid, feature: 'contact_gen',
+      transaction_type: 'spend', transaction_amount: deductAmt,
+      token_before: tokenBefore, token_after: remaining,
+      token_usage: deductAmt, credits_spent: 0,
+      token_cost_sgd: _TOKEN_COST_SGD, revenue_sgd: Math.round(deductAmt * _TOKEN_COST_SGD * 10000) / 10000,
+    });
+    res.json({ tokensLeft: remaining, accountTokens: remaining });
+  } catch (err) {
+    console.error('Error deducting contact gen tokens:', err);
     res.status(500).json({ error: 'Failed to deduct tokens' });
   }
 });
