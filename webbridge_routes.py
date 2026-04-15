@@ -2711,13 +2711,13 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if results:
             return results, total
         # User key returned empty — fall back to admin config
-        logger.warning(f"[Search] User Serper key returned 0 results for page; falling back to admin config")
+        logger.warning(f"[Search] User Serper key returned 0 results for query={query!r}; falling back to admin config")
         _search_fallback_flag.used = True
     if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
         if results:
             return results, total
-        logger.warning(f"[Search] User DataforSEO key returned 0 results for page; falling back to admin config")
+        logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
         _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
