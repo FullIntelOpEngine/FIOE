@@ -10083,8 +10083,11 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
             'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
             { headers: { 'Content-Type': 'application/json', Accept: 'application/json', token: key } }
           );
-          if (status === 401 || status === 403) {
-            results.push({ label: 'ContactOut', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your CONTACTOUT_API_KEY.` });
+          if (status === 401) {
+            results.push({ label: 'ContactOut', status: 'error', detail: 'Authentication failed (HTTP 401). Check your CONTACTOUT_API_KEY.' });
+          } else if (status === 403) {
+            // 403 from ContactOut means account suspended or quota exceeded, NOT invalid key
+            results.push({ label: 'ContactOut', status: 'warn', detail: 'ContactOut returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.' });
           } else if (status === 200 || status === 404 || status === 422) {
             // 200 = profile found, 404 = profile not found (key valid), 422 = invalid URL (key valid)
             results.push({ label: 'ContactOut', status: 'ok', detail: 'API key accepted.' });
@@ -10101,13 +10104,15 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
         results.push({ label: 'Apollo', status: 'error', detail: 'APOLLO_API_KEY is required.' });
       } else {
         try {
-          const { status } = await httpsGet('https://api.apollo.io/api/v1/auth/health', {
+          const { status } = await httpsGet('https://api.apollo.io/v1/auth/health', {
             headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
           });
           if (status === 200) {
             results.push({ label: 'Apollo', status: 'ok', detail: 'API key is valid.' });
-          } else if (status === 401 || status === 403) {
-            results.push({ label: 'Apollo', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your APOLLO_API_KEY.` });
+          } else if (status === 401) {
+            results.push({ label: 'Apollo', status: 'error', detail: `Authentication failed (HTTP 401). Check your APOLLO_API_KEY.` });
+          } else if (status === 403) {
+            results.push({ label: 'Apollo', status: 'warn', detail: 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.' });
           } else if (status >= 500) {
             results.push({ label: 'Apollo', status: 'warn', detail: `Apollo API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
           } else {
@@ -10123,13 +10128,15 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
         results.push({ label: 'RocketReach', status: 'error', detail: 'ROCKETREACH_API_KEY is required.' });
       } else {
         try {
-          const { status } = await httpsGet('https://api.rocketreach.co/api/v1/checkStatus', {
+          const { status } = await httpsGet('https://api.rocketreach.co/api/v2/checkStatus', {
             headers: { 'Api-Key': key },
           });
           if (status === 200) {
             results.push({ label: 'RocketReach', status: 'ok', detail: 'API key is valid.' });
-          } else if (status === 401 || status === 403) {
-            results.push({ label: 'RocketReach', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your ROCKETREACH_API_KEY.` });
+          } else if (status === 401) {
+            results.push({ label: 'RocketReach', status: 'error', detail: `Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.` });
+          } else if (status === 403) {
+            results.push({ label: 'RocketReach', status: 'warn', detail: 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.' });
           } else if (status >= 500) {
             results.push({ label: 'RocketReach', status: 'warn', detail: `RocketReach API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
           } else {

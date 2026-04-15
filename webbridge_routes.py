@@ -4218,9 +4218,13 @@ def user_svc_config_validate():
                 status, _ = _probe_get(
                     'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
                     headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'token': key})
-                if status in (401, 403):
+                if status == 401:
                     results.append({'label': 'ContactOut', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check your CONTACTOUT_API_KEY.'})
+                                    'detail': 'Authentication failed (HTTP 401). Check your CONTACTOUT_API_KEY.'})
+                elif status == 403:
+                    # 403 from ContactOut means account suspended or quota exceeded, NOT invalid key
+                    results.append({'label': 'ContactOut', 'status': 'warn',
+                                    'detail': 'ContactOut returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
                 elif status in (200, 404, 422):
                     results.append({'label': 'ContactOut', 'status': 'ok', 'detail': 'API key accepted.'})
                 else:
@@ -4233,13 +4237,16 @@ def user_svc_config_validate():
                 results.append({'label': 'Apollo', 'status': 'error',
                                 'detail': 'APOLLO_API_KEY is required.'})
             else:
-                status, _ = _probe_get('https://api.apollo.io/api/v1/auth/health',
+                status, _ = _probe_get('https://api.apollo.io/v1/auth/health',
                                        headers={'x-api-key': key, 'Content-Type': 'application/json'})
                 if status == 200:
                     results.append({'label': 'Apollo', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status in (401, 403):
+                elif status == 401:
                     results.append({'label': 'Apollo', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check your APOLLO_API_KEY.'})
+                                    'detail': 'Authentication failed (HTTP 401). Check your APOLLO_API_KEY.'})
+                elif status == 403:
+                    results.append({'label': 'Apollo', 'status': 'warn',
+                                    'detail': 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.'})
                 elif status is not None and status >= 500:
                     results.append({'label': 'Apollo', 'status': 'warn',
                                     'detail': f'Apollo API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
@@ -4253,13 +4260,16 @@ def user_svc_config_validate():
                 results.append({'label': 'RocketReach', 'status': 'error',
                                 'detail': 'ROCKETREACH_API_KEY is required.'})
             else:
-                status, _ = _probe_get('https://api.rocketreach.co/api/v1/checkStatus',
+                status, _ = _probe_get('https://api.rocketreach.co/api/v2/checkStatus',
                                        headers={'Api-Key': key})
                 if status == 200:
                     results.append({'label': 'RocketReach', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status in (401, 403):
+                elif status == 401:
                     results.append({'label': 'RocketReach', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check your ROCKETREACH_API_KEY.'})
+                                    'detail': 'Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.'})
+                elif status == 403:
+                    results.append({'label': 'RocketReach', 'status': 'warn',
+                                    'detail': 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
                 elif status is not None and status >= 500:
                     results.append({'label': 'RocketReach', 'status': 'warn',
                                     'detail': f'RocketReach API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
