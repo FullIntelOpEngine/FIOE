@@ -4002,6 +4002,7 @@ def user_svc_config_validate():
         search = body.get('search') or {}
         llm = body.get('llm') or {}
         email_verif = body.get('email_verif') or {}
+        contact_gen = body.get('contact_gen') or {}
 
         def _probe_get(url, headers=None, timeout=8):
             req = _ureq2.Request(url, headers=headers or {})
@@ -4202,6 +4203,70 @@ def user_svc_config_validate():
                 else:
                     results.append({'label': 'Bouncer', 'status': 'warn',
                                     'detail': 'Could not reach Bouncer API — please try again.'})
+
+        # ── Contact Generation ────────────────────────────────────────────────
+        cp = (contact_gen.get('provider') or '').strip()
+        if cp == 'gemini' or not cp:
+            results.append({'label': 'Contact Generation', 'status': 'ok',
+                            'detail': 'Using platform Gemini — no custom key required.'})
+        elif cp == 'contactout':
+            key = (contact_gen.get('CONTACTOUT_API_KEY') or '').strip()
+            if not key:
+                results.append({'label': 'ContactOut', 'status': 'error',
+                                'detail': 'CONTACTOUT_API_KEY is required.'})
+            else:
+                status, _ = _probe_get(
+                    'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
+                    headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'token': key})
+                if status in (401, 403):
+                    results.append({'label': 'ContactOut', 'status': 'error',
+                                    'detail': f'Authentication failed (HTTP {status}). Check your CONTACTOUT_API_KEY.'})
+                elif status in (200, 404, 422):
+                    results.append({'label': 'ContactOut', 'status': 'ok', 'detail': 'API key accepted.'})
+                else:
+                    results.append({'label': 'ContactOut', 'status': 'warn',
+                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your account or try again.'
+                                    if status else 'Could not reach ContactOut API.'})
+        elif cp == 'apollo':
+            key = (contact_gen.get('APOLLO_API_KEY') or '').strip()
+            if not key:
+                results.append({'label': 'Apollo', 'status': 'error',
+                                'detail': 'APOLLO_API_KEY is required.'})
+            else:
+                status, _ = _probe_get('https://api.apollo.io/api/v1/auth/health',
+                                       headers={'x-api-key': key, 'Content-Type': 'application/json'})
+                if status == 200:
+                    results.append({'label': 'Apollo', 'status': 'ok', 'detail': 'API key is valid.'})
+                elif status in (401, 403):
+                    results.append({'label': 'Apollo', 'status': 'error',
+                                    'detail': f'Authentication failed (HTTP {status}). Check your APOLLO_API_KEY.'})
+                elif status is not None and status >= 500:
+                    results.append({'label': 'Apollo', 'status': 'warn',
+                                    'detail': f'Apollo API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
+                else:
+                    results.append({'label': 'Apollo', 'status': 'warn',
+                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
+                                    if status else 'Could not reach Apollo API.'})
+        elif cp == 'rocketreach':
+            key = (contact_gen.get('ROCKETREACH_API_KEY') or '').strip()
+            if not key:
+                results.append({'label': 'RocketReach', 'status': 'error',
+                                'detail': 'ROCKETREACH_API_KEY is required.'})
+            else:
+                status, _ = _probe_get('https://api.rocketreach.co/api/v1/checkStatus',
+                                       headers={'Api-Key': key})
+                if status == 200:
+                    results.append({'label': 'RocketReach', 'status': 'ok', 'detail': 'API key is valid.'})
+                elif status in (401, 403):
+                    results.append({'label': 'RocketReach', 'status': 'error',
+                                    'detail': f'Authentication failed (HTTP {status}). Check your ROCKETREACH_API_KEY.'})
+                elif status is not None and status >= 500:
+                    results.append({'label': 'RocketReach', 'status': 'warn',
+                                    'detail': f'RocketReach API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
+                else:
+                    results.append({'label': 'RocketReach', 'status': 'warn',
+                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
+                                    if status else 'Could not reach RocketReach API.'})
 
         has_error = any(r['status'] == 'error' for r in results)
         return jsonify({'ok': not has_error, 'results': results})
