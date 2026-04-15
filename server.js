@@ -9811,22 +9811,22 @@ function deleteUserServiceConfig(username) {
 }
 
 // GET /api/user-service-config/status
-// Returns { active: bool, providers: { search, llm, email_verif } } (masked — no key values)
+// Returns { active: bool, providers: { search, llm, email_verif, contact_gen } } (masked — no key values)
 app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (req, res) => {
   try {
     const cfg = readUserServiceConfig(req.user.username);
     if (!cfg) {
+      console.log('[user-service-config/status] No config found for', req.user.username);
       return res.json({ active: false, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default' } });
     }
-    res.json({
-      active: true,
-      providers: {
-        search:      cfg.search?.provider      || 'google_cse',
-        llm:         cfg.llm?.provider         || 'gemini',
-        email_verif: cfg.email_verif?.provider || 'default',
-        contact_gen: cfg.contact_gen?.provider || 'gemini',
-      },
-    });
+    const providers = {
+      search:      cfg.search?.provider      || 'google_cse',
+      llm:         cfg.llm?.provider         || 'gemini',
+      email_verif: cfg.email_verif?.provider || 'default',
+      contact_gen: cfg.contact_gen?.provider || 'gemini',
+    };
+    console.log('[user-service-config/status] %s → active=true providers=%j', req.user.username, providers);
+    res.json({ active: true, providers });
   } catch (err) {
     console.error('[user-service-config/status]', err);
     res.status(500).json({ error: 'Could not read service config', detail: err.message });
