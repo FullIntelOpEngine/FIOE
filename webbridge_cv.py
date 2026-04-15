@@ -94,6 +94,7 @@ from webbridge_routes import (
     _role_tag_session_column_ensured,
     CRITERIA_OUTPUT_DIR, _get_criteria_filepath, _read_search_criteria,
     unified_llm_call_text,
+    _search_fallback_flag,
 )
 
 
@@ -223,6 +224,13 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 JOBS[job_id]['progress']['total']=len(JOBS[job_id]['urls'])
                 JOBS[job_id]['progress']['processed']=len(JOBS[job_id]['urls'])
             persist_job(job_id)
+        # Check if user search keys failed and admin config was used as fallback
+        if getattr(_search_fallback_flag, 'used', False):
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job:
+                    job['_user_search_fallback'] = True
+            _search_fallback_flag.used = False
         dedup=[]; seen=set()
         for r in rows:
             key=(r.get("LinkedInURL",""), r.get("Name","").lower(), r.get("JobTitle","").lower())

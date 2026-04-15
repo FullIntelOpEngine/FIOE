@@ -4177,10 +4177,13 @@ async function pollJob(jobId){
         }
         // Set progress bar to 100% when done
         if(progressFill){ progressFill.classList.remove('prog-running'); progressFill.classList.add('prog-done'); progressFill.style.width='100%'; }
-        // Deduct tokens based on actual final row count (skipped for BYOK users)
+        // Deduct tokens based on actual final row count (skipped for BYOK users).
+        // If the user had custom search keys but they failed (backend set _user_search_fallback),
+        // token deduction resumes even though __HAS_CUSTOM_SEARCH is true.
         try{
           const finalRows = extractFinalRowCount(data.status_html||'');
-          if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && !window.__HAS_CUSTOM_SEARCH){
+          const _searchFallback = !!data._user_search_fallback;
+          if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && (!window.__HAS_CUSTOM_SEARCH || _searchFallback)){
             const _acctToken = window.__ACCOUNT_TOKEN;
             const _userid = window.__ACTIVE_USERID || sessionStorage.getItem('userid') || localStorage.getItem('userid') || '';
             const _username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
