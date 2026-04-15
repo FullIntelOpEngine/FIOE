@@ -2537,16 +2537,21 @@ app.post('/smtp-config', requireLogin, async (req, res) => {
 function _userHasCustomProviders(username) {
   try {
     const cfg = readUserServiceConfig(username);
-    if (!cfg) return { emailVerif: false, llm: false };
+    if (!cfg) return { emailVerif: false, llm: false, contactGen: false, emailVerifProvider: '', llmProvider: '', contactGenProvider: '' };
     const ep = ((cfg.email_verif && cfg.email_verif.provider) || '').toLowerCase();
     const lp = ((cfg.llm && cfg.llm.provider) || '').toLowerCase();
+    const cp = ((cfg.contact_gen && cfg.contact_gen.provider) || '').toLowerCase();
     return {
       emailVerif: ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer',
+      emailVerifProvider: ep,
       llm:        lp === 'openai' || lp === 'anthropic',
+      llmProvider: lp,
+      contactGen: cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach',
+      contactGenProvider: cp,
     };
   } catch (err) {
     console.error('[_userHasCustomProviders]', err.message);
-    return { emailVerif: false, llm: false };
+    return { emailVerif: false, llm: false, contactGen: false, emailVerifProvider: '', llmProvider: '', contactGenProvider: '' };
   }
 }
 
@@ -2555,10 +2560,12 @@ app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), a
   try {
     const username = req.user.username;
     const userid   = String(req.user.id || '');
+    const selectedService = ((req.body && req.body.service) || '').toLowerCase();
 
-    // Skip deduction when the user has custom email verification keys (server-side guard)
+    // Skip deduction only when the user has custom email verification keys AND
+    // the selected service matches their own provider (server-side guard).
     const customProviders = _userHasCustomProviders(username);
-    if (customProviders.emailVerif) {
+    if (customProviders.emailVerif && selectedService && customProviders.emailVerifProvider === selectedService) {
       const curRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
       const current = curRes.rows.length ? parseInt(curRes.rows[0].t, 10) : 0;
       return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
@@ -2591,6 +2598,16 @@ app.post('/deduct-tokens-contact-gen', requireLogin, userRateLimit('upload_multi
   try {
     const username = req.user.username;
     const userid   = String(req.user.id || '');
+    const selectedService = ((req.body && req.body.service) || '').toLowerCase();
+
+    // Skip deduction only when the user has their own contact generation keys AND
+    // the selected service matches their own provider (server-side guard).
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.contactGen && selectedService && customProviders.contactGenProvider === selectedService) {
+      const curRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
+      const current = curRes.rows.length ? parseInt(curRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
+    }
 
     // Read current deduct amount from rate_limits.json (always fresh, matches /token-config)
     let deductAmt = _CONTACT_GEN_DEDUCT;
@@ -7527,7 +7544,7 @@ app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) =>
 // ========== NEW ENDPOINT: Generate Emails / Generate Contacts ==========
 app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    const { name, company, country, provider, linkedinurl } = req.body;
+    const { name, company, country, provider, linkedinurl, force_admin } = req.body;
 
     // ── ContactOut provider path ─────────────────────────────
     if (provider === 'contactout') {
@@ -7535,10 +7552,13 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: 'LinkedIn URL is required for ContactOut lookup.' });
       }
       // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      // When force_admin is set, skip per-user key and go straight to admin key.
       let contactoutApiKey = null;
-      const userSvcCfg = readUserServiceConfig(req.user.username);
-      if (userSvcCfg && userSvcCfg.contact_gen?.provider === 'contactout' && userSvcCfg.contact_gen?.CONTACTOUT_API_KEY) {
-        contactoutApiKey = userSvcCfg.contact_gen.CONTACTOUT_API_KEY;
+      if (!force_admin) {
+        const userSvcCfg = readUserServiceConfig(req.user.username);
+        if (userSvcCfg && userSvcCfg.contact_gen?.provider === 'contactout' && userSvcCfg.contact_gen?.CONTACTOUT_API_KEY) {
+          contactoutApiKey = userSvcCfg.contact_gen.CONTACTOUT_API_KEY;
+        }
       }
       if (!contactoutApiKey) {
         const cgCfg = loadEmailVerifConfig();
@@ -7676,10 +7696,13 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: 'LinkedIn URL is required for Apollo lookup.' });
       }
       // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      // When force_admin is set, skip per-user key and go straight to admin key.
       let apolloApiKey = null;
-      const userSvcCfgApollo = readUserServiceConfig(req.user.username);
-      if (userSvcCfgApollo && userSvcCfgApollo.contact_gen?.provider === 'apollo' && userSvcCfgApollo.contact_gen?.APOLLO_API_KEY) {
-        apolloApiKey = userSvcCfgApollo.contact_gen.APOLLO_API_KEY;
+      if (!force_admin) {
+        const userSvcCfgApollo = readUserServiceConfig(req.user.username);
+        if (userSvcCfgApollo && userSvcCfgApollo.contact_gen?.provider === 'apollo' && userSvcCfgApollo.contact_gen?.APOLLO_API_KEY) {
+          apolloApiKey = userSvcCfgApollo.contact_gen.APOLLO_API_KEY;
+        }
       }
       if (!apolloApiKey) {
         const apolloCfg = (loadEmailVerifConfig().apollo) || {};
@@ -7796,10 +7819,13 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: 'LinkedIn URL is required for RocketReach lookup.' });
       }
       // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      // When force_admin is set, skip per-user key and go straight to admin key.
       let rrApiKey = null;
-      const userSvcCfgRR = readUserServiceConfig(req.user.username);
-      if (userSvcCfgRR && userSvcCfgRR.contact_gen?.provider === 'rocketreach' && userSvcCfgRR.contact_gen?.ROCKETREACH_API_KEY) {
-        rrApiKey = userSvcCfgRR.contact_gen.ROCKETREACH_API_KEY;
+      if (!force_admin) {
+        const userSvcCfgRR = readUserServiceConfig(req.user.username);
+        if (userSvcCfgRR && userSvcCfgRR.contact_gen?.provider === 'rocketreach' && userSvcCfgRR.contact_gen?.ROCKETREACH_API_KEY) {
+          rrApiKey = userSvcCfgRR.contact_gen.ROCKETREACH_API_KEY;
+        }
       }
       if (!rrApiKey) {
         const rrCfg = (loadEmailVerifConfig().rocketreach) || {};
@@ -8140,7 +8166,7 @@ async function _callExternalVerifService(service, email, apiKey) {
 // ========== NEW ENDPOINT: Verify Email Details via Gemini + SMTP PING ==========
 app.post('/verify-email-details', requireLogin, async (req, res) => {
   try {
-    const { email, service = 'default' } = req.body;
+    const { email, service = 'default', force_admin } = req.body;
     if (!email) {
       return res.status(400).json({ error: 'Email is required.' });
     }
@@ -8148,12 +8174,15 @@ app.post('/verify-email-details', requireLogin, async (req, res) => {
     // ── External service verification ───────────────────────────────────────
     if (['neverbounce', 'zerobounce', 'bouncer'].includes(service)) {
       // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      // When force_admin is set, skip per-user key and go straight to admin key.
       let apiKey = null;
-      const userSvcCfg = readUserServiceConfig(req.user.username);
-      if (userSvcCfg && userSvcCfg.active !== false && userSvcCfg.email_verif?.provider === service) {
-        const keyField = service === 'neverbounce' ? 'NEVERBOUNCE_API_KEY'
-          : service === 'zerobounce' ? 'ZEROBOUNCE_API_KEY' : 'BOUNCER_API_KEY';
-        apiKey = userSvcCfg.email_verif?.[keyField] || null;
+      if (!force_admin) {
+        const userSvcCfg = readUserServiceConfig(req.user.username);
+        if (userSvcCfg && userSvcCfg.active !== false && userSvcCfg.email_verif?.provider === service) {
+          const keyField = service === 'neverbounce' ? 'NEVERBOUNCE_API_KEY'
+            : service === 'zerobounce' ? 'ZEROBOUNCE_API_KEY' : 'BOUNCER_API_KEY';
+          apiKey = userSvcCfg.email_verif?.[keyField] || null;
+        }
       }
       if (!apiKey) {
         const config = loadEmailVerifConfig();
