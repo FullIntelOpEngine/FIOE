@@ -1842,13 +1842,16 @@ function renderAssessmentReviewTable(rows) {
         btnRebate.className = 'review-action-btn rebate';
         btnRebate.textContent = 'Rebate';
         btnRebate.title = 'Rebate/Delete';
-        if (currentScore > 50) {
+        if (window.__HAS_CUSTOM_LLM) {
+            btnRebate.disabled = true;
+            btnRebate.style.display = 'none';
+        } else if (currentScore > 50) {
             btnRebate.disabled = true;
             btnRebate.title = 'Rebate disabled (Score > 50%)';
             btnRebate.style.opacity = '0.5';
             btnRebate.style.cursor = 'not-allowed';
         }
-        btnRebate.onclick = () => { if (currentScore <= 50) finalizeBulk('rebate', [r.linkedinurl]); };
+        btnRebate.onclick = () => { if (currentScore <= 50 && !window.__HAS_CUSTOM_LLM) finalizeBulk('rebate', [r.linkedinurl]); };
 
         tdActions.appendChild(btnRefresh);
         tdActions.appendChild(btnView);
@@ -2757,6 +2760,15 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               var metricsBox = document.getElementById('metricsBox');
               if(metricsBox) metricsBox.style.display = 'none';
             }
+            // Hide rebate/appeal UI when user has their own LLM key (no token charges → no rebates)
+            if (window.__HAS_CUSTOM_LLM) {
+              var _rn = document.getElementById('rebateNotice');
+              if (_rn) _rn.style.display = 'none';
+              var _rb1 = document.getElementById('rebateSelectedBtn');
+              if (_rb1) { _rb1.style.display = 'none'; _rb1.disabled = true; }
+              var _rb2 = document.getElementById('searchRebateSelectedBtn');
+              if (_rb2) { _rb2.style.display = 'none'; _rb2.disabled = true; }
+            }
           })
           .catch(function(){
             if (window.__IS_BYOK) {
@@ -3601,7 +3613,7 @@ function buildRow(row) {
           tickIcon.onmouseover = function() { this.style.transform = 'scale(1.15)'; this.style.boxShadow = '0 4px 8px rgba(16,185,129,0.3)'; };
           tickIcon.onmouseout = function() { this.style.transform = 'scale(1)'; this.style.boxShadow = 'none'; };
           checkboxCell.appendChild(tickIcon);
-      } else if (cachedScore !== null && cachedScore < scoreThreshold) {
+      } else if (cachedScore !== null && cachedScore < scoreThreshold && !window.__HAS_CUSTOM_LLM) {
           // ✗ FAIL - Red cross icon
           const crossIcon = document.createElement('button');
           crossIcon.innerHTML = '✗';
@@ -4476,7 +4488,7 @@ async function triggerLevel1Assessment(tr, anchor) {
         const threshold = 50; 
         const ratingString = `${headerText}: ${data.total_score} (${starCount} ★) - ${data.comments || ''}`;
 
-        if (totalScoreVal < threshold) {
+        if (totalScoreVal < threshold && !window.__HAS_CUSTOM_LLM) {
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
                     title: 'Rebate Eligible (Low Match Score)',
@@ -4510,7 +4522,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                             country: country,
                             linkedinurl: anchor,
                             experience: '',
-                            rating: ratingString 
+                            rating: ratingString
                         });
                         if(ok) {
                             setStatus('Record transferred. Rebate declined.', 'success');
@@ -4520,7 +4532,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                 }
             });
             }
-        } else {
+        } else if (!window.__HAS_CUSTOM_LLM) {
             /* AFFECTED: Add Appeal Button if score > 50% */
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
@@ -4760,8 +4772,8 @@ async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Reques
         const threshold = 50; 
         const ratingString = `${headerText}: ${data.total_score} (${starCount} ★) - ${data.comments || ''}`;
 
-        // Rebate logic
-        if (totalScoreVal < threshold) {
+        // Rebate logic (hidden when user has own LLM key)
+        if (totalScoreVal < threshold && !window.__HAS_CUSTOM_LLM) {
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
                     title: 'Rebate Eligible (Low Match Score)',
@@ -6888,8 +6900,8 @@ window.deleteBackendRow = async function(url) {
 window.applyTokenDelta = async function(delta, feature) {
     const uid = window.__SV_ACTIVE_USERID;
     if(!uid) return;
-    // Skip token deduction for BYOK users or users with custom LLM active
-    if((window.__IS_BYOK || window.__HAS_CUSTOM_LLM) && delta < 0) return;
+    // Skip token deduction AND rebate credits for BYOK users or users with custom LLM active
+    if((window.__IS_BYOK || window.__HAS_CUSTOM_LLM) && (delta < 0 || feature === 'search_rebate')) return;
     try {
         await fetch(TOKEN_UPDATE_API, {
             method:'POST', headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},

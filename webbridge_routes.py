@@ -72,6 +72,11 @@ from webbridge import (
     _load_llm_provider_config,
 )
 
+# Thread-local flag set by unified_search_page when a per-user search key fails
+# and the system falls back to admin config.  _job_runner reads this after each
+# search to record fallback in the JOBS dict for the front-end.
+_search_fallback_flag = threading.local()
+
 @app.post("/login")
 @_rate(_make_flask_limit("login"))
 @_check_user_rate("login")
@@ -2692,15 +2697,28 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     admin config.  Priority: per-user Serper → per-user DataforSEO → admin Serper →
     admin DataforSEO → Google CSE (fallback).
 
+    If the per-user provider returns zero results (suggesting key failure / exhausted
+    credits), falls back to the admin config and sets
+    ``_search_fallback_flag.used = True`` so callers can detect the fallback.
+
     Returns ``(results, estimated_total)`` identical to the individual adapters.
     """
     page = max(1, ((start_index - 1) // max(num, 1)) + 1)
 
     # Per-user search provider takes priority over the global admin config
     if user_provider == 'serper' and user_serper_key:
-        return serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
+        results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
+        if results:
+            return results, total
+        # User key returned empty — fall back to admin config
+        logger.warning(f"[Search] User Serper key returned 0 results for page; falling back to admin config")
+        _search_fallback_flag.used = True
     if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
-        return dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
+        results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
+        if results:
+            return results, total
+        logger.warning(f"[Search] User DataforSEO key returned 0 results for page; falling back to admin config")
+        _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
 
