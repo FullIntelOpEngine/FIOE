@@ -225,11 +225,13 @@ async function llmGenerateText(prompt, opts = {}) {
   const { username, label = 'llm' } = opts;
   const cfg = _readFullLlmConfig();
 
-  // Find the first enabled provider with an API key
+  // Find the first enabled provider with an API key AND an installed SDK
   let activeProvider = 'gemini'; // default
   for (const p of ['openai', 'anthropic', 'gemini']) {
     const pcfg = cfg[p] || {};
     if (pcfg.enabled && pcfg.api_key) {
+      if (p === 'openai' && !OpenAIClass) continue;
+      if (p === 'anthropic' && !AnthropicClass) continue;
       activeProvider = p;
       break;
     }
@@ -462,6 +464,10 @@ const _EMAIL_VERIF_CONFIG_PATHS = [
 ].filter(Boolean);
 
 const EMAIL_VERIF_SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
+// ContactOut (contact generation) key is stored alongside email verif services in email_verif_config.json
+// so that the same path-resolution logic (multi-path search) is used for all provider configs.
+// It is intentionally NOT in EMAIL_VERIF_SERVICES so it does not affect hasCustomEmailVerif / token deduction.
+const CONTACT_GEN_IN_EMAIL_VERIF = ['contactout', 'apollo', 'rocketreach'];
 
 function _resolveEmailVerifConfigPath() {
   // Use env override if set.
@@ -704,7 +710,7 @@ app.get('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, res
   const config = loadEmailVerifConfig();
   // Return masked view — never expose raw keys to the client
   const safe = {};
-  for (const svc of EMAIL_VERIF_SERVICES) {
+  for (const svc of [...EMAIL_VERIF_SERVICES, ...CONTACT_GEN_IN_EMAIL_VERIF]) {
     const cfg = config[svc] || {};
     safe[svc] = { api_key_set: !!cfg.api_key, enabled: cfg.enabled || 'disabled' };
   }
@@ -715,7 +721,7 @@ app.post('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, re
   const body = req.body;
   if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
   const current = loadEmailVerifConfig();
-  for (const svc of EMAIL_VERIF_SERVICES) {
+  for (const svc of [...EMAIL_VERIF_SERVICES, ...CONTACT_GEN_IN_EMAIL_VERIF]) {
     if (body[svc] && typeof body[svc] === 'object') {
       const entry = body[svc];
       if (!current[svc]) current[svc] = { api_key: '', enabled: 'disabled' };
@@ -727,11 +733,104 @@ app.post('/admin/email-verif-config', dashboardRateLimit, requireAdmin, (req, re
           return res.status(400).json({ error: `Invalid enabled value for ${svc}` });
         }
         current[svc].enabled = entry.enabled;
+        // Clear the API key when a service is disabled so no traces remain
+        if (entry.enabled === 'disabled') {
+          current[svc].api_key = '';
+        }
       }
     }
   }
   try {
     saveEmailVerifConfig(current);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: search-provider-config (Serper / DataforSEO / Google CSE) ──────────
+const _SEARCH_PROVIDER_CONFIG_PATHS = [
+  path.join(__dirname, 'search_provider_config.json'),
+  path.join(__dirname, '..', 'search_provider_config.json'),
+  path.join(__dirname, '..', '..', 'search_provider_config.json'),
+].filter(Boolean);
+
+function _resolveSearchProviderConfigPath() {
+  for (const p of _SEARCH_PROVIDER_CONFIG_PATHS) {
+    try { fs.accessSync(p, fs.constants.R_OK); return p; } catch (_) {}
+  }
+  return _SEARCH_PROVIDER_CONFIG_PATHS[0];
+}
+
+function loadSearchProviderConfig() {
+  try {
+    const raw = fs.readFileSync(_resolveSearchProviderConfigPath(), 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return {
+      serper: { api_key: '', enabled: 'disabled' },
+      dataforseo: { login: '', password: '', enabled: 'disabled' },
+      google_cse: { api_key: '', cx: '', gemini_key: '' },
+    };
+  }
+}
+
+function saveSearchProviderConfig(config) {
+  const p = _resolveSearchProviderConfigPath();
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const config = loadSearchProviderConfig();
+  const serper = config.serper || {};
+  const dfs    = config.dataforseo || {};
+  const cse    = config.google_cse || {};
+  res.json({
+    config: {
+      serper:     { api_key_set: !!serper.api_key, enabled: serper.enabled || 'disabled' },
+      dataforseo: { login_set: !!dfs.login, password_set: !!dfs.password, enabled: dfs.enabled || 'disabled' },
+      google_cse: { api_key_set: !!cse.api_key, cx_set: !!cse.cx, gemini_key_set: !!cse.gemini_key },
+    },
+  });
+});
+
+app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
+  const current = loadSearchProviderConfig();
+  if (!current.serper)     current.serper     = { api_key: '', enabled: 'disabled' };
+  if (!current.dataforseo) current.dataforseo = { login: '', password: '', enabled: 'disabled' };
+  if (!current.google_cse) current.google_cse = { api_key: '', cx: '', gemini_key: '' };
+
+  if (body.serper && typeof body.serper === 'object') {
+    const e = body.serper;
+    if (typeof e.api_key === 'string' && e.api_key.trim()) current.serper.api_key = e.api_key.trim();
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
+      current.serper.enabled = e.enabled;
+      if (e.enabled === 'enabled') { current.dataforseo.enabled = 'disabled'; }
+    }
+  }
+  if (body.dataforseo && typeof body.dataforseo === 'object') {
+    const e = body.dataforseo;
+    if (typeof e.login    === 'string' && e.login.trim())    current.dataforseo.login    = e.login.trim();
+    if (typeof e.password === 'string' && e.password.trim()) current.dataforseo.password = e.password.trim();
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
+      current.dataforseo.enabled = e.enabled;
+      if (e.enabled === 'enabled') { current.serper.enabled = 'disabled'; }
+    }
+  }
+  if (body.google_cse && typeof body.google_cse === 'object') {
+    const e = body.google_cse;
+    if (typeof e.api_key    === 'string') current.google_cse.api_key    = e.api_key.trim();
+    if (typeof e.cx         === 'string') current.google_cse.cx         = e.cx.trim();
+    if (typeof e.gemini_key === 'string') current.google_cse.gemini_key = e.gemini_key.trim();
+  }
+  try {
+    saveSearchProviderConfig(current);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2090,7 +2189,31 @@ const requireCsrfHeader = (req, res, next) => {
 // Apply CSRF header check globally for all mutation requests
 app.use(requireCsrfHeader);
 
-// ========================= AUTH ROUTES ========================= 
+// ========================= AUTH ROUTES =========================
+
+// GET /api/platform-provider-status — admin-level custom provider flags.
+// Returns { email_verif_custom, llm_custom } based on admin configs.
+// No API keys are exposed — only boolean flags.
+app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req, res) => {
+  try {
+    // Email verif: check if any non-default provider is enabled with a key
+    const evCfg = loadEmailVerifConfig();
+    const emailVerifCustom = EMAIL_VERIF_SERVICES.some(svc => {
+      const c = evCfg[svc] || {};
+      return c.enabled === 'enabled' && !!c.api_key;
+    });
+    // LLM: check if a non-default (non-gemini) provider is enabled with a key
+    const llmCfg = _readFullLlmConfig();
+    const llmCustom = ['openai', 'anthropic'].some(p => {
+      const c = llmCfg[p] || {};
+      return c.enabled === 'enabled' && !!c.api_key;
+    });
+    res.json({ email_verif_custom: emailVerifCustom, llm_custom: llmCustom });
+  } catch (err) {
+    console.error('[platform-provider-status]', err);
+    res.status(500).json({ error: 'Could not read platform provider config' });
+  }
+});
 
 app.post('/login', userRateLimit('login'), async (req, res) => {
   const { username, password } = req.body;
@@ -2403,11 +2526,42 @@ app.post('/smtp-config', requireLogin, async (req, res) => {
   }
 });
 
+// ── Server-side custom-provider check ──────────────────────────────────────────
+// Reads the per-user service config (same source as /api/user-service-config/status)
+// and returns { emailVerif: bool, llm: bool } indicating whether the user has
+// their own API keys for email verification or LLM.  When active, the server
+// skips token deduction — this is the authoritative guard (the frontend check is
+// a UX optimisation only; the server MUST enforce the rule).
+function _userHasCustomProviders(username) {
+  try {
+    const cfg = readUserServiceConfig(username);
+    if (!cfg) return { emailVerif: false, llm: false };
+    const ep = ((cfg.email_verif && cfg.email_verif.provider) || '').toLowerCase();
+    const lp = ((cfg.llm && cfg.llm.provider) || '').toLowerCase();
+    return {
+      emailVerif: ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer',
+      llm:        lp === 'openai' || lp === 'anthropic',
+    };
+  } catch (err) {
+    console.error('[_userHasCustomProviders]', err.message);
+    return { emailVerif: false, llm: false };
+  }
+}
+
 // POST /deduct-tokens - Deduct tokens from the authenticated user (called on Verified Selection)
 app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), async (req, res) => {
   try {
     const username = req.user.username;
     const userid   = String(req.user.id || '');
+
+    // Skip deduction when the user has custom email verification keys (server-side guard)
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.emailVerif) {
+      const curRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
+      const current = curRes.rows.length ? parseInt(curRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
+    }
+
     const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
     const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
     const result = await pool.query(
@@ -2442,6 +2596,12 @@ app.post('/candidates/token-deduct', requireLogin, userRateLimit('upload_multipl
     if (accessRes.rows.length > 0 && (accessRes.rows[0].useraccess || '').toLowerCase() === 'byok') {
       const current = parseInt(accessRes.rows[0].t, 10);
       return res.json({ tokensLeft: current, accountTokens: current });
+    }
+    // Skip deduction when custom LLM or email verif keys are active (server-side guard)
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.llm || customProviders.emailVerif) {
+      const current = accessRes.rows.length ? parseInt(accessRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
     const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
     const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
@@ -7310,14 +7470,460 @@ async function smtpVerify(email, mxHost) {
   });
 }
 
-// ========== NEW ENDPOINT: Generate Emails via Gemini (Ranked, No Verification yet) ==========
-app.post('/generate-email', requireLogin, async (req, res) => {
+// ========== ContactOut service discovery (reads email_verif_config.json for contactout entry) ==========
+app.get('/contact-gen-services', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const { name, company, country } = req.body;
+    const config = loadEmailVerifConfig();
+    const enabled = [];
+    for (const svc of CONTACT_GEN_IN_EMAIL_VERIF) {
+      const entry = config[svc] || {};
+      if (entry.enabled === 'enabled' && entry.api_key) enabled.push(svc);
+    }
+    res.json({ services: enabled });
+  } catch (err) {
+    console.error('/contact-gen-services error:', err);
+    res.json({ services: [] });
+  }
+});
+
+// ========== NEW ENDPOINT: Generate Emails / Generate Contacts ==========
+app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) => {
+  try {
+    const { name, company, country, provider, linkedinurl } = req.body;
+
+    // ── ContactOut provider path ─────────────────────────────
+    if (provider === 'contactout') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for ContactOut lookup.' });
+      }
+      const cgCfg = loadEmailVerifConfig();
+      const cusCfg = cgCfg.contactout || {};
+      if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
+      }
+
+      // Normalize LinkedIn URL: ensure https:// prefix and clean trailing slashes
+      let normalizedUrl = (linkedinurl || '').trim();
+      if (normalizedUrl && !normalizedUrl.startsWith('https://') && !normalizedUrl.startsWith('http://')) {
+        normalizedUrl = 'https://' + normalizedUrl;
+      }
+      // Warn and reject Sales Navigator / Recruiter URLs (not supported by ContactOut)
+      if (/linkedin\.com\/(sales|talent)\//.test(normalizedUrl)) {
+        return res.status(400).json({ error: 'ContactOut does not support Sales Navigator or Recruiter URLs. Please use a standard linkedin.com/in/ profile URL.' });
+      }
+
+      // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true&email_type=work
+      // email_type=work triggers real-time work email lookup per ContactOut docs
+      console.log('[ContactOut] Starting API call — profile:', normalizedUrl, '| key configured:', !!cusCfg.api_key);
+      const contactRes = await new Promise((resolve, reject) => {
+        const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
+        apiUrl.searchParams.set('profile', normalizedUrl);
+        apiUrl.searchParams.set('include_phone', 'true');
+        apiUrl.searchParams.set('email_type', 'work');
+        const reqOpts = {
+          hostname: apiUrl.hostname,
+          port: 443,
+          path: apiUrl.pathname + apiUrl.search,
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'token': cusCfg.api_key,
+          },
+        };
+        console.log('[ContactOut] Request URL:', `https://${apiUrl.hostname}${apiUrl.pathname}${apiUrl.search}`);
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            console.log('[ContactOut] HTTP status:', resp.statusCode);
+            console.log('[ContactOut] Raw response body:', body);
+            try {
+              const parsed = JSON.parse(body);
+              // Attach HTTP status for error checking
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) {
+              console.error('[ContactOut] Failed to parse response JSON:', e.message, '| Body was:', body);
+              reject(new Error('Invalid JSON from ContactOut API'));
+            }
+          });
+        });
+        r.on('error', (err) => {
+          console.error('[ContactOut] Network error:', err.message);
+          reject(err);
+        });
+        const CONTACTOUT_API_TIMEOUT_MS = 20000;
+        r.setTimeout(CONTACTOUT_API_TIMEOUT_MS, () => {
+          console.error('[ContactOut] Request timed out after', CONTACTOUT_API_TIMEOUT_MS, 'ms');
+          r.destroy();
+          reject(new Error('ContactOut API timeout'));
+        });
+        r.end();
+      });
+
+      // Check for API-level errors (status != 200)
+      if (contactRes._http_status && contactRes._http_status !== 200) {
+        const apiMsg = contactRes.message || contactRes.error || `ContactOut API returned status ${contactRes._http_status}`;
+        console.error('[ContactOut] API error response — status:', contactRes._http_status, '| message:', apiMsg);
+        return res.status(400).json({ error: apiMsg });
+      }
+
+      // Map ContactOut response → structured contact data
+      // Per the API docs, all fields (email, work_email, personal_email, phone, github)
+      // are returned as ARRAYS inside a top-level "profile" object.
+      const profile = contactRes.profile || {};
+      console.log('[ContactOut] Parsed profile fields — keys:', Object.keys(profile));
+      console.log('[ContactOut] profile.email:', JSON.stringify(profile.email));
+      console.log('[ContactOut] profile.work_email:', JSON.stringify(profile.work_email));
+      console.log('[ContactOut] profile.personal_email:', JSON.stringify(profile.personal_email));
+      console.log('[ContactOut] profile.phone:', JSON.stringify(profile.phone));
+      console.log('[ContactOut] profile.github:', JSON.stringify(profile.github));
+
+      // Helper: safely get first non-empty value from array or string field
+      const _first = (arrOrStr) => {
+        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
+        return typeof arrOrStr === 'string' ? arrOrStr : '';
+      };
+
+      // Per API docs all fields are arrays; fall back to legacy plural/scalar names for safety
+      const email          = _first(profile.email) || _first(profile.emails) || '';
+      const phone          = _first(profile.phone) || _first(profile.phones) || '';
+      const work_email     = _first(profile.work_email) || _first(profile.work_emails) || '';
+      const github         = _first(profile.github) || '';
+      const personal_email = _first(profile.personal_email) || _first(profile.personal_emails) || '';
+
+      // Helper: flatten any field (array or scalar string) into an array of non-empty strings
+      const _toArr = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
+
+      // Collect all unique emails for the frontend email list
+      const allEmails = [
+        ..._toArr(profile.email),
+        ..._toArr(profile.emails),
+        ..._toArr(profile.work_email),
+        ..._toArr(profile.work_emails),
+        ..._toArr(profile.personal_email),
+        ..._toArr(profile.personal_emails),
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+      const result = {
+        provider: 'contactout',
+        email,
+        phone,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
+      };
+      console.log('[ContactOut] Mapped result:', JSON.stringify(result));
+      return res.json(result);
+    }
+
+    // ── Apollo provider path ─────────────────────────────────────────────
+    if (provider === 'apollo') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for Apollo lookup.' });
+      }
+      const apolloCfg = (loadEmailVerifConfig().apollo) || {};
+      if (!apolloCfg.api_key || apolloCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'Apollo is not enabled or API key is missing.' });
+      }
+
+      // Normalize LinkedIn URL
+      let apolloUrl = (linkedinurl || '').trim();
+      if (apolloUrl && !apolloUrl.startsWith('https://') && !apolloUrl.startsWith('http://')) {
+        apolloUrl = 'https://' + apolloUrl;
+      }
+
+      console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
+      const apolloRes = await new Promise((resolve, reject) => {
+        const bodyStr = JSON.stringify({ linkedin_url: apolloUrl });
+        const reqOpts = {
+          hostname: 'api.apollo.io',
+          port: 443,
+          path: '/v1/people/match',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'x-api-key': apolloCfg.api_key,
+            'Content-Length': Buffer.byteLength(bodyStr),
+          },
+        };
+        console.log('[Apollo] Request: POST https://api.apollo.io/v1/people/match body:', bodyStr);
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            console.log('[Apollo] HTTP status:', resp.statusCode);
+            console.log('[Apollo] Raw response body:', body);
+            try {
+              const parsed = JSON.parse(body);
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) {
+              console.error('[Apollo] Failed to parse response JSON:', e.message, '| Body:', body);
+              reject(new Error('Invalid JSON from Apollo API'));
+            }
+          });
+        });
+        r.on('error', (err) => {
+          console.error('[Apollo] Network error:', err.message);
+          reject(err);
+        });
+        r.setTimeout(20000, () => {
+          console.error('[Apollo] Request timed out');
+          r.destroy();
+          reject(new Error('Apollo API timeout'));
+        });
+        r.write(bodyStr);
+        r.end();
+      });
+
+      if (apolloRes._http_status && apolloRes._http_status !== 200) {
+        const apiMsg = apolloRes.message || apolloRes.error || `Apollo API returned status ${apolloRes._http_status}`;
+        console.error('[Apollo] API error — status:', apolloRes._http_status, '| message:', apiMsg);
+        return res.status(400).json({ error: apiMsg });
+      }
+
+      const person = apolloRes.person || {};
+      console.log('[Apollo] person fields — keys:', Object.keys(person));
+      console.log('[Apollo] person.email:', JSON.stringify(person.email));
+      console.log('[Apollo] person.phone_numbers:', JSON.stringify(person.phone_numbers));
+
+      const _first = (arrOrStr) => {
+        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
+        return typeof arrOrStr === 'string' ? arrOrStr : '';
+      };
+
+      const email = person.email || '';
+      // phone_numbers is an array of objects with sanitized_number
+      const phoneObj = Array.isArray(person.phone_numbers) && person.phone_numbers.length > 0
+        ? person.phone_numbers[0]
+        : null;
+      const phone = (phoneObj && (phoneObj.sanitized_number || phoneObj.raw_number)) || '';
+      const work_email = person.work_email || _first(person.work_emails) || '';
+      const personal_email = person.personal_email || _first(person.personal_emails) || '';
+      const github = person.github_url || '';
+
+      const _toArr = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
+
+      const allEmails = [
+        ..._toArr(email),
+        ..._toArr(work_email),
+        ..._toArr(personal_email),
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+      const result = {
+        provider: 'apollo',
+        email,
+        phone,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
+      };
+      console.log('[Apollo] Mapped result:', JSON.stringify(result));
+      return res.json(result);
+    }
+
+    if (provider === 'rocketreach') {
+      if (!linkedinurl) {
+        return res.status(400).json({ error: 'LinkedIn URL is required for RocketReach lookup.' });
+      }
+      const rrCfg = (loadEmailVerifConfig().rocketreach) || {};
+      if (!rrCfg.api_key || rrCfg.enabled !== 'enabled') {
+        return res.status(400).json({ error: 'RocketReach is not enabled or API key is missing.' });
+      }
+
+      let rrUrl = (linkedinurl || '').trim();
+      if (rrUrl && !rrUrl.startsWith('https://') && !rrUrl.startsWith('http://')) {
+        rrUrl = 'https://' + rrUrl;
+      }
+
+      console.log('[RocketReach] Starting API call — linkedin_url:', rrUrl);
+      const rrRes = await new Promise((resolve, reject) => {
+        const rrPath = `/api/v2/person/lookup?linkedin_url=${encodeURIComponent(rrUrl)}`;
+        const reqOpts = {
+          hostname: 'api.rocketreach.co',
+          port: 443,
+          path: rrPath,
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'Api-Key': rrCfg.api_key,
+          },
+        };
+        console.log('[RocketReach] Request: GET https://api.rocketreach.co' + rrPath);
+        const r = https.request(reqOpts, (resp) => {
+          let body = '';
+          resp.on('data', d => body += d);
+          resp.on('end', () => {
+            console.log('[RocketReach] HTTP status:', resp.statusCode);
+            console.log('[RocketReach] Raw response body:', body);
+            try {
+              const parsed = JSON.parse(body);
+              parsed._http_status = resp.statusCode;
+              resolve(parsed);
+            } catch (e) {
+              console.error('[RocketReach] Failed to parse response JSON:', e.message, '| Body:', body);
+              reject(new Error('Invalid JSON from RocketReach API'));
+            }
+          });
+        });
+        r.on('error', (err) => {
+          console.error('[RocketReach] Network error:', err.message);
+          reject(err);
+        });
+        r.setTimeout(20000, () => {
+          console.error('[RocketReach] Request timed out');
+          r.destroy();
+          reject(new Error('RocketReach API timeout'));
+        });
+        r.end();
+      });
+
+      if (rrRes._http_status && rrRes._http_status !== 200) {
+        const apiMsg = rrRes.message || rrRes.detail || rrRes.error || `RocketReach API returned status ${rrRes._http_status}`;
+        console.error('[RocketReach] API error — status:', rrRes._http_status, '| message:', apiMsg);
+        return res.status(400).json({ error: apiMsg });
+      }
+
+      console.log('[RocketReach] emails:', JSON.stringify(rrRes.emails));
+      console.log('[RocketReach] phones:', JSON.stringify(rrRes.phones));
+
+      const _toArrRR = (v) => {
+        if (Array.isArray(v)) return v.filter(Boolean);
+        if (typeof v === 'string' && v) return [v];
+        return [];
+      };
+
+      const emailObjs = _toArrRR(rrRes.emails);
+      const emailStrs = emailObjs.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+
+      const phoneObjs = _toArrRR(rrRes.phones);
+      const phoneStr = phoneObjs.length > 0
+        ? (typeof phoneObjs[0] === 'object' ? (phoneObjs[0].number || phoneObjs[0].raw_number || '') : String(phoneObjs[0]))
+        : '';
+
+      const workEmails = emailObjs.filter(e => typeof e === 'object' && e.type === 'professional').map(e => e.email).filter(Boolean);
+      const personalEmails = emailObjs.filter(e => typeof e === 'object' && e.type !== 'professional').map(e => e.email).filter(Boolean);
+
+      const email = emailStrs[0] || '';
+      const work_email = workEmails[0] || '';
+      const personal_email = personalEmails[0] || '';
+      const github = (rrRes.links && rrRes.links.github) ? rrRes.links.github : '';
+
+      const allEmails = emailStrs.filter((v, i, a) => v && a.indexOf(v) === i);
+
+      // ── Call LLM to structure the full profile into a clean comment ──────
+      let structured_comment = '';
+      try {
+        const jobHistoryText = Array.isArray(rrRes.job_history) && rrRes.job_history.length > 0
+          ? rrRes.job_history.map(j => {
+              const start = j.start_date ? j.start_date.slice(0, 7) : '?';
+              const end   = j.end_date   === 'Present' ? 'Present' : (j.end_date || '?').slice(0, 7);
+              return `  - ${j.title || '?'} @ ${j.company_name || j.company || '?'} (${start} – ${end})`;
+            }).join('\n')
+          : '  (none)';
+
+        const educationText = Array.isArray(rrRes.education) && rrRes.education.length > 0
+          ? rrRes.education.map(e => {
+              const majorPart = e.major ? ` in ${e.major}` : '';
+              return `  - ${e.degree || '?'}${majorPart} @ ${e.school || '?'} (${e.start || '?'} – ${e.end || '?'})`;
+            }).join('\n')
+          : '  (none)';
+
+        const contactEmailsText = allEmails.length > 0 ? allEmails.join(', ') : '(not found)';
+        const contactPhoneText  = phoneStr || '(not found)';
+
+        const rrStructurePrompt = `You are a data structuring assistant. Given the following raw profile information from a RocketReach API response, produce a clean plain-text summary organized under exactly four subheaders. Do NOT use markdown, asterisks, or bullet symbols — use plain dashes for list items. Keep each section concise.
+
+Profile:
+  Name: ${rrRes.name || '?'}
+  Title: ${rrRes.current_title || '?'}
+  Employer: ${rrRes.current_employer || '?'}
+  Location: ${rrRes.location || (rrRes.city ? `${rrRes.city}, ${rrRes.country_code || ''}` : '?')}
+  LinkedIn: ${rrRes.linkedin_url || '?'}
+
+Employment history:
+${jobHistoryText}
+
+Education:
+${educationText}
+
+Contact:
+  Emails: ${contactEmailsText}
+  Phone: ${contactPhoneText}
+
+Produce the output in this exact format (keep subheader names exactly as shown, plain text only):
+
+[Profile]
+Name: ...
+Title: ...
+Employer: ...
+Location: ...
+LinkedIn: ...
+
+[Employment]
+(one entry per line: Title @ Company (start – end))
+
+[Education]
+(one entry per line: Degree in Major @ School (start – end))
+
+[Contact]
+Email: ...
+Phone: ...`;
+
+        const llmText = await llmGenerateText(rrStructurePrompt, { username: req.user && req.user.username, label: 'llm/rocketreach-structure' });
+        structured_comment = llmText.trim();
+        console.log('[RocketReach] LLM structured comment generated, length:', structured_comment.length);
+      } catch (llmErr) {
+        console.error('[RocketReach] LLM structuring failed (non-fatal):', llmErr.message);
+        // Fall back to a simple plain-text structure
+        const fallbackParts = [
+          `[Profile]`,
+          rrRes.name           ? `Name: ${rrRes.name}` : null,
+          rrRes.current_title  ? `Title: ${rrRes.current_title}` : null,
+          rrRes.current_employer ? `Employer: ${rrRes.current_employer}` : null,
+          rrRes.location       ? `Location: ${rrRes.location}` : null,
+          rrRes.linkedin_url   ? `LinkedIn: ${rrRes.linkedin_url}` : null,
+          '',
+          `[Contact]`,
+          allEmails.length > 0 ? `Email: ${allEmails.join(', ')}` : null,
+          phoneStr             ? `Phone: ${phoneStr}` : null,
+        ].filter(v => v !== null);
+        structured_comment = fallbackParts.join('\n');
+      }
+
+      const result = {
+        provider: 'rocketreach',
+        email,
+        phone: phoneStr,
+        work_email,
+        github,
+        personal_email,
+        all_emails: allEmails,
+        structured_comment,
+      };
+      console.log('[RocketReach] Mapped result:', JSON.stringify(result));
+      return res.json(result);
+    }
+
+    // ── Default Gemini/LLM path needs name + company ─────────────────────
     if (!name || !company) {
       return res.status(400).json({ error: 'Name and Company are required.' });
     }
 
+    // ── Default Gemini/LLM path ──────────────────────────────────────────
     // Request strictly 3 ranked emails
     const genPrompt = `
       Generate a list of exactly 3 most likely business email address permutations for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
@@ -7347,8 +7953,9 @@ app.post('/generate-email', requireLogin, async (req, res) => {
     res.json({ emails: candidates });
 
   } catch (err) {
-    console.error('/generate-email error:', err);
-    res.status(500).json({ error: 'Generation failed' });
+    console.error('[generate-email] Unhandled error:', err.message || err);
+    if (err.stack) console.error('[generate-email] Stack:', err.stack);
+    res.status(500).json({ error: 'Generation failed. Check server logs for details.' });
   }
 });
 
@@ -9051,13 +9658,22 @@ app.post('/api/porting/byok/validate', requireLogin, dashboardRateLimit, async (
   }
 });
 
-// ========== User Service Config: per-user encrypted provider keys ==========
-// File stored at: path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.enc`)
+// ========== User Service Config: per-user provider keys ==========
+// Encrypted file (when PORTING_SECRET is set):
+//   path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.enc`)
+// Plaintext JSON fallback (when PORTING_SECRET is not set):
+//   path.join(PORTING_INPUT_DIR, 'user-services', `${safeName(username)}.json`)
 
-function userServiceConfigPath(username) {
+function _userSvcDir() {
   const dir = path.join(PORTING_INPUT_DIR, 'user-services');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return path.join(dir, `${safeName(username)}.enc`);
+  return dir;
+}
+function userServiceConfigPath(username) {
+  return path.join(_userSvcDir(), `${safeName(username)}.enc`);
+}
+function _userServiceJsonPath(username) {
+  return path.join(_userSvcDir(), `${safeName(username)}.json`);
 }
 
 function decryptBuffer(buf) {
@@ -9072,23 +9688,67 @@ function decryptBuffer(buf) {
   return Buffer.concat([decipher.update(ct), decipher.final()]);
 }
 
+/**
+ * Read the per-user service config. Tries encrypted .enc first, then plaintext .json.
+ * Returns the parsed config object, or null if no config exists.
+ */
+function readUserServiceConfig(username) {
+  const encPath  = userServiceConfigPath(username);
+  const jsonPath = _userServiceJsonPath(username);
+  if (fs.existsSync(encPath)) {
+    try {
+      const raw = decryptBuffer(fs.readFileSync(encPath));
+      return JSON.parse(raw.toString('utf8'));
+    } catch (err) {
+      // Decryption may fail if PORTING_SECRET is missing/changed — fall through to .json
+      console.error('[readUserServiceConfig] .enc decrypt failed for', username, ':', err.message);
+    }
+  }
+  if (fs.existsSync(jsonPath)) {
+    return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  }
+  return null;
+}
+
+/**
+ * Write the per-user service config. Uses encryption when PORTING_SECRET is set,
+ * otherwise writes a plaintext JSON file so the system works without a secret.
+ */
+function writeUserServiceConfig(username, cfg) {
+  const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
+  if (process.env.PORTING_SECRET) {
+    fs.writeFileSync(userServiceConfigPath(username), encryptBuffer(raw));
+  } else {
+    // Plaintext fallback — no sensitive data stored in clear text beyond what
+    // the operator has already consented to by not setting PORTING_SECRET.
+    fs.writeFileSync(_userServiceJsonPath(username), raw);
+  }
+}
+
+/**
+ * Remove all config files for the user (both encrypted and plaintext).
+ */
+function deleteUserServiceConfig(username) {
+  [userServiceConfigPath(username), _userServiceJsonPath(username)].forEach(fp => {
+    try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (_) {}
+  });
+}
+
 // GET /api/user-service-config/status
 // Returns { active: bool, providers: { search, llm, email_verif } } (masked — no key values)
 app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (!fs.existsSync(fp)) {
+    const cfg = readUserServiceConfig(req.user.username);
+    if (!cfg) {
       return res.json({ active: false, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default' } });
     }
-    const enc = fs.readFileSync(fp);
-    const raw = decryptBuffer(enc);
-    const cfg = JSON.parse(raw.toString('utf8'));
     res.json({
       active: true,
       providers: {
         search:      cfg.search?.provider      || 'google_cse',
         llm:         cfg.llm?.provider         || 'gemini',
         email_verif: cfg.email_verif?.provider || 'default',
+        contact_gen: cfg.contact_gen?.provider || 'gemini',
       },
     });
   } catch (err) {
@@ -9100,14 +9760,16 @@ app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (re
 // POST /api/user-service-config/activate
 // Body: { search: { provider, SERPER_API_KEY?, DATAFORSEO_LOGIN?, DATAFORSEO_PASSWORD? },
 //         llm:    { provider, OPENAI_API_KEY?, ANTHROPIC_API_KEY? },
-//         email_verif: { provider, NEVERBOUNCE_API_KEY?, ZEROBOUNCE_API_KEY?, BOUNCER_API_KEY? } }
+//         email_verif: { provider, NEVERBOUNCE_API_KEY?, ZEROBOUNCE_API_KEY?, BOUNCER_API_KEY? },
+//         contact_gen: { provider, CONTACTOUT_API_KEY?, APOLLO_API_KEY?, ROCKETREACH_API_KEY? } }
 // Encrypts and stores config per user.
 app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    const { search, llm, email_verif } = req.body || {};
-    const VALID_SEARCH = ['google_cse', 'serper', 'dataforseo'];
-    const VALID_LLM    = ['gemini', 'openai', 'anthropic'];
-    const VALID_EMAIL  = ['default', 'neverbounce', 'zerobounce', 'bouncer'];
+    const { search, llm, email_verif, contact_gen } = req.body || {};
+    const VALID_SEARCH      = ['google_cse', 'serper', 'dataforseo'];
+    const VALID_LLM         = ['gemini', 'openai', 'anthropic'];
+    const VALID_EMAIL       = ['default', 'neverbounce', 'zerobounce', 'bouncer'];
+    const VALID_CONTACT_GEN = ['gemini', 'contactout', 'apollo', 'rocketreach'];
 
     if (!search?.provider || !VALID_SEARCH.includes(search.provider)) {
       return res.status(400).json({ error: 'Invalid or missing search provider' });
@@ -9117,6 +9779,9 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     }
     if (!email_verif?.provider || !VALID_EMAIL.includes(email_verif.provider)) {
       return res.status(400).json({ error: 'Invalid or missing email_verif provider' });
+    }
+    if (contact_gen && !VALID_CONTACT_GEN.includes(contact_gen.provider)) {
+      return res.status(400).json({ error: 'Invalid contact_gen provider' });
     }
 
     // Validate that required keys are present for non-default providers
@@ -9131,6 +9796,9 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     if (email_verif.provider === 'neverbounce' && !email_verif.NEVERBOUNCE_API_KEY?.trim()) missing.push('NEVERBOUNCE_API_KEY');
     if (email_verif.provider === 'zerobounce'  && !email_verif.ZEROBOUNCE_API_KEY?.trim())  missing.push('ZEROBOUNCE_API_KEY');
     if (email_verif.provider === 'bouncer'     && !email_verif.BOUNCER_API_KEY?.trim())     missing.push('BOUNCER_API_KEY');
+    if (contact_gen?.provider === 'contactout'  && !contact_gen.CONTACTOUT_API_KEY?.trim())  missing.push('CONTACTOUT_API_KEY');
+    if (contact_gen?.provider === 'apollo'      && !contact_gen.APOLLO_API_KEY?.trim())      missing.push('APOLLO_API_KEY');
+    if (contact_gen?.provider === 'rocketreach' && !contact_gen.ROCKETREACH_API_KEY?.trim()) missing.push('ROCKETREACH_API_KEY');
     if (missing.length > 0) {
       return res.status(400).json({ error: `Missing required keys: ${missing.join(', ')}` });
     }
@@ -9141,6 +9809,7 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
       search:   { provider: search.provider },
       llm:      { provider: llm.provider },
       email_verif: { provider: email_verif.provider },
+      contact_gen: { provider: contact_gen?.provider || 'gemini' },
     };
     if (search.provider === 'serper')     cfg.search.SERPER_API_KEY = search.SERPER_API_KEY.trim();
     if (search.provider === 'dataforseo') {
@@ -9152,10 +9821,11 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
     if (email_verif.provider === 'neverbounce') cfg.email_verif.NEVERBOUNCE_API_KEY = email_verif.NEVERBOUNCE_API_KEY.trim();
     if (email_verif.provider === 'zerobounce')  cfg.email_verif.ZEROBOUNCE_API_KEY  = email_verif.ZEROBOUNCE_API_KEY.trim();
     if (email_verif.provider === 'bouncer')     cfg.email_verif.BOUNCER_API_KEY     = email_verif.BOUNCER_API_KEY.trim();
+    if (contact_gen?.provider === 'contactout')  cfg.contact_gen.CONTACTOUT_API_KEY  = contact_gen.CONTACTOUT_API_KEY.trim();
+    if (contact_gen?.provider === 'apollo')      cfg.contact_gen.APOLLO_API_KEY      = contact_gen.APOLLO_API_KEY.trim();
+    if (contact_gen?.provider === 'rocketreach') cfg.contact_gen.ROCKETREACH_API_KEY = contact_gen.ROCKETREACH_API_KEY.trim();
 
-    const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
-    const encrypted = encryptBuffer(raw);
-    await fs.promises.writeFile(userServiceConfigPath(req.user.username), encrypted);
+    writeUserServiceConfig(req.user.username, cfg);
     res.json({ ok: true, active: true });
   } catch (err) {
     console.error('[user-service-config/activate]', err);
@@ -9164,11 +9834,10 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
 });
 
 // DELETE /api/user-service-config/deactivate
-// Removes the encrypted config file for the current user.
+// Removes the config file(s) for the current user.
 app.delete('/api/user-service-config/deactivate', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    deleteUserServiceConfig(req.user.username);
     res.json({ ok: true, active: false });
   } catch (err) {
     console.error('[user-service-config/deactivate]', err);
@@ -9181,13 +9850,8 @@ app.delete('/api/user-service-config/deactivate', requireLogin, dashboardRateLim
 // Used by AutoSourcing.html to inject per-user search keys into the /start_job payload.
 app.get('/api/user-service-config/search-keys', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const fp = userServiceConfigPath(req.user.username);
-    if (!fs.existsSync(fp)) {
-      return res.json({ provider: 'google_cse' });
-    }
-    const enc = fs.readFileSync(fp);
-    const raw = decryptBuffer(enc);
-    const cfg = JSON.parse(raw.toString('utf8'));
+    const cfg = readUserServiceConfig(req.user.username);
+    if (!cfg) return res.json({ provider: 'google_cse' });
     const search = cfg.search || {};
     const result = { provider: search.provider || 'google_cse' };
     if (search.provider === 'serper'     && search.SERPER_API_KEY)     result.SERPER_API_KEY    = search.SERPER_API_KEY;
@@ -9205,7 +9869,7 @@ app.get('/api/user-service-config/search-keys', requireLogin, dashboardRateLimit
 // Returns { ok: bool, results: [{label, status, detail}] }
 app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    const { search, llm, email_verif } = req.body || {};
+    const { search, llm, email_verif, contact_gen } = req.body || {};
 
     function httpsGet(url, opts = {}) {
       return new Promise((resolve, reject) => {
@@ -9401,6 +10065,85 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
           }
         } catch (e) {
           results.push({ label: 'Bouncer', status: 'warn', detail: `Could not reach Bouncer API: ${e.message}` });
+        }
+      }
+    }
+
+    // ── Contact Generation ────────────────────────────────────────────────────
+    if (!contact_gen || contact_gen.provider === 'gemini') {
+      results.push({ label: 'Contact Generation', status: 'ok', detail: 'Using platform Gemini — no custom key required.' });
+    } else if (contact_gen.provider === 'contactout') {
+      const key = (contact_gen.CONTACTOUT_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'ContactOut', status: 'error', detail: 'CONTACTOUT_API_KEY is required.' });
+      } else {
+        try {
+          // Use email_type=none so no credits are consumed — this only checks auth
+          const { status } = await httpsGet(
+            'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
+            { headers: { 'Content-Type': 'application/json', Accept: 'application/json', token: key } }
+          );
+          if (status === 401) {
+            results.push({ label: 'ContactOut', status: 'error', detail: 'Authentication failed (HTTP 401). Check your CONTACTOUT_API_KEY.' });
+          } else if (status === 403) {
+            // 403 from ContactOut means account suspended or quota exceeded, NOT invalid key
+            results.push({ label: 'ContactOut', status: 'warn', detail: 'ContactOut returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.' });
+          } else if (status === 200 || status === 404 || status === 422) {
+            // 200 = profile found, 404 = profile not found (key valid), 422 = invalid URL (key valid)
+            results.push({ label: 'ContactOut', status: 'ok', detail: 'API key accepted.' });
+          } else {
+            results.push({ label: 'ContactOut', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your account or try again.` });
+          }
+        } catch (e) {
+          results.push({ label: 'ContactOut', status: 'warn', detail: `Could not reach ContactOut API: ${e.message}` });
+        }
+      }
+    } else if (contact_gen.provider === 'apollo') {
+      const key = (contact_gen.APOLLO_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'Apollo', status: 'error', detail: 'APOLLO_API_KEY is required.' });
+      } else {
+        try {
+          const { status } = await httpsGet('https://api.apollo.io/v1/auth/health', {
+            headers: { 'x-api-key': key, 'Content-Type': 'application/json' },
+          });
+          if (status === 200) {
+            results.push({ label: 'Apollo', status: 'ok', detail: 'API key is valid.' });
+          } else if (status === 401) {
+            results.push({ label: 'Apollo', status: 'error', detail: 'Authentication failed (HTTP 401). Check your APOLLO_API_KEY.' });
+          } else if (status === 403) {
+            results.push({ label: 'Apollo', status: 'warn', detail: 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.' });
+          } else if (status >= 500) {
+            results.push({ label: 'Apollo', status: 'warn', detail: `Apollo API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
+          } else {
+            results.push({ label: 'Apollo', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
+          }
+        } catch (e) {
+          results.push({ label: 'Apollo', status: 'warn', detail: `Could not reach Apollo API: ${e.message}` });
+        }
+      }
+    } else if (contact_gen.provider === 'rocketreach') {
+      const key = (contact_gen.ROCKETREACH_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'RocketReach', status: 'error', detail: 'ROCKETREACH_API_KEY is required.' });
+      } else {
+        try {
+          const { status } = await httpsGet('https://api.rocketreach.co/api/v2/checkStatus', {
+            headers: { 'Api-Key': key },
+          });
+          if (status === 200) {
+            results.push({ label: 'RocketReach', status: 'ok', detail: 'API key is valid.' });
+          } else if (status === 401) {
+            results.push({ label: 'RocketReach', status: 'error', detail: 'Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.' });
+          } else if (status === 403) {
+            results.push({ label: 'RocketReach', status: 'warn', detail: 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.' });
+          } else if (status >= 500) {
+            results.push({ label: 'RocketReach', status: 'warn', detail: `RocketReach API returned HTTP ${status} — server may be temporarily unavailable. Try again.` });
+          } else {
+            results.push({ label: 'RocketReach', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but check your plan.` });
+          }
+        } catch (e) {
+          results.push({ label: 'RocketReach', status: 'warn', detail: `Could not reach RocketReach API: ${e.message}` });
         }
       }
     }
