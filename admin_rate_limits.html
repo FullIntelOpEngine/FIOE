@@ -1180,6 +1180,7 @@ const SYSTEM_PARAMS = [
 const TOKEN_PARAMS = [
   { key: 'appeal_approve_credit',     label: 'Appeal Approval Credit',         priority: 'high', unit: 'tokens', min: 0, step: 1,    hint: 'Tokens credited to a user when an appeal is approved (APPEAL_APPROVE_CREDIT)' },
   { key: 'verified_selection_deduct', label: 'Verified Selection Deduction',   priority: 'high', unit: 'tokens', min: 0, step: 1,    hint: 'Tokens deducted per Verified Selection action in SourcingVerify (VERIFIED_SELECTION_DEDUCT)' },
+  { key: 'contact_gen_deduct',        label: 'Contact Generation Deduction',   priority: 'high', unit: 'tokens', min: 0, step: 1,    hint: 'Tokens deducted per Generate Email/Contact action in App.js (ContactOut/Apollo/RocketReach). Gemini is free.' },
   { key: 'rebate_credit_per_profile', label: 'Rebate Credit per Profile',      priority: 'high', unit: 'tokens', min: 0, step: 1,    hint: 'Tokens credited back per rebated profile in SourcingVerify' },
   { key: 'analytic_token_cost',       label: 'Analytic DB Token Cost',          priority: 'high', unit: 'tokens/record', min: 0, step: 1,    hint: 'Tokens consumed per record analysed in the Analytic DB Dock In wizard (App.js)' },
   { key: 'initial_token_display',     label: 'Initial Token Display',          priority: 'mid',  unit: 'tokens', min: 0, step: 1,    hint: 'Fallback toolbar token value shown before the server balance loads in SourcingVerify' },
