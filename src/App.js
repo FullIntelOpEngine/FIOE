@@ -7695,6 +7695,21 @@ export default function App() {
         userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
         const lp = (svcData.providers.llm || '').toLowerCase();
         userLlm = lp === 'openai' || lp === 'anthropic';
+
+        // When a per-user email verif service is active, surface it in the
+        // Verif Engine dropdown so api_porting.html Option A keys are usable.
+        if (userEmailVerif) {
+          setAvailableEmailServices(prev => prev.includes(ep) ? prev : [...prev, ep]);
+          setEmailVerifService(prev => prev === 'default' ? ep : prev);
+        }
+
+        // When a per-user contact gen provider is active, surface it in the
+        // Generate Email dropdown so api_porting.html Option A keys are usable.
+        const cgp = (svcData.providers.contact_gen || '').toLowerCase();
+        if (['contactout', 'apollo', 'rocketreach'].includes(cgp)) {
+          setAvailableContactGenServices(prev => prev.includes(cgp) ? prev : [...prev, cgp]);
+          setEmailGenProvider(prev => prev === 'gemini' ? cgp : prev);
+        }
       }
       // Admin platform flags (from admin_rate_limits.html) — detected so App.js
       // can confirm it reads both config sources, but intentionally excluded from
