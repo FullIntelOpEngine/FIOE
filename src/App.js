@@ -7648,6 +7648,7 @@ export default function App() {
   const [tokensLeft, setTokensLeft] = useState(0);
   const [hasCustomEmailVerif, setHasCustomEmailVerif] = useState(false);
   const [hasCustomLlm, setHasCustomLlm] = useState(false);
+  const [hasCustomContactGen, setHasCustomContactGen] = useState(false);
 
   // Status Management State
   const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
@@ -7710,23 +7711,26 @@ export default function App() {
       fetch(`http://localhost:${API_PORT}/api/platform-provider-status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]).then(([svcData, platformData]) => {
       // Per-user flags (from api_porting.html) — these control token deduction & visibility.
-      let userEmailVerif = false, userLlm = false;
+      let userEmailVerif = false, userLlm = false, userContactGen = false;
       if (svcData && svcData.active && svcData.providers) {
         const ep = (svcData.providers.email_verif || '').toLowerCase();
         userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
         const lp = (svcData.providers.llm || '').toLowerCase();
         userLlm = lp === 'openai' || lp === 'anthropic';
+        const cp = (svcData.providers.contact_gen || '').toLowerCase();
+        userContactGen = cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach';
       }
       // Admin platform flags (from admin_rate_limits.html) — detected so App.js
       // can confirm it reads both config sources, but intentionally excluded from
       // token logic.  Only per-user keys (api_porting.html) suppress deduction / hide UI.
       const platEmailVerif = !!(platformData && platformData.email_verif_custom);
       const platLlm = !!(platformData && platformData.llm_custom);
-      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s | admin emailVerif=%s llm=%s',
-        userEmailVerif, userLlm, platEmailVerif, platLlm);
+      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s contactGen=%s | admin emailVerif=%s llm=%s',
+        userEmailVerif, userLlm, userContactGen, platEmailVerif, platLlm);
       // Only per-user flags control token deduction and visibility
       setHasCustomEmailVerif(userEmailVerif);
       setHasCustomLlm(userLlm);
+      setHasCustomContactGen(userContactGen);
     }).catch(err => console.error('[ServiceConfig] refresh failed:', err));
   }, [user]);
 
@@ -8674,6 +8678,51 @@ export default function App() {
       handleGenerateResumeEmails();
       return;
     }
+    // User's own Option A contact gen keys — no popup, no deduction; proceed directly
+    // On failure, alert the user and offer Gemini fallback with token deduction
+    if (hasCustomContactGen) {
+      const succeeded = await handleGenerateResumeEmails();
+      if (!succeeded) {
+        // Fetch latest token balance for the fallback popup
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        // Re-fetch token config for deduction amount
+        let deductAmt = _APP_CONTACT_GEN_DEDUCT;
+        try {
+          const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r.ok) { const cfg = await r.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.contact_gen_deduct === 'number') { deductAmt = t.contact_gen_deduct; _APP_CONTACT_GEN_DEDUCT = deductAmt; setAppContactGenDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doFallback = window.confirm(
+          `Your ${emailGenProvider.charAt(0).toUpperCase() + emailGenProvider.slice(1)} API service failed.\n\n` +
+          `Falling back to Gemini will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed with Gemini?`
+        );
+        if (doFallback) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); return; }
+          // Temporarily switch to gemini, generate, and deduct
+          const origProvider = emailGenProvider;
+          setEmailGenProvider('gemini');
+          setTimeout(async () => {
+            const geminiOk = await handleGenerateResumeEmails();
+            setEmailGenProvider(origProvider);
+            if (geminiOk) {
+              fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(r => r.json())
+                .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+                .catch(err => console.error('Gemini fallback token deduction failed:', err));
+            }
+          }, 0);
+        }
+      }
+      return;
+    }
     // Re-fetch token config so the popup shows the current admin-configured rate
     try {
       const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
@@ -8696,8 +8745,8 @@ export default function App() {
   const handleConfirmContactGen = async () => {
     setTokenContactGenConfirmOpen(false);
     const succeeded = await handleGenerateResumeEmails();
-    // Only deduct tokens if generation succeeded
-    if (!succeeded) return;
+    // Only deduct tokens if generation succeeded; skip if user has own keys
+    if (!succeeded || hasCustomContactGen) return;
     fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
       method: 'POST',
       credentials: 'include',
@@ -8716,6 +8765,12 @@ export default function App() {
     const selected = resumeEmailList.filter(item => item.checked);
     if (selected.length === 0) { alert('Please select an email to verify.'); return; }
     if (selected.length > 1) { alert('Please verify one email at a time.'); return; }
+    // User's own Option A keys — no popup, no deduction; proceed directly
+    if (hasCustomEmailVerif) {
+      setPendingVerifyEmail(selected[0].value);
+      handleConfirmVerify(selected[0].value);
+      return;
+    }
     // Re-fetch token config so the confirmation popup always shows the current admin value.
     try {
       const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
@@ -8727,14 +8782,14 @@ export default function App() {
         if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;        setAppContactGenDeduct(t.contact_gen_deduct); }
       }
     } catch (_) {}
-    if (!hasCustomEmailVerif && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
+    if (tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
     setPendingVerifyEmail(selected[0].value);
     setTokenConfirmOpen(true);
   };
 
-  const handleConfirmVerify = async () => {
+  const handleConfirmVerify = async (directEmail) => {
     setTokenConfirmOpen(false);
-    const emailToVerify = pendingVerifyEmail;
+    const emailToVerify = directEmail || pendingVerifyEmail;
     setPendingVerifyEmail(null);
     setVerifyingEmail(true);
     setVerifyModalEmail(emailToVerify);
@@ -8749,7 +8804,7 @@ export default function App() {
       if (!res.ok) throw new Error('Verification failed');
       const data = await res.json();
       setVerifyModalData(data);
-      // Deduct 2 tokens on successful verification (skipped when custom email verif API is active)
+      // Deduct tokens on successful verification (skipped when custom email verif API is active)
       if (!hasCustomEmailVerif) {
         fetch(`http://localhost:${API_PORT}/deduct-tokens`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
           .then(r => r.json())
@@ -10014,13 +10069,17 @@ export default function App() {
              onClick={() => setTokenConfirmOpen(false)}>
           <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Verified Selection</h3>
-            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
               Are you sure you want to proceed?&nbsp;
               <strong>{appVerifiedDeduct} token{appVerifiedDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this verified selection.
             </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appVerifiedDeduct)}</strong></div>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setTokenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
-              <button onClick={handleConfirmVerify} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+              <button onClick={() => handleConfirmVerify()} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
             </div>
           </div>
         </div>
@@ -10031,10 +10090,14 @@ export default function App() {
              onClick={() => setTokenContactGenConfirmOpen(false)}>
           <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Generate Contacts</h3>
-            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
               Are you sure you want to proceed?&nbsp;
               <strong>{appContactGenDeduct} token{appContactGenDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this contact generation.
             </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appContactGenDeduct)}</strong></div>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setTokenContactGenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
               <button onClick={handleConfirmContactGen} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>

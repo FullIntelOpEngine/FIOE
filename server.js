@@ -2537,16 +2537,18 @@ app.post('/smtp-config', requireLogin, async (req, res) => {
 function _userHasCustomProviders(username) {
   try {
     const cfg = readUserServiceConfig(username);
-    if (!cfg) return { emailVerif: false, llm: false };
+    if (!cfg) return { emailVerif: false, llm: false, contactGen: false };
     const ep = ((cfg.email_verif && cfg.email_verif.provider) || '').toLowerCase();
     const lp = ((cfg.llm && cfg.llm.provider) || '').toLowerCase();
+    const cp = ((cfg.contact_gen && cfg.contact_gen.provider) || '').toLowerCase();
     return {
       emailVerif: ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer',
       llm:        lp === 'openai' || lp === 'anthropic',
+      contactGen: cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach',
     };
   } catch (err) {
     console.error('[_userHasCustomProviders]', err.message);
-    return { emailVerif: false, llm: false };
+    return { emailVerif: false, llm: false, contactGen: false };
   }
 }
 
@@ -2591,6 +2593,14 @@ app.post('/deduct-tokens-contact-gen', requireLogin, userRateLimit('upload_multi
   try {
     const username = req.user.username;
     const userid   = String(req.user.id || '');
+
+    // Skip deduction when the user has their own contact generation keys (server-side guard)
+    const customProviders = _userHasCustomProviders(username);
+    if (customProviders.contactGen) {
+      const curRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
+      const current = curRes.rows.length ? parseInt(curRes.rows[0].t, 10) : 0;
+      return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
+    }
 
     // Read current deduct amount from rate_limits.json (always fresh, matches /token-config)
     let deductAmt = _CONTACT_GEN_DEDUCT;
