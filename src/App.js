@@ -52,6 +52,7 @@ const isInternalNavigation = () => {
 // React state (appTokenCost / appVerifiedDeduct) serves App()-owned JSX so dialogs re-render live.
 let _APP_ANALYTIC_TOKEN_COST        = 1;
 let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
+let _APP_CONTACT_GEN_DEDUCT         = 2;
 (function _loadAppTokenConfig() {
   fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     .then(r => r.ok ? r.json() : null)
@@ -60,6 +61,7 @@ let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
       const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
       if (typeof t.analytic_token_cost        === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
       if (typeof t.verified_selection_deduct  === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+      if (typeof t.contact_gen_deduct         === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
     })
     .catch(() => {});
 })();
@@ -7430,6 +7432,7 @@ export default function App() {
   // Dynamic token config — fetched from /token-config after login so JSX re-renders with live values.
   const [appTokenCost, setAppTokenCost] = useState(_APP_ANALYTIC_TOKEN_COST);
   const [appVerifiedDeduct, setAppVerifiedDeduct] = useState(_APP_VERIFIED_SELECTION_DEDUCT);
+  const [appContactGenDeduct, setAppContactGenDeduct] = useState(_APP_CONTACT_GEN_DEDUCT);
 
   // Candidates & main state
   const [candidates, setCandidates] = useState([]);
@@ -7475,6 +7478,7 @@ export default function App() {
   const [verifyModalEmail, setVerifyModalEmail] = useState('');
   const [tokenConfirmOpen, setTokenConfirmOpen] = useState(false);
   const [pendingVerifyEmail, setPendingVerifyEmail] = useState(null);
+  const [tokenContactGenConfirmOpen, setTokenContactGenConfirmOpen] = useState(false);
   // Email verification service selection
   const [emailVerifService, setEmailVerifService] = useState('default');
   const [availableEmailServices, setAvailableEmailServices] = useState([]);
@@ -7550,9 +7554,11 @@ export default function App() {
         // on the re-render triggered by the state setters below.
         if (typeof t.analytic_token_cost       === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
         if (typeof t.verified_selection_deduct === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+        if (typeof t.contact_gen_deduct        === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
         // Update React state so App()-owned JSX (verified selection popup etc.) re-renders.
         if (typeof t.analytic_token_cost       === 'number') setAppTokenCost(t.analytic_token_cost);
         if (typeof t.verified_selection_deduct === 'number') setAppVerifiedDeduct(t.verified_selection_deduct);
+        if (typeof t.contact_gen_deduct        === 'number') setAppContactGenDeduct(t.contact_gen_deduct);
       })
       .catch(() => {});
   }, [user]);
@@ -7740,6 +7746,7 @@ export default function App() {
           const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
           if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
           if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+          if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
         })
         .catch(() => {});
     };
@@ -8340,7 +8347,7 @@ export default function App() {
 
   // Handler for generating emails for resume candidate
   const handleGenerateResumeEmails = async () => {
-    if (!resumeCandidate) return;
+    if (!resumeCandidate) return false;
     const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
 
@@ -8351,6 +8358,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8416,13 +8424,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('ContactOut error:', e);
         alert('Failed to generate contacts via ContactOut.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     // Apollo path – requires LinkedIn URL
@@ -8432,6 +8441,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8492,13 +8502,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('Apollo error:', e);
         alert('Failed to generate contacts via Apollo.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     if (emailGenProvider === 'rocketreach') {
@@ -8507,6 +8518,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8573,13 +8585,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('RocketReach error:', e);
         alert('Failed to generate contacts via RocketReach.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     // Gemini / LLM path – requires name + company
@@ -8632,6 +8645,50 @@ export default function App() {
     }
   };
 
+  // Handler for Generate Email/Contacts button click — shows token confirmation for paid providers
+  const handleGenerateContactsClick = async () => {
+    // Gemini is free — no confirmation needed
+    if (emailGenProvider === 'gemini') {
+      handleGenerateResumeEmails();
+      return;
+    }
+    // Re-fetch token config so the popup shows the current admin-configured rate
+    try {
+      const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (r.ok) {
+        const cfg = await r.json();
+        const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
+        if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+        if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+      }
+    } catch (_) {}
+    if (tokensLeft < _APP_CONTACT_GEN_DEDUCT) {
+      alert(`Insufficient tokens. You need at least ${_APP_CONTACT_GEN_DEDUCT} token${_APP_CONTACT_GEN_DEDUCT !== 1 ? 's' : ''} to generate contacts.`);
+      return;
+    }
+    setTokenContactGenConfirmOpen(true);
+  };
+
+  // Called when user confirms the contact-gen token deduction dialog
+  const handleConfirmContactGen = async () => {
+    setTokenContactGenConfirmOpen(false);
+    const succeeded = await handleGenerateResumeEmails();
+    // Only deduct tokens if generation succeeded
+    if (!succeeded) return;
+    fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+      .then(r => r.json())
+      .then(t => {
+        if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
+        if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens);
+      })
+      .catch(err => console.error('Contact gen token deduction failed:', err));
+  };
+
   // Handler for verifying selected email in resume tab
   const handleVerifySelectedEmail = async () => {
     const selected = resumeEmailList.filter(item => item.checked);
@@ -8645,6 +8702,7 @@ export default function App() {
         const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
         if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
         if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;       setAppTokenCost(t.analytic_token_cost); }
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;        setAppContactGenDeduct(t.contact_gen_deduct); }
       }
     } catch (_) {}
     if (!hasCustomEmailVerif && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
@@ -9354,7 +9412,7 @@ export default function App() {
                                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                             {verifEngineMode === 'generate' ? (
                                                 <button 
-                                                    onClick={handleGenerateResumeEmails} 
+                                                    onClick={handleGenerateContactsClick} 
                                                     disabled={generatingEmails}
                                                     className="btn-primary"
                                                     style={{ fontSize: 12, padding: '6px 12px' }}
@@ -9941,6 +9999,23 @@ export default function App() {
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setTokenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
               <button onClick={handleConfirmVerify} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tokenContactGenConfirmOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(34,37,41,0.65)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10002 }}
+             onClick={() => setTokenContactGenConfirmOpen(false)}>
+          <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Generate Contacts</h3>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24, lineHeight: 1.6 }}>
+              Are you sure you want to proceed?&nbsp;
+              <strong>{appContactGenDeduct} token{appContactGenDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this contact generation.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => setTokenContactGenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
+              <button onClick={handleConfirmContactGen} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
             </div>
           </div>
         </div>
