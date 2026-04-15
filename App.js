@@ -8346,7 +8346,7 @@ export default function App() {
 
   // Handler for generating emails for resume candidate
   const handleGenerateResumeEmails = async () => {
-    if (!resumeCandidate) return;
+    if (!resumeCandidate) return false;
     const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
 
@@ -8357,6 +8357,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8422,13 +8423,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('ContactOut error:', e);
         alert('Failed to generate contacts via ContactOut.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     // Apollo path – requires LinkedIn URL
@@ -8438,6 +8440,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8498,13 +8501,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('Apollo error:', e);
         alert('Failed to generate contacts via Apollo.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     if (emailGenProvider === 'rocketreach') {
@@ -8513,6 +8517,7 @@ export default function App() {
         return;
       }
       setGeneratingEmails(true);
+      let _ok = false;
       try {
         const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
           method: 'POST',
@@ -8573,13 +8578,14 @@ export default function App() {
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');
         alert(summary);
+        _ok = true;
       } catch (e) {
         console.error('RocketReach error:', e);
         alert('Failed to generate contacts via RocketReach.');
       } finally {
         setGeneratingEmails(false);
       }
-      return;
+      return _ok;
     }
 
     // Gemini / LLM path – requires name + company
@@ -8660,8 +8666,9 @@ export default function App() {
   // Called when user confirms the contact-gen token deduction dialog
   const handleConfirmContactGen = async () => {
     setTokenContactGenConfirmOpen(false);
-    await handleGenerateResumeEmails();
-    // Deduct tokens after successful generation
+    const succeeded = await handleGenerateResumeEmails();
+    // Only deduct tokens if generation succeeded
+    if (!succeeded) return;
     fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
       method: 'POST',
       credentials: 'include',
