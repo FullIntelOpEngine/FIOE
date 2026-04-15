@@ -1118,6 +1118,12 @@
 // ── Constants ────────────────────────────────────────────────────────────────
 const API = '';  // same origin
 
+// BroadcastChannel for notifying App.js about config changes
+const _cfgChannel = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('fioe_api_config') : null;
+function _notifyConfigChanged(detail) {
+  if (_cfgChannel) try { _cfgChannel.postMessage({ type: 'api-config-changed', detail }); } catch (_) { /* ignore */ }
+}
+
 // ── Feature labels (with tab assignment) ─────────────────────────────────────
 // tab: 'autosourcing' | 'talent' | 'cms' | 'dashboard'
 const FEATURES = [
@@ -1191,8 +1197,9 @@ let _users   = [];
 let _appeals = [];
 let _session = null;
 let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled' }, zerobounce: { api_key_set: false, enabled: 'disabled' }, bouncer: { api_key_set: false, enabled: 'disabled' } };
-let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' } };
+let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
+let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1285,6 +1292,19 @@ async function loadData() {
     if (evRes.ok) {
       const evData = await evRes.json();
       _emailVerifConfig = evData.config || _emailVerifConfig;
+      // ContactOut and Apollo keys are stored in email_verif_config.json alongside email verif providers
+      if (_emailVerifConfig.contactout) {
+        _contactGenConfig.contactout = _emailVerifConfig.contactout;
+      } else if (_emailVerifConfig.contactus) {
+        // migrate legacy contactus key to contactout
+        _contactGenConfig.contactout = _emailVerifConfig.contactus;
+      }
+      if (_emailVerifConfig.apollo) {
+        _contactGenConfig.apollo = _emailVerifConfig.apollo;
+      }
+      if (_emailVerifConfig.rocketreach) {
+        _contactGenConfig.rocketreach = _emailVerifConfig.rocketreach;
+      }
     }
 
     if (spRes.ok) {
@@ -2804,6 +2824,7 @@ async function saveAll() {
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Save failed', 'error'); return; }
     toast('Rate limits saved successfully ✓', 'success');
+    _notifyConfigChanged('rate-limits');
   } catch (err) {
     toast('Network error: ' + err.message, 'error');
   }
@@ -3632,6 +3653,7 @@ function renderApiKeysCard() {
     { id: 'apikeys-email-verif',    label: '📧 Email Verification' },
     { id: 'apikeys-search-provider', label: '🔍 Search Provider'   },
     { id: 'apikeys-llm-model',       label: '🤖 LLM Model'         },
+    { id: 'apikeys-contact-gen',     label: '📇 Contact Generation' },
   ];
   function _switchApiKeySubTab(tabId) {
     subTabBar.querySelectorAll('.apikey-sub-tab').forEach(b => b.classList.toggle('active', b.dataset.subTab === tabId));
@@ -3676,6 +3698,16 @@ function renderApiKeysCard() {
   llmPanelDesc.textContent = 'Select the active LLM provider (Gemini, ChatGPT, or Claude) and the model to use. Only one provider is active at a time. Gemini 2.5 Flash Lite is the default.';
   llmPanel.appendChild(llmPanelDesc);
   card.appendChild(llmPanel);
+
+  // ── Contact Generation panel ──────────────────────────────────────────
+  const contactGenPanel = document.createElement('div');
+  contactGenPanel.id = 'apikeys-contact-gen';
+  contactGenPanel.className = 'apikey-sub-panel';
+  const contactGenPanelDesc = document.createElement('p');
+  contactGenPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
+  contactGenPanelDesc.textContent = 'Configure the ContactOut API for contact generation. When enabled and keys are set, App.js "Generate Email" mode can use ContactOut as an alternative to the default Gemini provider.';
+  contactGenPanel.appendChild(contactGenPanelDesc);
+  card.appendChild(contactGenPanel);
 
   const SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
 
@@ -3760,9 +3792,17 @@ function renderApiKeysCard() {
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
         // Update local state
-        _emailVerifConfig[svc] = { api_key_set: newKey ? true : cfg.api_key_set, enabled };
+        // When disabled, the backend clears the API key, so reflect that in local state
+        const keyStillSet = enabled === 'disabled' ? false : (newKey ? true : cfg.api_key_set);
+        _emailVerifConfig[svc] = { api_key_set: keyStillSet, enabled };
         keyInput.value = '';
         keyInput.placeholder = _emailVerifConfig[svc].api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        // Remove the key-set badge if service was disabled
+        if (enabled === 'disabled') {
+          const badge = keyInput.closest('.apikey-row')?.querySelector('.apikey-set-badge');
+          if (badge) badge.remove();
+        }
+        _notifyConfigChanged('email-verif');
         toast(`${_SVC_LABELS[svc]} settings saved`, 'success');
       } catch (err) {
         toast(err.message, 'error');
@@ -3865,13 +3905,20 @@ function renderApiKeysCard() {
       const serperKey  = document.getElementById('apikey-serper')?.value.trim() || '';
       const dfsLogin   = document.getElementById('apikey-dataforseo-login')?.value.trim()   || '';
       const dfsPass    = document.getElementById('apikey-dataforseo-password')?.value.trim() || '';
+      const cseApiKey  = document.getElementById('apikey-cse-key')?.value.trim()    || '';
+      const cseCx      = document.getElementById('apikey-cse-cx')?.value.trim()     || '';
+      const cseGemini  = document.getElementById('apikey-cse-gemini')?.value.trim() || '';
       const payload = {
         serper:    { enabled: _activeProvider === 'serper'    ? 'enabled' : 'disabled' },
         dataforseo: { enabled: _activeProvider === 'dataforseo' ? 'enabled' : 'disabled' },
+        google_cse: {},
       };
       if (serperKey) payload.serper.api_key  = serperKey;
       if (dfsLogin)  payload.dataforseo.login    = dfsLogin;
       if (dfsPass)   payload.dataforseo.password = dfsPass;
+      if (cseApiKey) payload.google_cse.api_key    = cseApiKey;
+      if (cseCx)     payload.google_cse.cx         = cseCx;
+      if (cseGemini) payload.google_cse.gemini_key = cseGemini;
       saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
       try {
         const r = await fetch(`${API}/admin/search-provider-config`, {
@@ -3887,11 +3934,24 @@ function renderApiKeysCard() {
         if (serperKey) _serperConfig.serper.api_key_set = true;
         if (dfsLogin)  _serperConfig.dataforseo.login_set    = true;
         if (dfsPass)   _serperConfig.dataforseo.password_set = true;
-        // Clear inputs
+        if (cseApiKey) _serperConfig.google_cse.api_key_set  = true;
+        if (cseCx)     _serperConfig.google_cse.cx_set       = true;
+        if (cseGemini) _serperConfig.google_cse.gemini_key_set = true;
+        // Clear disabled provider's key-set flags (backend clears actual keys)
+        if (enabledSp !== 'serper')    { _serperConfig.serper.api_key_set = false; }
+        if (enabledSp !== 'dataforseo') { _serperConfig.dataforseo.login_set = false; _serperConfig.dataforseo.password_set = false; }
+        // Clear inputs and update placeholders
         const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = _serperConfig.serper.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…'; }
         const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = _serperConfig.dataforseo.login_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…'; }
         const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = _serperConfig.dataforseo.password_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…'; }
+        const ck = document.getElementById('apikey-cse-key');    if (ck) { ck.value = ''; ck.placeholder = _serperConfig.google_cse.api_key_set   ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
+        const cc = document.getElementById('apikey-cse-cx');     if (cc) { cc.value = ''; cc.placeholder = _serperConfig.google_cse.cx_set         ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…'; }
+        const cg = document.getElementById('apikey-cse-gemini'); if (cg) { cg.value = ''; cg.placeholder = _serperConfig.google_cse.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
+        // Remove key-set badges for disabled providers
+        if (enabledSp !== 'serper') { const b = document.querySelector('#serper-section .apikey-set-badge'); if (b) b.remove(); }
+        if (enabledSp !== 'dataforseo') { document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove()); }
         const labels = { serper: 'Serper.dev', dataforseo: 'DataforSEO', cse: 'Google CSE' };
+        _notifyConfigChanged('search-provider');
         toast(`${labels[_activeProvider] || 'Google CSE'} is now active`, 'success');
       } catch (err) {
         toast(err.message, 'error');
@@ -3961,6 +4021,60 @@ function renderApiKeysCard() {
 
     dfsSec.appendChild(dfsRow);
     searchPanel.appendChild(dfsSec);
+
+    // ── Google CSE credentials ─────────────────────────────────────────────
+    const cseCfg = (_serperConfig && _serperConfig.google_cse) || { api_key_set: false, cx_set: false, gemini_key_set: false };
+    const cseSec = document.createElement('div');
+    cseSec.className = 'apikey-service';
+    cseSec.id = 'google-cse-section';
+    cseSec.style.marginTop = '18px';
+    const cseH3 = document.createElement('h3'); cseH3.textContent = 'Google CSE'; cseSec.appendChild(cseH3);
+    const cseRow = document.createElement('div'); cseRow.className = 'apikey-row'; cseRow.style.flexWrap = 'wrap';
+
+    // GOOGLE_CSE_API_KEY
+    const cseKeyField = document.createElement('div'); cseKeyField.className = 'apikey-field';
+    const cseKeyLabel = document.createElement('label'); cseKeyLabel.htmlFor = 'apikey-cse-key'; cseKeyLabel.textContent = 'GOOGLE_CSE_API_KEY';
+    const cseKeyInput = document.createElement('input');
+    cseKeyInput.type = 'password'; cseKeyInput.id = 'apikey-cse-key'; cseKeyInput.className = 'apikey-input';
+    cseKeyInput.placeholder = cseCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+    cseKeyInput.autocomplete = 'off';
+    cseKeyField.appendChild(cseKeyLabel); cseKeyField.appendChild(cseKeyInput);
+    if (cseCfg.api_key_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ API key saved';
+      cseKeyField.appendChild(b);
+    }
+    cseRow.appendChild(cseKeyField);
+
+    // GOOGLE_CSE_CX
+    const cseCxField = document.createElement('div'); cseCxField.className = 'apikey-field';
+    const cseCxLabel = document.createElement('label'); cseCxLabel.htmlFor = 'apikey-cse-cx'; cseCxLabel.textContent = 'GOOGLE_CSE_CX';
+    const cseCxInput = document.createElement('input');
+    cseCxInput.type = 'text'; cseCxInput.id = 'apikey-cse-cx'; cseCxInput.className = 'apikey-input';
+    cseCxInput.placeholder = cseCfg.cx_set ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…';
+    cseCxInput.autocomplete = 'off';
+    cseCxField.appendChild(cseCxLabel); cseCxField.appendChild(cseCxInput);
+    if (cseCfg.cx_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ CX saved';
+      cseCxField.appendChild(b);
+    }
+    cseRow.appendChild(cseCxField);
+
+    // Gemini API Key (for use with CSE)
+    const cseGeminiField = document.createElement('div'); cseGeminiField.className = 'apikey-field';
+    const cseGeminiLabel = document.createElement('label'); cseGeminiLabel.htmlFor = 'apikey-cse-gemini'; cseGeminiLabel.textContent = 'GEMINI_API_KEY (for CSE)';
+    const cseGeminiInput = document.createElement('input');
+    cseGeminiInput.type = 'password'; cseGeminiInput.id = 'apikey-cse-gemini'; cseGeminiInput.className = 'apikey-input';
+    cseGeminiInput.placeholder = cseCfg.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+    cseGeminiInput.autocomplete = 'off';
+    cseGeminiField.appendChild(cseGeminiLabel); cseGeminiField.appendChild(cseGeminiInput);
+    if (cseCfg.gemini_key_set) {
+      const b = document.createElement('div'); b.className = 'apikey-set-badge'; b.textContent = '✅ Gemini key saved';
+      cseGeminiField.appendChild(b);
+    }
+    cseRow.appendChild(cseGeminiField);
+
+    cseSec.appendChild(cseRow);
+    searchPanel.appendChild(cseSec);
   })();
 
   // ── LLM Model provider section ──────────────────────────────────────────────
@@ -4096,11 +4210,20 @@ function renderApiKeysCard() {
         });
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        // Update local state
+        // Update local state — clear input fields for providers that had new keys entered
         if (gemApiKey) { const el = document.getElementById('apikey-gemini'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         if (oaiApiKey) { const el = document.getElementById('apikey-openai'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
         if (antApiKey) { const el = document.getElementById('apikey-anthropic'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
+        // Clear disabled providers' input placeholders and key-set badges (backend clears actual keys)
+        for (const prov of ['gemini', 'openai', 'anthropic']) {
+          if (prov === _activeLlmProvider) continue;
+          const el = document.getElementById('apikey-' + prov);
+          if (el) { el.value = ''; el.placeholder = `Enter ${prov === 'gemini' ? 'Gemini' : prov === 'openai' ? 'ChatGPT (OpenAI)' : 'Claude (Anthropic)'} API key…`; }
+          const badge = document.querySelector(`#llm-${prov}-section .apikey-set-badge`);
+          if (badge) badge.remove();
+        }
         const labels = { gemini: 'Gemini', openai: 'ChatGPT (OpenAI)', anthropic: 'Claude (Anthropic)' };
+        _notifyConfigChanged('llm-provider');
         toast(`${labels[_activeLlmProvider] || 'Gemini'} is now the active LLM`, 'success');
       } catch (err) {
         toast(err.message, 'error');
@@ -4167,6 +4290,321 @@ function renderApiKeysCard() {
 
     // Apply initial toggle style after sections are in DOM
     setTimeout(() => { _applyLlmToggleStyle(); _syncDefaultModelField(); }, 0);
+  })();
+
+  // ── Contact Generation service section ──────────────────────────────────
+  (function renderContactGenSection() {
+    const cusCfg = (_contactGenConfig && _contactGenConfig.contactout) || { api_key_set: false, enabled: 'disabled' };
+
+    const sec = document.createElement('div');
+    sec.className = 'apikey-service';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = 'ContactOut';
+    sec.appendChild(h3);
+
+    const row = document.createElement('div');
+    row.className = 'apikey-row';
+
+    // API Key input
+    const keyField = document.createElement('div');
+    keyField.className = 'apikey-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.htmlFor = 'apikey-contactout';
+    keyLabel.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = 'apikey-contactout';
+    keyInput.className = 'apikey-input';
+    keyInput.placeholder = cusCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+    keyInput.autocomplete = 'off';
+    if (cusCfg.api_key_set) {
+      const badge = document.createElement('div');
+      badge.className = 'apikey-set-badge';
+      badge.textContent = '✅ API key saved';
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+      keyField.appendChild(badge);
+    } else {
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+    }
+    row.appendChild(keyField);
+
+    // Enable/Disable dropdown
+    const enableField = document.createElement('div');
+    enableField.className = 'apikey-field';
+    enableField.style.maxWidth = '180px';
+    const enableLabel = document.createElement('label');
+    enableLabel.htmlFor = 'apikey-contactout-enable';
+    enableLabel.textContent = 'Status';
+    const enableSelect = document.createElement('select');
+    enableSelect.id = 'apikey-contactout-enable';
+    enableSelect.className = 'apikey-input';
+    enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
+    enableSelect.value = cusCfg.enabled || 'disabled';
+    enableField.appendChild(enableLabel);
+    enableField.appendChild(enableSelect);
+    row.appendChild(enableField);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'apikey-save-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.addEventListener('click', async () => {
+      const apiKey  = keyInput.value.trim();
+      // Auto-enable when a new key is provided (matches email verif provider pattern)
+      const enabled = apiKey ? 'enabled' : enableSelect.value;
+      if (apiKey) enableSelect.value = 'enabled';
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const payload = { contactout: { enabled } };
+        if (apiKey) payload.contactout.api_key = apiKey;
+        // ContactOut key is stored in email_verif_config.json (same path-resolution as email verif providers)
+        const r = await fetch(`${API}/admin/email-verif-config`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: csrfHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        // When disabled, the backend clears the API key, so reflect that in local state
+        const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || cusCfg.api_key_set);
+        _contactGenConfig.contactout = { api_key_set: keyStillSet, enabled };
+        _emailVerifConfig.contactout = { api_key_set: keyStillSet, enabled };
+        keyInput.value = '';
+        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        // Update badge
+        const existingBadge = keyField.querySelector('.apikey-set-badge');
+        if (keyStillSet && !existingBadge) {
+          const badge = document.createElement('div');
+          badge.className = 'apikey-set-badge';
+          badge.textContent = '✅ API key saved';
+          keyField.appendChild(badge);
+        }
+        if (!keyStillSet && existingBadge) existingBadge.remove();
+        toast('ContactOut settings saved', 'success');
+        _notifyConfigChanged({ source: 'contact-gen-config' });
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save';
+      }
+    });
+    row.appendChild(saveBtn);
+
+    sec.appendChild(row);
+    contactGenPanel.appendChild(sec);
+  })();
+
+  // ── Apollo service section ──────────────────────────────────────────────
+  (function renderApolloSection() {
+    const apolloCfg = (_contactGenConfig && _contactGenConfig.apollo) || { api_key_set: false, enabled: 'disabled' };
+
+    const sec = document.createElement('div');
+    sec.className = 'apikey-service';
+    sec.style.marginTop = '18px';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = 'Apollo';
+    sec.appendChild(h3);
+
+    const row = document.createElement('div');
+    row.className = 'apikey-row';
+
+    // API Key input
+    const keyField = document.createElement('div');
+    keyField.className = 'apikey-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.htmlFor = 'apikey-apollo';
+    keyLabel.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = 'apikey-apollo';
+    keyInput.className = 'apikey-input';
+    keyInput.placeholder = apolloCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+    keyInput.autocomplete = 'off';
+    if (apolloCfg.api_key_set) {
+      const badge = document.createElement('div');
+      badge.className = 'apikey-set-badge';
+      badge.textContent = '✅ API key saved';
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+      keyField.appendChild(badge);
+    } else {
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+    }
+    row.appendChild(keyField);
+
+    // Enable/Disable dropdown
+    const enableField = document.createElement('div');
+    enableField.className = 'apikey-field';
+    enableField.style.maxWidth = '180px';
+    const enableLabel = document.createElement('label');
+    enableLabel.htmlFor = 'apikey-apollo-enable';
+    enableLabel.textContent = 'Status';
+    const enableSelect = document.createElement('select');
+    enableSelect.id = 'apikey-apollo-enable';
+    enableSelect.className = 'apikey-input';
+    enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
+    enableSelect.value = apolloCfg.enabled || 'disabled';
+    enableField.appendChild(enableLabel);
+    enableField.appendChild(enableSelect);
+    row.appendChild(enableField);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'apikey-save-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.addEventListener('click', async () => {
+      const apiKey  = keyInput.value.trim();
+      const enabled = apiKey ? 'enabled' : enableSelect.value;
+      if (apiKey) enableSelect.value = 'enabled';
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const payload = { apollo: { enabled } };
+        if (apiKey) payload.apollo.api_key = apiKey;
+        const r = await fetch(`${API}/admin/email-verif-config`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: csrfHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || apolloCfg.api_key_set);
+        _contactGenConfig.apollo = { api_key_set: keyStillSet, enabled };
+        _emailVerifConfig.apollo = { api_key_set: keyStillSet, enabled };
+        keyInput.value = '';
+        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        const existingBadge = keyField.querySelector('.apikey-set-badge');
+        if (keyStillSet && !existingBadge) {
+          const badge = document.createElement('div');
+          badge.className = 'apikey-set-badge';
+          badge.textContent = '✅ API key saved';
+          keyField.appendChild(badge);
+        }
+        if (!keyStillSet && existingBadge) existingBadge.remove();
+        toast('Apollo settings saved', 'success');
+        _notifyConfigChanged({ source: 'contact-gen-config' });
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save';
+      }
+    });
+    row.appendChild(saveBtn);
+
+    sec.appendChild(row);
+    contactGenPanel.appendChild(sec);
+  })();
+
+  // ── RocketReach service section ─────────────────────────────────────────
+  (function renderRocketReachSection() {
+    const rrCfg = (_contactGenConfig && _contactGenConfig.rocketreach) || { api_key_set: false, enabled: 'disabled' };
+
+    const sec = document.createElement('div');
+    sec.className = 'apikey-service';
+    sec.style.marginTop = '18px';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = 'RocketReach';
+    sec.appendChild(h3);
+
+    const row = document.createElement('div');
+    row.className = 'apikey-row';
+
+    // API Key input
+    const keyField = document.createElement('div');
+    keyField.className = 'apikey-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.htmlFor = 'apikey-rocketreach';
+    keyLabel.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = 'apikey-rocketreach';
+    keyInput.className = 'apikey-input';
+    keyInput.placeholder = rrCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+    keyInput.autocomplete = 'off';
+    if (rrCfg.api_key_set) {
+      const badge = document.createElement('div');
+      badge.className = 'apikey-set-badge';
+      badge.textContent = '✅ API key saved';
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+      keyField.appendChild(badge);
+    } else {
+      keyField.appendChild(keyLabel);
+      keyField.appendChild(keyInput);
+    }
+    row.appendChild(keyField);
+
+    // Enable/Disable dropdown
+    const enableField = document.createElement('div');
+    enableField.className = 'apikey-field';
+    enableField.style.maxWidth = '180px';
+    const enableLabel = document.createElement('label');
+    enableLabel.htmlFor = 'apikey-rocketreach-enable';
+    enableLabel.textContent = 'Status';
+    const enableSelect = document.createElement('select');
+    enableSelect.id = 'apikey-rocketreach-enable';
+    enableSelect.className = 'apikey-input';
+    enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
+    enableSelect.value = rrCfg.enabled || 'disabled';
+    enableField.appendChild(enableLabel);
+    enableField.appendChild(enableSelect);
+    row.appendChild(enableField);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'apikey-save-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.addEventListener('click', async () => {
+      const apiKey  = keyInput.value.trim();
+      const enabled = apiKey ? 'enabled' : enableSelect.value;
+      if (apiKey) enableSelect.value = 'enabled';
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const payload = { rocketreach: { enabled } };
+        if (apiKey) payload.rocketreach.api_key = apiKey;
+        const r = await fetch(`${API}/admin/email-verif-config`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: csrfHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || rrCfg.api_key_set);
+        _contactGenConfig.rocketreach = { api_key_set: keyStillSet, enabled };
+        _emailVerifConfig.rocketreach = { api_key_set: keyStillSet, enabled };
+        keyInput.value = '';
+        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter API key…';
+        const existingBadge = keyField.querySelector('.apikey-set-badge');
+        if (keyStillSet && !existingBadge) {
+          const badge = document.createElement('div');
+          badge.className = 'apikey-set-badge';
+          badge.textContent = '✅ API key saved';
+          keyField.appendChild(badge);
+        }
+        if (!keyStillSet && existingBadge) existingBadge.remove();
+        toast('RocketReach settings saved', 'success');
+        _notifyConfigChanged({ source: 'contact-gen-config' });
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save';
+      }
+    });
+    row.appendChild(saveBtn);
+
+    sec.appendChild(row);
+    contactGenPanel.appendChild(sec);
   })();
 
   return card;

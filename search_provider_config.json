@@ -7,5 +7,10 @@
     "login": "orlha@hotmail.com",
     "password": "42827a1b215fb12c",
     "enabled": "disabled"
+  },
+  "google_cse": {
+    "api_key": "AIzaSyB51v8tCR0Lx_zFg6ekvxzZ8sdUSLhziaA",
+    "cx": "7625de7a59a0246b2",
+    "gemini_key": "AIzaSyB51v8tCR0Lx_zFg6ekvxzZ8sdUSLhziaA"
   }
 }
