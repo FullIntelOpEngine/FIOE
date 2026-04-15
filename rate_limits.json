@@ -110,37 +110,34 @@
     "sourcing_rate_best_over50": 2.5,
     "sourcing_rate_over50": 2,
     "token_cost_sgd": 0.2,
-    "verified_selection_deduct": 5
+    "verified_selection_deduct": 5,
+    "contact_gen_deduct": 8
   },
   "access_levels": {
     "BYOK": {
+      "_syscfg_autosourcing": {},
+      "_syscfg_cms": {},
+      "_syscfg_consulting": {},
+      "_syscfg_talent_evaluation": {},
       "autosourcing": {
         "vskillset_infer": {
           "requests": 120,
           "window_seconds": 60
         }
       },
-      "talent_evaluation": {},
       "cms": {},
       "consulting": {},
-      "_syscfg_autosourcing": {},
-      "_syscfg_talent_evaluation": {},
-      "_syscfg_cms": {},
-      "_syscfg_consulting": {}
-    }
-  },
-  "ml": {
-    "confidence_level": {
-      "admin": 0.5,
-      "byok": 0.6,
-      "standard": 0.7,
-      "junior": 0.9
+      "talent_evaluation": {}
     },
-    "user_consenses": {
-      "admin": 1,
-      "byok": 2,
-      "standard": 3,
-      "junior": 5
+    "admin": {
+      "autosourcing": {},
+      "_syscfg_autosourcing": {},
+      "talent_evaluation": {},
+      "_syscfg_talent_evaluation": {},
+      "cms": {},
+      "_syscfg_cms": {},
+      "consulting": {},
+      "_syscfg_consulting": {}
     }
   }
 }

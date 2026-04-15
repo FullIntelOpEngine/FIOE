@@ -3890,6 +3890,13 @@ def _svc_config_path(username: str) -> str:
     return os.path.join(svc_dir, _porting_safe_name(username) + '.enc')
 
 
+def _svc_config_json_path(username: str) -> str:
+    """Plaintext JSON fallback path (when PORTING_SECRET is not set) — matches server.js."""
+    svc_dir = os.path.join(_PORTING_INPUT_DIR, 'user-services')
+    os.makedirs(svc_dir, exist_ok=True)
+    return os.path.join(svc_dir, _porting_safe_name(username) + '.json')
+
+
 def _svc_config_encrypt(data: bytes) -> bytes:
     """AES-256-GCM encrypt in Node.js-compatible format: IV(16) + tag(16) + ciphertext."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -3933,22 +3940,33 @@ def user_svc_config_status():
     if err:
         return err
     try:
-        path = _svc_config_path(username)
-        if not os.path.isfile(path):
+        stored = None
+        # Try encrypted .enc first, then plaintext .json (matches server.js readUserServiceConfig)
+        enc_path = _svc_config_path(username)
+        json_path = _svc_config_json_path(username)
+        if os.path.isfile(enc_path):
+            try:
+                with open(enc_path, 'rb') as fh:
+                    raw = fh.read()
+                decrypted = _svc_config_decrypt(raw)
+                stored = json.loads(decrypted.decode('utf-8'))
+            except Exception:
+                logger.warning("[user-service-config/status] .enc decrypt failed for %s — trying .json", username, exc_info=True)
+        if stored is None and os.path.isfile(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as fh:
+                    stored = json.load(fh)
+            except Exception:
+                logger.warning("[user-service-config/status] .json parse failed for %s", username, exc_info=True)
+        if stored is None:
             return jsonify({"active": False})
-        with open(path, 'rb') as fh:
-            raw = fh.read()
-        try:
-            decrypted = _svc_config_decrypt(raw)
-            stored = json.loads(decrypted.decode('utf-8'))
-            providers = {
-                'search': stored.get('search', {}).get('provider', 'google_cse'),
-                'llm': stored.get('llm', {}).get('provider', 'gemini'),
-                'email_verif': stored.get('email_verif', {}).get('provider', 'default'),
-            }
-            return jsonify({"active": True, "providers": providers})
-        except Exception:
-            return jsonify({"active": False})
+        providers = {
+            'search': stored.get('search', {}).get('provider', 'google_cse'),
+            'llm': stored.get('llm', {}).get('provider', 'gemini'),
+            'email_verif': stored.get('email_verif', {}).get('provider', 'default'),
+            'contact_gen': stored.get('contact_gen', {}).get('provider', 'gemini'),
+        }
+        return jsonify({"active": True, "providers": providers})
     except Exception as exc:
         logger.exception("[user-service-config/status]")
         return jsonify({"error": "Could not retrieve service config status"}), 500
@@ -3962,16 +3980,25 @@ def user_svc_config_search_keys():
     if err:
         return err
     try:
-        path = _svc_config_path(username)
-        if not os.path.isfile(path):
-            return jsonify({"provider": "google_cse"})
-        with open(path, 'rb') as fh:
-            raw = fh.read()
-        try:
-            decrypted = _svc_config_decrypt(raw)
-            cfg = json.loads(decrypted.decode('utf-8'))
-        except Exception:
-            logger.warning("[user-service-config/search-keys] decrypt/parse failed for %s", username)
+        cfg = None
+        # Try .enc then .json (matches server.js readUserServiceConfig)
+        enc_path = _svc_config_path(username)
+        json_path = _svc_config_json_path(username)
+        if os.path.isfile(enc_path):
+            try:
+                with open(enc_path, 'rb') as fh:
+                    raw = fh.read()
+                decrypted = _svc_config_decrypt(raw)
+                cfg = json.loads(decrypted.decode('utf-8'))
+            except Exception:
+                logger.warning("[user-service-config/search-keys] .enc decrypt/parse failed for %s", username, exc_info=True)
+        if cfg is None and os.path.isfile(json_path):
+            try:
+                with open(json_path, 'r', encoding='utf-8') as fh:
+                    cfg = json.load(fh)
+            except Exception:
+                logger.warning("[user-service-config/search-keys] .json parse failed for %s", username, exc_info=True)
+        if cfg is None:
             return jsonify({"provider": "google_cse"})
         search = cfg.get('search', {})
         result = {"provider": search.get('provider', 'google_cse')}
@@ -4287,23 +4314,32 @@ def user_svc_config_validate():
 
 @app.post("/api/user-service-config/activate")
 def user_svc_config_activate():
-    """Encrypt and store per-user service config."""
+    """Store per-user service config. Encrypts when PORTING_SECRET is set,
+    otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""
     username, err = _porting_login_required()
     if err:
         return err
     try:
         body = request.get_json(silent=True) or {}
-        # Store the whole payload (providers + keys) encrypted
-        raw = json.dumps({
+        cfg = {
             'username': username,
             'search': body.get('search') or {},
             'llm': body.get('llm') or {},
             'email_verif': body.get('email_verif') or {},
-        }).encode('utf-8')
-        encrypted = _svc_config_encrypt(raw)
-        dest = _svc_config_path(username)
-        with open(dest, 'wb') as fh:
-            fh.write(encrypted)
+            'contact_gen': body.get('contact_gen') or {},
+        }
+        raw = json.dumps(cfg).encode('utf-8')
+        if os.getenv("PORTING_SECRET", "").strip():
+            # Encrypted storage — server.js can decrypt with the same PORTING_SECRET
+            encrypted = _svc_config_encrypt(raw)
+            dest = _svc_config_path(username)
+            with open(dest, 'wb') as fh:
+                fh.write(encrypted)
+        else:
+            # Plaintext JSON fallback — matches server.js behavior when no PORTING_SECRET
+            dest = _svc_config_json_path(username)
+            with open(dest, 'w', encoding='utf-8') as fh:
+                fh.write(raw.decode('utf-8'))
         log_infrastructure("user_svc_config_activated", username=username,
                            detail="Per-user service config activated", status="success")
         return jsonify({"ok": True, "active": True})
@@ -4319,9 +4355,13 @@ def user_svc_config_deactivate():
     if err:
         return err
     try:
-        path = _svc_config_path(username)
-        if os.path.isfile(path):
-            os.remove(path)
+        # Remove both .enc and .json files (matches server.js deleteUserServiceConfig)
+        for fp in (_svc_config_path(username), _svc_config_json_path(username)):
+            try:
+                if os.path.isfile(fp):
+                    os.remove(fp)
+            except OSError:
+                pass
         log_infrastructure("user_svc_config_deactivated", username=username,
                            detail="Per-user service config removed", status="success")
         return jsonify({"ok": True, "active": False})
