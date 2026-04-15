@@ -7649,6 +7649,10 @@ export default function App() {
   const [hasCustomEmailVerif, setHasCustomEmailVerif] = useState(false);
   const [hasCustomLlm, setHasCustomLlm] = useState(false);
   const [hasCustomContactGen, setHasCustomContactGen] = useState(false);
+  // Track the specific provider names so deduction bypass only applies when the
+  // currently selected service matches the user's own api_porting.html key.
+  const [customEmailVerifProvider, setCustomEmailVerifProvider] = useState('');
+  const [customContactGenProvider, setCustomContactGenProvider] = useState('');
 
   // Status Management State
   const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
@@ -7731,6 +7735,15 @@ export default function App() {
       setHasCustomEmailVerif(userEmailVerif);
       setHasCustomLlm(userLlm);
       setHasCustomContactGen(userContactGen);
+      // Track specific provider names — deduction bypass only applies when the
+      // currently selected service matches the user's own provider.
+      if (svcData && svcData.active && svcData.providers) {
+        setCustomEmailVerifProvider((svcData.providers.email_verif || '').toLowerCase());
+        setCustomContactGenProvider((svcData.providers.contact_gen || '').toLowerCase());
+      } else {
+        setCustomEmailVerifProvider('');
+        setCustomContactGenProvider('');
+      }
     }).catch(err => console.error('[ServiceConfig] refresh failed:', err));
   }, [user]);
 
@@ -8678,9 +8691,11 @@ export default function App() {
       handleGenerateResumeEmails();
       return;
     }
-    // User's own Option A contact gen keys — no popup, no deduction; proceed directly
-    // On failure, alert the user and offer Gemini fallback with token deduction
-    if (hasCustomContactGen) {
+    // User's own Option A contact gen keys — no popup, no deduction ONLY when the
+    // currently selected service matches the user's own provider from api_porting.html.
+    // On failure, alert the user and offer Gemini fallback with token deduction.
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (usingOwnContactGenKey) {
       const succeeded = await handleGenerateResumeEmails();
       if (!succeeded) {
         // Fetch latest token balance for the fallback popup
@@ -8745,12 +8760,14 @@ export default function App() {
   const handleConfirmContactGen = async () => {
     setTokenContactGenConfirmOpen(false);
     const succeeded = await handleGenerateResumeEmails();
-    // Only deduct tokens if generation succeeded; skip if user has own keys
-    if (!succeeded || hasCustomContactGen) return;
+    // Only deduct tokens if generation succeeded; skip only when using own matching key
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (!succeeded || usingOwnContactGenKey) return;
     fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ service: emailGenProvider }),
     })
       .then(r => r.json())
       .then(t => {
@@ -8765,8 +8782,10 @@ export default function App() {
     const selected = resumeEmailList.filter(item => item.checked);
     if (selected.length === 0) { alert('Please select an email to verify.'); return; }
     if (selected.length > 1) { alert('Please verify one email at a time.'); return; }
-    // User's own Option A keys — no popup, no deduction; proceed directly
-    if (hasCustomEmailVerif) {
+    // User's own Option A keys — no popup, no deduction ONLY when the currently
+    // selected service matches the user's own provider from api_porting.html.
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
+    if (usingOwnVerifKey) {
       setPendingVerifyEmail(selected[0].value);
       handleConfirmVerify(selected[0].value);
       return;
@@ -8794,6 +8813,7 @@ export default function App() {
     setVerifyingEmail(true);
     setVerifyModalEmail(emailToVerify);
     setVerifyModalData(null);
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
     try {
       const res = await fetch(`http://localhost:${API_PORT}/verify-email-details`, {
         method: 'POST',
@@ -8804,9 +8824,13 @@ export default function App() {
       if (!res.ok) throw new Error('Verification failed');
       const data = await res.json();
       setVerifyModalData(data);
-      // Deduct tokens on successful verification (skipped when custom email verif API is active)
-      if (!hasCustomEmailVerif) {
-        fetch(`http://localhost:${API_PORT}/deduct-tokens`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      // Deduct tokens on successful verification — only when NOT using user's own matching key
+      if (!usingOwnVerifKey) {
+        fetch(`http://localhost:${API_PORT}/deduct-tokens`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ service: emailVerifService }),
+        })
           .then(r => r.json())
           .then(t => {
             if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
@@ -8815,7 +8839,54 @@ export default function App() {
           .catch(err => console.error('Token deduction failed:', err));
       }
     } catch (e) {
-      alert('Email verification failed.');
+      // If user's own key failed mid-process, offer retry with admin key + token deduction
+      if (usingOwnVerifKey) {
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        let deductAmt = _APP_VERIFIED_SELECTION_DEDUCT;
+        try {
+          const r2 = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r2.ok) { const cfg = await r2.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.verified_selection_deduct === 'number') { deductAmt = t.verified_selection_deduct; _APP_VERIFIED_SELECTION_DEDUCT = deductAmt; setAppVerifiedDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doRetry = window.confirm(
+          `Your ${emailVerifService.charAt(0).toUpperCase() + emailVerifService.slice(1)} API service failed.\n\n` +
+          `Retrying with platform key will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed?`
+        );
+        if (doRetry) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); setVerifyingEmail(false); return; }
+          try {
+            const retryRes = await fetch(`http://localhost:${API_PORT}/verify-email-details`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ email: emailToVerify, service: emailVerifService, force_admin: true }),
+              credentials: 'include'
+            });
+            if (!retryRes.ok) throw new Error('Retry failed');
+            const data = await retryRes.json();
+            setVerifyModalData(data);
+            fetch(`http://localhost:${API_PORT}/deduct-tokens`, {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ service: emailVerifService }),
+            })
+              .then(r => r.json())
+              .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+              .catch(err => console.error('Retry token deduction failed:', err));
+          } catch (_) {
+            alert('Email verification failed even with platform key.');
+          }
+        }
+      } else {
+        alert('Email verification failed.');
+      }
     } finally {
       setVerifyingEmail(false);
     }
@@ -9544,25 +9615,35 @@ export default function App() {
                                                         <button
                                                             type="button"
                                                             onClick={() => setVerifEngineMode('verify')}
+                                                            className="verif-toggle-btn"
                                                             style={{
                                                                 flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
                                                                 background: verifEngineMode === 'verify' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
                                                                 color: verifEngineMode === 'verify' ? '#fff' : 'var(--fg, #333)',
                                                                 fontWeight: verifEngineMode === 'verify' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'verify' ? 1 : 0.55,
                                                             }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'verify') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'verify' ? '1' : '0.55'; }}
                                                         >
                                                             Verify Selected
                                                         </button>
                                                         <button
                                                             type="button"
                                                             onClick={() => setVerifEngineMode('generate')}
+                                                            className="verif-toggle-btn"
                                                             style={{
                                                                 flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
                                                                 borderLeft: '1px solid var(--neutral-border)',
                                                                 background: verifEngineMode === 'generate' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
                                                                 color: verifEngineMode === 'generate' ? '#fff' : 'var(--fg, #333)',
                                                                 fontWeight: verifEngineMode === 'generate' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'generate' ? 1 : 0.55,
                                                             }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'generate') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'generate' ? '1' : '0.55'; }}
                                                         >
                                                             Generate Email
                                                         </button>

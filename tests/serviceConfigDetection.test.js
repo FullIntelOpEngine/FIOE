@@ -31,13 +31,16 @@
  */
 function computeFlags(svcData, platformData) {
   let userEmailVerif = false, userLlm = false, userContactGen = false;
+  let emailVerifProvider = '', contactGenProvider = '';
   if (svcData && svcData.active && svcData.providers) {
     const ep = (svcData.providers.email_verif || '').toLowerCase();
     userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
+    emailVerifProvider = ep;
     const lp = (svcData.providers.llm || '').toLowerCase();
     userLlm = lp === 'openai' || lp === 'anthropic';
     const cp = (svcData.providers.contact_gen || '').toLowerCase();
     userContactGen = cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach';
+    contactGenProvider = cp;
   }
   const platEmailVerif = !!(platformData && platformData.email_verif_custom);
   const platLlm = !!(platformData && platformData.llm_custom);
@@ -46,6 +49,8 @@ function computeFlags(svcData, platformData) {
     hasCustomEmailVerif: userEmailVerif,
     hasCustomLlm: userLlm,
     hasCustomContactGen: userContactGen,
+    emailVerifProvider,
+    contactGenProvider,
     platEmailVerif,
     platLlm,
   };
@@ -69,6 +74,17 @@ function shouldVerifySelectDeduct(flags) {
 }
 
 /**
+ * Given the flags AND the currently selected service, determines whether Verify
+ * Select should deduct tokens.  Deduction is only skipped when the selected
+ * service matches the user's own provider — not merely because the user has
+ * SOME custom email verif key.
+ */
+function shouldVerifySelectDeductForService(flags, selectedService) {
+  const usingOwn = flags.hasCustomEmailVerif && (selectedService || '').toLowerCase() === flags.emailVerifProvider;
+  return !usingOwn;
+}
+
+/**
  * Given the flags, determines whether DB Dockin Analytic should deduct tokens.
  * Mirrors the condition: !hasCustomLlm && !hasCustomEmailVerif
  */
@@ -82,6 +98,16 @@ function shouldAnalyticDeduct(flags) {
  */
 function shouldContactGenDeduct(flags) {
   return !flags.hasCustomContactGen;
+}
+
+/**
+ * Given the flags AND the currently selected service, determines whether
+ * Contact Gen should deduct tokens.  Deduction is only skipped when the
+ * selected service matches the user's own provider.
+ */
+function shouldContactGenDeductForService(flags, selectedService) {
+  const usingOwn = flags.hasCustomContactGen && (selectedService || '').toLowerCase() === flags.contactGenProvider;
+  return !usingOwn;
 }
 
 // ── Test Cases ──────────────────────────────────────────────────────────────
@@ -286,5 +312,53 @@ describe('Service Config Detection — api_porting.html vs admin_rate_limits.htm
     expect(flags.hasCustomEmailVerif).toBe(true);
     expect(shouldContactGenDeduct(flags)).toBe(false);
     expect(shouldVerifySelectDeduct(flags)).toBe(false); // both suppressed
+  });
+
+  // ── Scenario 11: Provider matching — deduction only skipped when selected matches own ──
+
+  test('User has Neverbounce but selects Bouncer → deduction applies', () => {
+    const svcData = { active: true, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'neverbounce' } };
+    const flags = computeFlags(svcData, null);
+    expect(flags.hasCustomEmailVerif).toBe(true);
+    expect(flags.emailVerifProvider).toBe('neverbounce');
+    // Selecting their own provider → no deduction
+    expect(shouldVerifySelectDeductForService(flags, 'neverbounce')).toBe(false);
+    // Selecting a DIFFERENT provider → deduction applies
+    expect(shouldVerifySelectDeductForService(flags, 'bouncer')).toBe(true);
+    expect(shouldVerifySelectDeductForService(flags, 'zerobounce')).toBe(true);
+    expect(shouldVerifySelectDeductForService(flags, 'default')).toBe(true);
+  });
+
+  test('User has ContactOut but selects Apollo → deduction applies', () => {
+    const svcData = { active: true, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default', contact_gen: 'contactout' } };
+    const flags = computeFlags(svcData, null);
+    expect(flags.hasCustomContactGen).toBe(true);
+    expect(flags.contactGenProvider).toBe('contactout');
+    // Selecting their own provider → no deduction
+    expect(shouldContactGenDeductForService(flags, 'contactout')).toBe(false);
+    // Selecting a DIFFERENT provider → deduction applies
+    expect(shouldContactGenDeductForService(flags, 'apollo')).toBe(true);
+    expect(shouldContactGenDeductForService(flags, 'rocketreach')).toBe(true);
+  });
+
+  test('No custom keys → deduction always applies regardless of selected service', () => {
+    const svcData = { active: false, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default' } };
+    const flags = computeFlags(svcData, null);
+    expect(shouldVerifySelectDeductForService(flags, 'neverbounce')).toBe(true);
+    expect(shouldVerifySelectDeductForService(flags, 'bouncer')).toBe(true);
+    expect(shouldContactGenDeductForService(flags, 'contactout')).toBe(true);
+    expect(shouldContactGenDeductForService(flags, 'apollo')).toBe(true);
+  });
+
+  test('User has RocketReach + ZeroBounce — mixed provider matching', () => {
+    const svcData = { active: true, providers: { search: 'serper', llm: 'openai', email_verif: 'zerobounce', contact_gen: 'rocketreach' } };
+    const flags = computeFlags(svcData, null);
+    // Email verif: zerobounce is own, bouncer is not
+    expect(shouldVerifySelectDeductForService(flags, 'zerobounce')).toBe(false);
+    expect(shouldVerifySelectDeductForService(flags, 'bouncer')).toBe(true);
+    // Contact gen: rocketreach is own, apollo is not
+    expect(shouldContactGenDeductForService(flags, 'rocketreach')).toBe(false);
+    expect(shouldContactGenDeductForService(flags, 'apollo')).toBe(true);
+    expect(shouldContactGenDeductForService(flags, 'contactout')).toBe(true);
   });
 });
