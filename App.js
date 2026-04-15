@@ -7512,32 +7512,51 @@ export default function App() {
   // Load available email verification services configured by admin.
   // Re-fetch whenever the Verif. Engine bar is expanded so freshly-configured
   // services (Neverbounce / ZeroBounce / Bouncer) appear without a page reload.
+  // Fetch admin-configured email verif services AND per-user service config so that
+  // api_porting.html Option A keys always appear in the Verif Engine dropdown.
+  // Using Promise.all ensures both sources are merged in one definitive list update,
+  // preventing the per-user service from being wiped when only admin services are fetched.
   const _fetchEmailVerifServices = () => {
-    fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data && Array.isArray(data.services)) {
-          setAvailableEmailServices(data.services);
-          // Auto-select the first configured service when the user hasn't
-          // explicitly chosen one yet, so a newly-saved key is immediately active.
-          setEmailVerifService(prev => (prev === 'default' && data.services.length > 0) ? data.services[0] : prev);
+    Promise.all([
+      fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user email verif service (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        if (['neverbounce', 'zerobounce', 'bouncer'].includes(ep) && !svcs.includes(ep)) {
+          svcs.push(ep);
         }
-      })
-      .catch(() => {});
+      }
+      setAvailableEmailServices(svcs);
+      // Auto-select the first configured service when the user hasn't explicitly chosen one yet.
+      setEmailVerifService(prev => (prev === 'default' && svcs.length > 0) ? svcs[0] : prev);
+    }).catch(() => {});
   };
   useEffect(() => { _fetchEmailVerifServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchEmailVerifServices(); }, [verifBarExpanded]); // on bar open
 
-  // Load available contact generation services (ContactOut) configured by admin.
+  // Load available contact generation services configured by admin AND per-user config.
+  // Same pattern as _fetchEmailVerifServices — merges both sources into one definitive list.
   const _fetchContactGenServices = () => {
-    fetch('http://localhost:4000/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data && Array.isArray(data.services)) {
-          setAvailableContactGenServices(data.services);
+    Promise.all([
+      fetch('http://localhost:4000/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user contact gen provider (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const cgp = (svcData.providers.contact_gen || '').toLowerCase();
+        if (['contactout', 'apollo', 'rocketreach'].includes(cgp) && !svcs.includes(cgp)) {
+          svcs.push(cgp);
+          setEmailGenProvider(prev => prev === 'gemini' ? cgp : prev);
         }
-      })
-      .catch(() => {});
+      }
+      setAvailableContactGenServices(svcs);
+    }).catch(() => {});
   };
   useEffect(() => { _fetchContactGenServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchContactGenServices(); }, [verifBarExpanded]); // on bar open
@@ -7681,7 +7700,9 @@ export default function App() {
   }, [user]);
 
   // Fetch per-user service config AND admin platform-level config to detect custom providers.
-  // Tokens are hidden / deductions skipped when custom providers are active at EITHER level.
+  // Dropdown population (availableEmailServices / availableContactGenServices) is now handled
+  // by _fetchEmailVerifServices / _fetchContactGenServices which merge both admin and per-user
+  // sources atomically.  _refreshServiceConfig only updates the token deduction flags.
   const _refreshServiceConfig = useCallback(() => {
     if (!user || !user.username) return;
     Promise.all([
@@ -7695,21 +7716,6 @@ export default function App() {
         userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
         const lp = (svcData.providers.llm || '').toLowerCase();
         userLlm = lp === 'openai' || lp === 'anthropic';
-
-        // When a per-user email verif service is active, surface it in the
-        // Verif Engine dropdown so api_porting.html Option A keys are usable.
-        if (userEmailVerif) {
-          setAvailableEmailServices(prev => prev.includes(ep) ? prev : [...prev, ep]);
-          setEmailVerifService(prev => prev === 'default' ? ep : prev);
-        }
-
-        // When a per-user contact gen provider is active, surface it in the
-        // Generate Email dropdown so api_porting.html Option A keys are usable.
-        const cgp = (svcData.providers.contact_gen || '').toLowerCase();
-        if (['contactout', 'apollo', 'rocketreach'].includes(cgp)) {
-          setAvailableContactGenServices(prev => prev.includes(cgp) ? prev : [...prev, cgp]);
-          setEmailGenProvider(prev => prev === 'gemini' ? cgp : prev);
-        }
       }
       // Admin platform flags (from admin_rate_limits.html) — detected so App.js
       // can confirm it reads both config sources, but intentionally excluded from
@@ -7725,14 +7731,15 @@ export default function App() {
   }, [user]);
   useEffect(() => {
     _refreshServiceConfig();
+    _fetchEmailVerifServices();
     _fetchContactGenServices();
-    const onFocus = () => { _refreshServiceConfig(); _fetchContactGenServices(); };
-    const onVisible = () => { if (document.visibilityState === 'visible') { _refreshServiceConfig(); _fetchContactGenServices(); } };
+    const onFocus = () => { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); } };
     window.addEventListener('focus', onFocus);
     document.addEventListener('visibilitychange', onVisible);
     // Poll every 30 s so dynamic key changes in api_porting.html / admin_rate_limits.html
     // propagate even when BroadcastChannel cannot cross origins (port 4000 → 3000).
-    const poll = setInterval(() => { _refreshServiceConfig(); _fetchContactGenServices(); }, 30000);
+    const poll = setInterval(() => { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); }, 30000);
     return () => {
       window.removeEventListener('focus', onFocus);
       document.removeEventListener('visibilitychange', onVisible);
