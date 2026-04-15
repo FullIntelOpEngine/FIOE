@@ -3951,13 +3951,13 @@ def user_svc_config_status():
                 decrypted = _svc_config_decrypt(raw)
                 stored = json.loads(decrypted.decode('utf-8'))
             except Exception:
-                logger.warning("[user-service-config/status] .enc decrypt failed for %s — trying .json", username)
+                logger.warning("[user-service-config/status] .enc decrypt failed for %s — trying .json", username, exc_info=True)
         if stored is None and os.path.isfile(json_path):
             try:
                 with open(json_path, 'r', encoding='utf-8') as fh:
                     stored = json.load(fh)
             except Exception:
-                logger.warning("[user-service-config/status] .json parse failed for %s", username)
+                logger.warning("[user-service-config/status] .json parse failed for %s", username, exc_info=True)
         if stored is None:
             return jsonify({"active": False})
         providers = {
@@ -3991,13 +3991,13 @@ def user_svc_config_search_keys():
                 decrypted = _svc_config_decrypt(raw)
                 cfg = json.loads(decrypted.decode('utf-8'))
             except Exception:
-                logger.warning("[user-service-config/search-keys] .enc decrypt/parse failed for %s", username)
+                logger.warning("[user-service-config/search-keys] .enc decrypt/parse failed for %s", username, exc_info=True)
         if cfg is None and os.path.isfile(json_path):
             try:
                 with open(json_path, 'r', encoding='utf-8') as fh:
                     cfg = json.load(fh)
             except Exception:
-                logger.warning("[user-service-config/search-keys] .json parse failed for %s", username)
+                logger.warning("[user-service-config/search-keys] .json parse failed for %s", username, exc_info=True)
         if cfg is None:
             return jsonify({"provider": "google_cse"})
         search = cfg.get('search', {})
@@ -4336,7 +4336,7 @@ def user_svc_config_activate():
             with open(dest, 'wb') as fh:
                 fh.write(encrypted)
         else:
-            # Plaintext JSON fallback — matches server.js behaviour when no PORTING_SECRET
+            # Plaintext JSON fallback — matches server.js behavior when no PORTING_SECRET
             dest = _svc_config_json_path(username)
             with open(dest, 'w', encoding='utf-8') as fh:
                 fh.write(raw.decode('utf-8'))
