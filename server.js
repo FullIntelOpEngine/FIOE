@@ -9224,8 +9224,8 @@ app.get('/api/events', (req, res) => {
 // as _EMAIL_VERIF_CONFIG_PATHS.
 const PORTING_INPUT_DIR = (() => {
   if (process.env.PORTING_INPUT_DIR) return path.resolve(process.env.PORTING_INPUT_DIR);
-  // Walk up from __dirname (up to 5 levels) to locate the Autosourcing root.
-  // Prioritise the webbridge.py marker so we always match where
+  // Walk up from __dirname (up to 6 levels) to locate the Autosourcing root.
+  // Prioritize the webbridge.py marker so we always match where
   // webbridge_routes.py writes — avoids stale porting_input dirs at closer levels.
   const levels = [];
   let cur = __dirname;
