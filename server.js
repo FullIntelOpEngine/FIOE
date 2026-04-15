@@ -9224,33 +9224,52 @@ app.get('/api/events', (req, res) => {
 // as _EMAIL_VERIF_CONFIG_PATHS.
 const PORTING_INPUT_DIR = (() => {
   if (process.env.PORTING_INPUT_DIR) return path.resolve(process.env.PORTING_INPUT_DIR);
-  const levels = [__dirname, path.join(__dirname, '..'), path.join(__dirname, '..', '..')];
-  // Prefer an existing porting_input directory.
+  // Walk up from __dirname (up to 5 levels) to locate the Autosourcing root.
+  // Prioritise the webbridge.py marker so we always match where
+  // webbridge_routes.py writes — avoids stale porting_input dirs at closer levels.
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;          // filesystem root reached
+    cur = parent;
+  }
+  // 1) Canonical: the directory that contains webbridge.py (Autosourcing root).
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_input');
+  }
+  // 2) Fallback: an already-existing porting_input directory.
   for (const d of levels) {
     const p = path.join(d, 'porting_input');
     if (fs.existsSync(p)) return p;
   }
-  // Fall back to the directory that contains webbridge.py (Autosourcing root).
-  for (const d of levels) {
-    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_input');
-  }
   return path.join(__dirname, 'porting_input');
 })();
+console.log('[startup] PORTING_INPUT_DIR resolved to', PORTING_INPUT_DIR);
 
 // Confirmed field-mappings per user, persisted as JSON on disk.
 // Same search-up pattern as PORTING_INPUT_DIR.
 const PORTING_MAPPINGS_DIR = (() => {
   if (process.env.PORTING_MAPPINGS_DIR) return path.resolve(process.env.PORTING_MAPPINGS_DIR);
-  const levels = [__dirname, path.join(__dirname, '..'), path.join(__dirname, '..', '..')];
-  for (const d of levels) {
-    const p = path.join(d, 'porting_mappings');
-    if (fs.existsSync(p)) return p;
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
   }
   for (const d of levels) {
     if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_mappings');
   }
+  for (const d of levels) {
+    const p = path.join(d, 'porting_mappings');
+    if (fs.existsSync(p)) return p;
+  }
   return path.join(__dirname, 'porting_mappings');
 })();
+console.log('[startup] PORTING_MAPPINGS_DIR resolved to', PORTING_MAPPINGS_DIR);
 
 // All columns present in the `process` table – used for Gemini mapping.
 const PROCESS_TABLE_FIELDS = [
@@ -9798,6 +9817,7 @@ function decryptBuffer(buf) {
 function readUserServiceConfig(username) {
   const encPath  = userServiceConfigPath(username);
   const jsonPath = _userServiceJsonPath(username);
+  console.log('[readUserServiceConfig] %s → checking enc=%s  json=%s', username, encPath, jsonPath);
   if (fs.existsSync(encPath)) {
     try {
       const raw = decryptBuffer(fs.readFileSync(encPath));
