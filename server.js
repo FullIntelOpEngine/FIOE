@@ -7534,10 +7534,19 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!linkedinurl) {
         return res.status(400).json({ error: 'LinkedIn URL is required for ContactOut lookup.' });
       }
-      const cgCfg = loadEmailVerifConfig();
-      const cusCfg = cgCfg.contactout || {};
-      if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
-        return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
+      // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      let contactoutApiKey = null;
+      const userSvcCfg = readUserServiceConfig(req.user.username);
+      if (userSvcCfg && userSvcCfg.contact_gen?.provider === 'contactout' && userSvcCfg.contact_gen?.CONTACTOUT_API_KEY) {
+        contactoutApiKey = userSvcCfg.contact_gen.CONTACTOUT_API_KEY;
+      }
+      if (!contactoutApiKey) {
+        const cgCfg = loadEmailVerifConfig();
+        const cusCfg = cgCfg.contactout || {};
+        if (!cusCfg.api_key || cusCfg.enabled !== 'enabled') {
+          return res.status(400).json({ error: 'ContactOut is not enabled or API key is missing.' });
+        }
+        contactoutApiKey = cusCfg.api_key;
       }
 
       // Normalize LinkedIn URL: ensure https:// prefix and clean trailing slashes
@@ -7552,7 +7561,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       // Call ContactOut API: GET /v1/people/linkedin?profile=<url>&include_phone=true&email_type=work
       // email_type=work triggers real-time work email lookup per ContactOut docs
-      console.log('[ContactOut] Starting API call — profile:', normalizedUrl, '| key configured:', !!cusCfg.api_key);
+      console.log('[ContactOut] Starting API call — profile:', normalizedUrl, '| key configured:', !!contactoutApiKey);
       const contactRes = await new Promise((resolve, reject) => {
         const apiUrl = new URL('https://api.contactout.com/v1/people/linkedin');
         apiUrl.searchParams.set('profile', normalizedUrl);
@@ -7566,7 +7575,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'token': cusCfg.api_key,
+            'token': contactoutApiKey,
           },
         };
         console.log('[ContactOut] Request URL:', `https://${apiUrl.hostname}${apiUrl.pathname}${apiUrl.search}`);
@@ -7666,9 +7675,18 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!linkedinurl) {
         return res.status(400).json({ error: 'LinkedIn URL is required for Apollo lookup.' });
       }
-      const apolloCfg = (loadEmailVerifConfig().apollo) || {};
-      if (!apolloCfg.api_key || apolloCfg.enabled !== 'enabled') {
-        return res.status(400).json({ error: 'Apollo is not enabled or API key is missing.' });
+      // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      let apolloApiKey = null;
+      const userSvcCfgApollo = readUserServiceConfig(req.user.username);
+      if (userSvcCfgApollo && userSvcCfgApollo.contact_gen?.provider === 'apollo' && userSvcCfgApollo.contact_gen?.APOLLO_API_KEY) {
+        apolloApiKey = userSvcCfgApollo.contact_gen.APOLLO_API_KEY;
+      }
+      if (!apolloApiKey) {
+        const apolloCfg = (loadEmailVerifConfig().apollo) || {};
+        if (!apolloCfg.api_key || apolloCfg.enabled !== 'enabled') {
+          return res.status(400).json({ error: 'Apollo is not enabled or API key is missing.' });
+        }
+        apolloApiKey = apolloCfg.api_key;
       }
 
       // Normalize LinkedIn URL
@@ -7688,7 +7706,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'x-api-key': apolloCfg.api_key,
+            'x-api-key': apolloApiKey,
             'Content-Length': Buffer.byteLength(bodyStr),
           },
         };
@@ -7777,9 +7795,18 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       if (!linkedinurl) {
         return res.status(400).json({ error: 'LinkedIn URL is required for RocketReach lookup.' });
       }
-      const rrCfg = (loadEmailVerifConfig().rocketreach) || {};
-      if (!rrCfg.api_key || rrCfg.enabled !== 'enabled') {
-        return res.status(400).json({ error: 'RocketReach is not enabled or API key is missing.' });
+      // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      let rrApiKey = null;
+      const userSvcCfgRR = readUserServiceConfig(req.user.username);
+      if (userSvcCfgRR && userSvcCfgRR.contact_gen?.provider === 'rocketreach' && userSvcCfgRR.contact_gen?.ROCKETREACH_API_KEY) {
+        rrApiKey = userSvcCfgRR.contact_gen.ROCKETREACH_API_KEY;
+      }
+      if (!rrApiKey) {
+        const rrCfg = (loadEmailVerifConfig().rocketreach) || {};
+        if (!rrCfg.api_key || rrCfg.enabled !== 'enabled') {
+          return res.status(400).json({ error: 'RocketReach is not enabled or API key is missing.' });
+        }
+        rrApiKey = rrCfg.api_key;
       }
 
       let rrUrl = (linkedinurl || '').trim();
@@ -7797,7 +7824,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           method: 'GET',
           headers: {
             'Accept': 'application/json',
-            'Api-Key': rrCfg.api_key,
+            'Api-Key': rrApiKey,
           },
         };
         console.log('[RocketReach] Request: GET https://api.rocketreach.co' + rrPath);
@@ -8120,14 +8147,25 @@ app.post('/verify-email-details', requireLogin, async (req, res) => {
 
     // ── External service verification ───────────────────────────────────────
     if (['neverbounce', 'zerobounce', 'bouncer'].includes(service)) {
-      const config = loadEmailVerifConfig();
-      const svcCfg = config[service] || {};
-      if (svcCfg.enabled !== 'enabled' || !svcCfg.api_key) {
-        return res.status(400).json({ error: `Service '${service}' is not configured or not enabled.` });
+      // Prefer per-user key from api_porting.html Option A; fall back to admin platform key.
+      let apiKey = null;
+      const userSvcCfg = readUserServiceConfig(req.user.username);
+      if (userSvcCfg && userSvcCfg.active !== false && userSvcCfg.email_verif?.provider === service) {
+        const keyField = service === 'neverbounce' ? 'NEVERBOUNCE_API_KEY'
+          : service === 'zerobounce' ? 'ZEROBOUNCE_API_KEY' : 'BOUNCER_API_KEY';
+        apiKey = userSvcCfg.email_verif?.[keyField] || null;
+      }
+      if (!apiKey) {
+        const config = loadEmailVerifConfig();
+        const svcCfg = config[service] || {};
+        if (svcCfg.enabled !== 'enabled' || !svcCfg.api_key) {
+          return res.status(400).json({ error: `Service '${service}' is not configured or not enabled.` });
+        }
+        apiKey = svcCfg.api_key;
       }
       let result;
       try {
-        result = await _callExternalVerifService(service, email, svcCfg.api_key);
+        result = await _callExternalVerifService(service, email, apiKey);
       } catch (exErr) {
         return res.status(502).json({ error: `External service error: ${exErr.message}` });
       }
@@ -9178,14 +9216,60 @@ app.get('/api/events', (req, res) => {
 // Storage directory for uploaded env / API-key files.
 // Defaults to  <project>/porting_input  but can be overridden in .env:
 //   PORTING_INPUT_DIR="F:\Recruiting Tools\Autosourcing\input"
-const PORTING_INPUT_DIR = process.env.PORTING_INPUT_DIR
-  ? path.resolve(process.env.PORTING_INPUT_DIR)
-  : path.join(__dirname, 'porting_input');
+//
+// Two-level-up fallback: server.js may live in <root>/Candidate Analyser/backend/
+// while porting_input/ sits at <root>/ (same dir as webbridge.py).
+// Search upward for an existing porting_input/ dir, then for the directory
+// containing webbridge.py as the Autosourcing root marker — same reasoning
+// as _EMAIL_VERIF_CONFIG_PATHS.
+const PORTING_INPUT_DIR = (() => {
+  if (process.env.PORTING_INPUT_DIR) return path.resolve(process.env.PORTING_INPUT_DIR);
+  // Walk up from __dirname (up to 6 levels) to locate the Autosourcing root.
+  // Prioritize the webbridge.py marker so we always match where
+  // webbridge_routes.py writes — avoids stale porting_input dirs at closer levels.
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;          // filesystem root reached
+    cur = parent;
+  }
+  // 1) Canonical: the directory that contains webbridge.py (Autosourcing root).
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_input');
+  }
+  // 2) Fallback: an already-existing porting_input directory.
+  for (const d of levels) {
+    const p = path.join(d, 'porting_input');
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(__dirname, 'porting_input');
+})();
+console.log('[startup] PORTING_INPUT_DIR resolved to', PORTING_INPUT_DIR);
 
 // Confirmed field-mappings per user, persisted as JSON on disk.
-const PORTING_MAPPINGS_DIR = process.env.PORTING_MAPPINGS_DIR
-  ? path.resolve(process.env.PORTING_MAPPINGS_DIR)
-  : path.join(__dirname, 'porting_mappings');
+// Same search-up pattern as PORTING_INPUT_DIR.
+const PORTING_MAPPINGS_DIR = (() => {
+  if (process.env.PORTING_MAPPINGS_DIR) return path.resolve(process.env.PORTING_MAPPINGS_DIR);
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'porting_mappings');
+  }
+  for (const d of levels) {
+    const p = path.join(d, 'porting_mappings');
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(__dirname, 'porting_mappings');
+})();
+console.log('[startup] PORTING_MAPPINGS_DIR resolved to', PORTING_MAPPINGS_DIR);
 
 // All columns present in the `process` table – used for Gemini mapping.
 const PROCESS_TABLE_FIELDS = [
@@ -9733,6 +9817,7 @@ function decryptBuffer(buf) {
 function readUserServiceConfig(username) {
   const encPath  = userServiceConfigPath(username);
   const jsonPath = _userServiceJsonPath(username);
+  console.log('[readUserServiceConfig] %s → checking enc=%s  json=%s', username, encPath, jsonPath);
   if (fs.existsSync(encPath)) {
     try {
       const raw = decryptBuffer(fs.readFileSync(encPath));
@@ -9773,22 +9858,22 @@ function deleteUserServiceConfig(username) {
 }
 
 // GET /api/user-service-config/status
-// Returns { active: bool, providers: { search, llm, email_verif } } (masked — no key values)
+// Returns { active: bool, providers: { search, llm, email_verif, contact_gen } } (masked — no key values)
 app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (req, res) => {
   try {
     const cfg = readUserServiceConfig(req.user.username);
     if (!cfg) {
+      console.log('[user-service-config/status] No config found for', req.user.username);
       return res.json({ active: false, providers: { search: 'google_cse', llm: 'gemini', email_verif: 'default' } });
     }
-    res.json({
-      active: true,
-      providers: {
-        search:      cfg.search?.provider      || 'google_cse',
-        llm:         cfg.llm?.provider         || 'gemini',
-        email_verif: cfg.email_verif?.provider || 'default',
-        contact_gen: cfg.contact_gen?.provider || 'gemini',
-      },
-    });
+    const providers = {
+      search:      cfg.search?.provider      || 'google_cse',
+      llm:         cfg.llm?.provider         || 'gemini',
+      email_verif: cfg.email_verif?.provider || 'default',
+      contact_gen: cfg.contact_gen?.provider || 'gemini',
+    };
+    console.log('[user-service-config/status] %s → active=true providers=%j', req.user.username, providers);
+    res.json({ active: true, providers });
   } catch (err) {
     console.error('[user-service-config/status]', err);
     res.status(500).json({ error: 'Could not read service config', detail: err.message });
