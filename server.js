@@ -771,6 +771,7 @@ function loadSearchProviderConfig() {
     return {
       serper: { api_key: '', enabled: 'disabled' },
       dataforseo: { login: '', password: '', enabled: 'disabled' },
+      linkedin: { api_key: '', enabled: 'disabled' },
       google_cse: { api_key: '', cx: '', gemini_key: '' },
     };
   }
@@ -788,10 +789,12 @@ app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req,
   const serper = config.serper || {};
   const dfs    = config.dataforseo || {};
   const cse    = config.google_cse || {};
+  const li     = config.linkedin || {};
   res.json({
     config: {
       serper:     { api_key_set: !!serper.api_key, enabled: serper.enabled || 'disabled' },
       dataforseo: { login_set: !!dfs.login, password_set: !!dfs.password, enabled: dfs.enabled || 'disabled' },
+      linkedin:   { api_key_set: !!li.api_key, enabled: li.enabled || 'disabled' },
       google_cse: { api_key_set: !!cse.api_key, cx_set: !!cse.cx, gemini_key_set: !!cse.gemini_key },
     },
   });
@@ -803,7 +806,14 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   const current = loadSearchProviderConfig();
   if (!current.serper)     current.serper     = { api_key: '', enabled: 'disabled' };
   if (!current.dataforseo) current.dataforseo = { login: '', password: '', enabled: 'disabled' };
+  if (!current.linkedin)   current.linkedin   = { api_key: '', enabled: 'disabled' };
   if (!current.google_cse) current.google_cse = { api_key: '', cx: '', gemini_key: '' };
+
+  function _disableOtherSearchProviders(except_provider) {
+    if (except_provider !== 'serper')     { current.serper.enabled = 'disabled'; current.serper.api_key = ''; }
+    if (except_provider !== 'dataforseo') { current.dataforseo.enabled = 'disabled'; current.dataforseo.login = ''; current.dataforseo.password = ''; }
+    if (except_provider !== 'linkedin')   { current.linkedin.enabled = 'disabled'; current.linkedin.api_key = ''; }
+  }
 
   if (body.serper && typeof body.serper === 'object') {
     const e = body.serper;
@@ -811,11 +821,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
       current.serper.enabled = e.enabled;
-      if (e.enabled === 'enabled') {
-        current.dataforseo.enabled = 'disabled';
-        current.dataforseo.login = '';
-        current.dataforseo.password = '';
-      }
+      if (e.enabled === 'enabled') { _disableOtherSearchProviders('serper'); }
       if (e.enabled === 'disabled') { current.serper.api_key = ''; }
     }
   }
@@ -826,11 +832,18 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
       current.dataforseo.enabled = e.enabled;
-      if (e.enabled === 'enabled') {
-        current.serper.enabled = 'disabled';
-        current.serper.api_key = '';
-      }
+      if (e.enabled === 'enabled') { _disableOtherSearchProviders('dataforseo'); }
       if (e.enabled === 'disabled') { current.dataforseo.login = ''; current.dataforseo.password = ''; }
+    }
+  }
+  if (body.linkedin && typeof body.linkedin === 'object') {
+    const e = body.linkedin;
+    if (typeof e.api_key === 'string' && e.api_key.trim()) current.linkedin.api_key = e.api_key.trim();
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for linkedin' });
+      current.linkedin.enabled = e.enabled;
+      if (e.enabled === 'enabled') { _disableOtherSearchProviders('linkedin'); }
+      if (e.enabled === 'disabled') { current.linkedin.api_key = ''; }
     }
   }
   if (body.google_cse && typeof body.google_cse === 'object') {
@@ -1530,6 +1543,8 @@ app.get('/search-provider-services', (req, res) => {
   if (serper.api_key) configured.push('serper');
   const dfs = config.dataforseo || {};
   if (dfs.login && dfs.password) configured.push('dataforseo');
+  const li = config.linkedin || {};
+  if (li.api_key) configured.push('linkedin');
   res.json({ services: configured });
 });
 

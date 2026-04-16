@@ -314,6 +314,7 @@ def _load_search_provider_config() -> dict:
         return {
             "serper": {"api_key": "", "enabled": "disabled"},
             "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
+            "linkedin": {"api_key": "", "enabled": "disabled"},
         }
 
 def _save_search_provider_config(config: dict) -> None:
@@ -1090,6 +1091,9 @@ def get_search_provider_services():
     dfs = config.get("dataforseo", {})
     if dfs.get("login") and dfs.get("password"):
         configured.append("dataforseo")
+    linkedin = config.get("linkedin", {})
+    if linkedin.get("api_key"):
+        configured.append("linkedin")
     return jsonify({"services": configured}), 200
 
 @app.get("/admin/search-provider-config")
@@ -1101,6 +1105,7 @@ def admin_get_search_provider_config():
     serper = config.get("serper", {})
     dataforseo = config.get("dataforseo", {})
     google_cse = config.get("google_cse", {})
+    linkedin = config.get("linkedin", {})
     return jsonify({
         "config": {
             "serper": {
@@ -1116,6 +1121,10 @@ def admin_get_search_provider_config():
                 "api_key_set": bool(google_cse.get("api_key")),
                 "cx_set": bool(google_cse.get("cx")),
                 "gemini_key_set": bool(google_cse.get("gemini_key")),
+            },
+            "linkedin": {
+                "api_key_set": bool(linkedin.get("api_key")),
+                "enabled": linkedin.get("enabled", "disabled"),
             },
         }
     }), 200
@@ -1135,8 +1144,23 @@ def admin_save_search_provider_config():
         current["serper"] = {"api_key": "", "enabled": "disabled"}
     if "dataforseo" not in current:
         current["dataforseo"] = {"login": "", "password": "", "enabled": "disabled"}
+    if "linkedin" not in current:
+        current["linkedin"] = {"api_key": "", "enabled": "disabled"}
     if "google_cse" not in current:
         current["google_cse"] = {"api_key": "", "cx": "", "gemini_key": ""}
+
+    def _disable_other_search_providers(except_provider):
+        """Mutual exclusion: disable all search providers except the given one."""
+        if except_provider != "serper":
+            current["serper"]["enabled"] = "disabled"
+            current["serper"]["api_key"] = ""
+        if except_provider != "dataforseo":
+            current["dataforseo"]["enabled"] = "disabled"
+            current["dataforseo"]["login"] = ""
+            current["dataforseo"]["password"] = ""
+        if except_provider != "linkedin":
+            current["linkedin"]["enabled"] = "disabled"
+            current["linkedin"]["api_key"] = ""
 
     if "serper" in body:
         entry = body["serper"]
@@ -1148,12 +1172,9 @@ def admin_save_search_provider_config():
             if entry["enabled"] not in ("enabled", "disabled"):
                 return jsonify({"error": "Invalid enabled value for serper"}), 400
             current["serper"]["enabled"] = entry["enabled"]
-            # Mutual exclusion: enabling Serper disables DataforSEO
+            # Mutual exclusion: enabling Serper disables others
             if entry["enabled"] == "enabled":
-                current["dataforseo"]["enabled"] = "disabled"
-                # Clear disabled provider's credentials so no traces remain
-                current["dataforseo"]["login"] = ""
-                current["dataforseo"]["password"] = ""
+                _disable_other_search_providers("serper")
             # Deactivating Serper clears its own API key
             if entry["enabled"] == "disabled":
                 current["serper"]["api_key"] = ""
@@ -1170,15 +1191,30 @@ def admin_save_search_provider_config():
             if entry["enabled"] not in ("enabled", "disabled"):
                 return jsonify({"error": "Invalid enabled value for dataforseo"}), 400
             current["dataforseo"]["enabled"] = entry["enabled"]
-            # Mutual exclusion: enabling DataforSEO disables Serper
+            # Mutual exclusion: enabling DataforSEO disables others
             if entry["enabled"] == "enabled":
-                current["serper"]["enabled"] = "disabled"
-                # Clear disabled provider's credentials so no traces remain
-                current["serper"]["api_key"] = ""
+                _disable_other_search_providers("dataforseo")
             # Deactivating DataforSEO clears its own credentials
             if entry["enabled"] == "disabled":
                 current["dataforseo"]["login"] = ""
                 current["dataforseo"]["password"] = ""
+
+    if "linkedin" in body:
+        entry = body["linkedin"]
+        if not isinstance(entry, dict):
+            return jsonify({"error": "Invalid config for linkedin"}), 400
+        if entry.get("api_key") is not None and entry["api_key"] != "":
+            current["linkedin"]["api_key"] = str(entry["api_key"])
+        if entry.get("enabled") is not None:
+            if entry["enabled"] not in ("enabled", "disabled"):
+                return jsonify({"error": "Invalid enabled value for linkedin"}), 400
+            current["linkedin"]["enabled"] = entry["enabled"]
+            # Mutual exclusion: enabling LinkedIn disables others
+            if entry["enabled"] == "enabled":
+                _disable_other_search_providers("linkedin")
+            # Deactivating LinkedIn clears its own API key
+            if entry["enabled"] == "disabled":
+                current["linkedin"]["api_key"] = ""
 
     if "google_cse" in body:
         entry = body["google_cse"]
