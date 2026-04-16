@@ -1510,15 +1510,18 @@ app.get('/email-verif-services', (req, res) => {
   res.json({ services: enabled });
 });
 
-// ── User-facing: list enabled search providers (no API keys) ─────────────────
+// ── User-facing: list configured search providers (no API keys) ──────────────
+// Returns all providers that have credentials configured so AutoSourcing.html
+// can populate the dropdown regardless of which one is currently "enabled"
+// as the admin default.
 app.get('/search-provider-services', (req, res) => {
   const config = loadSearchProviderConfig();
-  const enabled = [];
+  const configured = [];
   const serper = config.serper || {};
-  if (serper.enabled === 'enabled' && serper.api_key) enabled.push('serper');
+  if (serper.api_key) configured.push('serper');
   const dfs = config.dataforseo || {};
-  if (dfs.enabled === 'enabled' && dfs.login && dfs.password) enabled.push('dataforseo');
-  res.json({ services: enabled });
+  if (dfs.login && dfs.password) configured.push('dataforseo');
+  res.json({ services: configured });
 });
 
 const pool = new Pool({

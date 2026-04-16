@@ -1076,16 +1076,21 @@ def get_contact_gen_services():
 
 @app.get("/search-provider-services")
 def get_search_provider_services():
-    """Return list of enabled search providers (no API keys)."""
+    """Return list of configured search providers (no API keys).
+
+    Returns all providers that have credentials set so AutoSourcing.html can
+    populate the dropdown regardless of which one is currently the admin
+    default ("enabled").
+    """
     config = _load_search_provider_config()
-    enabled = []
+    configured = []
     serper = config.get("serper", {})
-    if serper.get("enabled") == "enabled" and serper.get("api_key"):
-        enabled.append("serper")
+    if serper.get("api_key"):
+        configured.append("serper")
     dfs = config.get("dataforseo", {})
-    if dfs.get("enabled") == "enabled" and dfs.get("login") and dfs.get("password"):
-        enabled.append("dataforseo")
-    return jsonify({"services": enabled}), 200
+    if dfs.get("login") and dfs.get("password"):
+        configured.append("dataforseo")
+    return jsonify({"services": configured}), 200
 
 @app.get("/admin/search-provider-config")
 @_rate(_make_flask_limit("admin_endpoints"))
