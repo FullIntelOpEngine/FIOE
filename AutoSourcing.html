@@ -1625,11 +1625,9 @@ pre {
           <!-- ═══ Search Provider Toggle (inline next to Edit Settings) ═══ -->
           <div id="searchProviderToggle">
             <div class="sp-toggle-header">
-              <label>🔍 Search Provider</label>
               <button type="button" id="spToggleBtn" class="sp-toggle-btn sp-mode-cse" onclick="window._toggleSearchProviderMode()">Default CSE</button>
             </div>
             <div id="spDropdownWrap">
-              <label for="spProviderSelect">Provider:</label>
               <select id="spProviderSelect">
                 <option value="">— select —</option>
               </select>
@@ -3932,6 +3930,7 @@ function _refreshTokenRates() {
   const _PROVIDER_LABELS = {
     'serper':      'Serper.dev',
     'dataforseo':  'DataForSEO',
+    'linkedin':    'LinkedIn',
     'contactout':  'ContactOut',
     'apollo':      'Apollo',
     'rocketreach': 'RocketReach',
@@ -3939,6 +3938,7 @@ function _refreshTokenRates() {
   const _PROVIDER_CATEGORY = {
     'serper':      '🔍 Search',
     'dataforseo':  '🔍 Search',
+    'linkedin':    '🔍 Search',
     'contactout':  '📇 Contact',
     'apollo':      '📇 Contact',
     'rocketreach': '📇 Contact',
@@ -3988,7 +3988,7 @@ function _refreshTokenRates() {
       // Add per-user search provider (from api_porting.html Option A)
       if (userData && userData.active && userData.providers) {
         const sp = (userData.providers.search || '').toLowerCase();
-        if (sp === 'serper' || sp === 'dataforseo') services.add(sp);
+        if (sp === 'serper' || sp === 'dataforseo' || sp === 'linkedin') services.add(sp);
       }
       _populateDropdown(Array.from(services));
     });

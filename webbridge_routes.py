@@ -3096,6 +3096,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "Serper (selected)"
         elif selected_provider == 'dataforseo':
             _provider_label = "DataforSEO (selected)"
+        elif selected_provider == 'linkedin':
+            _provider_label = "LinkedIn (selected)"
         else:
             _serper_on = (
                 _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
@@ -3106,7 +3108,11 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 and bool(_sp.get("dataforseo", {}).get("login"))
                 and bool(_sp.get("dataforseo", {}).get("password"))
             )
-            _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else "CSE")
+            _li_on = (
+                _sp.get("linkedin", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("linkedin", {}).get("api_key"))
+            )
+            _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else ("LinkedIn" if _li_on else "CSE"))
 
     global_collected = 0
 

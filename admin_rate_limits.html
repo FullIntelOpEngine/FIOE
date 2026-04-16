@@ -1198,7 +1198,7 @@ let _users   = [];
 let _appeals = [];
 let _session = null;
 let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled' }, zerobounce: { api_key_set: false, enabled: 'disabled' }, bouncer: { api_key_set: false, enabled: 'disabled' } };
-let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
+let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, linkedin: { api_key_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
 
@@ -3686,7 +3686,7 @@ function renderApiKeysCard() {
   searchPanel.className = 'apikey-sub-panel';
   const searchPanelDesc = document.createElement('p');
   searchPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  searchPanelDesc.textContent = 'Configure search provider API keys. Serper.dev and DataforSEO are supported — only one can be active at a time. When deactivated, associated API keys are cleared. Google CSE is the default fallback when no API provider is active.';
+  searchPanelDesc.textContent = 'Configure search provider API keys. Serper.dev, DataforSEO, and LinkedIn (LinkedAPI.io) are supported — only one can be active at a time. When deactivated, associated API keys are cleared. Google CSE is the default fallback when no API provider is active.';
   searchPanel.appendChild(searchPanelDesc);
   card.appendChild(searchPanel);
 
@@ -3823,6 +3823,7 @@ function renderApiKeysCard() {
   (function renderSearchProviderSection() {
     const serperCfg = (_serperConfig && _serperConfig.serper) || { api_key_set: false, enabled: 'disabled' };
     const dfsCfg    = (_serperConfig && _serperConfig.dataforseo) || { login_set: false, password_set: false, enabled: 'disabled' };
+    const linkedinCfg = (_serperConfig && _serperConfig.linkedin) || { api_key_set: false, enabled: 'disabled' };
     const cseCfg    = (_serperConfig && _serperConfig.google_cse) || { api_key_set: false, cx_set: false, gemini_key_set: false };
 
     // Shared save helper
@@ -3896,7 +3897,7 @@ function renderApiKeysCard() {
         serperKeyInput.value = '';
         serperKeyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…';
         if (!keyStillSet) { const b = serperKeyField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
-        // If serper enabled, backend cleared dataforseo creds — update UI
+        // If serper enabled, backend cleared dataforseo+linkedin creds — update UI
         if (enabled === 'enabled') {
           _serperConfig.dataforseo.enabled = 'disabled';
           _serperConfig.dataforseo.login_set = false;
@@ -3905,6 +3906,11 @@ function renderApiKeysCard() {
           document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove());
           const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = 'Enter DataforSEO login…'; }
           const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = 'Enter DataforSEO password…'; }
+          _serperConfig.linkedin.enabled = 'disabled';
+          _serperConfig.linkedin.api_key_set = false;
+          const liSel = document.getElementById('apikey-enable-linkedin'); if (liSel) liSel.value = 'disabled';
+          document.querySelectorAll('#linkedin-section .apikey-set-badge').forEach(b => b.remove());
+          const liI = document.getElementById('apikey-linkedin'); if (liI) { liI.value = ''; liI.placeholder = 'Enter LinkedIn API key…'; }
         }
         toast(enabled === 'enabled' ? 'Serper.dev enabled' : 'Serper.dev disabled', 'success');
       });
@@ -3986,13 +3992,18 @@ function renderApiKeysCard() {
         passInput.placeholder = passStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…';
         if (!loginStillSet) { const b = loginField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
         if (!passStillSet)  { const b = passField.querySelector('.apikey-set-badge');  if (b) b.remove(); }
-        // If dataforseo enabled, backend cleared serper creds — update UI
+        // If dataforseo enabled, backend cleared serper+linkedin creds — update UI
         if (enabled === 'enabled') {
           _serperConfig.serper.enabled = 'disabled';
           _serperConfig.serper.api_key_set = false;
           const spSel = document.getElementById('apikey-enable-serper'); if (spSel) spSel.value = 'disabled';
           const sb = document.querySelector('#serper-section .apikey-set-badge'); if (sb) sb.remove();
           const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = 'Enter Serper API key…'; }
+          _serperConfig.linkedin.enabled = 'disabled';
+          _serperConfig.linkedin.api_key_set = false;
+          const liSel = document.getElementById('apikey-enable-linkedin'); if (liSel) liSel.value = 'disabled';
+          document.querySelectorAll('#linkedin-section .apikey-set-badge').forEach(b => b.remove());
+          const liI = document.getElementById('apikey-linkedin'); if (liI) { liI.value = ''; liI.placeholder = 'Enter LinkedIn API key…'; }
         }
         toast(enabled === 'enabled' ? 'DataforSEO enabled' : 'DataforSEO disabled', 'success');
       });
@@ -4000,6 +4011,80 @@ function renderApiKeysCard() {
     dfsRow.appendChild(dfsSaveBtn);
     dfsSec.appendChild(dfsRow);
     searchPanel.appendChild(dfsSec);
+
+    // ── LinkedIn (LinkedAPI.io) section ────────────────────────────────────
+    const linkedinSec = document.createElement('div');
+    linkedinSec.className = 'apikey-service';
+    linkedinSec.id = 'linkedin-section';
+    const linkedinH3 = document.createElement('h3'); linkedinH3.textContent = 'LinkedIn (LinkedAPI.io)'; linkedinSec.appendChild(linkedinH3);
+    const linkedinRow = document.createElement('div'); linkedinRow.className = 'apikey-row';
+
+    // API Key field
+    const linkedinKeyField = document.createElement('div'); linkedinKeyField.className = 'apikey-field';
+    const linkedinKeyLabel = document.createElement('label'); linkedinKeyLabel.htmlFor = 'apikey-linkedin'; linkedinKeyLabel.textContent = 'API Key';
+    const linkedinKeyInput = document.createElement('input');
+    linkedinKeyInput.type = 'password'; linkedinKeyInput.id = 'apikey-linkedin'; linkedinKeyInput.className = 'apikey-input';
+    linkedinKeyInput.placeholder = linkedinCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter LinkedIn API key…';
+    linkedinKeyInput.autocomplete = 'off';
+    linkedinKeyField.appendChild(linkedinKeyLabel); linkedinKeyField.appendChild(linkedinKeyInput);
+    if (linkedinCfg.api_key_set) {
+      const badge = document.createElement('div'); badge.className = 'apikey-set-badge'; badge.textContent = '✅ API key saved';
+      linkedinKeyField.appendChild(badge);
+    }
+    linkedinRow.appendChild(linkedinKeyField);
+
+    // Status dropdown
+    const linkedinEnableField = document.createElement('div'); linkedinEnableField.className = 'apikey-field'; linkedinEnableField.style.maxWidth = '180px';
+    const linkedinEnableLabel = document.createElement('label'); linkedinEnableLabel.htmlFor = 'apikey-enable-linkedin'; linkedinEnableLabel.textContent = 'Status';
+    const linkedinEnableSel = document.createElement('select');
+    linkedinEnableSel.id = 'apikey-enable-linkedin';
+    linkedinEnableSel.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff;';
+    [['enabled', '✅ Enabled'], ['disabled', '⛔ Disabled']].forEach(([val, txt]) => {
+      const opt = document.createElement('option'); opt.value = val; opt.textContent = txt;
+      if (linkedinCfg.enabled === val) opt.selected = true;
+      linkedinEnableSel.appendChild(opt);
+    });
+    linkedinEnableField.appendChild(linkedinEnableLabel); linkedinEnableField.appendChild(linkedinEnableSel);
+    linkedinRow.appendChild(linkedinEnableField);
+
+    // Save button
+    const linkedinSaveBtn = document.createElement('button');
+    linkedinSaveBtn.className = 'btn btn-primary apikey-save-btn';
+    linkedinSaveBtn.textContent = '💾 Save';
+    linkedinSaveBtn.addEventListener('click', async () => {
+      const newKey = linkedinKeyInput.value.trim();
+      if (newKey) linkedinEnableSel.value = 'enabled';
+      const enabled = linkedinEnableSel.value;
+      const payload = { linkedin: { enabled } };
+      if (newKey) payload.linkedin.api_key = newKey;
+      await _saveSearchProvider(payload, linkedinSaveBtn, () => {
+        _serperConfig.linkedin.enabled = enabled;
+        const keyStillSet = enabled === 'disabled' ? false : (newKey ? true : linkedinCfg.api_key_set);
+        _serperConfig.linkedin.api_key_set = keyStillSet;
+        linkedinKeyInput.value = '';
+        linkedinKeyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter LinkedIn API key…';
+        if (!keyStillSet) { const b = linkedinKeyField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
+        // If linkedin enabled, backend cleared serper+dataforseo creds — update UI
+        if (enabled === 'enabled') {
+          _serperConfig.serper.enabled = 'disabled';
+          _serperConfig.serper.api_key_set = false;
+          const spSel = document.getElementById('apikey-enable-serper'); if (spSel) spSel.value = 'disabled';
+          const sb = document.querySelector('#serper-section .apikey-set-badge'); if (sb) sb.remove();
+          const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = 'Enter Serper API key…'; }
+          _serperConfig.dataforseo.enabled = 'disabled';
+          _serperConfig.dataforseo.login_set = false;
+          _serperConfig.dataforseo.password_set = false;
+          const dfsSel = document.getElementById('apikey-enable-dataforseo'); if (dfsSel) dfsSel.value = 'disabled';
+          document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove());
+          const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = 'Enter DataforSEO login…'; }
+          const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = 'Enter DataforSEO password…'; }
+        }
+        toast(enabled === 'enabled' ? 'LinkedIn enabled' : 'LinkedIn disabled', 'success');
+      });
+    });
+    linkedinRow.appendChild(linkedinSaveBtn);
+    linkedinSec.appendChild(linkedinRow);
+    searchPanel.appendChild(linkedinSec);
 
     // ── Google CSE section (default fallback) ─────────────────────────────
     const cseSec = document.createElement('div');
@@ -6999,7 +7084,7 @@ const TM_SUITES = [
     file: 'tests/test_search_provider.py',
     impactedFiles: ['webbridge.py', 'webbridge_routes.py', 'search_provider_config.json'],
     tests: [
-      { id: 'search_provider_get',          name: 'GET /admin/search-provider-config → 200 + keys masked (serper + dataforseo)', autoCheck: _tAPI('/admin/search-provider-config', 200) },
+      { id: 'search_provider_get',          name: 'GET /admin/search-provider-config → 200 + keys masked (serper + dataforseo + linkedin)', autoCheck: _tAPI('/admin/search-provider-config', 200) },
       { id: 'load_save_search_provider',    name: '_load_search_provider_config / _save_search_provider_config: read/write',      autoCheck: _tAPI('/admin/search-provider-config', 200) },
       { id: 'serper_active_disables_cse',   name: 'unified_search_page: Serper enabled → routes to Serper, bypasses CSE keys',   autoCheck: _tBE('tests/test_search_provider.py', 'serper_active_disables_cse') },
       { id: 'dataforseo_active_disables_cse', name: 'unified_search_page: DataforSEO enabled → routes to DataforSEO, bypasses CSE', autoCheck: _tBE('tests/test_search_provider.py', 'dataforseo_active_disables_cse') },
