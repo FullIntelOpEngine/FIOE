@@ -809,19 +809,12 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   if (!current.linkedin)   current.linkedin   = { api_key: '', enabled: 'disabled' };
   if (!current.google_cse) current.google_cse = { api_key: '', cx: '', gemini_key: '' };
 
-  function _disableOtherSearchProviders(except_provider) {
-    if (except_provider !== 'serper')     { current.serper.enabled = 'disabled'; current.serper.api_key = ''; }
-    if (except_provider !== 'dataforseo') { current.dataforseo.enabled = 'disabled'; current.dataforseo.login = ''; current.dataforseo.password = ''; }
-    if (except_provider !== 'linkedin')   { current.linkedin.enabled = 'disabled'; current.linkedin.api_key = ''; }
-  }
-
   if (body.serper && typeof body.serper === 'object') {
     const e = body.serper;
     if (typeof e.api_key === 'string' && e.api_key.trim()) current.serper.api_key = e.api_key.trim();
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
       current.serper.enabled = e.enabled;
-      if (e.enabled === 'enabled') { _disableOtherSearchProviders('serper'); }
       if (e.enabled === 'disabled') { current.serper.api_key = ''; }
     }
   }
@@ -832,7 +825,6 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
       current.dataforseo.enabled = e.enabled;
-      if (e.enabled === 'enabled') { _disableOtherSearchProviders('dataforseo'); }
       if (e.enabled === 'disabled') { current.dataforseo.login = ''; current.dataforseo.password = ''; }
     }
   }
@@ -842,7 +834,6 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for linkedin' });
       current.linkedin.enabled = e.enabled;
-      if (e.enabled === 'enabled') { _disableOtherSearchProviders('linkedin'); }
       if (e.enabled === 'disabled') { current.linkedin.api_key = ''; }
     }
   }

@@ -3897,21 +3897,6 @@ function renderApiKeysCard() {
         serperKeyInput.value = '';
         serperKeyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…';
         if (!keyStillSet) { const b = serperKeyField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
-        // If serper enabled, backend cleared dataforseo+linkedin creds — update UI
-        if (enabled === 'enabled') {
-          _serperConfig.dataforseo.enabled = 'disabled';
-          _serperConfig.dataforseo.login_set = false;
-          _serperConfig.dataforseo.password_set = false;
-          const dfsSel = document.getElementById('apikey-enable-dataforseo'); if (dfsSel) dfsSel.value = 'disabled';
-          document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove());
-          const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = 'Enter DataforSEO login…'; }
-          const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = 'Enter DataforSEO password…'; }
-          _serperConfig.linkedin.enabled = 'disabled';
-          _serperConfig.linkedin.api_key_set = false;
-          const liSel = document.getElementById('apikey-enable-linkedin'); if (liSel) liSel.value = 'disabled';
-          document.querySelectorAll('#linkedin-section .apikey-set-badge').forEach(b => b.remove());
-          const liI = document.getElementById('apikey-linkedin'); if (liI) { liI.value = ''; liI.placeholder = 'Enter LinkedIn API key…'; }
-        }
         toast(enabled === 'enabled' ? 'Serper.dev enabled' : 'Serper.dev disabled', 'success');
       });
     });
@@ -3992,19 +3977,6 @@ function renderApiKeysCard() {
         passInput.placeholder = passStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…';
         if (!loginStillSet) { const b = loginField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
         if (!passStillSet)  { const b = passField.querySelector('.apikey-set-badge');  if (b) b.remove(); }
-        // If dataforseo enabled, backend cleared serper+linkedin creds — update UI
-        if (enabled === 'enabled') {
-          _serperConfig.serper.enabled = 'disabled';
-          _serperConfig.serper.api_key_set = false;
-          const spSel = document.getElementById('apikey-enable-serper'); if (spSel) spSel.value = 'disabled';
-          const sb = document.querySelector('#serper-section .apikey-set-badge'); if (sb) sb.remove();
-          const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = 'Enter Serper API key…'; }
-          _serperConfig.linkedin.enabled = 'disabled';
-          _serperConfig.linkedin.api_key_set = false;
-          const liSel = document.getElementById('apikey-enable-linkedin'); if (liSel) liSel.value = 'disabled';
-          document.querySelectorAll('#linkedin-section .apikey-set-badge').forEach(b => b.remove());
-          const liI = document.getElementById('apikey-linkedin'); if (liI) { liI.value = ''; liI.placeholder = 'Enter LinkedIn API key…'; }
-        }
         toast(enabled === 'enabled' ? 'DataforSEO enabled' : 'DataforSEO disabled', 'success');
       });
     });
@@ -4064,21 +4036,6 @@ function renderApiKeysCard() {
         linkedinKeyInput.value = '';
         linkedinKeyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter LinkedIn API key…';
         if (!keyStillSet) { const b = linkedinKeyField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
-        // If linkedin enabled, backend cleared serper+dataforseo creds — update UI
-        if (enabled === 'enabled') {
-          _serperConfig.serper.enabled = 'disabled';
-          _serperConfig.serper.api_key_set = false;
-          const spSel = document.getElementById('apikey-enable-serper'); if (spSel) spSel.value = 'disabled';
-          const sb = document.querySelector('#serper-section .apikey-set-badge'); if (sb) sb.remove();
-          const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = 'Enter Serper API key…'; }
-          _serperConfig.dataforseo.enabled = 'disabled';
-          _serperConfig.dataforseo.login_set = false;
-          _serperConfig.dataforseo.password_set = false;
-          const dfsSel = document.getElementById('apikey-enable-dataforseo'); if (dfsSel) dfsSel.value = 'disabled';
-          document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove());
-          const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = 'Enter DataforSEO login…'; }
-          const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = 'Enter DataforSEO password…'; }
-        }
         toast(enabled === 'enabled' ? 'LinkedIn enabled' : 'LinkedIn disabled', 'success');
       });
     });
