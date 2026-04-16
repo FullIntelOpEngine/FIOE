@@ -3686,7 +3686,7 @@ function renderApiKeysCard() {
   searchPanel.className = 'apikey-sub-panel';
   const searchPanelDesc = document.createElement('p');
   searchPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  searchPanelDesc.textContent = 'Configure an alternative search backend. Serper.dev and DataforSEO are both supported — only one can be active at a time. When either is enabled, Google CSE is automatically bypassed.';
+  searchPanelDesc.textContent = 'Configure search provider API keys. Serper.dev and DataforSEO are supported — only one can be active at a time. When deactivated, associated API keys are cleared. Google CSE is the default fallback when no API provider is active.';
   searchPanel.appendChild(searchPanelDesc);
   card.appendChild(searchPanel);
 
@@ -3818,108 +3818,15 @@ function renderApiKeysCard() {
     emailPanel.appendChild(sec);
   });
 
-  // ── Serper.dev search provider section ────────────────────────────────────
+  // ── Search Provider section (Email Verification model) ────────────────────
 
   (function renderSearchProviderSection() {
     const serperCfg = (_serperConfig && _serperConfig.serper) || { api_key_set: false, enabled: 'disabled' };
     const dfsCfg    = (_serperConfig && _serperConfig.dataforseo) || { login_set: false, password_set: false, enabled: 'disabled' };
+    const cseCfg    = (_serperConfig && _serperConfig.google_cse) || { api_key_set: false, cx_set: false, gemini_key_set: false };
 
-    // Determine initial active provider
-    let _activeProvider = serperCfg.enabled === 'enabled' ? 'serper'
-                        : dfsCfg.enabled   === 'enabled' ? 'dataforseo'
-                        : 'cse';
-
-    // ── Notice banner (shared) ─────────────────────────────────────────────
-    const cseNotice = document.createElement('div');
-    cseNotice.id = 'serper-cse-notice';
-    cseNotice.style.cssText = 'display:none;margin-bottom:16px;padding:10px 14px;border-radius:7px;font-size:12px;background:#fff8e1;border:1px solid #ffe082;color:#7a5500';
-
-    function _updateCseNotice() {
-      if (_activeProvider === 'serper') {
-        cseNotice.textContent = '⚠️ Google CSE is now inactive — Serper.dev will handle all search queries.';
-        cseNotice.style.display = 'block';
-      } else if (_activeProvider === 'dataforseo') {
-        cseNotice.textContent = '⚠️ Google CSE is now inactive — DataforSEO will handle all search queries.';
-        cseNotice.style.display = 'block';
-      } else {
-        cseNotice.style.display = 'none';
-      }
-    }
-
-    // ── Active Provider toggle (3 pills) ──────────────────────────────────
-    const toggleSec = document.createElement('div');
-    toggleSec.className = 'apikey-service';
-    toggleSec.id = 'search-provider-toggle-section';
-
-    const toggleHeading = document.createElement('div');
-    toggleHeading.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap';
-
-    const toggleLabelEl = document.createElement('label');
-    toggleLabelEl.textContent = 'Active Provider';
-    toggleLabelEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;flex:0 0 auto';
-
-    const toggleWrap = document.createElement('div');
-    toggleWrap.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden';
-
-    const btnSerper    = document.createElement('button');
-    const btnDFS       = document.createElement('button');
-    const btnCSE       = document.createElement('button');
-    [btnSerper, btnDFS, btnCSE].forEach((b, i) => {
-      b.type = 'button';
-      b.style.cssText = 'flex:1;padding:8px 16px;font-size:13px;border:none;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap'
-                      + (i > 0 ? ';border-left:1px solid var(--border)' : '');
-    });
-    btnSerper.id  = 'provider-btn-serper';    btnSerper.textContent = '🔍 Serper.dev';
-    btnDFS.id     = 'provider-btn-dataforseo'; btnDFS.textContent    = '🔍 DataforSEO';
-    btnCSE.id     = 'provider-btn-cse';       btnCSE.textContent    = '🔍 Google CSE';
-
-    function _applyProviderToggleStyle() {
-      [['serper', btnSerper], ['dataforseo', btnDFS], ['cse', btnCSE]].forEach(([id, btn]) => {
-        const active = _activeProvider === id;
-        btn.style.background = active ? 'var(--primary, #1976d2)' : '#fff';
-        btn.style.color      = active ? '#fff' : 'var(--text, #222)';
-        btn.style.fontWeight = active ? '600' : '400';
-      });
-      _updateCseNotice();
-    }
-    _applyProviderToggleStyle();
-
-    btnSerper.addEventListener('click', () => { _activeProvider = 'serper';    _applyProviderToggleStyle(); });
-    btnDFS.addEventListener(   'click', () => { _activeProvider = 'dataforseo'; _applyProviderToggleStyle(); });
-    btnCSE.addEventListener(   'click', () => { _activeProvider = 'cse';       _applyProviderToggleStyle(); });
-
-    toggleWrap.appendChild(btnSerper);
-    toggleWrap.appendChild(btnDFS);
-    toggleWrap.appendChild(btnCSE);
-    toggleHeading.appendChild(toggleLabelEl);
-    toggleHeading.appendChild(toggleWrap);
-    toggleSec.appendChild(toggleHeading);
-    toggleSec.appendChild(cseNotice);
-
-    // ── Save button ────────────────────────────────────────────────────────
-    const saveRow = document.createElement('div');
-    saveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px';
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'btn btn-primary apikey-save-btn';
-    saveBtn.textContent = '💾 Save';
-    saveBtn.addEventListener('click', async () => {
-      const serperKey  = document.getElementById('apikey-serper')?.value.trim() || '';
-      const dfsLogin   = document.getElementById('apikey-dataforseo-login')?.value.trim()   || '';
-      const dfsPass    = document.getElementById('apikey-dataforseo-password')?.value.trim() || '';
-      const cseApiKey  = document.getElementById('apikey-cse-key')?.value.trim()    || '';
-      const cseCx      = document.getElementById('apikey-cse-cx')?.value.trim()     || '';
-      const cseGemini  = document.getElementById('apikey-cse-gemini')?.value.trim() || '';
-      const payload = {
-        serper:    { enabled: _activeProvider === 'serper'    ? 'enabled' : 'disabled' },
-        dataforseo: { enabled: _activeProvider === 'dataforseo' ? 'enabled' : 'disabled' },
-        google_cse: {},
-      };
-      if (serperKey) payload.serper.api_key  = serperKey;
-      if (dfsLogin)  payload.dataforseo.login    = dfsLogin;
-      if (dfsPass)   payload.dataforseo.password = dfsPass;
-      if (cseApiKey) payload.google_cse.api_key    = cseApiKey;
-      if (cseCx)     payload.google_cse.cx         = cseCx;
-      if (cseGemini) payload.google_cse.gemini_key = cseGemini;
+    // Shared save helper
+    async function _saveSearchProvider(payload, saveBtn, successCb) {
       saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
       try {
         const r = await fetch(`${API}/admin/search-provider-config`, {
@@ -3928,64 +3835,85 @@ function renderApiKeysCard() {
         });
         const data = await r.json();
         if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        // Update local state
-        const enabledSp = _activeProvider;
-        _serperConfig.serper.enabled    = enabledSp === 'serper'    ? 'enabled' : 'disabled';
-        _serperConfig.dataforseo.enabled = enabledSp === 'dataforseo' ? 'enabled' : 'disabled';
-        if (serperKey) _serperConfig.serper.api_key_set = true;
-        if (dfsLogin)  _serperConfig.dataforseo.login_set    = true;
-        if (dfsPass)   _serperConfig.dataforseo.password_set = true;
-        if (cseApiKey) _serperConfig.google_cse.api_key_set  = true;
-        if (cseCx)     _serperConfig.google_cse.cx_set       = true;
-        if (cseGemini) _serperConfig.google_cse.gemini_key_set = true;
-        // Clear disabled provider's key-set flags (backend clears actual keys)
-        if (enabledSp !== 'serper')    { _serperConfig.serper.api_key_set = false; }
-        if (enabledSp !== 'dataforseo') { _serperConfig.dataforseo.login_set = false; _serperConfig.dataforseo.password_set = false; }
-        // Clear inputs and update placeholders
-        const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = _serperConfig.serper.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…'; }
-        const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = _serperConfig.dataforseo.login_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…'; }
-        const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = _serperConfig.dataforseo.password_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…'; }
-        const ck = document.getElementById('apikey-cse-key');    if (ck) { ck.value = ''; ck.placeholder = _serperConfig.google_cse.api_key_set   ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
-        const cc = document.getElementById('apikey-cse-cx');     if (cc) { cc.value = ''; cc.placeholder = _serperConfig.google_cse.cx_set         ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…'; }
-        const cg = document.getElementById('apikey-cse-gemini'); if (cg) { cg.value = ''; cg.placeholder = _serperConfig.google_cse.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…'; }
-        // Remove key-set badges for disabled providers
-        if (enabledSp !== 'serper') { const b = document.querySelector('#serper-section .apikey-set-badge'); if (b) b.remove(); }
-        if (enabledSp !== 'dataforseo') { document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove()); }
-        const labels = { serper: 'Serper.dev', dataforseo: 'DataforSEO', cse: 'Google CSE' };
+        successCb();
         _notifyConfigChanged('search-provider');
-        toast(`${labels[_activeProvider] || 'Google CSE'} is now active`, 'success');
       } catch (err) {
         toast(err.message, 'error');
       } finally {
         saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
       }
-    });
-    saveRow.appendChild(saveBtn);
-    toggleSec.appendChild(saveRow);
-    searchPanel.appendChild(toggleSec);
+    }
 
-    // ── Serper.dev credentials ─────────────────────────────────────────────
+    // ── Serper.dev section ─────────────────────────────────────────────────
     const serperSec = document.createElement('div');
     serperSec.className = 'apikey-service';
     serperSec.id = 'serper-section';
     const serperH3 = document.createElement('h3'); serperH3.textContent = 'Serper.dev'; serperSec.appendChild(serperH3);
     const serperRow = document.createElement('div'); serperRow.className = 'apikey-row';
-    const keyField = document.createElement('div'); keyField.className = 'apikey-field';
-    const keyLabel = document.createElement('label'); keyLabel.htmlFor = 'apikey-serper'; keyLabel.textContent = 'API Key';
-    const keyInput = document.createElement('input');
-    keyInput.type = 'password'; keyInput.id = 'apikey-serper'; keyInput.className = 'apikey-input';
-    keyInput.placeholder = serperCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…';
-    keyInput.autocomplete = 'off';
-    keyField.appendChild(keyLabel); keyField.appendChild(keyInput);
+
+    // API Key field
+    const serperKeyField = document.createElement('div'); serperKeyField.className = 'apikey-field';
+    const serperKeyLabel = document.createElement('label'); serperKeyLabel.htmlFor = 'apikey-serper'; serperKeyLabel.textContent = 'API Key';
+    const serperKeyInput = document.createElement('input');
+    serperKeyInput.type = 'password'; serperKeyInput.id = 'apikey-serper'; serperKeyInput.className = 'apikey-input';
+    serperKeyInput.placeholder = serperCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…';
+    serperKeyInput.autocomplete = 'off';
+    serperKeyField.appendChild(serperKeyLabel); serperKeyField.appendChild(serperKeyInput);
     if (serperCfg.api_key_set) {
       const badge = document.createElement('div'); badge.className = 'apikey-set-badge'; badge.textContent = '✅ API key saved';
-      keyField.appendChild(badge);
+      serperKeyField.appendChild(badge);
     }
-    serperRow.appendChild(keyField);
+    serperRow.appendChild(serperKeyField);
+
+    // Status dropdown
+    const serperEnableField = document.createElement('div'); serperEnableField.className = 'apikey-field'; serperEnableField.style.maxWidth = '180px';
+    const serperEnableLabel = document.createElement('label'); serperEnableLabel.htmlFor = 'apikey-enable-serper'; serperEnableLabel.textContent = 'Status';
+    const serperEnableSel = document.createElement('select');
+    serperEnableSel.id = 'apikey-enable-serper';
+    serperEnableSel.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff;';
+    [['enabled', '✅ Enabled'], ['disabled', '⛔ Disabled']].forEach(([val, txt]) => {
+      const opt = document.createElement('option'); opt.value = val; opt.textContent = txt;
+      if (serperCfg.enabled === val) opt.selected = true;
+      serperEnableSel.appendChild(opt);
+    });
+    serperEnableField.appendChild(serperEnableLabel); serperEnableField.appendChild(serperEnableSel);
+    serperRow.appendChild(serperEnableField);
+
+    // Save button
+    const serperSaveBtn = document.createElement('button');
+    serperSaveBtn.className = 'btn btn-primary apikey-save-btn';
+    serperSaveBtn.textContent = '💾 Save';
+    serperSaveBtn.addEventListener('click', async () => {
+      const newKey = serperKeyInput.value.trim();
+      const enabled = newKey ? 'enabled' : serperEnableSel.value;
+      if (newKey) serperEnableSel.value = 'enabled';
+      const payload = { serper: { enabled } };
+      if (newKey) payload.serper.api_key = newKey;
+      await _saveSearchProvider(payload, serperSaveBtn, () => {
+        _serperConfig.serper.enabled = enabled;
+        const keyStillSet = enabled === 'disabled' ? false : (newKey ? true : serperCfg.api_key_set);
+        _serperConfig.serper.api_key_set = keyStillSet;
+        serperKeyInput.value = '';
+        serperKeyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter Serper API key…';
+        if (!keyStillSet) { const b = serperKeyField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
+        // If serper enabled, backend cleared dataforseo creds — update UI
+        if (enabled === 'enabled') {
+          _serperConfig.dataforseo.enabled = 'disabled';
+          _serperConfig.dataforseo.login_set = false;
+          _serperConfig.dataforseo.password_set = false;
+          const dfsSel = document.getElementById('apikey-enable-dataforseo'); if (dfsSel) dfsSel.value = 'disabled';
+          document.querySelectorAll('#dataforseo-section .apikey-set-badge').forEach(b => b.remove());
+          const di = document.getElementById('apikey-dataforseo-login'); if (di) { di.value = ''; di.placeholder = 'Enter DataforSEO login…'; }
+          const dp = document.getElementById('apikey-dataforseo-password'); if (dp) { dp.value = ''; dp.placeholder = 'Enter DataforSEO password…'; }
+        }
+        toast(enabled === 'enabled' ? 'Serper.dev enabled' : 'Serper.dev disabled', 'success');
+      });
+    });
+    serperRow.appendChild(serperSaveBtn);
     serperSec.appendChild(serperRow);
     searchPanel.appendChild(serperSec);
 
-    // ── DataforSEO credentials ─────────────────────────────────────────────
+    // ── DataforSEO section ─────────────────────────────────────────────────
     const dfsSec = document.createElement('div');
     dfsSec.className = 'apikey-service';
     dfsSec.id = 'dataforseo-section';
@@ -4020,16 +3948,69 @@ function renderApiKeysCard() {
     }
     dfsRow.appendChild(passField);
 
+    // Status dropdown
+    const dfsEnableField = document.createElement('div'); dfsEnableField.className = 'apikey-field'; dfsEnableField.style.maxWidth = '180px';
+    const dfsEnableLabel = document.createElement('label'); dfsEnableLabel.htmlFor = 'apikey-enable-dataforseo'; dfsEnableLabel.textContent = 'Status';
+    const dfsEnableSel = document.createElement('select');
+    dfsEnableSel.id = 'apikey-enable-dataforseo';
+    dfsEnableSel.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff;';
+    [['enabled', '✅ Enabled'], ['disabled', '⛔ Disabled']].forEach(([val, txt]) => {
+      const opt = document.createElement('option'); opt.value = val; opt.textContent = txt;
+      if (dfsCfg.enabled === val) opt.selected = true;
+      dfsEnableSel.appendChild(opt);
+    });
+    dfsEnableField.appendChild(dfsEnableLabel); dfsEnableField.appendChild(dfsEnableSel);
+    dfsRow.appendChild(dfsEnableField);
+
+    // Save button
+    const dfsSaveBtn = document.createElement('button');
+    dfsSaveBtn.className = 'btn btn-primary apikey-save-btn';
+    dfsSaveBtn.textContent = '💾 Save';
+    dfsSaveBtn.addEventListener('click', async () => {
+      const newLogin = loginInput.value.trim();
+      const newPass  = passInput.value.trim();
+      const enabled  = (newLogin || newPass) ? 'enabled' : dfsEnableSel.value;
+      if (newLogin || newPass) dfsEnableSel.value = 'enabled';
+      const payload = { dataforseo: { enabled } };
+      if (newLogin) payload.dataforseo.login    = newLogin;
+      if (newPass)  payload.dataforseo.password = newPass;
+      await _saveSearchProvider(payload, dfsSaveBtn, () => {
+        _serperConfig.dataforseo.enabled = enabled;
+        const loginStillSet = enabled === 'disabled' ? false : (newLogin ? true : dfsCfg.login_set);
+        const passStillSet  = enabled === 'disabled' ? false : (newPass  ? true : dfsCfg.password_set);
+        _serperConfig.dataforseo.login_set    = loginStillSet;
+        _serperConfig.dataforseo.password_set = passStillSet;
+        loginInput.value = '';
+        loginInput.placeholder = loginStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO login…';
+        passInput.value = '';
+        passInput.placeholder = passStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter DataforSEO password…';
+        if (!loginStillSet) { const b = loginField.querySelector('.apikey-set-badge'); if (b) b.remove(); }
+        if (!passStillSet)  { const b = passField.querySelector('.apikey-set-badge');  if (b) b.remove(); }
+        // If dataforseo enabled, backend cleared serper creds — update UI
+        if (enabled === 'enabled') {
+          _serperConfig.serper.enabled = 'disabled';
+          _serperConfig.serper.api_key_set = false;
+          const spSel = document.getElementById('apikey-enable-serper'); if (spSel) spSel.value = 'disabled';
+          const sb = document.querySelector('#serper-section .apikey-set-badge'); if (sb) sb.remove();
+          const si = document.getElementById('apikey-serper'); if (si) { si.value = ''; si.placeholder = 'Enter Serper API key…'; }
+        }
+        toast(enabled === 'enabled' ? 'DataforSEO enabled' : 'DataforSEO disabled', 'success');
+      });
+    });
+    dfsRow.appendChild(dfsSaveBtn);
     dfsSec.appendChild(dfsRow);
     searchPanel.appendChild(dfsSec);
 
-    // ── Google CSE credentials ─────────────────────────────────────────────
-    const cseCfg = (_serperConfig && _serperConfig.google_cse) || { api_key_set: false, cx_set: false, gemini_key_set: false };
+    // ── Google CSE section (default fallback) ─────────────────────────────
     const cseSec = document.createElement('div');
     cseSec.className = 'apikey-service';
     cseSec.id = 'google-cse-section';
     cseSec.style.marginTop = '18px';
     const cseH3 = document.createElement('h3'); cseH3.textContent = 'Google CSE'; cseSec.appendChild(cseH3);
+    const cseDefaultNotice = document.createElement('p');
+    cseDefaultNotice.style.cssText = 'font-size:12px;color:var(--muted);margin:0 0 10px';
+    cseDefaultNotice.textContent = '✅ Default active provider — used when no API provider is enabled.';
+    cseSec.appendChild(cseDefaultNotice);
     const cseRow = document.createElement('div'); cseRow.className = 'apikey-row'; cseRow.style.flexWrap = 'wrap';
 
     // GOOGLE_CSE_API_KEY
@@ -4074,7 +4055,32 @@ function renderApiKeysCard() {
     }
     cseRow.appendChild(cseGeminiField);
 
+    // CSE Save button
+    const cseSaveBtn = document.createElement('button');
+    cseSaveBtn.className = 'btn btn-primary apikey-save-btn';
+    cseSaveBtn.textContent = '💾 Save';
+    cseSaveBtn.addEventListener('click', async () => {
+      const cseApiKey = cseKeyInput.value.trim();
+      const cseCx     = cseCxInput.value.trim();
+      const cseGemini = cseGeminiInput.value.trim();
+      const payload = { google_cse: {} };
+      if (cseApiKey) payload.google_cse.api_key    = cseApiKey;
+      if (cseCx)     payload.google_cse.cx         = cseCx;
+      if (cseGemini) payload.google_cse.gemini_key = cseGemini;
+      await _saveSearchProvider(payload, cseSaveBtn, () => {
+        if (cseApiKey) { _serperConfig.google_cse.api_key_set = true; }
+        if (cseCx)     { _serperConfig.google_cse.cx_set      = true; }
+        if (cseGemini) { _serperConfig.google_cse.gemini_key_set = true; }
+        cseKeyInput.value   = ''; cseKeyInput.placeholder   = _serperConfig.google_cse.api_key_set   ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+        cseCxInput.value    = ''; cseCxInput.placeholder    = _serperConfig.google_cse.cx_set         ? '••••••••••••••••• (set — enter new value to update)' : 'Search engine ID…';
+        cseGeminiInput.value = ''; cseGeminiInput.placeholder = _serperConfig.google_cse.gemini_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'AIza…';
+        toast('Google CSE credentials saved', 'success');
+      });
+    });
+    const cseSaveRow = document.createElement('div'); cseSaveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px;width:100%';
+    cseSaveRow.appendChild(cseSaveBtn);
     cseSec.appendChild(cseRow);
+    cseSec.appendChild(cseSaveRow);
     searchPanel.appendChild(cseSec);
   })();
 
