@@ -3112,7 +3112,13 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 _sp.get("linkedin", {}).get("enabled", "disabled") == "enabled"
                 and bool(_sp.get("linkedin", {}).get("api_key"))
             )
-            _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else ("LinkedIn" if _li_on else "CSE"))
+            _provider_label = "CSE"
+            if _serper_on:
+                _provider_label = "Serper"
+            elif _dfs_on:
+                _provider_label = "DataforSEO"
+            elif _li_on:
+                _provider_label = "LinkedIn"
 
     global_collected = 0
 
