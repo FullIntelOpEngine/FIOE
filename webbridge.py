@@ -1154,6 +1154,9 @@ def admin_save_search_provider_config():
                 # Clear disabled provider's credentials so no traces remain
                 current["dataforseo"]["login"] = ""
                 current["dataforseo"]["password"] = ""
+            # Deactivating Serper clears its own API key
+            if entry["enabled"] == "disabled":
+                current["serper"]["api_key"] = ""
 
     if "dataforseo" in body:
         entry = body["dataforseo"]
@@ -1172,6 +1175,10 @@ def admin_save_search_provider_config():
                 current["serper"]["enabled"] = "disabled"
                 # Clear disabled provider's credentials so no traces remain
                 current["serper"]["api_key"] = ""
+            # Deactivating DataforSEO clears its own credentials
+            if entry["enabled"] == "disabled":
+                current["dataforseo"]["login"] = ""
+                current["dataforseo"]["password"] = ""
 
     if "google_cse" in body:
         entry = body["google_cse"]

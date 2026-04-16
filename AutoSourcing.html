@@ -3977,25 +3977,18 @@ function _refreshTokenRates() {
   function _fetchSearchProviderServices() {
     Promise.all([
       fetch('/search-provider-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch('/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([searchData, contactData, userData]) => {
+    ]).then(([searchData, userData]) => {
       _spServicesLoaded = true;
       const services = new Set();
-      // Add admin-configured search providers
+      // Add admin-configured search providers (serper / dataforseo)
       if (searchData && Array.isArray(searchData.services)) {
         searchData.services.forEach(s => services.add(s));
-      }
-      // Add admin-configured contact gen providers
-      if (contactData && Array.isArray(contactData.services)) {
-        contactData.services.forEach(s => services.add(s));
       }
       // Add per-user search provider (from api_porting.html Option A)
       if (userData && userData.active && userData.providers) {
         const sp = (userData.providers.search || '').toLowerCase();
         if (sp === 'serper' || sp === 'dataforseo') services.add(sp);
-        const cg = (userData.providers.contact_gen || '').toLowerCase();
-        if (cg === 'contactout' || cg === 'apollo' || cg === 'rocketreach') services.add(cg);
       }
       _populateDropdown(Array.from(services));
     });
@@ -4007,32 +4000,13 @@ function _refreshTokenRates() {
     // Preserve current selection if still valid
     const prev = sel.value;
     sel.innerHTML = '<option value="">— select —</option>';
-    // Group by category
-    const searchProviders = services.filter(s => _PROVIDER_CATEGORY[s] === '🔍 Search');
-    const contactProviders = services.filter(s => _PROVIDER_CATEGORY[s] === '📇 Contact');
-    if (searchProviders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = '🔍 Search Provider';
-      searchProviders.forEach(svc => {
-        const opt = document.createElement('option');
-        opt.value = svc;
-        opt.textContent = _PROVIDER_LABELS[svc] || svc;
-        grp.appendChild(opt);
-      });
-      sel.appendChild(grp);
-    }
-    if (contactProviders.length) {
-      const grp = document.createElement('optgroup');
-      grp.label = '📇 Contact Generation';
-      contactProviders.forEach(svc => {
-        const opt = document.createElement('option');
-        opt.value = svc;
-        opt.textContent = _PROVIDER_LABELS[svc] || svc;
-        grp.appendChild(opt);
-      });
-      sel.appendChild(grp);
-    }
-    // Auto-select if only one provider total
+    services.forEach(svc => {
+      const opt = document.createElement('option');
+      opt.value = svc;
+      opt.textContent = _PROVIDER_LABELS[svc] || svc;
+      sel.appendChild(opt);
+    });
+    // Auto-select if only one provider available
     if (services.length === 1) {
       sel.value = services[0];
       _spProvider = services[0];
