@@ -1166,34 +1166,31 @@ pre {
   text-transform: uppercase;
   letter-spacing: .4px;
 }
-.sp-toggle-pills {
-  display: inline-flex;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid var(--border, #d8d8d8);
-}
-.sp-toggle-pills button {
-  padding: 4px 10px;
+.sp-toggle-btn {
+  padding: 4px 12px;
   font-size: 11px;
   font-weight: 600;
-  border: none;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d8d8d8);
   cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+}
+.sp-toggle-btn.sp-mode-cse {
   background: #fff;
   color: var(--text-soft, #666);
-  transition: background 0.2s, color 0.2s, opacity 0.2s, box-shadow 0.2s;
-  opacity: 0.6;
+  border-color: var(--border, #d8d8d8);
 }
-.sp-toggle-pills button:hover {
-  opacity: 0.9;
-  box-shadow: 0 0 8px 1px rgba(59,130,246,0.35);
+.sp-toggle-btn.sp-mode-cse:hover {
+  box-shadow: 0 0 8px 1px rgba(59,130,246,0.25);
+  border-color: #aac;
 }
-.sp-toggle-pills button.sp-active {
+.sp-toggle-btn.sp-mode-api {
   background: var(--azure-dragon, #073679);
   color: #fff;
-  opacity: 1;
-  box-shadow: none;
+  border-color: var(--azure-dragon, #073679);
 }
-.sp-toggle-pills button.sp-active:hover {
+.sp-toggle-btn.sp-mode-api:hover {
   box-shadow: 0 0 8px 1px rgba(7,54,121,0.3);
 }
 #spDropdownWrap {
@@ -1629,10 +1626,7 @@ pre {
           <div id="searchProviderToggle">
             <div class="sp-toggle-header">
               <label>🔍 Search Provider</label>
-              <div class="sp-toggle-pills">
-                <button type="button" id="spPillCSE" class="sp-active" onclick="window._setSearchProviderMode('cse')">Default CSE</button>
-                <button type="button" id="spPillAPI" onclick="window._setSearchProviderMode('api')">API Provider</button>
-              </div>
+              <button type="button" id="spToggleBtn" class="sp-toggle-btn sp-mode-cse" onclick="window._toggleSearchProviderMode()">Default CSE</button>
             </div>
             <div id="spDropdownWrap">
               <label for="spProviderSelect">Provider:</label>
@@ -3952,11 +3946,13 @@ function _refreshTokenRates() {
 
   window._setSearchProviderMode = function(mode) {
     _spMode = mode;
-    const pillCSE  = document.getElementById('spPillCSE');
-    const pillAPI  = document.getElementById('spPillAPI');
+    const btn      = document.getElementById('spToggleBtn');
     const dropWrap = document.getElementById('spDropdownWrap');
-    if (pillCSE) { pillCSE.classList.toggle('sp-active', mode === 'cse'); }
-    if (pillAPI) { pillAPI.classList.toggle('sp-active', mode === 'api'); }
+    if (btn) {
+      btn.classList.toggle('sp-mode-cse', mode === 'cse');
+      btn.classList.toggle('sp-mode-api', mode === 'api');
+      btn.textContent = mode === 'api' ? 'API Provider' : 'Default CSE';
+    }
     if (dropWrap) {
       if (mode === 'api') {
         dropWrap.classList.add('sp-open');
@@ -3965,6 +3961,11 @@ function _refreshTokenRates() {
       }
     }
     if (mode === 'api' && !_spServicesLoaded) _fetchSearchProviderServices();
+  };
+
+  // Click-to-toggle handler for the unified single button
+  window._toggleSearchProviderMode = function() {
+    window._setSearchProviderMode(_spMode === 'cse' ? 'api' : 'cse');
   };
 
   // Expose the selected provider for payload injection

@@ -812,6 +812,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
       current.serper.enabled = e.enabled;
       if (e.enabled === 'enabled') { current.dataforseo.enabled = 'disabled'; }
+      if (e.enabled === 'disabled') { current.serper.api_key = ''; }
     }
   }
   if (body.dataforseo && typeof body.dataforseo === 'object') {
@@ -822,6 +823,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
       current.dataforseo.enabled = e.enabled;
       if (e.enabled === 'enabled') { current.serper.enabled = 'disabled'; }
+      if (e.enabled === 'disabled') { current.dataforseo.login = ''; current.dataforseo.password = ''; }
     }
   }
   if (body.google_cse && typeof body.google_cse === 'object') {
