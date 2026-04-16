@@ -1,15 +1,16 @@
 """
-Unit tests for Search Provider (Serper.dev / DataforSEO / Google CSE) helpers.
+Unit tests for Search Provider (Serper.dev / DataforSEO / LinkedIn / Google CSE) helpers.
 
 Covers:
   - _load_search_provider_config / _save_search_provider_config  (read/write + defaults)
   - unified_search_page routing:
       • Serper when enabled+keyed
       • DataforSEO when enabled+credentialed (and Serper not enabled)
-      • Google CSE fallback when both disabled / missing credentials
+      • LinkedIn when enabled+keyed (and Serper/DataforSEO not enabled)
+      • Google CSE fallback when all disabled / missing credentials
   - serper_active_disables_cse  (Serper enabled → serper_search_page called, CSE skipped)
   - dataforseo_active_disables_cse (DataforSEO enabled → dataforseo_search_page called, CSE skipped)
-  - cse_fallback_when_no_serper (both disabled → google_cse_search_page called)
+  - cse_fallback_when_no_serper (all disabled → google_cse_search_page called)
   - provider_label_in_messages  (job messages reflect active provider name)
 
 NOTE: These tests use self-contained stubs that mirror the production functions
@@ -33,6 +34,7 @@ def _make_default_config():
     return {
         "serper": {"api_key": "", "enabled": "disabled"},
         "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
+        "linkedin": {"api_key": "", "enabled": "disabled"},
     }
 
 
@@ -54,11 +56,11 @@ def _save_search_provider_config(config, path):
 
 
 def unified_search_page(query, num, start_index, gl_hint=None,
-                        cfg=None, serper_fn=None, dataforseo_fn=None, cse_fn=None):
+                        cfg=None, serper_fn=None, dataforseo_fn=None, linkedin_fn=None, cse_fn=None):
     """
     Stub of webbridge_routes.unified_search_page.
 
-    Priority: Serper → DataforSEO → Google CSE.
+    Priority: Serper → DataforSEO → LinkedIn → Google CSE.
     The real implementation uses module-level globals for the callables; this
     stub accepts them as parameters so tests can inject mocks without patching
     module globals.
@@ -76,6 +78,11 @@ def unified_search_page(query, num, start_index, gl_hint=None,
     if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
         return dataforseo_fn(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
 
+    li_cfg = (cfg or {}).get("linkedin", {})
+    li_key = li_cfg.get("api_key", "")
+    if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
+        return linkedin_fn(query, li_key, num, gl_hint=gl_hint, page=page)
+
     return cse_fn(query, num, start_index, gl_hint=gl_hint)
 
 
@@ -90,7 +97,17 @@ def _get_provider_label(cfg):
         and bool(cfg.get("dataforseo", {}).get("login"))
         and bool(cfg.get("dataforseo", {}).get("password"))
     )
-    return "Serper" if serper_on else ("DataforSEO" if dfs_on else "CSE")
+    li_on = (
+        cfg.get("linkedin", {}).get("enabled", "disabled") == "enabled"
+        and bool(cfg.get("linkedin", {}).get("api_key"))
+    )
+    if serper_on:
+        return "Serper"
+    if dfs_on:
+        return "DataforSEO"
+    if li_on:
+        return "LinkedIn"
+    return "CSE"
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +178,7 @@ class TestSerperActiveDisablesCse(unittest.TestCase):
             1000,
         ))
         self.dataforseo_fn = MagicMock(return_value=([], 0))
+        self.linkedin_fn = MagicMock(return_value=([], 0))
         self.cse_fn = MagicMock(return_value=([], 0))
 
     def serper_active_disables_cse(self):
@@ -170,10 +188,11 @@ class TestSerperActiveDisablesCse(unittest.TestCase):
         }
         results, total = unified_search_page(
             "software engineer site:linkedin.com", 10, 1,
-            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn,
+            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn,
         )
         self.serper_fn.assert_called_once()
         self.dataforseo_fn.assert_not_called()
+        self.linkedin_fn.assert_not_called()
         self.cse_fn.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["link"], "https://linkedin.com/in/alice")
@@ -189,7 +208,7 @@ class TestSerperActiveDisablesCse(unittest.TestCase):
             "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
         }
         unified_search_page("q", 10, 11, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         _, kwargs = self.serper_fn.call_args
         self.assertEqual(kwargs.get("page"), 2)
 
@@ -203,6 +222,7 @@ class TestDataforSeoActiveDisablesCse(unittest.TestCase):
             [{"link": "https://linkedin.com/in/carol", "title": "Carol", "snippet": "", "displayLink": ""}],
             750,
         ))
+        self.linkedin_fn = MagicMock(return_value=([], 0))
         self.cse_fn = MagicMock(return_value=([], 0))
 
     def dataforseo_active_disables_cse(self):
@@ -212,10 +232,11 @@ class TestDataforSeoActiveDisablesCse(unittest.TestCase):
         }
         results, total = unified_search_page(
             "product manager site:linkedin.com", 10, 1,
-            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn,
+            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn,
         )
         self.dataforseo_fn.assert_called_once()
         self.serper_fn.assert_not_called()
+        self.linkedin_fn.assert_not_called()
         self.cse_fn.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["link"], "https://linkedin.com/in/carol")
@@ -231,7 +252,7 @@ class TestDataforSeoActiveDisablesCse(unittest.TestCase):
             "dataforseo": {"login": "", "password": "secret", "enabled": "enabled"},
         }
         unified_search_page("q", 10, 1, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         self.cse_fn.assert_called_once()
         self.dataforseo_fn.assert_not_called()
 
@@ -242,7 +263,7 @@ class TestDataforSeoActiveDisablesCse(unittest.TestCase):
             "dataforseo": {"login": "user@example.com", "password": "", "enabled": "enabled"},
         }
         unified_search_page("q", 10, 1, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         self.cse_fn.assert_called_once()
         self.dataforseo_fn.assert_not_called()
 
@@ -254,7 +275,7 @@ class TestDataforSeoActiveDisablesCse(unittest.TestCase):
             "dataforseo": {"login": "u", "password": "p", "enabled": "enabled"},
         }
         unified_search_page("q", 10, 1, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         self.serper_fn.assert_called_once()
         self.dataforseo_fn.assert_not_called()
 
@@ -265,6 +286,7 @@ class TestCseFallbackWhenNoSerper(unittest.TestCase):
     def setUp(self):
         self.serper_fn = MagicMock(return_value=([], 0))
         self.dataforseo_fn = MagicMock(return_value=([], 0))
+        self.linkedin_fn = MagicMock(return_value=([], 0))
         self.cse_fn = MagicMock(return_value=(
             [{"link": "https://linkedin.com/in/bob", "title": "Bob", "snippet": "", "displayLink": ""}],
             500,
@@ -277,11 +299,12 @@ class TestCseFallbackWhenNoSerper(unittest.TestCase):
         }
         results, total = unified_search_page(
             "data engineer site:linkedin.com", 10, 1,
-            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn,
+            cfg=cfg, serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn,
         )
         self.cse_fn.assert_called_once()
         self.serper_fn.assert_not_called()
         self.dataforseo_fn.assert_not_called()
+        self.linkedin_fn.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["link"], "https://linkedin.com/in/bob")
         self.assertEqual(total, 500)
@@ -296,7 +319,7 @@ class TestCseFallbackWhenNoSerper(unittest.TestCase):
             "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
         }
         unified_search_page("q", 10, 1, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         self.cse_fn.assert_called_once()
         self.serper_fn.assert_not_called()
 
@@ -307,13 +330,13 @@ class TestCseFallbackWhenNoSerper(unittest.TestCase):
             "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
         }
         unified_search_page("q", 10, 1, cfg=cfg,
-                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, cse_fn=self.cse_fn)
+                            serper_fn=self.serper_fn, dataforseo_fn=self.dataforseo_fn, linkedin_fn=self.linkedin_fn, cse_fn=self.cse_fn)
         self.cse_fn.assert_called_once()
         self.serper_fn.assert_not_called()
 
 
 class TestProviderLabelInMessages(unittest.TestCase):
-    """Job messages reflect active provider: "Running Serper" / "Running DataforSEO" / "Running CSE" """
+    """Job messages reflect active provider: "Running Serper" / "Running DataforSEO" / "Running LinkedIn" / "Running CSE" """
 
     def provider_label_in_messages(self):
         # Serper enabled+keyed → label is "Serper"
@@ -322,6 +345,10 @@ class TestProviderLabelInMessages(unittest.TestCase):
         # DataforSEO enabled+credentialed (Serper off) → label is "DataforSEO"
         self.assertEqual(_get_provider_label({"serper": {"api_key": "", "enabled": "disabled"},
                                               "dataforseo": {"login": "u", "password": "p", "enabled": "enabled"}}), "DataforSEO")
+        # LinkedIn enabled+keyed (others off) → label is "LinkedIn"
+        self.assertEqual(_get_provider_label({"serper": {"api_key": "", "enabled": "disabled"},
+                                              "dataforseo": {"login": "", "password": "", "enabled": "disabled"},
+                                              "linkedin": {"api_key": "li-key", "enabled": "enabled"}}), "LinkedIn")
         # Both disabled → label is "CSE"
         self.assertEqual(_get_provider_label({"serper": {"api_key": "", "enabled": "disabled"},
                                               "dataforseo": {"login": "", "password": "", "enabled": "disabled"}}), "CSE")
