@@ -3885,8 +3885,8 @@ function renderApiKeysCard() {
     serperSaveBtn.textContent = '💾 Save';
     serperSaveBtn.addEventListener('click', async () => {
       const newKey = serperKeyInput.value.trim();
-      const enabled = newKey ? 'enabled' : serperEnableSel.value;
       if (newKey) serperEnableSel.value = 'enabled';
+      const enabled = serperEnableSel.value;
       const payload = { serper: { enabled } };
       if (newKey) payload.serper.api_key = newKey;
       await _saveSearchProvider(payload, serperSaveBtn, () => {
@@ -3969,8 +3969,8 @@ function renderApiKeysCard() {
     dfsSaveBtn.addEventListener('click', async () => {
       const newLogin = loginInput.value.trim();
       const newPass  = passInput.value.trim();
-      const enabled  = (newLogin || newPass) ? 'enabled' : dfsEnableSel.value;
       if (newLogin || newPass) dfsEnableSel.value = 'enabled';
+      const enabled  = dfsEnableSel.value;
       const payload = { dataforseo: { enabled } };
       if (newLogin) payload.dataforseo.login    = newLogin;
       if (newPass)  payload.dataforseo.password = newPass;
