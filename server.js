@@ -771,6 +771,7 @@ function loadSearchProviderConfig() {
     return {
       serper: { api_key: '', enabled: 'disabled' },
       dataforseo: { login: '', password: '', enabled: 'disabled' },
+      linkedin: { api_key: '', enabled: 'disabled' },
       google_cse: { api_key: '', cx: '', gemini_key: '' },
     };
   }
@@ -788,10 +789,12 @@ app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req,
   const serper = config.serper || {};
   const dfs    = config.dataforseo || {};
   const cse    = config.google_cse || {};
+  const li     = config.linkedin || {};
   res.json({
     config: {
       serper:     { api_key_set: !!serper.api_key, enabled: serper.enabled || 'disabled' },
       dataforseo: { login_set: !!dfs.login, password_set: !!dfs.password, enabled: dfs.enabled || 'disabled' },
+      linkedin:   { api_key_set: !!li.api_key, enabled: li.enabled || 'disabled' },
       google_cse: { api_key_set: !!cse.api_key, cx_set: !!cse.cx, gemini_key_set: !!cse.gemini_key },
     },
   });
@@ -803,6 +806,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   const current = loadSearchProviderConfig();
   if (!current.serper)     current.serper     = { api_key: '', enabled: 'disabled' };
   if (!current.dataforseo) current.dataforseo = { login: '', password: '', enabled: 'disabled' };
+  if (!current.linkedin)   current.linkedin   = { api_key: '', enabled: 'disabled' };
   if (!current.google_cse) current.google_cse = { api_key: '', cx: '', gemini_key: '' };
 
   if (body.serper && typeof body.serper === 'object') {
@@ -811,7 +815,7 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for serper' });
       current.serper.enabled = e.enabled;
-      if (e.enabled === 'enabled') { current.dataforseo.enabled = 'disabled'; }
+      if (e.enabled === 'disabled') { current.serper.api_key = ''; }
     }
   }
   if (body.dataforseo && typeof body.dataforseo === 'object') {
@@ -821,7 +825,16 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
     if (e.enabled !== undefined) {
       if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for dataforseo' });
       current.dataforseo.enabled = e.enabled;
-      if (e.enabled === 'enabled') { current.serper.enabled = 'disabled'; }
+      if (e.enabled === 'disabled') { current.dataforseo.login = ''; current.dataforseo.password = ''; }
+    }
+  }
+  if (body.linkedin && typeof body.linkedin === 'object') {
+    const e = body.linkedin;
+    if (typeof e.api_key === 'string' && e.api_key.trim()) current.linkedin.api_key = e.api_key.trim();
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled for linkedin' });
+      current.linkedin.enabled = e.enabled;
+      if (e.enabled === 'disabled') { current.linkedin.api_key = ''; }
     }
   }
   if (body.google_cse && typeof body.google_cse === 'object') {
@@ -1508,6 +1521,22 @@ app.get('/email-verif-services', (req, res) => {
     (config[svc] || {}).enabled === 'enabled' && !!(config[svc] || {}).api_key
   );
   res.json({ services: enabled });
+});
+
+// ── User-facing: list configured search providers (no API keys) ──────────────
+// Returns all providers that have credentials configured so AutoSourcing.html
+// can populate the dropdown regardless of which one is currently "enabled"
+// as the admin default.
+app.get('/search-provider-services', (req, res) => {
+  const config = loadSearchProviderConfig();
+  const configured = [];
+  const serper = config.serper || {};
+  if (serper.api_key) configured.push('serper');
+  const dfs = config.dataforseo || {};
+  if (dfs.login && dfs.password) configured.push('dataforseo');
+  const li = config.linkedin || {};
+  if (li.api_key) configured.push('linkedin');
+  res.json({ services: configured });
 });
 
 const pool = new Pool({
@@ -9918,7 +9947,7 @@ app.get('/api/user-service-config/status', requireLogin, dashboardRateLimit, (re
 app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
     const { search, llm, email_verif, contact_gen } = req.body || {};
-    const VALID_SEARCH      = ['google_cse', 'serper', 'dataforseo'];
+    const VALID_SEARCH      = ['google_cse', 'serper', 'dataforseo', 'linkedin'];
     const VALID_LLM         = ['gemini', 'openai', 'anthropic'];
     const VALID_EMAIL       = ['default', 'neverbounce', 'zerobounce', 'bouncer'];
     const VALID_CONTACT_GEN = ['gemini', 'contactout', 'apollo', 'rocketreach'];
@@ -9943,6 +9972,7 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
       if (!search.DATAFORSEO_LOGIN?.trim())    missing.push('DATAFORSEO_LOGIN');
       if (!search.DATAFORSEO_PASSWORD?.trim()) missing.push('DATAFORSEO_PASSWORD');
     }
+    if (search.provider === 'linkedin' && !search.LINKEDIN_API_KEY?.trim()) missing.push('LINKEDIN_API_KEY');
     if (llm.provider === 'openai'    && !llm.OPENAI_API_KEY?.trim())    missing.push('OPENAI_API_KEY');
     if (llm.provider === 'anthropic' && !llm.ANTHROPIC_API_KEY?.trim()) missing.push('ANTHROPIC_API_KEY');
     if (email_verif.provider === 'neverbounce' && !email_verif.NEVERBOUNCE_API_KEY?.trim()) missing.push('NEVERBOUNCE_API_KEY');
@@ -9968,6 +9998,7 @@ app.post('/api/user-service-config/activate', requireLogin, dashboardRateLimit, 
       cfg.search.DATAFORSEO_LOGIN    = search.DATAFORSEO_LOGIN.trim();
       cfg.search.DATAFORSEO_PASSWORD = search.DATAFORSEO_PASSWORD.trim();
     }
+    if (search.provider === 'linkedin')   cfg.search.LINKEDIN_API_KEY = search.LINKEDIN_API_KEY.trim();
     if (llm.provider === 'openai')    cfg.llm.OPENAI_API_KEY    = llm.OPENAI_API_KEY.trim();
     if (llm.provider === 'anthropic') cfg.llm.ANTHROPIC_API_KEY = llm.ANTHROPIC_API_KEY.trim();
     if (email_verif.provider === 'neverbounce') cfg.email_verif.NEVERBOUNCE_API_KEY = email_verif.NEVERBOUNCE_API_KEY.trim();
@@ -10009,6 +10040,7 @@ app.get('/api/user-service-config/search-keys', requireLogin, dashboardRateLimit
     if (search.provider === 'serper'     && search.SERPER_API_KEY)     result.SERPER_API_KEY    = search.SERPER_API_KEY;
     if (search.provider === 'dataforseo' && search.DATAFORSEO_LOGIN)   result.DATAFORSEO_LOGIN   = search.DATAFORSEO_LOGIN;
     if (search.provider === 'dataforseo' && search.DATAFORSEO_PASSWORD) result.DATAFORSEO_PASSWORD = search.DATAFORSEO_PASSWORD;
+    if (search.provider === 'linkedin'   && search.LINKEDIN_API_KEY)   result.LINKEDIN_API_KEY   = search.LINKEDIN_API_KEY;
     res.json(result);
   } catch (err) {
     console.error('[user-service-config/search-keys]', err);
@@ -10093,6 +10125,28 @@ app.post('/api/user-service-config/validate', requireLogin, dashboardRateLimit, 
           }
         } catch (e) {
           results.push({ label: 'DataforSEO', status: 'warn', detail: `Could not reach DataforSEO API: ${e.message}` });
+        }
+      }
+    } else if (search?.provider === 'linkedin') {
+      const key = (search.LINKEDIN_API_KEY || '').trim();
+      if (!key) {
+        results.push({ label: 'LinkedIn', status: 'error', detail: 'LINKEDIN_API_KEY is required.' });
+      } else {
+        try {
+          const { status } = await httpsGet('https://api.linkedapi.io/v1/search', {
+            method: 'POST',
+            headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ q: 'test', num: 1 }),
+          });
+          if (status === 200) {
+            results.push({ label: 'LinkedIn', status: 'ok', detail: 'API key is valid.' });
+          } else if (status === 401 || status === 403) {
+            results.push({ label: 'LinkedIn', status: 'error', detail: `Authentication failed (HTTP ${status}). Check your LINKEDIN_API_KEY.` });
+          } else {
+            results.push({ label: 'LinkedIn', status: 'warn', detail: `Unexpected HTTP ${status} — key may be valid but quota or plan issue possible.` });
+          }
+        } catch (e) {
+          results.push({ label: 'LinkedIn', status: 'warn', detail: `Could not reach LinkedIn API: ${e.message}` });
         }
       }
     }
