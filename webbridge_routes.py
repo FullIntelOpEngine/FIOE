@@ -2619,6 +2619,46 @@ def serper_search_page(query: str, api_key: str, num: int, gl_hint: str = None, 
         logger.warning(f"[Serper] page fetch failed: {e}")
         return [], 0
 
+def linkedin_search_page(query: str, api_key: str, num: int, gl_hint: str = None, page: int = 1):
+    """Fetch one page of LinkedIn search results via LinkedAPI.io.
+
+    Returns the same ``(results, estimated_total)`` tuple as
+    ``google_cse_search_page`` so callers are interchangeable.
+    """
+    if not api_key:
+        return [], 0
+    endpoint = "https://api.linkedapi.io/v1/search"
+    payload = {"q": query, "num": min(num, 10), "page": page}
+    if gl_hint:
+        payload["gl"] = gl_hint
+    try:
+        r = requests.post(
+            endpoint,
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        organic = data.get("organic") or data.get("results") or []
+        total_str = str(data.get("totalResults", "0") or "0")
+        try:
+            estimated_total = int(total_str.replace(",", ""))
+        except (ValueError, TypeError):
+            estimated_total = 0
+        out = []
+        for it in organic:
+            out.append({
+                "link": it.get("link") or it.get("url") or "",
+                "title": it.get("title") or it.get("name") or "",
+                "snippet": it.get("snippet") or it.get("description") or "",
+                "displayLink": it.get("displayLink") or (it.get("link") or it.get("url") or ""),
+            })
+        return out, estimated_total
+    except Exception as e:
+        logger.warning(f"[LinkedIn] page fetch failed: {e}")
+        return [], 0
+
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
     """Fetch one page of results from the DataforSEO Google Organic Live API.
 
@@ -2690,12 +2730,17 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
 
 def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = None,
                         user_provider: str = None, user_serper_key: str = None,
-                        user_dfs_login: str = None, user_dfs_password: str = None):
+                        user_dfs_login: str = None, user_dfs_password: str = None,
+                        user_linkedin_key: str = None,
+                        selected_provider: str = None):
     """Search wrapper that routes to the configured active provider.
 
     Per-user provider (from Option A service config) takes priority over the global
     admin config.  Priority: per-user Serper → per-user DataforSEO → admin Serper →
     admin DataforSEO → Google CSE (fallback).
+
+    When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
+    config lookup is overridden to route to that specific provider instead.
 
     If the per-user provider returns zero results (suggesting key failure / exhausted
     credits), falls back to the admin config and sets
@@ -2719,8 +2764,33 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
             return results, total
         logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
         _search_fallback_flag.used = True
+    if user_provider == 'linkedin' and user_linkedin_key:
+        results, total = linkedin_search_page(query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
+        if results:
+            return results, total
+        logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
+        _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
+
+    # When a specific provider is selected via the AutoSourcing toggle, route to
+    # that provider directly (if admin has keys configured for it).
+    if selected_provider == 'serper':
+        serper_cfg = cfg.get("serper", {})
+        serper_key = serper_cfg.get("api_key", "")
+        if serper_key:
+            return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
+    elif selected_provider == 'dataforseo':
+        dfs_cfg = cfg.get("dataforseo", {})
+        dfs_login = (dfs_cfg.get("login") or "").strip()
+        dfs_password = (dfs_cfg.get("password") or "").strip()
+        if dfs_login and dfs_password:
+            return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
+    elif selected_provider == 'linkedin':
+        li_cfg = cfg.get("linkedin", {})
+        li_key = li_cfg.get("api_key", "")
+        if li_key:
+            return linkedin_search_page(query, li_key, num, gl_hint=gl_hint, page=page)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -2732,6 +2802,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     dfs_password = (dfs_cfg.get("password") or "").strip()
     if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
         return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
+
+    li_cfg = cfg.get("linkedin", {})
+    li_key = li_cfg.get("api_key", "")
+    if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
+        return linkedin_search_page(query, li_key, num, gl_hint=gl_hint, page=page)
 
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
@@ -3010,7 +3085,9 @@ def _infer_primary_job_title(job_titles):
 
 def _perform_cse_queries(job_id, queries, target_limit, country,
                          user_provider=None, user_serper_key=None,
-                         user_dfs_login=None, user_dfs_password=None):
+                         user_dfs_login=None, user_dfs_password=None,
+                         user_linkedin_key=None,
+                         selected_provider=None):
     results=[]
     m_cc=re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
     country_code_hint = m_cc.group(1).lower() if m_cc else None
@@ -3021,18 +3098,37 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         _provider_label = "Serper (user)"
     elif user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         _provider_label = "DataforSEO (user)"
+    elif user_provider == 'linkedin' and user_linkedin_key:
+        _provider_label = "LinkedIn (user)"
     else:
         _sp = _load_search_provider_config()
-        _serper_on = (
-            _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
-            and bool(_sp.get("serper", {}).get("api_key"))
-        )
-        _dfs_on = (
-            _sp.get("dataforseo", {}).get("enabled", "disabled") == "enabled"
-            and bool(_sp.get("dataforseo", {}).get("login"))
-            and bool(_sp.get("dataforseo", {}).get("password"))
-        )
-        _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else "CSE")
+        if selected_provider == 'serper':
+            _provider_label = "Serper (selected)"
+        elif selected_provider == 'dataforseo':
+            _provider_label = "DataforSEO (selected)"
+        elif selected_provider == 'linkedin':
+            _provider_label = "LinkedIn (selected)"
+        else:
+            _serper_on = (
+                _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("serper", {}).get("api_key"))
+            )
+            _dfs_on = (
+                _sp.get("dataforseo", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("dataforseo", {}).get("login"))
+                and bool(_sp.get("dataforseo", {}).get("password"))
+            )
+            _li_on = (
+                _sp.get("linkedin", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("linkedin", {}).get("api_key"))
+            )
+            _provider_label = "CSE"
+            if _serper_on:
+                _provider_label = "Serper"
+            elif _dfs_on:
+                _provider_label = "DataforSEO"
+            elif _li_on:
+                _provider_label = "LinkedIn"
 
     global_collected = 0
 
@@ -3057,6 +3153,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 q, page_size, start_index, gl_hint=country_code_hint,
                 user_provider=user_provider, user_serper_key=user_serper_key,
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                user_linkedin_key=user_linkedin_key,
+                selected_provider=selected_provider,
             )
             pages_fetched+=1
 
@@ -4026,6 +4124,8 @@ def user_svc_config_search_keys():
             result['DATAFORSEO_LOGIN'] = search['DATAFORSEO_LOGIN']
         if search.get('provider') == 'dataforseo' and search.get('DATAFORSEO_PASSWORD'):
             result['DATAFORSEO_PASSWORD'] = search['DATAFORSEO_PASSWORD']
+        if search.get('provider') == 'linkedin' and search.get('LINKEDIN_API_KEY'):
+            result['LINKEDIN_API_KEY'] = search['LINKEDIN_API_KEY']
         return jsonify(result)
     except Exception as exc:
         logger.exception("[user-service-config/search-keys]")
@@ -4120,6 +4220,24 @@ def user_svc_config_validate():
                 else:
                     results.append({'label': 'DataforSEO', 'status': 'warn',
                                     'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach DataforSEO API.'})
+        elif sp == 'linkedin':
+            key = (search.get('LINKEDIN_API_KEY') or '').strip()
+            if not key:
+                results.append({'label': 'LinkedIn', 'status': 'error',
+                                'detail': 'LINKEDIN_API_KEY is required.'})
+            else:
+                payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
+                status, _ = _probe_post('https://api.linkedapi.io/v1/search', payload,
+                                        headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
+                if status == 200:
+                    results.append({'label': 'LinkedIn', 'status': 'ok', 'detail': 'API key is valid.'})
+                elif status in (401, 403):
+                    results.append({'label': 'LinkedIn', 'status': 'error',
+                                    'detail': f'Authentication failed (HTTP {status}). Check your LINKEDIN_API_KEY.'})
+                else:
+                    results.append({'label': 'LinkedIn', 'status': 'warn',
+                                    'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
+                                    if status else 'Could not reach LinkedIn API.'})
 
         # ── LLM ───────────────────────────────────────────────────────────────
         lp = (llm.get('provider') or '').strip()

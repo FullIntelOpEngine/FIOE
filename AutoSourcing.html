@@ -1012,11 +1012,12 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
   background: #ebebeb;
   border: 1.5px solid var(--cool-blue, #4c82b8);
   border-radius: var(--radius);
-  padding: 12px 16px;
+  padding: 10px 16px;
   margin-bottom: 8px;
 }
 .wiz-summary-bar.hidden { display: none; }
@@ -1133,6 +1134,86 @@ pre {
 #sourcingProgressFill.prog-done {
   background: linear-gradient(90deg, #073679, #4c82b8);
   animation: none;
+}
+
+/* ── Search Provider Toggle (inline in summary bar) ── */
+#searchProviderToggle {
+  display: none; /* shown via _showSearchProviderToggle() */
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#searchProviderToggle.sp-bar-visible {
+  display: flex;
+}
+.wiz-sb-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--cool-blue, #4c82b8);
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+#searchProviderToggle .sp-toggle-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+#searchProviderToggle .sp-toggle-header label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--azure-dragon, #073679);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.sp-toggle-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d8d8d8);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+}
+.sp-toggle-btn.sp-mode-cse {
+  background: #fff;
+  color: var(--text-soft, #666);
+  border-color: var(--border, #d8d8d8);
+}
+.sp-toggle-btn.sp-mode-cse:hover {
+  box-shadow: 0 0 8px 1px rgba(59,130,246,0.25);
+  border-color: #aac;
+}
+.sp-toggle-btn.sp-mode-api {
+  background: var(--azure-dragon, #073679);
+  color: #fff;
+  border-color: var(--azure-dragon, #073679);
+}
+.sp-toggle-btn.sp-mode-api:hover {
+  box-shadow: 0 0 8px 1px rgba(7,54,121,0.3);
+}
+#spDropdownWrap {
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+#spDropdownWrap.sp-open {
+  display: flex;
+}
+#spDropdownWrap label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-soft, #666);
+  white-space: nowrap;
+}
+#spDropdownWrap select {
+  padding: 4px 8px;
+  font-size: 11.5px;
+  border: 1px solid var(--border, #d8d8d8);
+  border-radius: 6px;
+  background: #fff;
+  min-width: 130px;
 }
 
 /* Skill Adjacency button tooltip */
@@ -1541,6 +1622,18 @@ pre {
           <span class="wiz-sb-chip" id="wizSumLimit"></span>
         </div>
         <div class="wiz-sb-actions">
+          <!-- ═══ Search Provider Toggle (inline next to Edit Settings) ═══ -->
+          <div id="searchProviderToggle">
+            <div class="sp-toggle-header">
+              <button type="button" id="spToggleBtn" class="sp-toggle-btn sp-mode-cse" onclick="window._toggleSearchProviderMode()">Default CSE</button>
+            </div>
+            <div id="spDropdownWrap">
+              <select id="spProviderSelect">
+                <option value="">— select —</option>
+              </select>
+            </div>
+          </div>
+          <span class="wiz-sb-divider" id="spBarDivider" style="display:none;"></span>
           <button class="wiz-sb-edit-btn" id="wizSummaryEditBtn" type="button">✏ Edit Settings</button>
           <button class="wiz-sb-reset-btn" id="resetChoicesBtn" type="button">↺ Reset</button>
         </div>
@@ -3647,7 +3740,7 @@ async function enhanceWelcomeWithFullName(){
         if (svcData && svcData.active && svcData.providers) {
           const sp = (svcData.providers.search || '').toLowerCase();
           const lp = (svcData.providers.llm || '').toLowerCase();
-          window.__HAS_CUSTOM_SEARCH = (sp === 'serper' || sp === 'dataforseo');
+          window.__HAS_CUSTOM_SEARCH = (sp === 'serper' || sp === 'dataforseo' || sp === 'linkedin');
           window.__HAS_CUSTOM_LLM   = (lp === 'openai' || lp === 'anthropic');
         }
       }
@@ -3666,6 +3759,8 @@ async function enhanceWelcomeWithFullName(){
     }
     // Apply admin visibility to compiled query and queries section
     applyAdminVisibility();
+    // Show search provider toggle once user config is resolved
+    if (typeof window._showSearchProviderToggle === 'function') window._showSearchProviderToggle();
   }catch(e){ }
 }
 
@@ -3822,6 +3917,142 @@ function _refreshTokenRates() {
     })
     .catch(() => {});
 }
+
+// ── Search Provider Toggle ───────────────────────────────────────────────────
+// Manages the toggle between Default CSE and API Provider modes.
+// Dropdown pulls available search providers and contact gen providers from
+// admin_rate_limits.html config via endpoints (same concept as Verif.Engine).
+(function _initSearchProviderToggle(){
+  let _spMode = 'cse';    // 'cse' or 'api'
+  let _spProvider = '';    // 'serper' | 'dataforseo' | 'contactout' | 'apollo' | 'rocketreach' | ''
+  let _spServicesLoaded = false;
+
+  const _PROVIDER_LABELS = {
+    'serper':      'Serper.dev',
+    'dataforseo':  'DataForSEO',
+    'linkedin':    'LinkedIn',
+    'contactout':  'ContactOut',
+    'apollo':      'Apollo',
+    'rocketreach': 'RocketReach',
+  };
+  const _PROVIDER_CATEGORY = {
+    'serper':      '🔍 Search',
+    'dataforseo':  '🔍 Search',
+    'linkedin':    '🔍 Search',
+    'contactout':  '📇 Contact',
+    'apollo':      '📇 Contact',
+    'rocketreach': '📇 Contact',
+  };
+
+  window._setSearchProviderMode = function(mode) {
+    _spMode = mode;
+    const btn      = document.getElementById('spToggleBtn');
+    const dropWrap = document.getElementById('spDropdownWrap');
+    if (btn) {
+      btn.classList.toggle('sp-mode-cse', mode === 'cse');
+      btn.classList.toggle('sp-mode-api', mode === 'api');
+      btn.textContent = mode === 'api' ? 'API Provider' : 'Default CSE';
+    }
+    if (dropWrap) {
+      if (mode === 'api') {
+        dropWrap.classList.add('sp-open');
+      } else {
+        dropWrap.classList.remove('sp-open');
+      }
+    }
+    if (mode === 'api' && !_spServicesLoaded) _fetchSearchProviderServices();
+  };
+
+  // Click-to-toggle handler for the unified single button
+  window._toggleSearchProviderMode = function() {
+    window._setSearchProviderMode(_spMode === 'cse' ? 'api' : 'cse');
+  };
+
+  // Expose the selected provider for payload injection
+  window._getSelectedSearchProvider = function() {
+    if (_spMode === 'cse') return { mode: 'cse', provider: '' };
+    return { mode: 'api', provider: _spProvider || '' };
+  };
+
+  function _fetchSearchProviderServices() {
+    Promise.all([
+      fetch('/search-provider-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([searchData, contactData, userData]) => {
+      _spServicesLoaded = true;
+      const services = new Set();
+      // Add admin-configured search providers (serper / dataforseo / linkedin)
+      if (searchData && Array.isArray(searchData.services)) {
+        searchData.services.forEach(s => services.add(s));
+      }
+      // Add admin-configured contact generation providers (contactout / apollo / rocketreach)
+      if (contactData && Array.isArray(contactData.services)) {
+        contactData.services.forEach(s => services.add(s));
+      }
+      // Add per-user search provider (from api_porting.html Option A)
+      if (userData && userData.active && userData.providers) {
+        const sp = (userData.providers.search || '').toLowerCase();
+        if (sp === 'serper' || sp === 'dataforseo' || sp === 'linkedin') services.add(sp);
+      }
+      _populateDropdown(Array.from(services));
+    });
+  }
+
+  function _populateDropdown(services) {
+    const sel = document.getElementById('spProviderSelect');
+    if (!sel) return;
+    // Preserve current selection if still valid
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— select —</option>';
+    // Group services by category
+    const groups = {};
+    services.forEach(svc => {
+      const cat = _PROVIDER_CATEGORY[svc] || 'Other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(svc);
+    });
+    const categoryOrder = ['🔍 Search', '📇 Contact', 'Other'];
+    categoryOrder.forEach(cat => {
+      if (!groups[cat] || groups[cat].length === 0) return;
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = cat;
+      groups[cat].forEach(svc => {
+        const opt = document.createElement('option');
+        opt.value = svc;
+        opt.textContent = _PROVIDER_LABELS[svc] || svc;
+        optgroup.appendChild(opt);
+      });
+      sel.appendChild(optgroup);
+    });
+    // Auto-select if only one provider available
+    if (services.length === 1) {
+      sel.value = services[0];
+      _spProvider = services[0];
+    } else if (services.includes(prev)) {
+      sel.value = prev;
+      _spProvider = prev;
+    }
+  }
+
+  // Listen for dropdown changes
+  document.addEventListener('DOMContentLoaded', function(){
+    const sel = document.getElementById('spProviderSelect');
+    if (sel) sel.addEventListener('change', function(){ _spProvider = sel.value; });
+  });
+
+  // Show the toggle once user config is loaded (after enhanceWelcomeWithFullName).
+  // The toggle lives inside wizSummaryBar; mark it visible via CSS class so it
+  // shows up when the summary bar is shown after wizard completion.
+  window._showSearchProviderToggle = function() {
+    const toggle = document.getElementById('searchProviderToggle');
+    if (toggle) toggle.classList.add('sp-bar-visible');
+    const divider = document.getElementById('spBarDivider');
+    if (divider) divider.style.display = '';
+    // Pre-fetch services on show
+    _fetchSearchProviderServices();
+  };
+})();
 
 function showBestModeNotif(){
   // Guard suppression before the async fetch to avoid a flash of the suppressed popup.
@@ -4086,6 +4317,17 @@ async function generateAndStart(){
         if (sk.SERPER_API_KEY)        payload._serperApiKey    = sk.SERPER_API_KEY;
         if (sk.DATAFORSEO_LOGIN)      payload._dfsLogin        = sk.DATAFORSEO_LOGIN;
         if (sk.DATAFORSEO_PASSWORD)   payload._dfsPassword     = sk.DATAFORSEO_PASSWORD;
+        if (sk.LINKEDIN_API_KEY)      payload._linkedinApiKey  = sk.LINKEDIN_API_KEY;
+      }
+    }
+  } catch (_) {}
+  // Apply Search Provider toggle selection — when user chose API Provider mode with a
+  // specific provider, tell the backend to route through that admin-configured provider.
+  try {
+    if (typeof window._getSelectedSearchProvider === 'function') {
+      const spSel = window._getSelectedSearchProvider();
+      if (spSel.mode === 'api' && spSel.provider) {
+        payload._selectedSearchProvider = spSel.provider;
       }
     }
   } catch (_) {}
