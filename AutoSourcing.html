@@ -1012,11 +1012,12 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
   background: #ebebeb;
   border: 1.5px solid var(--cool-blue, #4c82b8);
   border-radius: var(--radius);
-  padding: 12px 16px;
+  padding: 10px 16px;
   margin-bottom: 8px;
 }
 .wiz-summary-bar.hidden { display: none; }
@@ -1135,24 +1136,35 @@ pre {
   animation: none;
 }
 
-/* ── Search Provider Toggle ── */
+/* ── Search Provider Toggle (inline in summary bar) ── */
 #searchProviderToggle {
-  margin-top: 12px;
-  padding: 12px 16px;
-  background: #f7f9fb;
-  border: 1px solid var(--border, #d8d8d8);
-  border-radius: 8px;
+  display: none; /* shown via _showSearchProviderToggle() */
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#searchProviderToggle.sp-bar-visible {
+  display: flex;
+}
+.wiz-sb-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--cool-blue, #4c82b8);
+  opacity: 0.35;
+  flex-shrink: 0;
 }
 #searchProviderToggle .sp-toggle-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: 6px;
 }
 #searchProviderToggle .sp-toggle-header label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text, #333);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--azure-dragon, #073679);
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: .4px;
 }
 .sp-toggle-pills {
   display: inline-flex;
@@ -1161,51 +1173,50 @@ pre {
   border: 1px solid var(--border, #d8d8d8);
 }
 .sp-toggle-pills button {
-  padding: 6px 16px;
-  font-size: 12px;
+  padding: 4px 10px;
+  font-size: 11px;
   font-weight: 600;
   border: none;
   cursor: pointer;
   background: #fff;
   color: var(--text-soft, #666);
   transition: background 0.2s, color 0.2s, opacity 0.2s, box-shadow 0.2s;
-  opacity: 0.55;
+  opacity: 0.6;
 }
 .sp-toggle-pills button:hover {
-  opacity: 0.85;
-  box-shadow: 0 0 10px 2px rgba(59,130,246,0.45);
+  opacity: 0.9;
+  box-shadow: 0 0 8px 1px rgba(59,130,246,0.35);
 }
 .sp-toggle-pills button.sp-active {
-  background: var(--accent, #3b82f6);
+  background: var(--azure-dragon, #073679);
   color: #fff;
   opacity: 1;
   box-shadow: none;
 }
 .sp-toggle-pills button.sp-active:hover {
-  box-shadow: 0 0 10px 2px rgba(59,130,246,0.45);
+  box-shadow: 0 0 8px 1px rgba(7,54,121,0.3);
 }
 #spDropdownWrap {
   display: none;
-  margin-top: 8px;
+  align-items: center;
+  gap: 6px;
 }
 #spDropdownWrap.sp-open {
   display: flex;
-  align-items: center;
-  gap: 10px;
 }
 #spDropdownWrap label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-soft, #666);
   white-space: nowrap;
 }
 #spDropdownWrap select {
-  padding: 5px 10px;
-  font-size: 12px;
+  padding: 4px 8px;
+  font-size: 11.5px;
   border: 1px solid var(--border, #d8d8d8);
   border-radius: 6px;
   background: #fff;
-  min-width: 160px;
+  min-width: 130px;
 }
 
 /* Skill Adjacency button tooltip */
@@ -1614,6 +1625,23 @@ pre {
           <span class="wiz-sb-chip" id="wizSumLimit"></span>
         </div>
         <div class="wiz-sb-actions">
+          <!-- ═══ Search Provider Toggle (inline next to Edit Settings) ═══ -->
+          <div id="searchProviderToggle">
+            <div class="sp-toggle-header">
+              <label>🔍 Search</label>
+              <div class="sp-toggle-pills">
+                <button type="button" id="spPillCSE" class="sp-active" onclick="window._setSearchProviderMode('cse')">CSE</button>
+                <button type="button" id="spPillAPI" onclick="window._setSearchProviderMode('api')">API</button>
+              </div>
+            </div>
+            <div id="spDropdownWrap">
+              <label for="spProviderSelect">Provider:</label>
+              <select id="spProviderSelect">
+                <option value="">— select —</option>
+              </select>
+            </div>
+          </div>
+          <span class="wiz-sb-divider" id="spBarDivider" style="display:none;"></span>
           <button class="wiz-sb-edit-btn" id="wizSummaryEditBtn" type="button">✏ Edit Settings</button>
           <button class="wiz-sb-reset-btn" id="resetChoicesBtn" type="button">↺ Reset</button>
         </div>
@@ -1927,23 +1955,6 @@ pre {
         <!-- ═══ Start Autosourcing — original bottom position, beneath "We'll search for" section ═══ -->
         <div class="flow-actions" id="startSourcingBar" style="margin-top:16px;">
           <button class="primary" id="generateBtn" data-state="idle">Start Autosourcing</button>
-        </div>
-
-        <!-- ═══ Search Provider Toggle ═══ -->
-        <div id="searchProviderToggle" style="display:none;">
-          <div class="sp-toggle-header">
-            <label>🔍 Search Provider</label>
-            <div class="sp-toggle-pills">
-              <button type="button" id="spPillCSE" class="sp-active" onclick="window._setSearchProviderMode('cse')">Default CSE</button>
-              <button type="button" id="spPillAPI" onclick="window._setSearchProviderMode('api')">API Provider</button>
-            </div>
-          </div>
-          <div id="spDropdownWrap">
-            <label for="spProviderSelect">Provider:</label>
-            <select id="spProviderSelect">
-              <option value="">— select —</option>
-            </select>
-          </div>
         </div>
 
         <!-- Sourcing progress bar — visible below Start Autosourcing while job runs -->
@@ -4036,11 +4047,14 @@ function _refreshTokenRates() {
     if (sel) sel.addEventListener('change', function(){ _spProvider = sel.value; });
   });
 
-  // Show the toggle once user config is loaded (after enhanceWelcomeWithFullName)
-  // This is called from the user config load path
+  // Show the toggle once user config is loaded (after enhanceWelcomeWithFullName).
+  // The toggle lives inside wizSummaryBar; mark it visible via CSS class so it
+  // shows up when the summary bar is shown after wizard completion.
   window._showSearchProviderToggle = function() {
     const toggle = document.getElementById('searchProviderToggle');
-    if (toggle) toggle.style.display = '';
+    if (toggle) toggle.classList.add('sp-bar-visible');
+    const divider = document.getElementById('spBarDivider');
+    if (divider) divider.style.display = '';
     // Pre-fetch services on show
     _fetchSearchProviderServices();
   };
