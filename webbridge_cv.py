@@ -131,7 +131,8 @@ def _geography_flask_limit():
 
 
 def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, search_results_only, country, dynamic_target, job_titles,
-                user_search_provider=None, user_serper_key=None, user_dfs_login=None, user_dfs_password=None):
+                user_search_provider=None, user_serper_key=None, user_dfs_login=None, user_dfs_password=None,
+                selected_search_provider=None):
     global SEARCH_RESULTS_TARGET
     add_message(job_id, "Starting search pipeline...")
     rows=[]; urls=[]
@@ -158,6 +159,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     job_id, primary_q, target_limit, country,
                     user_provider=user_search_provider, user_serper_key=user_serper_key,
                     user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                    selected_provider=selected_search_provider,
                 )
                 cse_queries_fired += len(primary_q)
                 urls=[r["link"] for r in cse_results]
@@ -190,6 +192,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 job_id, fallback_queries, still_needed_fb, country,
                 user_provider=user_search_provider, user_serper_key=user_serper_key,
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                selected_provider=selected_search_provider,
             )
             cse_queries_fired += len(fallback_queries)
             # Collect already-seen URLs so duplicates from fallback are discarded
@@ -562,6 +565,8 @@ def start_job():
     _user_serper_key      = (data.get('_serperApiKey')       or '').strip() or None
     _user_dfs_login       = (data.get('_dfsLogin')           or '').strip() or None
     _user_dfs_password    = (data.get('_dfsPassword')        or '').strip() or None
+    # UI-selected search provider from the AutoSourcing.html toggle (admin-configured)
+    _selected_search_provider = (data.get('_selectedSearchProvider') or '').strip().lower() or None
 
     # --- PATCH START: Automatically update role_tag in login and sourcing tables based on job_titles ---
     # The requirement is that autosourcing.html search title must pass automatically to login.role_tag
@@ -648,7 +653,8 @@ def start_job():
     threading.Thread(target=_job_runner,
                      args=(job_id, queries, fallback_queries, auto_expand, manual_urls,
                            search_results_only, country, dynamic_target, job_titles,
-                           _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password),
+                           _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
+                           _selected_search_provider),
                      daemon=True).start()
     # Log agentic intent event
     _agentic_filters = []

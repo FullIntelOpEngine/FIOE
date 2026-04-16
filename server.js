@@ -1510,6 +1510,17 @@ app.get('/email-verif-services', (req, res) => {
   res.json({ services: enabled });
 });
 
+// ── User-facing: list enabled search providers (no API keys) ─────────────────
+app.get('/search-provider-services', (req, res) => {
+  const config = loadSearchProviderConfig();
+  const enabled = [];
+  const serper = config.serper || {};
+  if (serper.enabled === 'enabled' && serper.api_key) enabled.push('serper');
+  const dfs = config.dataforseo || {};
+  if (dfs.enabled === 'enabled' && dfs.login && dfs.password) enabled.push('dataforseo');
+  res.json({ services: enabled });
+});
+
 const pool = new Pool({
   user: process.env.PGUSER || 'postgres',
   host: process.env.PGHOST || 'localhost',

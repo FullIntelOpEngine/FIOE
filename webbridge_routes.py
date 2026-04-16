@@ -2690,12 +2690,16 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
 
 def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = None,
                         user_provider: str = None, user_serper_key: str = None,
-                        user_dfs_login: str = None, user_dfs_password: str = None):
+                        user_dfs_login: str = None, user_dfs_password: str = None,
+                        selected_provider: str = None):
     """Search wrapper that routes to the configured active provider.
 
     Per-user provider (from Option A service config) takes priority over the global
     admin config.  Priority: per-user Serper → per-user DataforSEO → admin Serper →
     admin DataforSEO → Google CSE (fallback).
+
+    When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
+    config lookup is overridden to route to that specific provider instead.
 
     If the per-user provider returns zero results (suggesting key failure / exhausted
     credits), falls back to the admin config and sets
@@ -2721,6 +2725,20 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
+
+    # When a specific provider is selected via the AutoSourcing toggle, route to
+    # that provider directly (if admin has keys configured for it).
+    if selected_provider == 'serper':
+        serper_cfg = cfg.get("serper", {})
+        serper_key = serper_cfg.get("api_key", "")
+        if serper_key:
+            return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
+    elif selected_provider == 'dataforseo':
+        dfs_cfg = cfg.get("dataforseo", {})
+        dfs_login = (dfs_cfg.get("login") or "").strip()
+        dfs_password = (dfs_cfg.get("password") or "").strip()
+        if dfs_login and dfs_password:
+            return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -3010,7 +3028,8 @@ def _infer_primary_job_title(job_titles):
 
 def _perform_cse_queries(job_id, queries, target_limit, country,
                          user_provider=None, user_serper_key=None,
-                         user_dfs_login=None, user_dfs_password=None):
+                         user_dfs_login=None, user_dfs_password=None,
+                         selected_provider=None):
     results=[]
     m_cc=re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
     country_code_hint = m_cc.group(1).lower() if m_cc else None
@@ -3023,16 +3042,21 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         _provider_label = "DataforSEO (user)"
     else:
         _sp = _load_search_provider_config()
-        _serper_on = (
-            _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
-            and bool(_sp.get("serper", {}).get("api_key"))
-        )
-        _dfs_on = (
-            _sp.get("dataforseo", {}).get("enabled", "disabled") == "enabled"
-            and bool(_sp.get("dataforseo", {}).get("login"))
-            and bool(_sp.get("dataforseo", {}).get("password"))
-        )
-        _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else "CSE")
+        if selected_provider == 'serper':
+            _provider_label = "Serper (selected)"
+        elif selected_provider == 'dataforseo':
+            _provider_label = "DataforSEO (selected)"
+        else:
+            _serper_on = (
+                _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("serper", {}).get("api_key"))
+            )
+            _dfs_on = (
+                _sp.get("dataforseo", {}).get("enabled", "disabled") == "enabled"
+                and bool(_sp.get("dataforseo", {}).get("login"))
+                and bool(_sp.get("dataforseo", {}).get("password"))
+            )
+            _provider_label = "Serper" if _serper_on else ("DataforSEO" if _dfs_on else "CSE")
 
     global_collected = 0
 
@@ -3057,6 +3081,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 q, page_size, start_index, gl_hint=country_code_hint,
                 user_provider=user_provider, user_serper_key=user_serper_key,
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                selected_provider=selected_provider,
             )
             pages_fetched+=1
 
