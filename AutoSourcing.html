@@ -3740,7 +3740,7 @@ async function enhanceWelcomeWithFullName(){
         if (svcData && svcData.active && svcData.providers) {
           const sp = (svcData.providers.search || '').toLowerCase();
           const lp = (svcData.providers.llm || '').toLowerCase();
-          window.__HAS_CUSTOM_SEARCH = (sp === 'serper' || sp === 'dataforseo');
+          window.__HAS_CUSTOM_SEARCH = (sp === 'serper' || sp === 'dataforseo' || sp === 'linkedin');
           window.__HAS_CUSTOM_LLM   = (lp === 'openai' || lp === 'anthropic');
         }
       }
@@ -4317,6 +4317,7 @@ async function generateAndStart(){
         if (sk.SERPER_API_KEY)        payload._serperApiKey    = sk.SERPER_API_KEY;
         if (sk.DATAFORSEO_LOGIN)      payload._dfsLogin        = sk.DATAFORSEO_LOGIN;
         if (sk.DATAFORSEO_PASSWORD)   payload._dfsPassword     = sk.DATAFORSEO_PASSWORD;
+        if (sk.LINKEDIN_API_KEY)      payload._linkedinApiKey  = sk.LINKEDIN_API_KEY;
       }
     }
   } catch (_) {}

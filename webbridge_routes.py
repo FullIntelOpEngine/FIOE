@@ -2731,6 +2731,7 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
 def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = None,
                         user_provider: str = None, user_serper_key: str = None,
                         user_dfs_login: str = None, user_dfs_password: str = None,
+                        user_linkedin_key: str = None,
                         selected_provider: str = None):
     """Search wrapper that routes to the configured active provider.
 
@@ -2762,6 +2763,12 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if results:
             return results, total
         logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
+        _search_fallback_flag.used = True
+    if user_provider == 'linkedin' and user_linkedin_key:
+        results, total = linkedin_search_page(query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
+        if results:
+            return results, total
+        logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
         _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
@@ -3079,6 +3086,7 @@ def _infer_primary_job_title(job_titles):
 def _perform_cse_queries(job_id, queries, target_limit, country,
                          user_provider=None, user_serper_key=None,
                          user_dfs_login=None, user_dfs_password=None,
+                         user_linkedin_key=None,
                          selected_provider=None):
     results=[]
     m_cc=re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
@@ -3090,6 +3098,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         _provider_label = "Serper (user)"
     elif user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         _provider_label = "DataforSEO (user)"
+    elif user_provider == 'linkedin' and user_linkedin_key:
+        _provider_label = "LinkedIn (user)"
     else:
         _sp = _load_search_provider_config()
         if selected_provider == 'serper':
@@ -3143,6 +3153,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 q, page_size, start_index, gl_hint=country_code_hint,
                 user_provider=user_provider, user_serper_key=user_serper_key,
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                user_linkedin_key=user_linkedin_key,
                 selected_provider=selected_provider,
             )
             pages_fetched+=1
@@ -4113,6 +4124,8 @@ def user_svc_config_search_keys():
             result['DATAFORSEO_LOGIN'] = search['DATAFORSEO_LOGIN']
         if search.get('provider') == 'dataforseo' and search.get('DATAFORSEO_PASSWORD'):
             result['DATAFORSEO_PASSWORD'] = search['DATAFORSEO_PASSWORD']
+        if search.get('provider') == 'linkedin' and search.get('LINKEDIN_API_KEY'):
+            result['LINKEDIN_API_KEY'] = search['LINKEDIN_API_KEY']
         return jsonify(result)
     except Exception as exc:
         logger.exception("[user-service-config/search-keys]")
@@ -4207,6 +4220,24 @@ def user_svc_config_validate():
                 else:
                     results.append({'label': 'DataforSEO', 'status': 'warn',
                                     'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach DataforSEO API.'})
+        elif sp == 'linkedin':
+            key = (search.get('LINKEDIN_API_KEY') or '').strip()
+            if not key:
+                results.append({'label': 'LinkedIn', 'status': 'error',
+                                'detail': 'LINKEDIN_API_KEY is required.'})
+            else:
+                payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
+                status, _ = _probe_post('https://api.linkedapi.io/v1/search', payload,
+                                        headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
+                if status == 200:
+                    results.append({'label': 'LinkedIn', 'status': 'ok', 'detail': 'API key is valid.'})
+                elif status in (401, 403):
+                    results.append({'label': 'LinkedIn', 'status': 'error',
+                                    'detail': f'Authentication failed (HTTP {status}). Check your LINKEDIN_API_KEY.'})
+                else:
+                    results.append({'label': 'LinkedIn', 'status': 'warn',
+                                    'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
+                                    if status else 'Could not reach LinkedIn API.'})
 
         # ── LLM ───────────────────────────────────────────────────────────────
         lp = (llm.get('provider') or '').strip()

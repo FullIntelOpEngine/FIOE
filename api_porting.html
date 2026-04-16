@@ -1376,6 +1376,7 @@
                 <button class="svc-pill active" data-svc="search" data-provider="google_cse">Google CSE (default)</button>
                 <button class="svc-pill" data-svc="search" data-provider="serper">Serper.dev</button>
                 <button class="svc-pill" data-svc="search" data-provider="dataforseo">DataforSEO</button>
+                <button class="svc-pill" data-svc="search" data-provider="linkedin">LinkedIn</button>
               </div>
               <div class="svc-key-fields" id="svc-search-fields">
                 <div class="byok-field" id="svc-serper-field" style="display:none">
@@ -1389,6 +1390,10 @@
                 <div class="byok-field" id="svc-dfs-pass-field" style="display:none">
                   <label for="svc_dfs_pass">DATAFORSEO_PASSWORD</label>
                   <input type="password" id="svc_dfs_pass" placeholder="password" autocomplete="off" spellcheck="false">
+                </div>
+                <div class="byok-field" id="svc-linkedin-field" style="display:none">
+                  <label for="svc_linkedin_key">LINKEDIN_API_KEY</label>
+                  <input type="password" id="svc_linkedin_key" placeholder="…" autocomplete="off" spellcheck="false">
                 </div>
               </div>
             </div>
@@ -2829,6 +2834,7 @@ window._selectOptionIfActive = function(opt) { _selectOption(opt); };
       document.getElementById('svc-serper-field').style.display   = provider === 'serper'     ? '' : 'none';
       document.getElementById('svc-dfs-login-field').style.display = provider === 'dataforseo' ? '' : 'none';
       document.getElementById('svc-dfs-pass-field').style.display  = provider === 'dataforseo' ? '' : 'none';
+      document.getElementById('svc-linkedin-field').style.display  = provider === 'linkedin'   ? '' : 'none';
     } else if (svc === 'llm') {
       document.getElementById('svc-openai-field').style.display    = provider === 'openai'     ? '' : 'none';
       document.getElementById('svc-anthropic-field').style.display = provider === 'anthropic'  ? '' : 'none';
@@ -2856,6 +2862,9 @@ window._selectOptionIfActive = function(opt) { _selectOption(opt); };
     if (_svcSelection.search === 'dataforseo') {
       payload.search.DATAFORSEO_LOGIN    = (document.getElementById('svc_dfs_login').value || '').trim();
       payload.search.DATAFORSEO_PASSWORD = (document.getElementById('svc_dfs_pass').value || '').trim();
+    }
+    if (_svcSelection.search === 'linkedin') {
+      payload.search.LINKEDIN_API_KEY = (document.getElementById('svc_linkedin_key').value || '').trim();
     }
     if (_svcSelection.llm === 'openai') {
       payload.llm.OPENAI_API_KEY = (document.getElementById('svc_openai_key').value || '').trim();

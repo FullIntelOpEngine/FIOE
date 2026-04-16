@@ -132,6 +132,7 @@ def _geography_flask_limit():
 
 def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, search_results_only, country, dynamic_target, job_titles,
                 user_search_provider=None, user_serper_key=None, user_dfs_login=None, user_dfs_password=None,
+                user_linkedin_key=None,
                 selected_search_provider=None):
     global SEARCH_RESULTS_TARGET
     add_message(job_id, "Starting search pipeline...")
@@ -148,7 +149,8 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
             # even if the global CSE keys are not set.
             _has_user_search = (
                 (user_search_provider == 'serper' and user_serper_key) or
-                (user_search_provider == 'dataforseo' and user_dfs_login and user_dfs_password)
+                (user_search_provider == 'dataforseo' and user_dfs_login and user_dfs_password) or
+                (user_search_provider == 'linkedin' and user_linkedin_key)
             )
             if not _has_user_search and (not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX):
                 add_message(job_id, "ERROR: GOOGLE_CSE_API_KEY/CX not set. Cannot run search.")
@@ -159,6 +161,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     job_id, primary_q, target_limit, country,
                     user_provider=user_search_provider, user_serper_key=user_serper_key,
                     user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                    user_linkedin_key=user_linkedin_key,
                     selected_provider=selected_search_provider,
                 )
                 cse_queries_fired += len(primary_q)
@@ -192,6 +195,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 job_id, fallback_queries, still_needed_fb, country,
                 user_provider=user_search_provider, user_serper_key=user_serper_key,
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                user_linkedin_key=user_linkedin_key,
                 selected_provider=selected_search_provider,
             )
             cse_queries_fired += len(fallback_queries)
@@ -565,6 +569,7 @@ def start_job():
     _user_serper_key      = (data.get('_serperApiKey')       or '').strip() or None
     _user_dfs_login       = (data.get('_dfsLogin')           or '').strip() or None
     _user_dfs_password    = (data.get('_dfsPassword')        or '').strip() or None
+    _user_linkedin_key    = (data.get('_linkedinApiKey')     or '').strip() or None
     # UI-selected search provider from the AutoSourcing.html toggle (admin-configured)
     _selected_search_provider = (data.get('_selectedSearchProvider') or '').strip().lower() or None
 
@@ -654,6 +659,7 @@ def start_job():
                      args=(job_id, queries, fallback_queries, auto_expand, manual_urls,
                            search_results_only, country, dynamic_target, job_titles,
                            _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
+                           _user_linkedin_key,
                            _selected_search_provider),
                      daemon=True).start()
     # Log agentic intent event
