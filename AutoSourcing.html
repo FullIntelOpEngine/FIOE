@@ -3977,13 +3977,18 @@ function _refreshTokenRates() {
   function _fetchSearchProviderServices() {
     Promise.all([
       fetch('/search-provider-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
-    ]).then(([searchData, userData]) => {
+    ]).then(([searchData, contactData, userData]) => {
       _spServicesLoaded = true;
       const services = new Set();
-      // Add admin-configured search providers (serper / dataforseo)
+      // Add admin-configured search providers (serper / dataforseo / linkedin)
       if (searchData && Array.isArray(searchData.services)) {
         searchData.services.forEach(s => services.add(s));
+      }
+      // Add admin-configured contact generation providers (contactout / apollo / rocketreach)
+      if (contactData && Array.isArray(contactData.services)) {
+        contactData.services.forEach(s => services.add(s));
       }
       // Add per-user search provider (from api_porting.html Option A)
       if (userData && userData.active && userData.providers) {
@@ -4000,11 +4005,25 @@ function _refreshTokenRates() {
     // Preserve current selection if still valid
     const prev = sel.value;
     sel.innerHTML = '<option value="">— select —</option>';
+    // Group services by category
+    const groups = {};
     services.forEach(svc => {
-      const opt = document.createElement('option');
-      opt.value = svc;
-      opt.textContent = _PROVIDER_LABELS[svc] || svc;
-      sel.appendChild(opt);
+      const cat = _PROVIDER_CATEGORY[svc] || 'Other';
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(svc);
+    });
+    const categoryOrder = ['🔍 Search', '📇 Contact', 'Other'];
+    categoryOrder.forEach(cat => {
+      if (!groups[cat] || groups[cat].length === 0) return;
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = cat;
+      groups[cat].forEach(svc => {
+        const opt = document.createElement('option');
+        opt.value = svc;
+        opt.textContent = _PROVIDER_LABELS[svc] || svc;
+        optgroup.appendChild(opt);
+      });
+      sel.appendChild(optgroup);
     });
     // Auto-select if only one provider available
     if (services.length === 1) {
