@@ -917,17 +917,6 @@ app.post('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, r
   }
 });
 
-// ── User-facing: linkdapi enabled status (no key, just boolean) ────────────
-app.get('/api/linkdapi-status', requireLogin, dashboardRateLimit, (req, res) => {
-  try {
-    const cfg = loadGetProfilesConfig();
-    const ld = cfg.linkdapi || {};
-    res.json({ enabled: ld.enabled === 'enabled' && !!ld.api_key });
-  } catch (err) {
-    res.json({ enabled: false });
-  }
-});
-
 // ── User-facing: list enabled email verification services ───────────────────
 // NOTE: registered again after the CORS middleware so cross-origin App.js calls succeed.
 // This placeholder is intentionally left blank (route moved below the cors setup).
@@ -2319,6 +2308,17 @@ app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req,
   } catch (err) {
     console.error('[platform-provider-status]', err);
     res.status(500).json({ error: 'Could not read platform provider config' });
+  }
+});
+
+// ── User-facing: linkdapi enabled status (no key, just boolean) ────────────
+app.get('/api/linkdapi-status', requireLogin, dashboardRateLimit, (req, res) => {
+  try {
+    const cfg = loadGetProfilesConfig();
+    const ld = cfg.linkdapi || {};
+    res.json({ enabled: ld.enabled === 'enabled' && !!ld.api_key });
+  } catch (err) {
+    res.json({ enabled: false });
   }
 });
 
