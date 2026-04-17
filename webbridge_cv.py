@@ -235,6 +235,8 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                                 row_entry["_Source"] = "apollo"
                                 if item.get("_apollo_id"):
                                     row_entry["_ApolloId"] = item["_apollo_id"]
+                            elif item.get("_source") == "rocketreach":
+                                row_entry["_Source"] = "rocketreach"
                             rows.append(row_entry)
                     processed+=1
                     with JOBS_LOCK:
@@ -274,6 +276,8 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                         row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
                         if item.get("_source") == "contactout" or selected_search_provider == "contactout":
                             row_entry["_Source"] = "contactout"
+                        elif item.get("_source") == "rocketreach" or selected_search_provider == "rocketreach":
+                            row_entry["_Source"] = "rocketreach"
                         rows.append(row_entry)
                         existing_urls.add(link)
                 processed+=1

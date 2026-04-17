@@ -2918,6 +2918,129 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
         return [], 0
 
 
+def _translate_xray_to_rocketreach_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into a
+    RocketReach People Search API query payload.
+
+    Extracts recognised RocketReach filter fields from the Xray boolean query.
+    Falls back to a ``{"keyword": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the RocketReach Person Search API "
+        "(POST https://api.rocketreach.co/api/v2/search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"current_title\" (array of strings).\n"
+        "2. Extract company names into \"current_employer\" (array of strings).\n"
+        "3. Extract location hints into \"location\" (array of strings).\n"
+        "4. Extract person names into \"name\" (array of strings).\n"
+        "5. Put any remaining meaningful keywords into \"keyword\" (single string).\n"
+        "6. Omit fields for which no clear value can be found.\n"
+        "7. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "8. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[RocketReach] Xray→RocketReach params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[RocketReach] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"keyword": kw} if kw else {}
+
+
+def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
+                                    gl_hint: str = None, page: int = 1):
+    """Call the RocketReach Person Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'rocketreach'`` to identify the origin.
+    """
+    if not api_key:
+        return [], 0
+    params = _translate_xray_to_rocketreach_params(query)
+    body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
+    try:
+        r = requests.post(
+            "https://api.rocketreach.co/api/v2/search",
+            headers={
+                "Api-Key": api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=body,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        people = data.get("profiles") or data.get("people") or data.get("results") or []
+        estimated_total = int(data.get("pagination", {}).get("total") or data.get("total") or len(people))
+        out = []
+        skipped = 0
+        for person in people:
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                skipped += 1
+                continue
+            first = (person.get("first_name") or "").strip()
+            last = (person.get("last_name") or "").strip()
+            name = f"{first} {last}".strip() or (person.get("name") or "").strip()
+            title = (person.get("current_title") or person.get("title") or "").strip()
+            company = (person.get("current_employer") or person.get("company") or "").strip()
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            location = (person.get("location") or person.get("city") or "").strip()
+            if location:
+                snippet_parts.append(location)
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            rr_id = str(person.get("id") or "").strip()
+            result = {
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "rocketreach",
+            }
+            if rr_id:
+                result["_rocketreach_id"] = rr_id
+            out.append(result)
+        if skipped:
+            logger.info(f"[RocketReach] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        return out, estimated_total
+    except Exception as e:
+        logger.warning(f"[RocketReach] people search failed: {e}")
+        return [], 0
+
+
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
     """Fetch one page of results from the DataforSEO Google Organic Live API.
 
@@ -3134,9 +3257,13 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         # No Apollo key configured — translate query and fall through to web search
         query = _translate_xray_for_provider(query, 'apollo')
     elif selected_provider == 'rocketreach':
-        # RocketReach does not have a dedicated web-search API.  Translate the
-        # Xray query into simpler keyword syntax via Gemini, then fall through to
-        # whichever admin-configured web search backend is available.
+        # RocketReach has its own structured Person Search API.  Translate the Xray
+        # query to RocketReach JSON params via LLM and call it directly.
+        ev_cfg = _load_email_verif_config()
+        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        if rr_key:
+            return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page)
+        # No RocketReach key configured — translate query and fall through to web search
         query = _translate_xray_for_provider(query, 'rocketreach')
 
     serper_cfg = cfg.get("serper", {})
@@ -4963,6 +5090,76 @@ def apollo_download_profile():
     except Exception as exc:
         logger.warning(f"[Apollo] download-profile error: {exc}")
         return jsonify({"error": "Failed to fetch Apollo profile"}), 500
+
+
+@app.get("/api/rocketreach/download-profile")
+@_require_session
+def rocketreach_download_profile():
+    """Fetch the full RocketReach profile for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Calls the RocketReach lookupProfile endpoint to retrieve the full profile JSON.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    # Resolve the RocketReach API key: check per-user service config first, then admin config.
+    rr_key = ""
+    _req_user = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
+    if _req_user:
+        _safe_user = _porting_safe_name(_req_user)
+        try:
+            _u_enc = _svc_config_path(_safe_user)
+            _u_json = _svc_config_json_path(_safe_user)
+            _u_cfg = None
+            if os.path.isfile(_u_enc):
+                try:
+                    with open(_u_enc, "rb") as _fh:
+                        _u_cfg = json.loads(_svc_config_decrypt(_fh.read()).decode("utf-8"))
+                except Exception:
+                    pass
+            if _u_cfg is None and os.path.isfile(_u_json):
+                try:
+                    with open(_u_json, "r", encoding="utf-8") as _fh:
+                        _u_cfg = json.load(_fh)
+                except Exception:
+                    pass
+            if _u_cfg:
+                rr_key = (_u_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        except Exception:
+            pass
+    if not rr_key:
+        ev_cfg = _load_email_verif_config()
+        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+    if not rr_key:
+        return jsonify({"error": "ROCKETREACH_API_KEY is not configured"}), 503
+
+    try:
+        r = requests.get(
+            "https://api.rocketreach.co/api/v2/lookupProfile",
+            params={"linkedin_url": linkedin_url},
+            headers={
+                "Api-Key": rr_key,
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code == 401:
+            return jsonify({"error": "RocketReach authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "RocketReach returned HTTP 403 — quota may be exceeded"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[RocketReach] download-profile HTTP error: {http_err}")
+        return jsonify({"error": "RocketReach API request failed"}), 502
+    except Exception as exc:
+        logger.warning(f"[RocketReach] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch RocketReach profile"}), 500
 
 
 @app.post("/api/user-service-config/activate")
