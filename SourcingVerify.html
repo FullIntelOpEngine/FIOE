@@ -3628,6 +3628,48 @@ async function _downloadContactOutProfile(linkedinUrl, btnEl) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Apollo profile download helper
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the full Apollo profile for a LinkedIn URL and trigger a JSON
+ * file download.  The button element is passed so its label can be updated
+ * during the async request.
+ */
+async function _downloadApolloProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/apollo/download-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`Apollo profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    // Trigger JSON file download
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'apollo_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[Apollo] download-profile error:', err);
+    alert(`Apollo profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
 // Apply bulk assessment results from JSON file to table rows
 function buildRow(row) {
   const tr = document.createElement('tr');
@@ -3658,7 +3700,7 @@ function buildRow(row) {
   }
   
   if (!hasAssessment) {
-      // BEFORE ASSESSMENT: ContactOut rows get a download button; others get a checkbox
+      // BEFORE ASSESSMENT: ContactOut/Apollo rows get a download button; others get a checkbox
       if (row.source === 'contactout') {
           const coBtn = document.createElement('button');
           coBtn.className = 'contactout-tag';
@@ -3669,6 +3711,16 @@ function buildRow(row) {
           coBtn.onmouseout = function() { this.style.background = '#e8f4fb'; this.style.color = '#0073b1'; };
           coBtn.addEventListener('click', () => _downloadContactOutProfile(row.linkedinurl, coBtn));
           checkboxCell.appendChild(coBtn);
+      } else if (row.source === 'apollo') {
+          const apBtn = document.createElement('button');
+          apBtn.className = 'apollo-tag';
+          apBtn.textContent = 'AP';
+          apBtn.title = 'Download full Apollo profile';
+          apBtn.style.cssText = 'width:32px; height:32px; border:2px solid #f05a28; background:#fff3ef; color:#f05a28; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+          apBtn.onmouseover = function() { this.style.background = '#f05a28'; this.style.color = '#fff'; };
+          apBtn.onmouseout = function() { this.style.background = '#fff3ef'; this.style.color = '#f05a28'; };
+          apBtn.addEventListener('click', () => _downloadApolloProfile(row.linkedinurl, apBtn));
+          checkboxCell.appendChild(apBtn);
       } else {
           // Standard checkbox for selection
           const cb = document.createElement('input');

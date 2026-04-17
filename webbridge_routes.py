@@ -2785,6 +2785,137 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         return [], 0
 
 
+def _translate_xray_to_apollo_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into an
+    Apollo People Search API query payload.
+
+    Extracts recognised Apollo filter fields from the Xray boolean query.
+    Falls back to a ``{"q_keywords": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the Apollo People Search API "
+        "(POST https://api.apollo.io/api/v1/mixed_people/api_search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"person_titles\" (array of strings).\n"
+        "2. Extract location hints into \"person_locations\" (array of strings).\n"
+        "3. Extract seniority levels into \"person_seniorities\" (array of strings — "
+        "valid values: owner, founder, c_suite, partner, vp, head, director, manager, "
+        "senior, entry, intern).\n"
+        "4. Extract company domain names (e.g. microsoft.com) into "
+        "\"q_organization_domains_list\" (array of strings).\n"
+        "5. Put any remaining meaningful keywords into \"q_keywords\" (single string).\n"
+        "6. Omit fields for which no clear value can be found.\n"
+        "7. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "8. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[Apollo] Xray→Apollo params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[Apollo] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"q_keywords": kw} if kw else {}
+
+
+def apollo_people_search_page(query: str, api_key: str, num: int = 10,
+                               gl_hint: str = None, page: int = 1):
+    """Call the Apollo People Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'apollo'`` to identify the origin.
+    A ``_apollo_id`` key is also stored to support the download-profile endpoint.
+    """
+    if not api_key:
+        return [], 0
+    params = _translate_xray_to_apollo_params(query)
+    params["page"] = page
+    params["per_page"] = num
+    try:
+        r = requests.post(
+            "https://api.apollo.io/api/v1/mixed_people/api_search",
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        people = data.get("people") or []
+        estimated_total = int(data.get("total_entries") or data.get("total") or len(people))
+        out = []
+        skipped = 0
+        for person in people:
+            # Apollo results may expose linkedin_url directly or via organization
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                skipped += 1
+                continue
+            first = (person.get("first_name") or "").strip()
+            last_raw = (person.get("last_name") or person.get("last_name_obfuscated") or "").strip()
+            name = f"{first} {last_raw}".strip()
+            title = (person.get("title") or "").strip()
+            org = person.get("organization") or {}
+            company = (org.get("name") or "").strip() if isinstance(org, dict) else ""
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            city = (person.get("city") or "").strip()
+            state = (person.get("state") or "").strip()
+            country = (person.get("country") or "").strip()
+            location_parts = [p for p in [city, state, country] if p]
+            if location_parts:
+                snippet_parts.append(", ".join(location_parts))
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            result = {
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "apollo",
+                "_apollo_id": person.get("id") or "",
+            }
+            out.append(result)
+        if skipped:
+            logger.info(f"[Apollo] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        return out, estimated_total
+    except Exception as e:
+        logger.warning(f"[Apollo] people search failed: {e}")
+        return [], 0
+
+
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
     """Fetch one page of results from the DataforSEO Google Organic Live API.
 
@@ -2991,11 +3122,20 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
             return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page)
         # No ContactOut key configured — translate query and fall through to web search
         query = _translate_xray_for_provider(query, 'contactout')
-    elif selected_provider in ('apollo', 'rocketreach'):
-        # These providers do not have a dedicated web-search API.  Translate the
+    elif selected_provider == 'apollo':
+        # Apollo has its own structured People Search API.  Translate the Xray
+        # query to Apollo JSON params via LLM and call it directly.
+        ev_cfg = _load_email_verif_config()
+        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        if ap_key:
+            return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page)
+        # No Apollo key configured — translate query and fall through to web search
+        query = _translate_xray_for_provider(query, 'apollo')
+    elif selected_provider == 'rocketreach':
+        # RocketReach does not have a dedicated web-search API.  Translate the
         # Xray query into simpler keyword syntax via Gemini, then fall through to
         # whichever admin-configured web search backend is available.
-        query = _translate_xray_for_provider(query, selected_provider)
+        query = _translate_xray_for_provider(query, 'rocketreach')
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -4732,6 +4872,67 @@ def contactout_download_profile():
     except Exception as exc:
         logger.warning(f"[ContactOut] download-profile error: {exc}")
         return jsonify({"error": "Failed to fetch ContactOut profile"}), 500
+
+
+@app.get("/api/apollo/download-profile")
+@_require_session
+def apollo_download_profile():
+    """Fetch the full Apollo profile for a given person ID or LinkedIn URL.
+
+    Query parameters (at least one required):
+      person_id    – the Apollo person ID (preferred)
+      linkedin_url – the LinkedIn profile URL (fallback lookup)
+
+    Calls the Apollo people/match endpoint to retrieve the full profile JSON.
+    """
+    person_id = (request.args.get("person_id") or "").strip()
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not person_id and not linkedin_url:
+        return jsonify({"error": "person_id or linkedin_url is required"}), 400
+
+    ev_cfg = _load_email_verif_config()
+    ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+    if not ap_key:
+        return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
+
+    try:
+        if person_id:
+            # Use the people/match endpoint to get full details by Apollo ID
+            r = requests.post(
+                "https://api.apollo.io/api/v1/people/match",
+                headers={
+                    "x-api-key": ap_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"id": person_id, "reveal_personal_emails": True, "reveal_phone_number": True},
+                timeout=30,
+            )
+        else:
+            # Lookup by LinkedIn URL
+            r = requests.post(
+                "https://api.apollo.io/api/v1/people/match",
+                headers={
+                    "x-api-key": ap_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"linkedin_url": linkedin_url, "reveal_personal_emails": True, "reveal_phone_number": True},
+                timeout=30,
+            )
+        if r.status_code == 401:
+            return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "Apollo returned HTTP 403 — quota may be exceeded or plan lacks access"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[Apollo] download-profile HTTP error: {http_err}")
+        return jsonify({"error": "Apollo API request failed"}), 502
+    except Exception as exc:
+        logger.warning(f"[Apollo] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch Apollo profile"}), 500
 
 
 @app.post("/api/user-service-config/activate")

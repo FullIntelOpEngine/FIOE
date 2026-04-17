@@ -231,6 +231,10 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                             row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
                             if item.get("_source") == "contactout" or selected_search_provider == "contactout":
                                 row_entry["_Source"] = "contactout"
+                            elif item.get("_source") == "apollo" or selected_search_provider == "apollo":
+                                row_entry["_Source"] = "apollo"
+                                if item.get("_apollo_id"):
+                                    row_entry["_ApolloId"] = item["_apollo_id"]
                             rows.append(row_entry)
                     processed+=1
                     with JOBS_LOCK:
