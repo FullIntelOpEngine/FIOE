@@ -5612,15 +5612,19 @@ def linkdapi_get_profile():
             so the server never sees the name and cannot reject it."""
 
             def connect(self):
-                timeout = getattr(self, "timeout", _socket._GLOBAL_DEFAULT_TIMEOUT)
+                timeout = getattr(self, "timeout", _socket.getdefaulttimeout())
                 src = getattr(self, "source_address", None)
                 raw = _socket.create_connection((self.host, self.port), timeout, src)
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-                # server_hostname=None → no SNI extension in the TLS ClientHello
-                self.sock = ctx.wrap_socket(raw, server_hostname=None)
+                try:
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                    # server_hostname=None → no SNI extension in the TLS ClientHello
+                    self.sock = ctx.wrap_socket(raw, server_hostname=None)
+                except Exception:
+                    raw.close()
+                    raise
 
         qs = _uparse.urlencode({"username": username})
         conn = _NoSNIHTTPSConn("api.linkd.io", timeout=30)
@@ -5635,23 +5639,23 @@ def linkdapi_get_profile():
             )
             resp = conn.getresponse()
             body = resp.read()
+
+            if resp.status == 401:
+                return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
+            if resp.status == 403:
+                return jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+            if resp.status == 404:
+                return jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}), 404
+            if resp.status >= 400:
+                try:
+                    _err_body = _json.loads(body)
+                except Exception:
+                    _err_body = body.decode("utf-8", errors="replace")[:200]
+                return jsonify({"error": f"linkdapi error (HTTP {resp.status}): {_err_body}"}), resp.status
+            profile_data = _json.loads(body)
+            return jsonify(profile_data)
         finally:
             conn.close()
-
-        if resp.status == 401:
-            return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
-        if resp.status == 403:
-            return jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}), 403
-        if resp.status == 404:
-            return jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}), 404
-        if resp.status >= 400:
-            try:
-                _err_body = _json.loads(body)
-            except Exception:
-                _err_body = body.decode("utf-8", errors="replace")[:200]
-            return jsonify({"error": f"linkdapi error (HTTP {resp.status}): {_err_body}"}), resp.status
-        profile_data = _json.loads(body)
-        return jsonify(profile_data)
     except Exception as exc:
         logger.warning(f"[linkdapi] get-profile error: {exc}")
         return jsonify({"error": "Failed to fetch linkdapi profile"}), 500
