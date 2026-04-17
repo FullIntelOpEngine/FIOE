@@ -5593,67 +5593,63 @@ def linkdapi_get_profile():
 
     try:
         import ssl  # noqa: PLC0415
-        import urllib3  # noqa: PLC0415
-        from requests.adapters import HTTPAdapter  # noqa: PLC0415
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        import socket as _socket  # noqa: PLC0415
+        import http.client as _http  # noqa: PLC0415
+        import urllib.parse as _uparse  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
 
-        class _LinkdapiAdapter(HTTPAdapter):
-            """Custom adapter that works around the TLSV1_UNRECOGNIZED_NAME SSL
-            alert sent by api.linkd.io.  The alert is issued by the server
-            during the TLS handshake when it receives an SNI name it does not
-            recognise.  ``verify=False`` alone is insufficient because the alert
-            arrives before certificate verification.
+        class _NoSNIHTTPSConn(_http.HTTPSConnection):
+            """HTTPSConnection that suppresses the TLS SNI extension.
 
-            ``ssl.OP_NO_TLSEXT`` (which disables SNI) was removed in Python
-            3.12+, so instead we patch ``ctx.wrap_socket`` to strip the
-            ``server_hostname`` keyword argument before the TLS handshake.
-            Dropping ``server_hostname`` prevents the TLS ClientHello from
-            including the SNI extension at all, which resolves the error on
-            every Python version."""
+            api.linkd.io returns a fatal ``TLSV1_UNRECOGNIZED_NAME`` (alert 112)
+            when it receives a TLS ClientHello that includes an SNI hostname it
+            does not recognise.  ``ssl.OP_NO_TLSEXT`` (which disabled SNI) was
+            removed in Python 3.12+.
 
-            def init_poolmanager(self, *args, **kwargs):
+            The reliable cross-version fix is to override ``connect()`` and call
+            ``ctx.wrap_socket`` with ``server_hostname=None``.  Without a
+            ``server_hostname`` the TLS stack omits the SNI extension entirely,
+            so the server never sees the name and cannot reject it."""
+
+            def connect(self):
+                raw = _socket.create_connection(
+                    (self.host, self.port), self.timeout, self.source_address
+                )
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                # Patch wrap_socket to omit server_hostname → no SNI extension
-                _orig_wrap = ctx.wrap_socket
-                def _wrap_no_sni(sock, *a, **kw):  # noqa: E306
-                    kw.pop("server_hostname", None)
-                    return _orig_wrap(sock, *a, **kw)
-                ctx.wrap_socket = _wrap_no_sni
-                kwargs["ssl_context"] = ctx
-                kwargs["assert_hostname"] = False
-                super().init_poolmanager(*args, **kwargs)
+                # server_hostname=None → no SNI extension in the TLS ClientHello
+                self.sock = ctx.wrap_socket(raw, server_hostname=None)
 
-        _linkdapi_session = requests.Session()
-        _linkdapi_session.mount("https://api.linkd.io", _LinkdapiAdapter())
-        r = _linkdapi_session.get(
-            "https://api.linkd.io/api/v1/profile/full",
-            params={"username": username},
+        qs = _uparse.urlencode({"username": username})
+        conn = _NoSNIHTTPSConn("api.linkd.io", timeout=30)
+        conn.request(
+            "GET",
+            f"/api/v1/profile/full?{qs}",
             headers={
                 "x-api-key": api_key,
                 "Accept": "application/json",
+                "Host": "api.linkd.io",
             },
-            timeout=30,
         )
-        if r.status_code == 401:
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+
+        if resp.status == 401:
             return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
-        if r.status_code == 403:
+        if resp.status == 403:
             return jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}), 403
-        if r.status_code == 404:
+        if resp.status == 404:
             return jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}), 404
-        if not r.ok:
-            _err_body = ""
+        if resp.status >= 400:
             try:
-                _err_body = r.json()
+                _err_body = _json.loads(body)
             except Exception:
-                _err_body = r.text[:200]
-            return jsonify({"error": f"linkdapi error (HTTP {r.status_code}): {_err_body}"}), r.status_code
-        profile_data = r.json()
+                _err_body = body.decode("utf-8", errors="replace")[:200]
+            return jsonify({"error": f"linkdapi error (HTTP {resp.status}): {_err_body}"}), resp.status
+        profile_data = _json.loads(body)
         return jsonify(profile_data)
-    except requests.exceptions.HTTPError as http_err:
-        logger.warning(f"[linkdapi] get-profile HTTP error: {http_err}")
-        return jsonify({"error": "linkdapi API request failed"}), 502
     except Exception as exc:
         logger.warning(f"[linkdapi] get-profile error: {exc}")
         return jsonify({"error": "Failed to fetch linkdapi profile"}), 500
