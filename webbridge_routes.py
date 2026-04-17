@@ -2729,6 +2729,12 @@ def _load_provider_query_schema(provider: str) -> dict:
     try:
         with open(schema_path, "r", encoding="utf-8") as fh:
             return json.load(fh)
+    except FileNotFoundError:
+        logger.debug(f"[{provider}] Query schema file not found: {schema_path}")
+        return {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(f"[{provider}] Query schema {filename} contains invalid JSON: {exc}")
+        return {}
     except Exception as exc:
         logger.debug(f"[{provider}] Could not load query schema {filename}: {exc}")
         return {}
@@ -2774,17 +2780,14 @@ def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
         f"You are a search API parameter mapper. Convert the following AutoSourcing.html "
         f"form field values into a JSON object of query parameters for the {provider_label} "
         f"People Search API.\n\n"
-        f"Available {provider_label} query parameters:\n{schema_summary}\n\n"
+        f"Available {provider_label} query parameters (with source_field hints where applicable):\n{schema_summary}\n\n"
         f"Form field values:\n{json.dumps(form_fields, indent=2)}\n\n"
         f"Rules:\n"
-        f"1. Map jobTitles → person_titles (Apollo) or current_title (RocketReach).\n"
-        f"2. Map companyNames → organization_names (Apollo) or current_employer (RocketReach).\n"
-        f"3. Map country → person_locations (Apollo) or location (RocketReach) as an array.\n"
-        f"4. Map keywords → q_keywords (Apollo) or keyword (RocketReach) as a string.\n"
-        f"5. Infer person_seniorities (Apollo) from job titles where relevant.\n"
-        f"6. Only include parameters that have non-empty values.\n"
-        f"7. For Apollo, always include include_similar_titles: true when person_titles is set.\n"
-        f"8. Return ONLY valid JSON — no explanation, no markdown fences.\n"
+        f"1. Use the 'source_field' hints in the parameter list above to map each form field to the correct parameter.\n"
+        f"2. Infer seniority levels from job titles where applicable (e.g. director → director, VP → vp, manager → manager).\n"
+        f"3. Only include parameters that have non-empty values.\n"
+        f"4. For Apollo, always include include_similar_titles: true when person_titles is set.\n"
+        f"5. Return ONLY valid JSON — no explanation, no markdown fences.\n"
     )
     try:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
