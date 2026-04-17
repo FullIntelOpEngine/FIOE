@@ -3801,10 +3801,11 @@ function buildRow(row) {
       if (providerBtn) {
           checkboxCell.appendChild(providerBtn);
       } else {
-          // Standard checkbox for selection
+          // Standard checkbox for selection (invisible — provider buttons are the primary first-column control)
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.className = 'row-select';
+          cb.style.visibility = 'hidden';
           if(isRowDetailDisabled(row.linkedinurl) || isRowDetailCompleted(row.linkedinurl)){
             cb.disabled = true;
             cb.title = isRowDetailCompleted(row.linkedinurl) ? 'Completed (View)' : 'Disabled after View action';

@@ -1768,11 +1768,10 @@ pre {
               <option value="Sri Lanka">Sri Lanka</option>
             </optgroup>
           </select>
-          <!-- API Provider mode: free-text country input with autocomplete -->
-          <input type="text" id="countryTextInput" list="countryDatalist" autocomplete="off"
+          <!-- API Provider mode: free-text country input (plain textbox, no dropdown) -->
+          <input type="text" id="countryTextInput" autocomplete="off"
                  placeholder="Type a country name…"
                  style="display:none; width:100%; padding:8px 10px; font-size:14px; border:1px solid var(--border,#d8d8d8); border-radius:6px; box-sizing:border-box;">
-          <datalist id="countryDatalist"></datalist>
           <div id="countryValidationError" style="display:none; color:var(--danger,#dc2626); font-size:12px; margin-top:4px;"></div>
           <div class="helper" id="countryHelper">Maps to LinkedIn country domain.</div>
           
@@ -2695,21 +2694,7 @@ function lookupCountryCode(c){
     return dp[la];
   }
 
-  // Build datalist options once countryCodeMap is loaded
-  let _datalistPopulated = false;
-  function _populateCountryDatalist() {
-    if (_datalistPopulated || !Object.keys(countryCodeMap).length) return;
-    const dl = document.getElementById('countryDatalist');
-    if (!dl) return;
-    dl.innerHTML = '';
-    for (const [code, name] of Object.entries(countryCodeMap)) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.dataset.code = code;
-      dl.appendChild(opt);
-    }
-    _datalistPopulated = true;
-  }
+  // (datalist removed — Location is a plain textbox in API Provider mode)
 
   // Common alias map (common alternate names → canonical countryCodeMap name)
   const _COUNTRY_ALIASES = {
@@ -2859,7 +2844,6 @@ function lookupCountryCode(c){
       // Switch to textbox
       selectEl.style.display = 'none';
       textEl.style.display = '';
-      _populateCountryDatalist();
       // Transfer current select value to textbox
       if (selectEl.value && !textEl.value) {
         textEl.value = selectEl.value;
@@ -2930,7 +2914,7 @@ document.getElementById('activateTranslationBtn').addEventListener('click',()=>{
   const c=val('country'); translationError.style.display='none'; translationNotice.style.display='none';
   if(!c){ translationError.textContent='Enter a Location before activating translation.'; translationError.style.display='block'; return; }
   const lang=detectTargetLang(c);
-  if(!lang){ translationError.textContent='Cannot determine translation language from Location.'; translationError.style.display='block'; setTranslationMode(false); return; }
+  if(!lang){ translationError.textContent='Translation is not supported for "' + c + '". Supported countries include: France, Germany, Spain, Italy, Brazil, Japan, China, Korea, and others with known language mappings.'; translationError.style.display='block'; setTranslationMode(false); return; }
   setTranslationMode(true,lang);
 });
 document.getElementById('deactivateTranslationBtn').addEventListener('click',()=>setTranslationMode(false));
