@@ -152,7 +152,11 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 (user_search_provider == 'dataforseo' and user_dfs_login and user_dfs_password) or
                 (user_search_provider == 'linkedin' and user_linkedin_key)
             )
-            if not _has_user_search and (not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX):
+            # When a provider is explicitly selected from the API Provider toggle, the
+            # backend will route to admin-configured search (with Xray translation if
+            # needed), so Google CSE keys are not a prerequisite.
+            _has_selected_provider = bool(selected_search_provider)
+            if not _has_user_search and not _has_selected_provider and (not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX):
                 add_message(job_id, "ERROR: GOOGLE_CSE_API_KEY/CX not set. Cannot run search.")
             else:
                 executed_primary=True

@@ -2856,6 +2856,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if li_key:
             li_query = _translate_xray_for_provider(query, 'linkedin')
             return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
+    elif selected_provider in ('contactout', 'apollo', 'rocketreach'):
+        # These providers do not have a dedicated web-search API.  Translate the
+        # Xray query into simpler keyword syntax via Gemini, then fall through to
+        # whichever admin-configured web search backend is available.
+        query = _translate_xray_for_provider(query, selected_provider)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -3174,6 +3179,12 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "DataforSEO (selected)"
         elif selected_provider == 'linkedin':
             _provider_label = "LinkedIn (selected)"
+        elif selected_provider == 'contactout':
+            _provider_label = "ContactOut (selected)"
+        elif selected_provider == 'apollo':
+            _provider_label = "Apollo (selected)"
+        elif selected_provider == 'rocketreach':
+            _provider_label = "RocketReach (selected)"
         else:
             _serper_on = (
                 _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
@@ -3200,7 +3211,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
     _eff_provider = None
     if user_provider in ('serper', 'dataforseo', 'linkedin'):
         _eff_provider = user_provider
-    elif selected_provider in ('serper', 'dataforseo', 'linkedin'):
+    elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
     else:
         _sp_cfg = _load_search_provider_config()
