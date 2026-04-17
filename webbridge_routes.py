@@ -5577,12 +5577,11 @@ def linkdapi_get_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    # Extract LinkedIn username from URL
-    import re as _re
-    _m = _re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    # Extract LinkedIn username from URL (re already imported at module level)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
-    username = _m.group(1).rstrip("/")
+    username = _m.group(1)
 
     gp_cfg = _load_get_profiles_config()
     linkdapi = gp_cfg.get("linkdapi", {})
@@ -5619,10 +5618,10 @@ def linkdapi_get_profile():
         return jsonify(profile_data)
     except requests.exceptions.HTTPError as http_err:
         logger.warning(f"[linkdapi] get-profile HTTP error: {http_err}")
-        return jsonify({"error": f"linkdapi API request failed: {http_err}"}), 502
+        return jsonify({"error": "linkdapi API request failed"}), 502
     except Exception as exc:
         logger.warning(f"[linkdapi] get-profile error: {exc}")
-        return jsonify({"error": f"Failed to fetch linkdapi profile: {exc}"}), 500
+        return jsonify({"error": "Failed to fetch linkdapi profile"}), 500
 
 
 @app.post("/api/user-service-config/activate")

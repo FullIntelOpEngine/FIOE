@@ -1289,7 +1289,7 @@ def admin_save_get_profiles_config():
         _save_get_profiles_config(current)
         return jsonify({"ok": True}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Failed to save configuration"}), 500
 
 @app.get("/admin/llm-provider-config")
 @_rate(_make_flask_limit("admin_endpoints"))
