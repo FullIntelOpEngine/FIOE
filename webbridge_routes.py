@@ -5592,6 +5592,8 @@ def linkdapi_get_profile():
         return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
 
     try:
+        import urllib3  # noqa: PLC0415
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         r = requests.get(
             "https://api.linkd.io/api/v1/profile/full",
             params={"username": username},
@@ -5600,6 +5602,7 @@ def linkdapi_get_profile():
                 "Accept": "application/json",
             },
             timeout=30,
+            verify=False,
         )
         if r.status_code == 401:
             return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
