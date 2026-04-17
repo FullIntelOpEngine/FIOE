@@ -98,6 +98,52 @@ from webbridge_routes import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Country resolution from LinkedIn URL subdomain
+# ---------------------------------------------------------------------------
+_COUNTRYCODE_MAP = None
+_COUNTRYCODE_MAP_LOCK = threading.Lock()
+
+def _load_countrycode_map():
+    """Lazily load countrycode.JSON from BASE_DIR. Returns a dict of {code: name}."""
+    global _COUNTRYCODE_MAP
+    if _COUNTRYCODE_MAP is not None:
+        return _COUNTRYCODE_MAP
+    with _COUNTRYCODE_MAP_LOCK:
+        if _COUNTRYCODE_MAP is not None:
+            return _COUNTRYCODE_MAP
+        try:
+            path = os.path.join(BASE_DIR, "countrycode.JSON")
+            with open(path, "r", encoding="utf-8") as f:
+                _COUNTRYCODE_MAP = json.load(f)
+        except Exception:
+            _COUNTRYCODE_MAP = {}
+    return _COUNTRYCODE_MAP
+
+def _country_from_linkedin_url(url):
+    """Extract country name from a LinkedIn profile URL subdomain.
+
+    For example, ``https://cn.linkedin.com/in/...`` yields ``China``.
+    URLs with ``www`` or no recognisable country subdomain return ``None``.
+    Only two-character codes (ISO 3166-1 alpha-2) are matched.
+    """
+    if not url:
+        return None
+    m = re.match(r'^https?://([^/]+)/in/', url.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    host = m.group(1).lower()  # e.g. "cn.linkedin.com"
+    parts = host.split(".")
+    # Expect pattern: <code>.linkedin.com  (3 parts, first part is a country code)
+    if len(parts) < 3:
+        return None
+    code = parts[0]
+    if not code or code == "www" or len(code) != 2:
+        return None
+    country_map = _load_countrycode_map()
+    return country_map.get(code) or None
+
+
 def _bulk_assess_flask_limit():
     """Return the Flask-Limiter rate string for bulk_assess, read from admin config.
 
@@ -133,7 +179,8 @@ def _geography_flask_limit():
 def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, search_results_only, country, dynamic_target, job_titles,
                 user_search_provider=None, user_serper_key=None, user_dfs_login=None, user_dfs_password=None,
                 user_linkedin_key=None,
-                selected_search_provider=None):
+                selected_search_provider=None,
+                raw_form_fields=None):
     global SEARCH_RESULTS_TARGET
     add_message(job_id, "Starting search pipeline...")
     rows=[]; urls=[]
@@ -152,7 +199,11 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 (user_search_provider == 'dataforseo' and user_dfs_login and user_dfs_password) or
                 (user_search_provider == 'linkedin' and user_linkedin_key)
             )
-            if not _has_user_search and (not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX):
+            # When a provider is explicitly selected from the API Provider toggle, the
+            # backend will route to admin-configured search (with Xray translation if
+            # needed), so Google CSE keys are not a prerequisite.
+            _has_selected_provider = bool(selected_search_provider)
+            if not _has_user_search and not _has_selected_provider and (not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX):
                 add_message(job_id, "ERROR: GOOGLE_CSE_API_KEY/CX not set. Cannot run search.")
             else:
                 executed_primary=True
@@ -163,6 +214,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
                     user_linkedin_key=user_linkedin_key,
                     selected_provider=selected_search_provider,
+                    raw_form_fields=raw_form_fields,
                 )
                 cse_queries_fired += len(primary_q)
                 urls=[r["link"] for r in cse_results]
@@ -178,7 +230,16 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     if is_linkedin_profile(link):
                         name, jobtitle, company = parse_linkedin_title(title)
                         if name or jobtitle or company:
-                            rows.append({"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link})
+                            row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
+                            if item.get("_source") == "contactout":
+                                row_entry["_Source"] = "contactout"
+                            elif item.get("_source") == "apollo":
+                                row_entry["_Source"] = "apollo"
+                                if item.get("_apollo_id"):
+                                    row_entry["_ApolloId"] = item["_apollo_id"]
+                            elif item.get("_source") == "rocketreach":
+                                row_entry["_Source"] = "rocketreach"
+                            rows.append(row_entry)
                     processed+=1
                     with JOBS_LOCK:
                         JOBS[job_id]['progress']['processed']=processed
@@ -197,6 +258,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
                 user_linkedin_key=user_linkedin_key,
                 selected_provider=selected_search_provider,
+                raw_form_fields=raw_form_fields,
             )
             cse_queries_fired += len(fallback_queries)
             # Collect already-seen URLs so duplicates from fallback are discarded
@@ -214,7 +276,16 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 if is_linkedin_profile(link):
                     name, jobtitle, company = parse_linkedin_title(title)
                     if name or jobtitle or company:
-                        rows.append({"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link})
+                        row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
+                        if item.get("_source") == "contactout" or selected_search_provider == "contactout":
+                            row_entry["_Source"] = "contactout"
+                        elif item.get("_source") == "apollo" or selected_search_provider == "apollo":
+                            row_entry["_Source"] = "apollo"
+                            if item.get("_apollo_id"):
+                                row_entry["_ApolloId"] = item["_apollo_id"]
+                        elif item.get("_source") == "rocketreach" or selected_search_provider == "rocketreach":
+                            row_entry["_Source"] = "rocketreach"
+                        rows.append(row_entry)
                         existing_urls.add(link)
                 processed+=1
                 with JOBS_LOCK:
@@ -305,12 +376,23 @@ def _write_outputs(job_id, rows):
     with JOBS_LOCK:
         job_meta=(JOBS.get(job_id) or {}).get('meta',{})
         job_top=(JOBS.get(job_id) or {})
+        job_username = (JOBS.get(job_id) or {}).get('username', '')
     dropdown_companies=_aggregate_company_dropdown(job_meta)
+    # Build a safe username prefix for output filenames (alphanumeric, _ and - only)
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', job_username).strip('_') if job_username else ''
+    _file_prefix = f"{safe_username}_{job_id}" if safe_username else job_id
+    # Detect whether any row has a _Source marker (e.g. 'contactout')
+    has_source_col = any(r.get("_Source") for r in rows)
     processed=[]
     for r in rows:
         link=r.get("LinkedInURL","")
         country_val=r.get("Country","")
-        if not is_linkedin_profile(link): country_val=""
+        if not is_linkedin_profile(link):
+            country_val=""
+        else:
+            url_country = _country_from_linkedin_url(link)
+            if url_country:
+                country_val = url_country
         raw_name=r.get("Name",""); raw_company=r.get("Company",""); raw_job=r.get("JobTitle","")
         moved_company, adjusted_job=_extract_company_from_jobtitle(raw_job, raw_company, dropdown_companies)
         if not moved_company:
@@ -321,13 +403,17 @@ def _write_outputs(job_id, rows):
         name_val=_sanitize_for_excel(raw_name)
         job_val=_sanitize_for_excel(adjusted_job)
         company_val=(moved_company or "").strip()
-        processed.append({"Name":name_val,"Company":company_val,"JobTitle":job_val,"Country":country_val,"LinkedInURL":link})
-    csv_name=f"{job_id}_results.csv"
+        entry = {"Name":name_val,"Company":company_val,"JobTitle":job_val,"Country":country_val,"LinkedInURL":link}
+        if has_source_col:
+            entry["Source"] = r.get("_Source") or ""
+        processed.append(entry)
+    csv_name=f"{_file_prefix}_results.csv"
     csv_path=os.path.join(SEARCH_XLS_DIR, csv_name)
     # Ensure target dir exists
     os.makedirs(SEARCH_XLS_DIR, exist_ok=True)
+    _csv_fields = ["Name","Company","JobTitle","Country","LinkedInURL"] + (["Source"] if has_source_col else [])
     with open(csv_path,"w",encoding="utf-8",newline="") as f:
-        w=DictWriter(f, fieldnames=["Name","Company","JobTitle","Country","LinkedInURL"])
+        w=DictWriter(f, fieldnames=_csv_fields)
         w.writeheader()
         for pr in processed: w.writerow(pr)
         try:
@@ -341,8 +427,12 @@ def _write_outputs(job_id, rows):
         from openpyxl.worksheet.datavalidation import DataValidation
         wb=Workbook(); ws=wb.active
         ws.title="Results"
-        ws.append(["Name","Company","JobTitle","Country","LinkedInURL"])
-        for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"]])
+        if has_source_col:
+            ws.append(["Name","Company","JobTitle","Country","LinkedInURL","Source"])
+            for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"],pr.get("Source","")])
+        else:
+            ws.append(["Name","Company","JobTitle","Country","LinkedInURL"])
+            for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"]])
         company_dropdown=dropdown_companies
         if company_dropdown:
             cs=wb.create_sheet(title="Companies")
@@ -354,7 +444,7 @@ def _write_outputs(job_id, rows):
             ws.add_data_validation(dv)
             last_results_row=ws.max_row
             dv.add(f"B2:B{last_results_row}")
-        xlsx_name=f"{job_id}_results.xlsx"
+        xlsx_name=f"{_file_prefix}_results.xlsx"
         # Save to SEARCH_XLS_DIR
         xlsx_full=os.path.join(SEARCH_XLS_DIR, xlsx_name)
         wb.save(xlsx_full)
@@ -373,7 +463,9 @@ def _write_outputs(job_id, rows):
             sheet=wb_ing["Results"]
             headers=[cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
             expected=["Name","Company","JobTitle","Country","LinkedInURL"]
-            if headers!=expected:
+            expected_with_source=["Name","Company","JobTitle","Country","LinkedInURL","Source"]
+            has_source_header = (headers == expected_with_source)
+            if headers != expected and not has_source_header:
                 logger.warning(f"[Ingest] Header mismatch. Expected {expected}, got {headers}. Skipping ingestion.")
             else:
                 data_rows=[]
@@ -390,7 +482,12 @@ def _write_outputs(job_id, rows):
                     conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
                     conn.autocommit=False
                     cur=conn.cursor()
-                    
+
+                    # Ensure source column exists when file includes Source header
+                    if has_source_header:
+                        cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
+                        conn.commit()
+
                     # Check if pic column exists in sourcing table
                     cur.execute("""
                         SELECT column_name 
@@ -402,7 +499,29 @@ def _write_outputs(job_id, rows):
                     active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
                     active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
                     
-                    if has_pic_column:
+                    if has_source_header:
+                        if has_pic_column:
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows = []
+                            for r in data_rows:
+                                linkedin_url = r[4]
+                                source_val = (r[5] or "") if len(r) > 5 else ""
+                                pic_bytes = None
+                                try:
+                                    pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
+                                    if pic_url:
+                                        pic_bytes = fetch_image_bytes_from_url(pic_url)
+                                        if pic_bytes:
+                                            pic_bytes = psycopg2.Binary(pic_bytes)
+                                        else:
+                                            pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
+                                except Exception as pic_err:
+                                    logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
+                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes, source_val))
+                        else:
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
+                    elif has_pic_column:
                         # Include pic column in insert
                         insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                         batch_rows = []
@@ -439,6 +558,31 @@ def _write_outputs(job_id, rows):
                         total_inserted+=len(batch)
                     conn.commit()
                     logger.info(f"[Ingest] Inserted {total_inserted} rows into sourcing (userid='{active_userid}' username='{active_username}').")
+                    # Back-fill the source column for any existing rows that were previously
+                    # inserted without a source (ON CONFLICT DO NOTHING skips them on insert).
+                    # This ensures the provider button (CO/AP/RR) appears even for contacts
+                    # that were re-found by a provider search after being added by a prior search.
+                    if has_source_header:
+                        if has_pic_column:
+                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], pic[7], source[8])
+                            update_src_rows = [
+                                (row[8], row[0], row[6])  # (source, userid, linkedinurl)
+                                for row in batch_rows if row[8]
+                            ]
+                        else:
+                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], source[7])
+                            update_src_rows = [
+                                (row[7], row[0], row[6])  # (source, userid, linkedinurl)
+                                for row in batch_rows if row[7]
+                            ]
+                        if update_src_rows:
+                            for i in range(0, len(update_src_rows), batch_size):
+                                cur.executemany(
+                                    "UPDATE sourcing SET source = %s WHERE userid = %s AND linkedinurl = %s AND (source IS NULL OR source = '')",
+                                    update_src_rows[i:i+batch_size]
+                                )
+                            conn.commit()
+                            logger.info(f"[Ingest] Back-filled source column for up to {len(update_src_rows)} existing rows.")
                     # Transfer role_tag from login table into sourcing table for this user
                     if active_username:
                         try:
@@ -573,6 +717,18 @@ def start_job():
     # UI-selected search provider from the AutoSourcing.html toggle (admin-configured)
     _selected_search_provider = (data.get('_selectedSearchProvider') or '').strip().lower() or None
 
+    # Raw form fields forwarded to the provider API when a ContactOut/Apollo/RocketReach
+    # provider is selected.  These are used to build native API params directly,
+    # bypassing the Xray query translation step entirely.
+    _raw_form_fields = None
+    if _selected_search_provider in ('contactout', 'apollo', 'rocketreach'):
+        _raw_form_fields = {
+            'jobTitles':    job_titles,
+            'companyNames': user_companies,
+            'country':      country,
+            'keywords':     (data.get('languageQuery') or '').strip(),
+        }
+
     # --- PATCH START: Automatically update role_tag in login and sourcing tables based on job_titles ---
     # The requirement is that autosourcing.html search title must pass automatically to login.role_tag
     # and also be transferred to sourcing.role_tag for all records of this user.
@@ -660,7 +816,8 @@ def start_job():
                            search_results_only, country, dynamic_target, job_titles,
                            _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
                            _user_linkedin_key,
-                           _selected_search_provider),
+                           _selected_search_provider,
+                           _raw_form_fields),
                      daemon=True).start()
     # Log agentic intent event
     _agentic_filters = []
@@ -838,6 +995,14 @@ def sourcing_list():
         pic_idx = 6 if has_pic else None  # 0-based index of pic in result tuple
         rating_idx = 7 if has_pic else 6
 
+        # Detect optional source column
+        cur.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='sourcing' AND column_name='source'
+        """)
+        has_source_col = cur.fetchone() is not None
+        source_col = "COALESCE(s.source, '') AS source" if has_source_col else "'' AS source"
+
         # ------------------------------------------------------------------
         # Build ORDER BY clause
         # ------------------------------------------------------------------
@@ -962,7 +1127,8 @@ def sourcing_list():
                    {pic_col}
                    p.rating,
                    {relevance_expr},
-                   COALESCE(s.role_tag, '') AS role_tag
+                   COALESCE(s.role_tag, '') AS role_tag,
+                   {source_col}
             FROM sourcing s
             LEFT JOIN process p ON s.linkedinurl = p.linkedinurl
             WHERE {where_sql}
@@ -980,9 +1146,10 @@ def sourcing_list():
         # ------------------------------------------------------------------
         import base64
         rows = []
-        # Column index for relevance_score is after rating; role_tag follows it
+        # Column index for relevance_score is after rating; role_tag follows it; source follows role_tag
         relevance_col_idx = (rating_idx + 1)
         role_tag_col_idx = relevance_col_idx + 1
+        source_col_idx = role_tag_col_idx + 1
 
         def _strip_nim(name: str) -> str:
             """Strip the Korean honorific suffix '님' (U+B2D8) and surrounding whitespace from a name."""
@@ -1002,6 +1169,7 @@ def sourcing_list():
                 "rating_level": "",
                 "relevance_score": float(r[relevance_col_idx]) if r[relevance_col_idx] is not None else 0.0,
                 "role_tag": r[role_tag_col_idx] or "",
+                "source": r[source_col_idx] or "",
             }
             if has_pic and pic_idx is not None:
                 pic_data = r[pic_idx]

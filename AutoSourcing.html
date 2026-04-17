@@ -1768,7 +1768,12 @@ pre {
               <option value="Sri Lanka">Sri Lanka</option>
             </optgroup>
           </select>
-          <div class="helper">Maps to LinkedIn country domain.</div>
+          <!-- API Provider mode: free-text country input (plain textbox, no dropdown) -->
+          <input type="text" id="countryTextInput" autocomplete="off"
+                 placeholder="Type a country name…"
+                 style="display:none; width:100%; padding:8px 10px; font-size:14px; border:1px solid var(--border,#d8d8d8); border-radius:6px; box-sizing:border-box;">
+          <div id="countryValidationError" style="display:none; color:var(--danger,#dc2626); font-size:12px; margin-top:4px;"></div>
+          <div class="helper" id="countryHelper">Maps to LinkedIn country domain.</div>
           
           <div style="margin-top:8px;">
             <button type="button" id="activateTranslationBtn" class="small-btn">Activate Translation</button>
@@ -2666,6 +2671,220 @@ function lookupCountryCode(c){
   return null;
 }
 
+// ── Country textbox fuzzy matching & mode switching ──────────────────────────
+// When API Provider mode is active the Location <select> is hidden and replaced
+// with a free-text input that autocompletes against countrycode.JSON entries.
+// Fuzzy matching uses Levenshtein distance so small typos still resolve.
+(function _initCountryTextMode() {
+  // Levenshtein distance for fuzzy matching
+  function _levenshtein(a, b) {
+    const la = a.length, lb = b.length;
+    if (!la) return lb;
+    if (!lb) return la;
+    const dp = Array.from({ length: la + 1 }, (_, i) => i);
+    for (let j = 1; j <= lb; j++) {
+      let prev = dp[0];
+      dp[0] = j;
+      for (let i = 1; i <= la; i++) {
+        const tmp = dp[i];
+        dp[i] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[i], dp[i - 1]);
+        prev = tmp;
+      }
+    }
+    return dp[la];
+  }
+
+  // (datalist removed — Location is a plain textbox in API Provider mode)
+
+  // Common alias map (common alternate names → canonical countryCodeMap name)
+  const _COUNTRY_ALIASES = {
+    'south korea': 'Korea', 'republic of korea': 'Korea', 'rok': 'Korea',
+    'north korea': 'North Korea', 'dprk': 'North Korea',
+    'usa': 'United States', 'us': 'United States', 'america': 'United States',
+    'uk': 'United Kingdom', 'england': 'United Kingdom', 'britain': 'United Kingdom', 'great britain': 'United Kingdom',
+    'uae': 'United Arab Emirates', 'emirates': 'United Arab Emirates',
+    'czechia': 'Czech Republic', 'holland': 'Netherlands',
+    'ivory coast': "Côte d'Ivoire", 'burma': 'Myanmar',
+    'russia': 'Russia', 'persia': 'Iran',
+    'vatican': 'Vatican City', 'holy see': 'Vatican City',
+    'macau': 'Macao', 'eswatini': 'Eswatini', 'swaziland': 'Eswatini',
+  };
+
+  /**
+   * Resolve user input to a valid country name from countryCodeMap.
+   * Returns { name: string, code: string } or null if unresolvable.
+   * Tolerance: exact match > alias > starts-with > contains > fuzzy Levenshtein (threshold ≤ 3).
+   */
+  function _resolveCountry(input) {
+    if (!input) return null;
+    const raw = input.trim();
+    if (!raw) return null;
+    const lower = raw.toLowerCase();
+
+    // 1. Check if it's already a 2-letter code
+    if (lower.length === 2 && countryCodeMap[lower]) {
+      return { name: countryCodeMap[lower], code: lower };
+    }
+
+    // 2. Exact name match
+    for (const [code, name] of Object.entries(countryCodeMap)) {
+      if (name.toLowerCase() === lower) return { name, code };
+    }
+
+    // 3. Alias match
+    const alias = _COUNTRY_ALIASES[lower];
+    if (alias) {
+      for (const [code, name] of Object.entries(countryCodeMap)) {
+        if (name === alias) return { name, code };
+      }
+    }
+
+    // 4. Starts-with match (e.g. "Switz" → "Switzerland")
+    const startsWithMatches = [];
+    for (const [code, name] of Object.entries(countryCodeMap)) {
+      if (name.toLowerCase().startsWith(lower)) {
+        startsWithMatches.push({ name, code, dist: 0 });
+      }
+    }
+    if (startsWithMatches.length === 1) return startsWithMatches[0];
+
+    // 5. Contains match (e.g. "korea" → "Korea")
+    const containsMatches = [];
+    for (const [code, name] of Object.entries(countryCodeMap)) {
+      if (name.toLowerCase().includes(lower) || lower.includes(name.toLowerCase())) {
+        containsMatches.push({ name, code });
+      }
+    }
+    if (containsMatches.length === 1) return containsMatches[0];
+
+    // 6. Fuzzy Levenshtein match (threshold ≤ 3)
+    let bestMatch = null;
+    let bestDist = Infinity;
+    for (const [code, name] of Object.entries(countryCodeMap)) {
+      const dist = _levenshtein(lower, name.toLowerCase());
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestMatch = { name, code };
+      }
+    }
+    if (bestDist <= 3 && bestMatch) return bestMatch;
+
+    return null;
+  }
+
+  // Validate the text input on blur/change
+  const _textInput = document.getElementById('countryTextInput');
+  const _validationError = document.getElementById('countryValidationError');
+  const _selectEl = document.getElementById('country');
+
+  // Track validated country for Xray
+  let _validatedCountryName = '';
+
+  function _validateCountryInput() {
+    if (!_textInput || _textInput.style.display === 'none') return;
+    const raw = _textInput.value.trim();
+    if (!raw) {
+      _validationError.style.display = 'none';
+      _validatedCountryName = '';
+      _selectEl.value = '';
+      _fireCountryChange();
+      return;
+    }
+    const resolved = _resolveCountry(raw);
+    if (resolved) {
+      _validationError.style.display = 'none';
+      // Auto-correct the text to canonical name
+      _textInput.value = resolved.name;
+      _validatedCountryName = resolved.name;
+      // Sync the hidden select so val('country') returns the canonical name
+      // Try to match an existing option; if none exists the value is set directly
+      const optMatch = _selectEl.querySelector('option[value="' + resolved.name.replace(/"/g, '\\"') + '"]');
+      _selectEl.value = optMatch ? resolved.name : '';
+      // Store resolved name on select as a data attribute for val() fallback
+      _selectEl.dataset.resolvedCountry = resolved.name;
+      _fireCountryChange();
+    } else {
+      _validationError.textContent = 'Country not recognized. Please check spelling and try again.';
+      _validationError.style.display = 'block';
+      _validatedCountryName = '';
+      _selectEl.value = '';
+      _selectEl.dataset.resolvedCountry = '';
+      _fireCountryChange();
+    }
+  }
+
+  function _fireCountryChange() {
+    // Trigger change handlers that listen on #country
+    try { _selectEl.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+  }
+
+  if (_textInput) {
+    _textInput.addEventListener('blur', _validateCountryInput);
+    _textInput.addEventListener('change', _validateCountryInput);
+    // On input: clear errors (no datalist — plain textbox only)
+    _textInput.addEventListener('input', function () {
+      _validationError.style.display = 'none';
+      // Also fire input on the select so updateSourcingSection picks up changes
+      try { _selectEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+    });
+  }
+
+  /**
+   * Switch Location field between select (CSE mode) and textbox (API Provider mode).
+   * Called by _setSearchProviderMode.
+   */
+  window._setLocationFieldMode = function (mode) {
+    const selectEl = document.getElementById('country');
+    const textEl = document.getElementById('countryTextInput');
+    const errEl = document.getElementById('countryValidationError');
+    if (!selectEl || !textEl) return;
+
+    if (mode === 'api') {
+      // Switch to textbox
+      selectEl.style.display = 'none';
+      textEl.style.display = '';
+      // Transfer current select value to textbox
+      if (selectEl.value && !textEl.value) {
+        textEl.value = selectEl.value;
+        _validatedCountryName = selectEl.value;
+      }
+    } else {
+      // Switch back to select
+      textEl.style.display = 'none';
+      selectEl.style.display = '';
+      if (errEl) errEl.style.display = 'none';
+      // Transfer validated textbox value back to select
+      if (_validatedCountryName) {
+        const optExists = selectEl.querySelector('option[value="' + _validatedCountryName.replace(/"/g, '\\"') + '"]');
+        if (optExists) selectEl.value = _validatedCountryName;
+      }
+    }
+  };
+
+  /**
+   * Override val('country') so the textbox value is used when in API mode.
+   * We monkey-patch the global val function to intercept 'country' calls.
+   */
+  const _origVal = window.val || function(id){ const e=document.getElementById(id); return e?e.value.trim():""; };
+  window.val = function(id) {
+    if (id === 'country') {
+      const textEl = document.getElementById('countryTextInput');
+      if (textEl && textEl.style.display !== 'none') {
+        // In textbox mode: return validated country name or raw input
+        return (_validatedCountryName || textEl.value || '').trim();
+      }
+      // In select mode, also check the resolved data attribute as fallback
+      const selEl = document.getElementById('country');
+      if (selEl && selEl.dataset.resolvedCountry) return selEl.dataset.resolvedCountry.trim();
+    }
+    return _origVal(id);
+  };
+
+  // Expose resolve function for external validation (e.g. search precondition)
+  window._resolveCountryInput = _resolveCountry;
+  window._getValidatedCountryName = function() { return _validatedCountryName; };
+})();
+
 let translationActive=false, translationLang=null, translationLangName=null;
 const activeTag=document.getElementById('activeTranslationTag');
 const activeLabel=document.getElementById('activeTranslationLabel');
@@ -2694,7 +2913,7 @@ document.getElementById('activateTranslationBtn').addEventListener('click',()=>{
   const c=val('country'); translationError.style.display='none'; translationNotice.style.display='none';
   if(!c){ translationError.textContent='Enter a Location before activating translation.'; translationError.style.display='block'; return; }
   const lang=detectTargetLang(c);
-  if(!lang){ translationError.textContent='Cannot determine translation language from Location.'; translationError.style.display='block'; setTranslationMode(false); return; }
+  if(!lang){ translationError.textContent='Translation is not supported for "' + c + '". Supported countries include: France, Germany, Spain, Italy, Brazil, Japan, China, Korea, and others with known language mappings.'; translationError.style.display='block'; setTranslationMode(false); return; }
   setTranslationMode(true,lang);
 });
 document.getElementById('deactivateTranslationBtn').addEventListener('click',()=>setTranslationMode(false));
@@ -2707,6 +2926,14 @@ function onCountryChange(){
   updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleEstimateUpdate();
 }
 document.getElementById('country').addEventListener('change', onCountryChange);
+// Also fire onCountryChange when the API-mode textbox value is validated
+(function() {
+  const _cti = document.getElementById('countryTextInput');
+  if (_cti) {
+    _cti.addEventListener('change', onCountryChange);
+    _cti.addEventListener('blur', onCountryChange);
+  }
+})();
 
 const suggestionsContainer=document.getElementById('aiSuggestionsContainer');
 const suggestionsGrid=document.getElementById('suggestionsGrid');
@@ -3087,9 +3314,8 @@ function updateSourcingSection() {
   
   // Check if jobTitles array has entries (global array defined at line 817)
   const hasJobTitle = jobTitles && jobTitles.length > 0;
-  // Check if location field has value
-  const countryEl = document.getElementById('country');
-  const hasLocation = countryEl && countryEl.value.trim().length > 0;
+  // Check if location field has value (select or textbox mode)
+  const hasLocation = !!(val('country') || '').trim();
   
   // Check Smart Search Builder toggles
   const toggleJdToCandidates = document.getElementById('toggleJdToCandidates');
@@ -3296,6 +3522,16 @@ function updateSourcingSection() {
         updateSourcingSection();
       });
       countryInput.addEventListener('change', function() {
+        updateSourcingSection();
+      });
+    }
+    // Also monitor the API-mode textbox for location changes
+    const countryTextInput = document.getElementById('countryTextInput');
+    if (countryTextInput) {
+      countryTextInput.addEventListener('input', function() {
+        updateSourcingSection();
+      });
+      countryTextInput.addEventListener('change', function() {
         updateSourcingSection();
       });
     }
@@ -3959,6 +4195,10 @@ function _refreshTokenRates() {
       } else {
         dropWrap.classList.remove('sp-open');
       }
+    }
+    // Switch Location field between select (CSE) and textbox (API Provider)
+    if (typeof window._setLocationFieldMode === 'function') {
+      window._setLocationFieldMode(mode);
     }
     if (mode === 'api' && !_spServicesLoaded) _fetchSearchProviderServices();
   };
@@ -4831,7 +5071,10 @@ function updateSectorEnabledState(){
               if(analyzeData.country && !val('country')){ 
                 // Normalize "South Korea" to "Korea"
                 const normalizedCountry = normalizeCountryName(analyzeData.country);
-                document.getElementById('country').value = normalizedCountry; 
+                document.getElementById('country').value = normalizedCountry;
+                // Also update the API-mode textbox if visible
+                const _ctiJd = document.getElementById('countryTextInput');
+                if (_ctiJd && _ctiJd.style.display !== 'none') _ctiJd.value = normalizedCountry;
                 updateSectorEnabledState();
                 updateFullCompiledQuery(); 
                 scheduleEstimateUpdate(); 

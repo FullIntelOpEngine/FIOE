@@ -1799,7 +1799,7 @@ function renderAssessmentReviewTable(rows) {
                 <td>${escapeHtml(r.name||'')}</td>
                 <td>${escapeHtml(r.company||'')}</td>
                 <td>${escapeHtml(r.jobtitle||'')}</td>
-                <td>${escapeHtml(r.country||'')}</td>
+                <td>${escapeHtml(_countryFromLinkedInUrl(r.linkedinurl) || r.country||'')}</td>
                 <td>${escapeHtml(r.linkedinurl||'')}</td>
                 <td data-field="experience" data-experience="${escapeHtml(r.experience||'')}"></td>
             `;
@@ -2748,13 +2748,26 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         // Store BYOK status and hide token metric displays for BYOK users
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
-        // Fetch per-user service config to check custom LLM activation
-        fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-          .then(function(r){ return r.ok ? r.json() : null; })
-          .then(function(svcData){
+        window.__LINKDAPI_ENABLED = false;
+        // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
+        Promise.all([
+          fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch('/api/linkdapi-status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+        ]).then(function(results){
+            var svcData = results[0];
+            var gpData  = results[1];
             if (svcData && svcData.active && svcData.providers) {
               var lp = (svcData.providers.llm || '').toLowerCase();
               window.__HAS_CUSTOM_LLM = (lp === 'openai' || lp === 'anthropic');
+            }
+            if (gpData && typeof gpData.enabled === 'boolean') {
+              window.__LINKDAPI_ENABLED = gpData.enabled;
+            }
+            // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
+            // to show GP buttons (races: config fetch resolves after renderTable ran).
+            if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' &&
+                typeof rowsData !== 'undefined' && rowsData && rowsData.length > 0) {
+              renderTable();
             }
             if (window.__IS_BYOK || window.__HAS_CUSTOM_LLM) {
               var metricsBox = document.getElementById('metricsBox');
@@ -3557,6 +3570,251 @@ async function transferSingleRecordViaMarketNoDelete({ name, company, role, coun
 // Global variable to track the toggle state
 let _profileSourceMode = 'upload'; // 'snip' or 'upload' - default set to upload now
 
+// ---------------------------------------------------------------------------
+// Country resolution from LinkedIn URL subdomain using countrycode.json
+// ---------------------------------------------------------------------------
+let _svCountryCodeMap = null;
+(function _loadSvCountryCodes() {
+  fetch('countrycode.json')
+    .then(r => r.ok ? r.json() : null)
+    .catch(err => { console.warn('[SourcingVerify] Failed to load countrycode.json:', err); return null; })
+    .then(m => { if (m) _svCountryCodeMap = m; });
+})();
+
+/**
+ * Extract the country name from a LinkedIn profile URL subdomain.
+ * e.g. https://cn.linkedin.com/in/... → "China"
+ * Returns null when no recognisable two-character country subdomain is found.
+ */
+function _countryFromLinkedInUrl(url) {
+  if (!url) return null;
+  const m = url.trim().match(/^https?:\/\/([^/]+)\/in\//i);
+  if (!m) return null;
+  const parts = m[1].toLowerCase().split('.');
+  // Expect <code>.linkedin.com (3+ parts, first = 2-letter ISO country code)
+  if (parts.length < 3) return null;
+  const code = parts[0];
+  if (!code || code === 'www' || code.length !== 2) return null;
+  return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
+}
+
+// ---------------------------------------------------------------------------
+// ContactOut profile download helper
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the full ContactOut profile for a LinkedIn URL and trigger a JSON
+ * file download.  The button element is passed so its label can be updated
+ * during the async request.
+ */
+async function _downloadContactOutProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/contactout/download-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`ContactOut profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    // Trigger JSON file download
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    // Extract profile ID/slug from URL for a concise filename
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'contactout_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[ContactOut] download-profile error:', err);
+    alert(`ContactOut profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Apollo profile download helper
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the full Apollo profile for a LinkedIn URL and trigger a JSON
+ * file download.  The button element is passed so its label can be updated
+ * during the async request.
+ */
+async function _downloadApolloProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/apollo/download-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`Apollo profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    // Trigger JSON file download
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'apollo_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[Apollo] download-profile error:', err);
+    alert(`Apollo profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RocketReach profile download helper
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the full RocketReach profile for a LinkedIn URL and trigger a JSON
+ * file download.  The button element is passed so its label can be updated
+ * during the async request.
+ */
+async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/rocketreach/download-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`RocketReach profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    // Trigger JSON file download
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'rocketreach_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[RocketReach] download-profile error:', err);
+    alert(`RocketReach profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// linkdapi full profile download helper (for CSE/Serper/DataforSEO rows)
+// ---------------------------------------------------------------------------
+async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'linkdapi_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[linkdapi] get-profile error:', err);
+    alert(`linkdapi profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unified provider button factory for the first-column cell in buildRow().
+// Returns a <button> element for known API providers (ContactOut, Apollo,
+// RocketReach), or null for rows without a provider source.
+// ---------------------------------------------------------------------------
+const _PROVIDER_BUTTON_CONFIG = {
+  contactout: {
+    label: 'CO',
+    className: 'contactout-tag',
+    title: 'Download full ContactOut profile',
+    borderColor: '#0073b1',
+    bgColor: '#e8f4fb',
+    fgColor: '#0073b1',
+    downloadFn: _downloadContactOutProfile,
+  },
+  apollo: {
+    label: 'AP',
+    className: 'apollo-tag',
+    title: 'Download full Apollo profile',
+    borderColor: '#f05a28',
+    bgColor: '#fff3ef',
+    fgColor: '#f05a28',
+    downloadFn: _downloadApolloProfile,
+  },
+  rocketreach: {
+    label: 'RR',
+    className: 'rocketreach-tag',
+    title: 'Download full RocketReach profile',
+    borderColor: '#5c2d91',
+    bgColor: '#f3edfb',
+    fgColor: '#5c2d91',
+    downloadFn: _downloadRocketReachProfile,
+  },
+};
+
+function _createProviderButton(source, linkedinUrl) {
+  const cfg = _PROVIDER_BUTTON_CONFIG[(source || '').toLowerCase()];
+  if (!cfg) return null;
+
+  const btn = document.createElement('button');
+  btn.className = cfg.className;
+  btn.textContent = cfg.label;
+  btn.title = cfg.title;
+  btn.style.cssText =
+    'width:32px; height:32px; border:2px solid ' + cfg.borderColor +
+    '; background:' + cfg.bgColor + '; color:' + cfg.fgColor +
+    '; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
+    ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+  btn.onmouseover = function () { this.style.background = cfg.fgColor; this.style.color = '#fff'; };
+  btn.onmouseout  = function () { this.style.background = cfg.bgColor; this.style.color = cfg.fgColor; };
+  btn.addEventListener('click', () => cfg.downloadFn(linkedinUrl, btn));
+  return btn;
+}
+
 // Apply bulk assessment results from JSON file to table rows
 function buildRow(row) {
   const tr = document.createElement('tr');
@@ -3587,16 +3845,37 @@ function buildRow(row) {
   }
   
   if (!hasAssessment) {
-      // BEFORE ASSESSMENT: Show checkbox for selection
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'row-select';
-      if(isRowDetailDisabled(row.linkedinurl) || isRowDetailCompleted(row.linkedinurl)){
-        cb.disabled = true;
-        cb.title = isRowDetailCompleted(row.linkedinurl) ? 'Completed (View)' : 'Disabled after View action';
+      // BEFORE ASSESSMENT: ContactOut/Apollo/RocketReach rows get a provider download button; others get a checkbox
+      const providerBtn = _createProviderButton(row.source, row.linkedinurl);
+      if (providerBtn) {
+          checkboxCell.appendChild(providerBtn);
+      } else if (window.__LINKDAPI_ENABLED) {
+          // GP button: linkdapi full profile retrieval for CSE/Serper/DataforSEO rows
+          const gpBtn = document.createElement('button');
+          gpBtn.className = 'gp-tag';
+          gpBtn.textContent = 'GP';
+          gpBtn.title = 'Get full LinkedIn profile via linkdapi';
+          gpBtn.style.cssText =
+            'width:32px; height:32px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.12);' +
+            ' color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
+            ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+          gpBtn.onmouseover = function () { this.style.background = 'var(--robins-egg,#6deaf9)'; this.style.color = 'var(--azure-dragon,#073679)'; };
+          gpBtn.onmouseout  = function () { this.style.background = 'rgba(109,234,249,0.12)'; this.style.color = 'var(--azure-dragon,#073679)'; };
+          gpBtn.addEventListener('click', () => _downloadLinkdapiProfile(row.linkedinurl, gpBtn));
+          checkboxCell.appendChild(gpBtn);
+      } else {
+          // Standard checkbox for selection (invisible — provider buttons are the primary first-column control)
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'row-select';
+          cb.style.visibility = 'hidden';
+          if(isRowDetailDisabled(row.linkedinurl) || isRowDetailCompleted(row.linkedinurl)){
+            cb.disabled = true;
+            cb.title = isRowDetailCompleted(row.linkedinurl) ? 'Completed (View)' : 'Disabled after View action';
+          }
+          cb.addEventListener('change', showDeleteIfNeeded);
+          checkboxCell.appendChild(cb);
       }
-      cb.addEventListener('change', showDeleteIfNeeded);
-      checkboxCell.appendChild(cb);
   } else {
       // AFTER ASSESSMENT: Show tick or cross icon based on score
       const cachedScore = (cached && typeof cached.totalScore === 'number') ? cached.totalScore : null;
@@ -4157,7 +4436,8 @@ function buildRow(row) {
   tr.appendChild(makeEditableCell('name', row.name, true, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, true));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, true));
-  tr.appendChild(makeEditableCell('country', row.country, true));
+  const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
+  tr.appendChild(makeEditableCell('country', urlCountry || row.country, true));
   tr.appendChild(makeEditableCell('linkedinurl', row.linkedinurl, false));
   
   // Matching Level / Assessment Score column

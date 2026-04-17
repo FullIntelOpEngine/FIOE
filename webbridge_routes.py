@@ -70,12 +70,21 @@ from webbridge import (
     _APP_LOGGER_AVAILABLE,
     _load_search_provider_config,
     _load_llm_provider_config,
+    _load_email_verif_config,
+    _load_get_profiles_config,
 )
 
 # Thread-local flag set by unified_search_page when a per-user search key fails
 # and the system falls back to admin config.  _job_runner reads this after each
 # search to record fallback in the JOBS dict for the front-end.
 _search_fallback_flag = threading.local()
+
+
+class ProviderSearchError(Exception):
+    """Raised when a selected API provider (ContactOut/Apollo/RocketReach) search
+    fails or has no key configured.  The message contains the specific reason so
+    it can be surfaced directly in job-status messages without a CSE fallback."""
+    pass
 
 @app.post("/login")
 @_rate(_make_flask_limit("login"))
@@ -2659,6 +2668,702 @@ def linkedin_search_page(query: str, api_key: str, num: int, gl_hint: str = None
         logger.warning(f"[LinkedIn] page fetch failed: {e}")
         return [], 0
 
+_APOLLO_SENIORITY_MAP = {
+    "intern": "intern", "junior": "entry", "entry": "entry", "associate": "entry",
+    "senior": "senior", "sr": "senior", "lead": "senior",
+    "manager": "manager", "mgr": "manager",
+    "director": "director", "dir": "director",
+    "vp": "vp", "vice president": "vp",
+    "head": "head",
+    "c_suite": "c_suite", "ceo": "c_suite", "cto": "c_suite", "cfo": "c_suite",
+    "chief": "c_suite", "partner": "partner", "founder": "founder", "owner": "owner",
+}
+
+# Synthetic placeholder used when running a single provider-API search
+_PROVIDER_API_PLACEHOLDER = "provider_api_search"
+
+
+def _infer_apollo_seniority(job_titles: list) -> list:
+    """Return a deduplicated list of Apollo seniority codes inferred from job titles.
+
+    Uses word-boundary matching to avoid false positives (e.g. 'assistance'
+    should not match 'senior' or 'associate').
+    """
+    result = []
+    for title in (job_titles or []):
+        low = (title or "").lower()
+        for kw, code in _APOLLO_SENIORITY_MAP.items():
+            # Use word-boundary regex to prevent substring false-positives
+            if re.search(r'\b' + re.escape(kw) + r'\b', low) and code not in result:
+                result.append(code)
+    return result
+
+
+def _build_contactout_params_from_fields(job_titles: list, companies: list,
+                                          country: str, keywords: str = "") -> dict:
+    """Build a ContactOut People Search payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``contactout_query_schema.json``
+    first.  Falls back to hardcoded mapping if the LLM call fails or returns
+    nothing useful, ensuring searches always proceed even without an active
+    LLM key.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("contactout")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "contactout", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            # Remove pagination keys — those are controlled by the caller
+            llm_params.pop("page", None)
+            llm_params.pop("limit", None)
+            logger.debug(f"[ContactOut] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["job_title"] = titles
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        params["company"] = comps
+    if country:
+        params["location"] = [country]
+    kw = (keywords or "").strip()
+    if kw:
+        params["keyword"] = kw
+    logger.debug(f"[ContactOut] Built params from fields (hardcoded fallback): {params}")
+    return params
+
+
+def _load_provider_query_schema(provider: str) -> dict:
+    """Load the JSON query parameter schema for a provider.
+
+    Schema files live in the same directory as webbridge.py (BASE_DIR).
+    Returns an empty dict if the file is missing or unreadable.
+    """
+    filename = f"{provider}_query_schema.json"
+    schema_path = os.path.join(BASE_DIR, filename)
+    try:
+        with open(schema_path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        logger.debug(f"[{provider}] Query schema file not found: {schema_path}")
+        return {}
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning(f"[{provider}] Query schema {filename} contains invalid JSON: {exc}")
+        return {}
+    except Exception as exc:
+        logger.debug(f"[{provider}] Could not load query schema {filename}: {exc}")
+        return {}
+
+
+def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
+                                        companies: list, country: str,
+                                        keywords: str, schema: dict) -> dict:
+    """Use the active LLM (Gemini) to map AutoSourcing.html form fields to the
+    provider's native query parameters, guided by the supplied JSON schema.
+
+    Returns a dict of provider-native query params on success, or an empty dict
+    if the LLM call fails so the caller can fall back to hardcoded mapping.
+    """
+    if not schema:
+        return {}
+
+    # Summarise schema param names + descriptions for the prompt
+    schema_summary_parts = []
+    params_spec = schema.get("parameters") or schema.get("query_parameters") or {}
+    for key, spec in params_spec.items():
+        if isinstance(spec, dict):
+            desc = spec.get("description", "")
+            typ = spec.get("type", "")
+            src = spec.get("source_field", "")
+            schema_summary_parts.append(
+                f'  "{key}" ({typ}): {desc}'
+                + (f' [from form field: {src}]' if src else '')
+            )
+        else:
+            schema_summary_parts.append(f'  "{key}": {spec}')
+    schema_summary = "\n".join(schema_summary_parts) if schema_summary_parts else json.dumps(params_spec, indent=2)
+
+    provider_label = provider.capitalize()
+    form_fields = {
+        "jobTitles": job_titles or [],
+        "companyNames": companies or [],
+        "country": country or "",
+        "keywords": (keywords or "").strip(),
+    }
+
+    prompt = (
+        f"You are a search API parameter mapper. Convert the following AutoSourcing.html "
+        f"form field values into a JSON object of query parameters for the {provider_label} "
+        f"People Search API.\n\n"
+        f"Available {provider_label} query parameters (with source_field hints where applicable):\n{schema_summary}\n\n"
+        f"Form field values:\n{json.dumps(form_fields, indent=2)}\n\n"
+        f"Rules:\n"
+        f"1. Use the 'source_field' hints in the parameter list above to map each form field to the correct parameter.\n"
+        f"2. Infer seniority levels from job titles where applicable (e.g. director → director, VP → vp, manager → manager).\n"
+        f"3. Only include parameters that have non-empty values.\n"
+        f"4. For Apollo, always include include_similar_titles: true when person_titles is set.\n"
+        f"5. Return ONLY valid JSON — no explanation, no markdown fences.\n"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            mapped = json.loads(cleaned.strip())
+            if isinstance(mapped, dict) and mapped:
+                logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
+                return mapped
+    except Exception as exc:
+        logger.warning(f"[{provider_label}] LLM field-mapping failed: {exc}")
+    return {}
+
+
+def _build_apollo_params_from_fields(job_titles: list, companies: list,
+                                      country: str, keywords: str = "") -> dict:
+    """Build an Apollo People Search payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``apollo_query_schema.json`` first.
+    Falls back to hardcoded mapping if the LLM call fails or returns nothing
+    useful, ensuring searches always proceed even without an active LLM key.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("apollo")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "apollo", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            # Always ensure include_similar_titles is set when person_titles present
+            if llm_params.get("person_titles") and "include_similar_titles" not in llm_params:
+                llm_params["include_similar_titles"] = True
+            logger.debug(f"[Apollo] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["person_titles"] = titles
+        params["include_similar_titles"] = True
+    if country:
+        params["person_locations"] = [country]
+    seniority = _infer_apollo_seniority(job_titles)
+    if seniority:
+        params["person_seniorities"] = seniority
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        params["organization_names"] = comps
+    kw = (keywords or "").strip()
+    if kw:
+        params["q_keywords"] = kw
+    logger.debug(f"[Apollo] Built params from fields (hardcoded fallback): {params}")
+    return params
+
+
+def _build_rocketreach_params_from_fields(job_titles: list, companies: list,
+                                           country: str, keywords: str = "") -> dict:
+    """Build a RocketReach Person Search query payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``rocketreach_query_schema.json``
+    first.  Falls back to hardcoded mapping if the LLM call fails or returns
+    nothing useful.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("rocketreach")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "rocketreach", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            logger.debug(f"[RocketReach] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["current_title"] = titles
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        params["current_employer"] = comps
+    if country:
+        params["location"] = [country]
+    kw = (keywords or "").strip()
+    if kw:
+        params["keyword"] = kw
+    logger.debug(f"[RocketReach] Built params from fields (hardcoded fallback): {params}")
+    return params
+
+
+def _translate_xray_to_contactout_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into a
+    ContactOut People Search API JSON payload.
+
+    The function extracts recognised ContactOut filter fields (job_title, skills,
+    company, location, keyword, education, industry) from the Xray boolean query.
+    Falls back to a ``{"keyword": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the ContactOut People Search API "
+        "(POST https://api.contactout.com/v1/people/search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"job_title\" (array of strings, max 50).\n"
+        "2. Extract required skills / technologies into \"skills\" (array of strings, max 50).\n"
+        "3. Extract company names into \"company\" (array of strings).\n"
+        "4. Extract location hints into \"location\" (array of strings).\n"
+        "5. Extract field-of-study / degree / school into \"education\" (array of strings).\n"
+        "6. Extract industry keywords into \"industry\" (array of strings).\n"
+        "7. Put any remaining meaningful keywords into \"keyword\" (single string).\n"
+        "8. Omit fields for which no clear value can be found.\n"
+        "9. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "10. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            # Remove any ```json``` fences
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[ContactOut] Xray→ContactOut params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[ContactOut] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    # Strip obvious Google Xray operators before falling back
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"keyword": kw} if kw else {}
+
+
+def contactout_people_search_page(query: str, api_key: str, num: int = 10,
+                                   gl_hint: str = None, page: int = 1,
+                                   raw_params: dict = None):
+    """Call the ContactOut People Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'contactout'`` to identify the origin.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
+    """
+    if not api_key:
+        raise ProviderSearchError("ContactOut API key is not configured. Add CONTACTOUT_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_contactout_params(query)
+    params["page"] = page
+    logger.debug(f"[ContactOut] Calling people/search — page={page} params={params}")
+    try:
+        r = requests.post(
+            "https://api.contactout.com/v1/people/search",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=params,
+            timeout=30,
+        )
+        logger.info(f"[ContactOut] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            resp_body = r.text[:500]
+        logger.debug(f"[ContactOut] Response body: {resp_body}")
+        if not r.ok:
+            # Extract the specific error message from the API response
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[ContactOut] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"ContactOut API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
+        people = data.get("people") or data.get("profiles") or data.get("results") or []
+        estimated_total = int(data.get("total") or data.get("count") or len(people))
+        out = []
+        skipped = 0
+        for person in people:
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                skipped += 1
+                continue
+            name = (person.get("name") or person.get("full_name") or "").strip()
+            title = (person.get("title") or person.get("headline") or "").strip()
+            company_obj = person.get("company") or {}
+            if isinstance(company_obj, dict):
+                company = company_obj.get("name") or ""
+            else:
+                company = str(company_obj)
+            # Format title string so parse_linkedin_title can extract fields
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            if person.get("location"):
+                snippet_parts.append(str(person["location"]))
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            out.append({
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "contactout",
+            })
+        if skipped:
+            logger.info(f"[ContactOut] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[ContactOut] Returned {len(out)} results (total≈{estimated_total})")
+        return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[ContactOut] Request timed out after 30 s")
+        raise ProviderSearchError("ContactOut API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[ContactOut] Connection error: {e}")
+        raise ProviderSearchError(f"ContactOut connection error: {e}")
+    except Exception as e:
+        logger.error(f"[ContactOut] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"ContactOut people search failed: {e}")
+
+
+def _translate_xray_to_apollo_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into an
+    Apollo People Search API query payload.
+
+    Extracts recognised Apollo filter fields from the Xray boolean query.
+    Falls back to a ``{"q_keywords": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the Apollo People Search API "
+        "(POST https://api.apollo.io/api/v1/mixed_people/api_search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"person_titles\" (array of strings).\n"
+        "2. Extract location hints into \"person_locations\" (array of strings).\n"
+        "3. Extract seniority levels into \"person_seniorities\" (array of strings — "
+        "valid values: owner, founder, c_suite, partner, vp, head, director, manager, "
+        "senior, entry, intern).\n"
+        "4. Extract company domain names (e.g. microsoft.com) into "
+        "\"q_organization_domains_list\" (array of strings).\n"
+        "5. Put any remaining meaningful keywords into \"q_keywords\" (single string).\n"
+        "6. Omit fields for which no clear value can be found.\n"
+        "7. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "8. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[Apollo] Xray→Apollo params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[Apollo] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"q_keywords": kw} if kw else {}
+
+
+def apollo_people_search_page(query: str, api_key: str, num: int = 10,
+                               gl_hint: str = None, page: int = 1,
+                               raw_params: dict = None):
+    """Call the Apollo People Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'apollo'`` to identify the origin.
+    A ``_apollo_id`` key is also stored to support the download-profile endpoint.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
+    """
+    if not api_key:
+        raise ProviderSearchError("Apollo API key is not configured. Add APOLLO_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_apollo_params(query)
+    params["page"] = page
+    params["per_page"] = num
+    logger.debug(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
+    try:
+        r = requests.post(
+            "https://api.apollo.io/api/v1/mixed_people/api_search",
+            headers={
+                "x-api-key": api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=params,
+            timeout=30,
+        )
+        logger.info(f"[Apollo] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            resp_body = r.text[:500]
+        logger.debug(f"[Apollo] Response body: {resp_body}")
+        if not r.ok:
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[Apollo] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"Apollo API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
+        people = data.get("people") or []
+        estimated_total = int(data.get("total_entries") or data.get("total") or len(people))
+        out = []
+        skipped = 0
+        for person in people:
+            # Apollo results may expose linkedin_url directly or via organization
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                skipped += 1
+                continue
+            first = (person.get("first_name") or "").strip()
+            last_raw = (person.get("last_name") or person.get("last_name_obfuscated") or "").strip()
+            name = f"{first} {last_raw}".strip()
+            title = (person.get("title") or "").strip()
+            org = person.get("organization") or {}
+            company = (org.get("name") or "").strip() if isinstance(org, dict) else ""
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            city = (person.get("city") or "").strip()
+            state = (person.get("state") or "").strip()
+            country = (person.get("country") or "").strip()
+            location_parts = [p for p in [city, state, country] if p]
+            if location_parts:
+                snippet_parts.append(", ".join(location_parts))
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            result = {
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "apollo",
+            }
+            apollo_id = (person.get("id") or "").strip()
+            if apollo_id:
+                result["_apollo_id"] = apollo_id
+            out.append(result)
+        if skipped:
+            logger.info(f"[Apollo] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[Apollo] Returned {len(out)} results (total≈{estimated_total})")
+        return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[Apollo] Request timed out after 30 s")
+        raise ProviderSearchError("Apollo API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[Apollo] Connection error: {e}")
+        raise ProviderSearchError(f"Apollo connection error: {e}")
+    except Exception as e:
+        logger.error(f"[Apollo] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"Apollo people search failed: {e}")
+
+
+def _translate_xray_to_rocketreach_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into a
+    RocketReach People Search API query payload.
+
+    Extracts recognised RocketReach filter fields from the Xray boolean query.
+    Falls back to a ``{"keyword": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the RocketReach Person Search API "
+        "(POST https://api.rocketreach.co/api/v2/search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"current_title\" (array of strings).\n"
+        "2. Extract company names into \"current_employer\" (array of strings).\n"
+        "3. Extract location hints into \"location\" (array of strings).\n"
+        "4. Extract person names into \"name\" (array of strings).\n"
+        "5. Put any remaining meaningful keywords into \"keyword\" (single string).\n"
+        "6. Omit fields for which no clear value can be found.\n"
+        "7. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "8. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[RocketReach] Xray→RocketReach params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[RocketReach] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"keyword": kw} if kw else {}
+
+
+def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
+                                    gl_hint: str = None, page: int = 1,
+                                    raw_params: dict = None):
+    """Call the RocketReach Person Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'rocketreach'`` to identify the origin.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
+    """
+    if not api_key:
+        raise ProviderSearchError("RocketReach API key is not configured. Add ROCKETREACH_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_rocketreach_params(query)
+    body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
+    logger.debug(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
+    try:
+        r = requests.post(
+            "https://api.rocketreach.co/api/v2/search",
+            headers={
+                "Api-Key": api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=body,
+            timeout=30,
+        )
+        logger.info(f"[RocketReach] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except (ValueError, requests.exceptions.JSONDecodeError):
+            resp_body = r.text[:500]
+        logger.debug(f"[RocketReach] Response body: {resp_body}")
+        if not r.ok:
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[RocketReach] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"RocketReach API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
+        people = data.get("profiles") or data.get("people") or data.get("results") or []
+        estimated_total = int(data.get("pagination", {}).get("total") or data.get("total") or len(people))
+        out = []
+        skipped = 0
+        for person in people:
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                skipped += 1
+                continue
+            first = (person.get("first_name") or "").strip()
+            last = (person.get("last_name") or "").strip()
+            name = f"{first} {last}".strip() or (person.get("name") or "").strip()
+            title = (person.get("current_title") or person.get("title") or "").strip()
+            company = (person.get("current_employer") or person.get("company") or "").strip()
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            location = (person.get("location") or person.get("city") or "").strip()
+            if location:
+                snippet_parts.append(location)
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            rr_id = str(person.get("id") or "").strip()
+            result = {
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "rocketreach",
+            }
+            if rr_id:
+                result["_rocketreach_id"] = rr_id
+            out.append(result)
+        if skipped:
+            logger.info(f"[RocketReach] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[RocketReach] Returned {len(out)} results (total≈{estimated_total})")
+        return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[RocketReach] Request timed out after 30 s")
+        raise ProviderSearchError("RocketReach API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[RocketReach] Connection error: {e}")
+        raise ProviderSearchError(f"RocketReach connection error: {e}")
+    except Exception as e:
+        logger.error(f"[RocketReach] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"RocketReach people search failed: {e}")
+
+
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
     """Fetch one page of results from the DataforSEO Google Organic Live API.
 
@@ -2792,7 +3497,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
                         user_provider: str = None, user_serper_key: str = None,
                         user_dfs_login: str = None, user_dfs_password: str = None,
                         user_linkedin_key: str = None,
-                        selected_provider: str = None):
+                        selected_provider: str = None,
+                        raw_form_fields: dict = None):
     """Search wrapper that routes to the configured active provider.
 
     Per-user provider (from Option A service config) takes priority over the global
@@ -2802,6 +3508,12 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
     config lookup is overridden to route to that specific provider instead.
 
+    When ``selected_provider`` is 'contactout', 'apollo', or 'rocketreach', the search
+    is executed *directly* against that provider's API using ``raw_form_fields`` (if
+    supplied) to build native params without any Xray translation.  No fallback to
+    Google CSE is performed — a ``ProviderSearchError`` is raised if the key is missing
+    or the API call fails.
+
     If the per-user provider returns zero results (suggesting key failure / exhausted
     credits), falls back to the admin config and sets
     ``_search_fallback_flag.used = True`` so callers can detect the fallback.
@@ -2810,6 +3522,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     first translated via the active LLM (see ``_translate_xray_for_provider``).
 
     Returns ``(results, estimated_total)`` identical to the individual adapters.
+    Raises ``ProviderSearchError`` for ContactOut/Apollo/RocketReach failures.
     """
     page = max(1, ((start_index - 1) // max(num, 1)) + 1)
 
@@ -2836,6 +3549,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
+    ev_cfg = _load_email_verif_config()
 
     # When a specific provider is selected via the AutoSourcing toggle, route to
     # that provider directly (if admin has keys configured for it).
@@ -2856,6 +3570,70 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if li_key:
             li_query = _translate_xray_for_provider(query, 'linkedin')
             return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
+
+    # ── Provider API searches (ContactOut / Apollo / RocketReach) ────────────
+    # These providers are called DIRECTLY with native API params built from the
+    # form fields.  NO fallback to Google CSE is permitted.  If the key is
+    # missing or the API call fails, ProviderSearchError is raised so the caller
+    # can surface the specific reason in the job status messages.
+    elif selected_provider == 'contactout':
+        co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+        if not co_key:
+            raise ProviderSearchError(
+                "ContactOut API key is not configured. Add CONTACTOUT_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        # Build params directly from form fields when available; otherwise
+        # translate the Xray query via LLM as fallback.
+        if raw_form_fields:
+            raw_params = _build_contactout_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
+
+    elif selected_provider == 'apollo':
+        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        if not ap_key:
+            raise ProviderSearchError(
+                "Apollo API key is not configured. Add APOLLO_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        if raw_form_fields:
+            raw_params = _build_apollo_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
+
+    elif selected_provider == 'rocketreach':
+        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        if not rr_key:
+            raise ProviderSearchError(
+                "RocketReach API key is not configured. Add ROCKETREACH_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        if raw_form_fields:
+            raw_params = _build_rocketreach_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -3153,10 +3931,16 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                          user_provider=None, user_serper_key=None,
                          user_dfs_login=None, user_dfs_password=None,
                          user_linkedin_key=None,
-                         selected_provider=None):
+                         selected_provider=None,
+                         raw_form_fields=None):
     results=[]
-    m_cc=re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
-    country_code_hint = m_cc.group(1).lower() if m_cc else None
+    # For provider-API searches we extract the country hint from the form fields
+    # rather than from Xray URL patterns (no site: operator present).
+    if selected_provider in ('contactout', 'apollo', 'rocketreach') and raw_form_fields:
+        country_code_hint = None  # provider APIs accept full country names
+    else:
+        m_cc = re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
+        country_code_hint = m_cc.group(1).lower() if m_cc else None
 
     # Determine active search provider label for job status messages
     # Per-user provider takes priority over admin config for label determination
@@ -3174,6 +3958,12 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "DataforSEO (selected)"
         elif selected_provider == 'linkedin':
             _provider_label = "LinkedIn (selected)"
+        elif selected_provider == 'contactout':
+            _provider_label = "ContactOut (selected)"
+        elif selected_provider == 'apollo':
+            _provider_label = "Apollo (selected)"
+        elif selected_provider == 'rocketreach':
+            _provider_label = "RocketReach (selected)"
         else:
             _serper_on = (
                 _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
@@ -3200,7 +3990,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
     _eff_provider = None
     if user_provider in ('serper', 'dataforseo', 'linkedin'):
         _eff_provider = user_provider
-    elif selected_provider in ('serper', 'dataforseo', 'linkedin'):
+    elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
     else:
         _sp_cfg = _load_search_provider_config()
@@ -3212,11 +4002,22 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 _eff_provider = _p
                 break
 
-    _needs_translation = _eff_provider and _eff_provider not in _XRAY_NATIVE_PROVIDERS
+    # Provider API searches (ContactOut/Apollo/RocketReach) use native params
+    # built from form fields — no Xray translation needed.
+    _is_provider_api = selected_provider in ('contactout', 'apollo', 'rocketreach')
+    _needs_translation = not _is_provider_api and _eff_provider and _eff_provider not in _XRAY_NATIVE_PROVIDERS
 
     global_collected = 0
 
-    for q in queries:
+    # For provider API searches, execute only a single logical search (the
+    # provider returns paginated results on its own).  For Xray-based searches,
+    # iterate over each generated query string as before.
+    _query_list = queries
+    if _is_provider_api:
+        # Use a single synthetic entry so the loop fires exactly once.
+        _query_list = [_PROVIDER_API_PLACEHOLDER]
+
+    for q in _query_list:
         # Global stop-loss: target already reached, no need to fire more queries.
         still_needed = target_limit - global_collected
         if still_needed <= 0:
@@ -3231,26 +4032,35 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         if _needs_translation:
             add_message(job_id, f"Translating Xray query for {_provider_label}…")
 
-        add_message(job_id, f"Running {_provider_label}: {q} target={effective_target} (need {still_needed} more to reach {target_limit})")
+        if _is_provider_api:
+            add_message(job_id, f"Running {_provider_label}: direct API search (target={effective_target})")
+        else:
+            add_message(job_id, f"Running {_provider_label}: {q} target={effective_target} (need {still_needed} more to reach {target_limit})")
 
         while gathered < effective_target:
             remaining = effective_target - gathered
             page_size = min(CSE_PAGE_SIZE, remaining)
 
-            page, estimated_total = unified_search_page(
-                q, page_size, start_index, gl_hint=country_code_hint,
-                user_provider=user_provider, user_serper_key=user_serper_key,
-                user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
-                user_linkedin_key=user_linkedin_key,
-                selected_provider=selected_provider,
-            )
+            try:
+                page, estimated_total = unified_search_page(
+                    q, page_size, start_index, gl_hint=country_code_hint,
+                    user_provider=user_provider, user_serper_key=user_serper_key,
+                    user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                    user_linkedin_key=user_linkedin_key,
+                    selected_provider=selected_provider,
+                    raw_form_fields=raw_form_fields,
+                )
+            except ProviderSearchError as pse:
+                add_message(job_id, f"ERROR [{_provider_label}]: {pse}")
+                logger.error(f"[_perform_cse_queries] ProviderSearchError for {_provider_label}: {pse}")
+                return _dedupe_links(results)  # abort — no CSE fallback
+
             pages_fetched+=1
 
-            # Per-query stop-loss: if Google reports fewer total results than we
-            # are requesting from this query, cap the query target to what Google
-            # says is actually available.  This prevents wasting API quota on
-            # pages that will always return empty, but does NOT prevent subsequent
-            # queries from running to make up the shortfall.
+            # Per-query stop-loss: if provider reports fewer total results than we
+            # are requesting from this query, cap the query target to what it says
+            # is actually available.  This prevents wasting API quota on
+            # pages that will always return empty.
             if pages_fetched == 1 and estimated_total > 0 and estimated_total < effective_target:
                 effective_target = estimated_total
                 add_message(job_id, f"  Stop-loss: {_provider_label} reports ~{estimated_total} results for this query — capping to {effective_target}")
@@ -4534,6 +5344,423 @@ def user_svc_config_validate():
     except Exception as exc:
         logger.exception("[user-service-config/validate]")
         return jsonify({"error": "Validation failed"}), 500
+
+
+
+@app.get("/api/contactout/download-profile")
+@_require_session
+def contactout_download_profile():
+    """Fetch the full ContactOut profile for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Calls the ContactOut LinkedIn lookup endpoint
+    (GET /v1/people/linkedin) with ``reveal_info=true`` so that contact
+    details are included in the response, and returns the raw JSON document.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    ev_cfg = _load_email_verif_config()
+    co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+    if not co_key:
+        return jsonify({"error": "CONTACTOUT_API_KEY is not configured"}), 503
+
+    try:
+        r = requests.get(
+            "https://api.contactout.com/v1/people/linkedin",
+            params={
+                "profile": linkedin_url,
+                "email_type": "personal",
+                "include_phone": "true",
+                "reveal_info": "true",
+            },
+            headers={
+                "Authorization": f"Token {co_key}",
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code == 401:
+            return jsonify({"error": "ContactOut authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "ContactOut returned HTTP 403 — quota may be exceeded"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[ContactOut] download-profile HTTP error: {http_err}")
+        return jsonify({"error": "ContactOut API request failed"}), 502
+    except Exception as exc:
+        logger.warning(f"[ContactOut] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch ContactOut profile"}), 500
+
+
+@app.get("/api/apollo/download-profile")
+@_require_session
+def apollo_download_profile():
+    """Fetch the full Apollo profile for a given person ID or LinkedIn URL.
+
+    Query parameters (at least one required):
+      person_id    – the Apollo person ID (preferred)
+      linkedin_url – the LinkedIn profile URL (fallback lookup)
+
+    Calls the Apollo people/match endpoint to retrieve the full profile JSON.
+    """
+    person_id = (request.args.get("person_id") or "").strip()
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not person_id and not linkedin_url:
+        return jsonify({"error": "person_id or linkedin_url is required"}), 400
+
+    # Resolve the Apollo API key: check per-user service config first, then admin config.
+    # request._session_user is set by @_require_session after DB-validated session check.
+    ap_key = ""
+    _req_user = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
+    if _req_user:
+        # Sanitise username to a safe filesystem identifier (strips path-traversal chars)
+        _safe_user = _porting_safe_name(_req_user)
+        try:
+            _u_enc = _svc_config_path(_safe_user)
+            _u_json = _svc_config_json_path(_safe_user)
+            _u_cfg = None
+            if os.path.isfile(_u_enc):
+                try:
+                    with open(_u_enc, "rb") as _fh:
+                        _u_cfg = json.loads(_svc_config_decrypt(_fh.read()).decode("utf-8"))
+                except Exception:
+                    pass
+            if _u_cfg is None and os.path.isfile(_u_json):
+                try:
+                    with open(_u_json, "r", encoding="utf-8") as _fh:
+                        _u_cfg = json.load(_fh)
+                except Exception:
+                    pass
+            if _u_cfg:
+                ap_key = (_u_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        except Exception:
+            pass
+    if not ap_key:
+        ev_cfg = _load_email_verif_config()
+        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+    if not ap_key:
+        return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
+
+    try:
+        if person_id:
+            # Use the people/match endpoint to get full details by Apollo ID
+            r = requests.post(
+                "https://api.apollo.io/api/v1/people/match",
+                headers={
+                    "x-api-key": ap_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"id": person_id, "reveal_personal_emails": True, "reveal_phone_number": True},
+                timeout=30,
+            )
+        else:
+            # Lookup by LinkedIn URL
+            r = requests.post(
+                "https://api.apollo.io/api/v1/people/match",
+                headers={
+                    "x-api-key": ap_key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={"linkedin_url": linkedin_url, "reveal_personal_emails": True, "reveal_phone_number": True},
+                timeout=30,
+            )
+        if r.status_code == 401:
+            return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "Apollo returned HTTP 403 — quota may be exceeded or plan lacks access"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[Apollo] download-profile HTTP error: {http_err}")
+        return jsonify({"error": "Apollo API request failed"}), 502
+    except Exception as exc:
+        logger.warning(f"[Apollo] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch Apollo profile"}), 500
+
+
+@app.get("/api/rocketreach/download-profile")
+@_require_session
+def rocketreach_download_profile():
+    """Fetch the full RocketReach profile for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Calls the RocketReach lookupProfile endpoint to retrieve the full profile JSON.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    # Resolve the RocketReach API key: check per-user service config first, then admin config.
+    rr_key = ""
+    _req_user = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
+    if _req_user:
+        _safe_user = _porting_safe_name(_req_user)
+        try:
+            _u_enc = _svc_config_path(_safe_user)
+            _u_json = _svc_config_json_path(_safe_user)
+            _u_cfg = None
+            if os.path.isfile(_u_enc):
+                try:
+                    with open(_u_enc, "rb") as _fh:
+                        _u_cfg = json.loads(_svc_config_decrypt(_fh.read()).decode("utf-8"))
+                except Exception:
+                    pass
+            if _u_cfg is None and os.path.isfile(_u_json):
+                try:
+                    with open(_u_json, "r", encoding="utf-8") as _fh:
+                        _u_cfg = json.load(_fh)
+                except Exception:
+                    pass
+            if _u_cfg:
+                rr_key = (_u_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        except Exception:
+            pass
+    if not rr_key:
+        ev_cfg = _load_email_verif_config()
+        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+    if not rr_key:
+        return jsonify({"error": "ROCKETREACH_API_KEY is not configured"}), 503
+
+    try:
+        r = requests.get(
+            "https://api.rocketreach.co/api/v2/lookupProfile",
+            params={"linkedin_url": linkedin_url},
+            headers={
+                "Api-Key": rr_key,
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code == 401:
+            return jsonify({"error": "RocketReach authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "RocketReach returned HTTP 403 — quota may be exceeded"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[RocketReach] download-profile HTTP error: {http_err}")
+        return jsonify({"error": "RocketReach API request failed"}), 502
+    except Exception as exc:
+        logger.warning(f"[RocketReach] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch RocketReach profile"}), 500
+
+
+# ---------------------------------------------------------------------------
+# linkdapi: full LinkedIn profile retrieval
+# ---------------------------------------------------------------------------
+
+_LINKDAPI_HOST = "linkdapi.com"
+_LINKDAPI_HEADER = "X-linkdapi-apikey"
+_LINKDAPI_MAX_RETRIES = 3
+
+
+def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
+    """Fetch a profile from linkdapi.com and return ``(body_str, http_status)``.
+
+    **Strategy** (dual-layer, cross-platform, with retry):
+
+    1. *Primary* – Python ``http.client.HTTPSConnection`` with a custom
+       ``connect()`` that creates a TLS 1.2-only context, suppresses SNI
+       (``server_hostname=None``), and enables ``OP_LEGACY_SERVER_CONNECT``.
+       This uses Python's bundled OpenSSL, *not* the OS TLS stack (so it
+       works identically on Windows, Linux, and macOS).
+
+    2. *Fallback* – ``curl`` subprocess with ``-sSk --tlsv1.2 --tls-max 1.2``
+       (pins exactly TLS 1.2) plus ``--ssl-no-revoke`` for Windows Schannel.
+
+    Both layers are retried up to ``_LINKDAPI_MAX_RETRIES`` times for
+    transient TLS / network errors before giving up.
+
+    The linkdapi.com server may send an ``unrecognized_name`` TLS warning
+    alert.  TLS 1.3 (RFC 8446 §6) treats *all* warning alerts as fatal,
+    killing the handshake.  TLS 1.2 (RFC 6066 §3) considers it non-fatal.
+    Forcing TLS 1.2 + suppressing SNI avoids the alert entirely.
+    """
+    import http.client as _hc   # noqa: PLC0415
+    import ssl as _ssl          # noqa: PLC0415
+    import urllib.parse as _up  # noqa: PLC0415
+
+    qs = _up.urlencode({"username": username})
+    path = f"/api/v1/profile/full?{qs}"
+    headers = {_LINKDAPI_HEADER: api_key, "Accept": "application/json"}
+
+    # Sanitise api_key for safe shell-arg use (reject embedded control chars).
+    _safe_key = re.sub(r"[^\x20-\x7E]", "", api_key)
+
+    last_exc = None
+
+    for attempt in range(1, _LINKDAPI_MAX_RETRIES + 1):
+        # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
+        conn = None
+        try:
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            ctx.maximum_version = _ssl.TLSVersion.TLSv1_2
+            ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+            if hasattr(_ssl, "OP_LEGACY_SERVER_CONNECT"):
+                ctx.options |= _ssl.OP_LEGACY_SERVER_CONNECT
+            if hasattr(_ssl, "OP_IGNORE_UNEXPECTED_EOF"):
+                ctx.options |= _ssl.OP_IGNORE_UNEXPECTED_EOF
+
+            import socket as _sock  # noqa: PLC0415
+
+            conn = _hc.HTTPSConnection(_LINKDAPI_HOST, timeout=timeout, context=ctx)
+            # Override connect() to suppress SNI (server_hostname=None).
+
+            def _no_sni_connect():
+                conn.sock = _sock.create_connection(
+                    (conn.host, conn.port or 443), conn.timeout
+                )
+                conn.sock = ctx.wrap_socket(conn.sock, server_hostname=None)
+
+            conn.connect = _no_sni_connect
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            status = resp.status
+            return body, status
+        except Exception as py_exc:
+            last_exc = py_exc
+            logger.debug(
+                "[linkdapi] Python http.client attempt %d/%d failed (%s), trying curl…",
+                attempt, _LINKDAPI_MAX_RETRIES, py_exc,
+            )
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        # ---- fallback: curl subprocess ----
+        try:
+            import subprocess as _sp  # noqa: PLC0415
+
+            url = f"https://{_LINKDAPI_HOST}{path}"
+            sep = "\n__LINKDAPI_HTTP_STATUS__"
+            cmd = [
+                "curl", "-sSk",
+                "--tlsv1.2", "--tls-max", "1.2",
+                "--ssl-no-revoke",
+                "--max-time", str(timeout),
+                "-H", f"{_LINKDAPI_HEADER}: {_safe_key}",
+                "-H", "Accept: application/json",
+                "-w", sep + "%{http_code}",
+                url,
+            ]
+            result = _sp.run(cmd, capture_output=True, timeout=timeout + 5)
+            raw = result.stdout.decode("utf-8", errors="replace")
+            if sep in raw:
+                body_str, st = raw.rsplit(sep, 1)
+            else:
+                body_str, st = raw, "0"
+            try:
+                sc = int(st.strip())
+            except ValueError:
+                sc = 0
+
+            # Non-transient HTTP errors — do not retry
+            if sc in (401, 403, 404):
+                return body_str, sc
+
+            if result.returncode != 0 and sc == 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning(
+                    "[linkdapi] curl error attempt %d/%d (rc=%d): %s",
+                    attempt, _LINKDAPI_MAX_RETRIES, result.returncode, stderr,
+                )
+                last_exc = RuntimeError(stderr)
+                continue  # retry transient TLS/network errors
+            return body_str, sc
+        except _sp.TimeoutExpired:
+            logger.warning("[linkdapi] get-profile timed out (curl, attempt %d/%d)", attempt, _LINKDAPI_MAX_RETRIES)
+            last_exc = TimeoutError("curl timed out")
+        except FileNotFoundError:
+            logger.error("[linkdapi] curl binary not found")
+            return "curl not found on server", 0
+        except Exception as curl_exc:
+            logger.warning("[linkdapi] curl fallback error (attempt %d/%d): %s", attempt, _LINKDAPI_MAX_RETRIES, curl_exc)
+            last_exc = curl_exc
+
+    # All retries exhausted
+    logger.error("[linkdapi] all %d attempts failed; last error: %s", _LINKDAPI_MAX_RETRIES, last_exc)
+    return "TLS/connection error reaching linkdapi", 0
+
+
+@app.get("/api/linkdapi/get-profile")
+@_require_session
+def linkdapi_get_profile():
+    """Fetch the full LinkedIn profile via linkdapi for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
+
+    Calls GET https://linkdapi.com/api/v1/profile/full?username=<username>
+    using the admin-configured LINKDAPI_API_KEY.  Returns the raw JSON profile.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    # Extract LinkedIn username from URL (re already imported at module level)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    gp_cfg = _load_get_profiles_config()
+    linkdapi = gp_cfg.get("linkdapi", {})
+    if linkdapi.get("enabled") != "enabled":
+        return jsonify({"error": "linkdapi is not enabled"}), 503
+    api_key = (linkdapi.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
+
+    body_str, status_code = _linkdapi_fetch(username, api_key)
+
+    if status_code == 401:
+        return (
+            jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}),
+            401,
+        )
+    if status_code == 403:
+        return (
+            jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}),
+            403,
+        )
+    if status_code == 404:
+        return (
+            jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}),
+            404,
+        )
+    if status_code >= 400:
+        logger.warning("[linkdapi] upstream HTTP %d", status_code)
+        return (
+            jsonify({"error": f"linkdapi returned an error (HTTP {status_code})"}),
+            status_code,
+        )
+    if status_code == 0:
+        return jsonify({"error": "Failed to reach linkdapi service"}), 502
+
+    try:
+        profile_data = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Invalid JSON from linkdapi"}), 502
+    return jsonify(profile_data)
 
 
 @app.post("/api/user-service-config/activate")

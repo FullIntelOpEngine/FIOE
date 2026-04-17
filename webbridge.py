@@ -263,6 +263,9 @@ def _make_flask_limit(key: str, default_req: int = None, default_win: int = None
     def _limit_fn():
         try:
             cfg  = _load_rate_limits()
+            # When rate limits are globally disabled, return an effectively unlimited limit.
+            if not cfg.get("rates_enabled", True):
+                return "999999999 per 1 second"
             feat = cfg.get("defaults", {}).get(key, {})
             req  = int(feat.get("requests",       _fallback_req))
             win  = int(feat.get("window_seconds", _fallback_win))
@@ -299,6 +302,28 @@ def _save_email_verif_config(config: dict) -> None:
     os.replace(tmp, _EMAIL_VERIF_CONFIG_PATH)
 
 # ContactOut keys are now stored in email_verif_config.json (alongside neverbounce/zerobounce/bouncer).
+
+# ── Get Profiles config (linkdapi) ────────────────────────────────────────────
+_GET_PROFILES_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "get_profiles_config.json"
+)
+
+def _load_get_profiles_config() -> dict:
+    """Return parsed get_profiles_config.json; returns defaults on error."""
+    try:
+        with open(_GET_PROFILES_CONFIG_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {
+            "linkdapi": {"api_key": "", "enabled": "disabled"},
+        }
+
+def _save_get_profiles_config(config: dict) -> None:
+    """Atomically write get_profiles_config.json."""
+    tmp = _GET_PROFILES_CONFIG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2)
+    os.replace(tmp, _GET_PROFILES_CONFIG_PATH)
 
 # ── Search provider config (Serper.dev vs Google CSE) ────────────────────────
 _SEARCH_PROVIDER_CONFIG_PATH = os.path.join(
@@ -445,6 +470,9 @@ def _check_user_rate(feature: str):
         import functools
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
+            # Skip all per-user rate limiting when globally disabled
+            if not _load_rate_limits().get("rates_enabled", True):
+                return f(*args, **kwargs)
             # Best-effort username resolution from cookies or JSON body
             username = (
                 request.cookies.get("username")
@@ -839,6 +867,10 @@ def admin_save_rate_limits():
     access_levels = body.get("access_levels")
     if isinstance(access_levels, dict):
         to_save["access_levels"] = access_levels
+    # Preserve the global rates_enabled toggle (bool, default True)
+    rates_enabled = body.get("rates_enabled")
+    if isinstance(rates_enabled, bool):
+        to_save["rates_enabled"] = rates_enabled
     _save_rate_limits(to_save)
     # Best-effort: sync the same data to the Node.js server so its /token-config
     # endpoint always returns the freshly-saved values even when server.js and
@@ -1210,6 +1242,67 @@ def admin_save_search_provider_config():
         return jsonify({"ok": True}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+# ── Admin: get-profiles-config (linkdapi) ────────────────────────────────────
+
+@app.get("/admin/get-profiles-config")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_get_get_profiles_config():
+    """Return Get Profiles service configuration (API keys masked)."""
+    config = _load_get_profiles_config()
+    linkdapi = config.get("linkdapi", {})
+    return jsonify({
+        "config": {
+            "linkdapi": {
+                "api_key_set": bool(linkdapi.get("api_key")),
+                "enabled": linkdapi.get("enabled", "disabled"),
+            },
+        }
+    }), 200
+
+
+@app.get("/api/linkdapi-status")
+@_rate(_make_flask_limit("api"))
+@_require_session
+def api_linkdapi_status():
+    """Return whether linkdapi is enabled — user-accessible (no admin required)."""
+    try:
+        config = _load_get_profiles_config()
+        ld = config.get("linkdapi", {})
+        return jsonify({"enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key"))}), 200
+    except Exception:
+        return jsonify({"enabled": False}), 200
+
+@app.post("/admin/get-profiles-config")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_csrf_required
+@_require_admin
+def admin_save_get_profiles_config():
+    """Save Get Profiles service configuration."""
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON object required"}), 400
+    current = _load_get_profiles_config()
+    if "linkdapi" not in current:
+        current["linkdapi"] = {"api_key": "", "enabled": "disabled"}
+    if "linkdapi" in body:
+        entry = body["linkdapi"]
+        if not isinstance(entry, dict):
+            return jsonify({"error": "Invalid config for linkdapi"}), 400
+        if entry.get("api_key") is not None and entry["api_key"] != "":
+            current["linkdapi"]["api_key"] = str(entry["api_key"])
+        if entry.get("enabled") is not None:
+            if entry["enabled"] not in ("enabled", "disabled"):
+                return jsonify({"error": "Invalid enabled value for linkdapi"}), 400
+            current["linkdapi"]["enabled"] = entry["enabled"]
+            if entry["enabled"] == "disabled":
+                current["linkdapi"]["api_key"] = ""
+    try:
+        _save_get_profiles_config(current)
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to save configuration"}), 500
 
 @app.get("/admin/llm-provider-config")
 @_rate(_make_flask_limit("admin_endpoints"))
