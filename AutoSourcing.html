@@ -2821,9 +2821,8 @@ function lookupCountryCode(c){
   if (_textInput) {
     _textInput.addEventListener('blur', _validateCountryInput);
     _textInput.addEventListener('change', _validateCountryInput);
-    // On input: populate datalist + clear errors
+    // On input: clear errors (no datalist — plain textbox only)
     _textInput.addEventListener('input', function () {
-      _populateCountryDatalist();
       _validationError.style.display = 'none';
       // Also fire input on the select so updateSourcingSection picks up changes
       try { _selectEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
