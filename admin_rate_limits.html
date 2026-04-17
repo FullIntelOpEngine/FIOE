@@ -1534,6 +1534,65 @@ function renderPage(container) {
     rlPanel.appendChild(subPanel);
   });
 
+  // ── Global Rate Limits Toggle ─────────────────────────────────────────────
+  // Placed at the bottom of the Rate Limits section. Persisted as
+  // rate_limits.json → rates_enabled (boolean, default true).
+  const globalToggleCard = document.createElement('div');
+  globalToggleCard.className = 'card';
+  globalToggleCard.style.marginTop = '20px';
+  const _ratesCurrentlyEnabled = _config.rates_enabled !== false;
+  globalToggleCard.innerHTML = `
+    <h2>⚙️ System Configuration — Rate Limits Master Switch</h2>
+    <p style="color:var(--muted);font-size:12px;margin:0 0 14px;">
+      When toggled <strong>Off</strong>, all rate limits (per-user and global) are suspended and every request is allowed through.
+      When toggled <strong>On</strong>, the configured rate limit settings are enforced normally.
+      Changes are saved to <code>rate_limits.json</code> and take effect immediately.
+    </p>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;font-size:14px;">
+        <span id="globalRatesLabel" style="min-width:130px;">${_ratesCurrentlyEnabled ? '🟢 Rate Limits: ON' : '🔴 Rate Limits: OFF'}</span>
+        <span style="position:relative;display:inline-block;width:52px;height:28px;">
+          <input type="checkbox" id="globalRatesEnabledToggle"
+            ${_ratesCurrentlyEnabled ? 'checked' : ''}
+            style="opacity:0;width:0;height:0;position:absolute;">
+          <span id="globalRatesSlider" style="
+            position:absolute;inset:0;background:${_ratesCurrentlyEnabled ? 'var(--primary,#0d6efd)' : '#ccc'};
+            border-radius:28px;transition:background 0.2s;cursor:pointer;"></span>
+          <span id="globalRatesKnob" style="
+            position:absolute;top:3px;left:${_ratesCurrentlyEnabled ? '27px' : '3px'};
+            width:22px;height:22px;background:#fff;border-radius:50%;
+            box-shadow:0 1px 3px rgba(0,0,0,0.3);transition:left 0.2s;pointer-events:none;"></span>
+        </span>
+      </label>
+      <button id="globalRatesSaveBtn" class="btn btn-primary" style="min-width:110px;">💾 Save</button>
+      <span id="globalRatesSaveMsg" style="font-size:12px;color:var(--success,#198754);display:none;">Saved ✓</span>
+    </div>
+  `;
+  // Wire toggle interaction
+  const _chk     = globalToggleCard.querySelector('#globalRatesEnabledToggle');
+  const _lbl     = globalToggleCard.querySelector('#globalRatesLabel');
+  const _slider  = globalToggleCard.querySelector('#globalRatesSlider');
+  const _knob    = globalToggleCard.querySelector('#globalRatesKnob');
+  const _saveBtn = globalToggleCard.querySelector('#globalRatesSaveBtn');
+  const _saveMsg = globalToggleCard.querySelector('#globalRatesSaveMsg');
+  function _updateToggleUI(on) {
+    _lbl.textContent    = on ? '🟢 Rate Limits: ON' : '🔴 Rate Limits: OFF';
+    _slider.style.background = on ? 'var(--primary,#0d6efd)' : '#ccc';
+    _knob.style.left    = on ? '27px' : '3px';
+    _config.rates_enabled = on;
+  }
+  globalToggleCard.querySelector('span[style*="inset:0"]') && void 0; // noop ref
+  // clicking the track toggles
+  _slider.addEventListener('click', () => { _chk.checked = !_chk.checked; _updateToggleUI(_chk.checked); });
+  _chk.addEventListener('change', () => _updateToggleUI(_chk.checked));
+  _saveBtn.addEventListener('click', async () => {
+    _saveMsg.style.display = 'none';
+    await saveAll();
+    _saveMsg.style.display = '';
+    setTimeout(() => { _saveMsg.style.display = 'none'; }, 3000);
+  });
+  rlPanel.appendChild(globalToggleCard);
+
   container.appendChild(rlPanel);
 
   // ── Tab: Users ────────────────────────────────────────────────────────────
@@ -2810,6 +2869,9 @@ function collectConfig() {
       _config.ml[mlkey][mllevel] = parsed;
     }
   });
+  // Sync the global rates_enabled toggle value into _config
+  const _gToggle = document.getElementById('globalRatesEnabledToggle');
+  if (_gToggle) _config.rates_enabled = _gToggle.checked;
   return _config;
 }
 

@@ -229,9 +229,9 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                         name, jobtitle, company = parse_linkedin_title(title)
                         if name or jobtitle or company:
                             row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
-                            if item.get("_source") == "contactout" or selected_search_provider == "contactout":
+                            if item.get("_source") == "contactout":
                                 row_entry["_Source"] = "contactout"
-                            elif item.get("_source") == "apollo" or selected_search_provider == "apollo":
+                            elif item.get("_source") == "apollo":
                                 row_entry["_Source"] = "apollo"
                                 if item.get("_apollo_id"):
                                     row_entry["_ApolloId"] = item["_apollo_id"]

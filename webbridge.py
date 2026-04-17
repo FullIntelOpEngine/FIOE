@@ -263,6 +263,9 @@ def _make_flask_limit(key: str, default_req: int = None, default_win: int = None
     def _limit_fn():
         try:
             cfg  = _load_rate_limits()
+            # When rate limits are globally disabled, return an effectively unlimited limit.
+            if not cfg.get("rates_enabled", True):
+                return "999999999 per 1 second"
             feat = cfg.get("defaults", {}).get(key, {})
             req  = int(feat.get("requests",       _fallback_req))
             win  = int(feat.get("window_seconds", _fallback_win))
@@ -445,6 +448,9 @@ def _check_user_rate(feature: str):
         import functools
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
+            # Skip all per-user rate limiting when globally disabled
+            if not _load_rate_limits().get("rates_enabled", True):
+                return f(*args, **kwargs)
             # Best-effort username resolution from cookies or JSON body
             username = (
                 request.cookies.get("username")
@@ -839,6 +845,10 @@ def admin_save_rate_limits():
     access_levels = body.get("access_levels")
     if isinstance(access_levels, dict):
         to_save["access_levels"] = access_levels
+    # Preserve the global rates_enabled toggle (bool, default True)
+    rates_enabled = body.get("rates_enabled")
+    if isinstance(rates_enabled, bool):
+        to_save["rates_enabled"] = rates_enabled
     _save_rate_limits(to_save)
     # Best-effort: sync the same data to the Node.js server so its /token-config
     # endpoint always returns the freshly-saved values even when server.js and

@@ -511,6 +511,8 @@ const _userRateState = new Map(); // key: "username::feature" -> [ timestamp, ..
 function isUserAllowed(username, feature) {
   if (!username) return true;
   const config = loadRateLimits();
+  // When rate limits are globally disabled, allow all requests.
+  if (config.rates_enabled === false) return true;
   const userLimits = (config.users || {})[username] || {};
   const defaultLimits = config.defaults || {};
   const limitCfg = userLimits[feature] || defaultLimits[feature];
@@ -699,6 +701,8 @@ app.post('/admin/rate-limits', dashboardRateLimit, requireAdmin, (req, res) => {
     if (tokens && typeof tokens === 'object') toSave.tokens = tokens;
     if (access_levels && typeof access_levels === 'object') toSave.access_levels = access_levels;
     if (ml && typeof ml === 'object') toSave.ml = ml;
+    // Preserve global rates_enabled toggle (boolean)
+    if (typeof body.rates_enabled === 'boolean') toSave.rates_enabled = body.rates_enabled;
     saveRateLimits(toSave);
     res.json({ ok: true });
   } catch (err) {
@@ -3455,6 +3459,25 @@ app.delete('/candidates/clear-user', requireLogin, userRateLimit('bulk_delete'),
       }
     } catch (e) {
       console.warn('[clear-user] Could not wipe BYOK keys (non-fatal):', e.message);
+    }
+
+    // 7. Delete Autosourcing search XLS/CSV output files belonging to this user.
+    //    Files are named {username}_{job_id}_results.xlsx / .csv (safe chars only).
+    try {
+      if (fs.existsSync(SEARCH_XLS_DIR)) {
+        const _xlsPrefix = `${safe}_`;
+        const _xlsEntries = fs.readdirSync(SEARCH_XLS_DIR).filter(f => {
+          const lower = f.toLowerCase();
+          return f.startsWith(_xlsPrefix) && (lower.endsWith('_results.xlsx') || lower.endsWith('_results.csv'));
+        });
+        for (const f of _xlsEntries) {
+          try { fs.unlinkSync(path.join(SEARCH_XLS_DIR, f)); } catch (e) {
+            console.warn(`[clear-user] Could not delete searchxls file ${f}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[clear-user] searchxls cleanup failed (non-fatal):', e.message);
     }
 
     res.json({ deleted: result.rowCount });
@@ -9328,6 +9351,31 @@ const PORTING_MAPPINGS_DIR = (() => {
   return path.join(__dirname, 'porting_mappings');
 })();
 console.log('[startup] PORTING_MAPPINGS_DIR resolved to', PORTING_MAPPINGS_DIR);
+
+// Output XLS/CSV directory for Autosourcing results.
+// Same webbridge.py-first search pattern as PORTING_INPUT_DIR.
+const SEARCH_XLS_DIR = (() => {
+  if (process.env.SEARCH_XLS_DIR) return path.resolve(process.env.SEARCH_XLS_DIR);
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // Canonical: directory containing webbridge.py + '/searchxls'
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'searchxls');
+  }
+  // Fallback: an already-existing searchxls directory
+  for (const d of levels) {
+    const p = path.join(d, 'searchxls');
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(__dirname, 'searchxls');
+})();
+console.log('[startup] SEARCH_XLS_DIR resolved to', SEARCH_XLS_DIR);
 
 // All columns present in the `process` table – used for Gemini mapping.
 const PROCESS_TABLE_FIELDS = [
