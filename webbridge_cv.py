@@ -98,6 +98,51 @@ from webbridge_routes import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Country resolution from LinkedIn URL subdomain
+# ---------------------------------------------------------------------------
+_COUNTRYCODE_MAP = None
+_COUNTRYCODE_MAP_LOCK = threading.Lock()
+
+def _load_countrycode_map():
+    """Lazily load countrycode.JSON from BASE_DIR. Returns a dict of {code: name}."""
+    global _COUNTRYCODE_MAP
+    if _COUNTRYCODE_MAP is not None:
+        return _COUNTRYCODE_MAP
+    with _COUNTRYCODE_MAP_LOCK:
+        if _COUNTRYCODE_MAP is not None:
+            return _COUNTRYCODE_MAP
+        try:
+            path = os.path.join(BASE_DIR, "countrycode.JSON")
+            with open(path, "r", encoding="utf-8") as f:
+                _COUNTRYCODE_MAP = json.load(f)
+        except Exception:
+            _COUNTRYCODE_MAP = {}
+    return _COUNTRYCODE_MAP
+
+def _country_from_linkedin_url(url):
+    """Extract country name from a LinkedIn profile URL subdomain.
+
+    For example, ``https://cn.linkedin.com/in/...`` yields ``China``.
+    URLs with ``www`` or no recognisable subdomain return ``None``.
+    """
+    if not url:
+        return None
+    m = re.match(r'^https?://([^/]+)/in/', url.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    host = m.group(1).lower()  # e.g. "cn.linkedin.com"
+    parts = host.split(".")
+    # Expect pattern: <code>.linkedin.com  (3 parts, first part is 2-char country code)
+    if len(parts) < 3:
+        return None
+    code = parts[0]
+    if code in ("www", ""):
+        return None
+    country_map = _load_countrycode_map()
+    return country_map.get(code) or None
+
+
 def _bulk_assess_flask_limit():
     """Return the Flask-Limiter rate string for bulk_assess, read from admin config.
 
@@ -314,7 +359,12 @@ def _write_outputs(job_id, rows):
     for r in rows:
         link=r.get("LinkedInURL","")
         country_val=r.get("Country","")
-        if not is_linkedin_profile(link): country_val=""
+        if not is_linkedin_profile(link):
+            country_val=""
+        else:
+            url_country = _country_from_linkedin_url(link)
+            if url_country:
+                country_val = url_country
         raw_name=r.get("Name",""); raw_company=r.get("Company",""); raw_job=r.get("JobTitle","")
         moved_company, adjusted_job=_extract_company_from_jobtitle(raw_job, raw_company, dropdown_companies)
         if not moved_company:

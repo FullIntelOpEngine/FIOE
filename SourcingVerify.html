@@ -1799,7 +1799,7 @@ function renderAssessmentReviewTable(rows) {
                 <td>${escapeHtml(r.name||'')}</td>
                 <td>${escapeHtml(r.company||'')}</td>
                 <td>${escapeHtml(r.jobtitle||'')}</td>
-                <td>${escapeHtml(r.country||'')}</td>
+                <td>${escapeHtml(_countryFromLinkedInUrl(r.linkedinurl) || r.country||'')}</td>
                 <td>${escapeHtml(r.linkedinurl||'')}</td>
                 <td data-field="experience" data-experience="${escapeHtml(r.experience||'')}"></td>
             `;
@@ -3557,6 +3557,34 @@ async function transferSingleRecordViaMarketNoDelete({ name, company, role, coun
 // Global variable to track the toggle state
 let _profileSourceMode = 'upload'; // 'snip' or 'upload' - default set to upload now
 
+// ---------------------------------------------------------------------------
+// Country resolution from LinkedIn URL subdomain using countrycode.json
+// ---------------------------------------------------------------------------
+let _svCountryCodeMap = null;
+(function _loadSvCountryCodes() {
+  fetch('countrycode.json')
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(m => { if (m) _svCountryCodeMap = m; });
+})();
+
+/**
+ * Extract the country name from a LinkedIn profile URL subdomain.
+ * e.g. https://cn.linkedin.com/in/... → "China"
+ * Returns null when no recognisable country subdomain is found.
+ */
+function _countryFromLinkedInUrl(url) {
+  if (!url) return null;
+  const m = url.trim().match(/^https?:\/\/([^/]+)\/in\//i);
+  if (!m) return null;
+  const parts = m[1].toLowerCase().split('.');
+  // Expect <code>.linkedin.com (3+ parts, first = 2-letter country code)
+  if (parts.length < 3) return null;
+  const code = parts[0];
+  if (!code || code === 'www') return null;
+  return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
+}
+
 // Apply bulk assessment results from JSON file to table rows
 function buildRow(row) {
   const tr = document.createElement('tr');
@@ -4157,7 +4185,8 @@ function buildRow(row) {
   tr.appendChild(makeEditableCell('name', row.name, true, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, true));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, true));
-  tr.appendChild(makeEditableCell('country', row.country, true));
+  const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
+  tr.appendChild(makeEditableCell('country', urlCountry || row.country, true));
   tr.appendChild(makeEditableCell('linkedinurl', row.linkedinurl, false));
   
   // Matching Level / Assessment Score column
