@@ -1,0 +1,77 @@
+{
+  "_description": "RocketReach Person Search API (POST https://api.rocketreach.co/api/v2/search) query parameter specification. Use this schema to map AutoSourcing.html form fields into a valid RocketReach search payload. The request body must wrap all filters in a 'query' key: { 'query': { ... }, 'start': 1, 'page_size': 10 }.",
+  "request_wrapper": {
+    "query": "object — all filter parameters go inside this key",
+    "start": "integer — 1-based offset (first page = 1)",
+    "page_size": "integer — number of results to return per page (max 25)"
+  },
+  "query_parameters": {
+    "name": {
+      "type": "string",
+      "description": "Full or partial name of the person to search for.",
+      "source_field": "keywords (if it looks like a person name)"
+    },
+    "current_title": {
+      "type": "array of strings",
+      "description": "Job titles currently held by the people you want to find. A person is included if they match any ONE of the supplied titles.",
+      "examples": ["Software Engineer", "VP of Engineering", "Marketing Director"],
+      "source_field": "jobTitles"
+    },
+    "current_employer": {
+      "type": "array of strings",
+      "description": "Current employer / company names. A person is included if their current employer matches any of these names.",
+      "examples": ["Google", "Meta", "Goldman Sachs"],
+      "source_field": "companyNames"
+    },
+    "location": {
+      "type": "array of strings",
+      "description": "Locations where people live or work. Accepts city names, country names, or region names.",
+      "examples": ["United States", "Japan", "London", "New York"],
+      "source_field": "country"
+    },
+    "keyword": {
+      "type": "string",
+      "description": "Free-text keyword string. Searches across name, title, company, skills, and bio fields.",
+      "source_field": "keywords"
+    },
+    "skills": {
+      "type": "array of strings",
+      "description": "Skills or technologies the person should have. Infer from job titles or keywords when appropriate.",
+      "examples": ["Python", "Machine Learning", "Sales"]
+    },
+    "degree": {
+      "type": "string",
+      "description": "Education degree filter. Only include when explicitly searching for education background."
+    },
+    "major": {
+      "type": "string",
+      "description": "Field of study / academic major. Only include when explicitly searching for education background."
+    },
+    "school": {
+      "type": "string",
+      "description": "University or institution name. Only include when explicitly searching for alumni."
+    },
+    "past_employer": {
+      "type": "array of strings",
+      "description": "Past employer names. Only include when explicitly looking for alumni of specific companies."
+    }
+  },
+  "response_fields": {
+    "profiles": {
+      "type": "array",
+      "description": "List of matching person profiles (also check 'people' and 'results' keys for alternate response formats)",
+      "item_fields": {
+        "id": "RocketReach internal person ID — store as _rocketreach_id for lookup calls",
+        "first_name": "First name",
+        "last_name": "Last name",
+        "name": "Full name (fallback when first_name/last_name absent)",
+        "current_title": "Current job title",
+        "current_employer": "Current employer name",
+        "linkedin_url": "LinkedIn profile URL — use as the primary link",
+        "location": "Location string",
+        "city": "City (may be nested)"
+      }
+    },
+    "pagination.total": "Estimated total number of matching profiles"
+  }
+}

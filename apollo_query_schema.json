@@ -1,0 +1,73 @@
+{
+  "_description": "Apollo People Search API (POST https://api.apollo.io/api/v1/mixed_people/api_search) query parameter specification. Use this schema to map AutoSourcing.html form fields into a valid Apollo search payload.",
+  "parameters": {
+    "person_titles": {
+      "type": "array of strings",
+      "description": "Job titles held by the people you want to find. A person is included if they match any ONE of the supplied titles. Also matches similar titles unless include_similar_titles is false.",
+      "examples": ["sales development representative", "marketing manager", "research analyst"],
+      "source_field": "jobTitles"
+    },
+    "include_similar_titles": {
+      "type": "boolean",
+      "description": "When true (default), results include people with similar or related job titles. Set to false for strict exact-title matches.",
+      "default": true
+    },
+    "q_keywords": {
+      "type": "string",
+      "description": "A free-text keyword string used to filter results. Searches across name, title, company, and bio fields.",
+      "source_field": "keywords"
+    },
+    "person_locations": {
+      "type": "array of strings",
+      "description": "Locations where people live. Accepts city names, US state names, or country names (full names preferred).",
+      "examples": ["United States", "Japan", "New York", "California"],
+      "source_field": "country"
+    },
+    "person_seniorities": {
+      "type": "array of strings",
+      "description": "Seniority level filter. Valid values: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern. Infer these from job titles when possible.",
+      "valid_values": ["owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager", "senior", "entry", "intern"],
+      "infer_from": "person_titles"
+    },
+    "organization_names": {
+      "type": "array of strings",
+      "description": "Company or organization names. A person is included if their current employer matches any of these names.",
+      "examples": ["Google", "Amazon", "McKinsey & Company"],
+      "source_field": "companyNames"
+    },
+    "q_organization_domains_list": {
+      "type": "array of strings",
+      "description": "Company domain names (e.g. 'google.com', 'amazon.com'). Use when company domains can be inferred from company names.",
+      "examples": ["google.com", "amazon.com"],
+      "infer_from": "companyNames"
+    },
+    "organization_industry_tag_ids": {
+      "type": "array of strings",
+      "description": "Industry tag identifiers. Use only when a clear industry can be inferred from keywords or titles.",
+      "examples": ["technology", "financial_services", "healthcare"]
+    },
+    "person_past_organization_names": {
+      "type": "array of strings",
+      "description": "Past employer names. Only include if explicitly looking for alumni of specific companies."
+    }
+  },
+  "response_fields": {
+    "people": {
+      "type": "array",
+      "description": "List of matching people profiles",
+      "item_fields": {
+        "id": "Apollo internal person ID — store as _apollo_id for download-profile calls",
+        "first_name": "First name",
+        "last_name": "Last name (may be obfuscated as last_name_obfuscated)",
+        "last_name_obfuscated": "Obfuscated last name — use as fallback when last_name absent",
+        "title": "Current job title",
+        "linkedin_url": "LinkedIn profile URL — use as the primary link",
+        "organization.name": "Current employer name",
+        "city": "City",
+        "state": "State/Province",
+        "country": "Country"
+      }
+    },
+    "total_entries": "Estimated total number of matching profiles"
+  }
+}

@@ -2718,10 +2718,111 @@ def _build_contactout_params_from_fields(job_titles: list, companies: list,
     return params
 
 
+def _load_provider_query_schema(provider: str) -> dict:
+    """Load the JSON query parameter schema for a provider.
+
+    Schema files live in the same directory as webbridge.py (BASE_DIR).
+    Returns an empty dict if the file is missing or unreadable.
+    """
+    filename = f"{provider}_query_schema.json"
+    schema_path = os.path.join(BASE_DIR, filename)
+    try:
+        with open(schema_path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        logger.debug(f"[{provider}] Could not load query schema {filename}: {exc}")
+        return {}
+
+
+def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
+                                        companies: list, country: str,
+                                        keywords: str, schema: dict) -> dict:
+    """Use the active LLM (Gemini) to map AutoSourcing.html form fields to the
+    provider's native query parameters, guided by the supplied JSON schema.
+
+    Returns a dict of provider-native query params on success, or an empty dict
+    if the LLM call fails so the caller can fall back to hardcoded mapping.
+    """
+    if not schema:
+        return {}
+
+    # Summarise schema param names + descriptions for the prompt
+    schema_summary_parts = []
+    params_spec = schema.get("parameters") or schema.get("query_parameters") or {}
+    for key, spec in params_spec.items():
+        if isinstance(spec, dict):
+            desc = spec.get("description", "")
+            typ = spec.get("type", "")
+            src = spec.get("source_field", "")
+            schema_summary_parts.append(
+                f'  "{key}" ({typ}): {desc}'
+                + (f' [from form field: {src}]' if src else '')
+            )
+        else:
+            schema_summary_parts.append(f'  "{key}": {spec}')
+    schema_summary = "\n".join(schema_summary_parts) if schema_summary_parts else json.dumps(params_spec, indent=2)
+
+    provider_label = provider.capitalize()
+    form_fields = {
+        "jobTitles": job_titles or [],
+        "companyNames": companies or [],
+        "country": country or "",
+        "keywords": (keywords or "").strip(),
+    }
+
+    prompt = (
+        f"You are a search API parameter mapper. Convert the following AutoSourcing.html "
+        f"form field values into a JSON object of query parameters for the {provider_label} "
+        f"People Search API.\n\n"
+        f"Available {provider_label} query parameters:\n{schema_summary}\n\n"
+        f"Form field values:\n{json.dumps(form_fields, indent=2)}\n\n"
+        f"Rules:\n"
+        f"1. Map jobTitles → person_titles (Apollo) or current_title (RocketReach).\n"
+        f"2. Map companyNames → organization_names (Apollo) or current_employer (RocketReach).\n"
+        f"3. Map country → person_locations (Apollo) or location (RocketReach) as an array.\n"
+        f"4. Map keywords → q_keywords (Apollo) or keyword (RocketReach) as a string.\n"
+        f"5. Infer person_seniorities (Apollo) from job titles where relevant.\n"
+        f"6. Only include parameters that have non-empty values.\n"
+        f"7. For Apollo, always include include_similar_titles: true when person_titles is set.\n"
+        f"8. Return ONLY valid JSON — no explanation, no markdown fences.\n"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            mapped = json.loads(cleaned.strip())
+            if isinstance(mapped, dict) and mapped:
+                logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
+                return mapped
+    except Exception as exc:
+        logger.warning(f"[{provider_label}] LLM field-mapping failed: {exc}")
+    return {}
+
+
 def _build_apollo_params_from_fields(job_titles: list, companies: list,
                                       country: str, keywords: str = "") -> dict:
-    """Build an Apollo People Search payload directly from form fields,
-    bypassing Xray query translation."""
+    """Build an Apollo People Search payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``apollo_query_schema.json`` first.
+    Falls back to hardcoded mapping if the LLM call fails or returns nothing
+    useful, ensuring searches always proceed even without an active LLM key.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("apollo")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "apollo", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            # Always ensure include_similar_titles is set when person_titles present
+            if llm_params.get("person_titles") and "include_similar_titles" not in llm_params:
+                llm_params["include_similar_titles"] = True
+            logger.debug(f"[Apollo] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
     params: dict = {}
     titles = [t for t in (job_titles or []) if t]
     if titles:
@@ -2734,19 +2835,33 @@ def _build_apollo_params_from_fields(job_titles: list, companies: list,
         params["person_seniorities"] = seniority
     comps = [c for c in (companies or []) if c]
     if comps:
-        # Apollo uses organization_names for company filtering
         params["organization_names"] = comps
     kw = (keywords or "").strip()
     if kw:
         params["q_keywords"] = kw
-    logger.debug(f"[Apollo] Built params from fields: {params}")
+    logger.debug(f"[Apollo] Built params from fields (hardcoded fallback): {params}")
     return params
 
 
 def _build_rocketreach_params_from_fields(job_titles: list, companies: list,
                                            country: str, keywords: str = "") -> dict:
-    """Build a RocketReach Person Search query payload directly from form fields,
-    bypassing Xray query translation."""
+    """Build a RocketReach Person Search query payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``rocketreach_query_schema.json``
+    first.  Falls back to hardcoded mapping if the LLM call fails or returns
+    nothing useful.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("rocketreach")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "rocketreach", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            logger.debug(f"[RocketReach] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
     params: dict = {}
     titles = [t for t in (job_titles or []) if t]
     if titles:
@@ -2759,7 +2874,7 @@ def _build_rocketreach_params_from_fields(job_titles: list, companies: list,
     kw = (keywords or "").strip()
     if kw:
         params["keyword"] = kw
-    logger.debug(f"[RocketReach] Built params from fields: {params}")
+    logger.debug(f"[RocketReach] Built params from fields (hardcoded fallback): {params}")
     return params
 
 
