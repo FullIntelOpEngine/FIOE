@@ -5589,6 +5589,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     headers = {"x-api-key": api_key, "Accept": "application/json"}
 
     # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
+    conn = None
     try:
         ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
@@ -5616,10 +5617,15 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
         resp = conn.getresponse()
         body = resp.read().decode("utf-8", errors="replace")
         status = resp.status
-        conn.close()
         return body, status
     except Exception as py_exc:
         logger.debug("[linkdapi] Python http.client failed (%s), trying curl…", py_exc)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     # ---- fallback: curl subprocess ----
     try:
@@ -5651,7 +5657,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
         if result.returncode != 0 and sc == 0:
             stderr = result.stderr.decode("utf-8", errors="replace").strip()
             logger.warning("[linkdapi] curl error (rc=%d): %s", result.returncode, stderr)
-            return stderr, 0
+            return "TLS/connection error reaching linkdapi", 0
         return body_str, sc
     except _sp.TimeoutExpired:
         logger.warning("[linkdapi] get-profile timed out (curl)")
@@ -5661,7 +5667,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
         return "curl not found on server", 0
     except Exception as curl_exc:
         logger.warning("[linkdapi] get-profile curl fallback error: %s", curl_exc)
-        return str(curl_exc), 0
+        return "linkdapi service unavailable", 0
 
 
 @app.get("/api/linkdapi/get-profile")
@@ -5712,12 +5718,13 @@ def linkdapi_get_profile():
             404,
         )
     if status_code >= 400:
+        logger.warning("[linkdapi] upstream HTTP %d", status_code)
         return (
-            jsonify({"error": f"linkdapi error (HTTP {status_code}): {body_str[:500]}"}),
+            jsonify({"error": f"linkdapi returned an error (HTTP {status_code})"}),
             status_code,
         )
     if status_code == 0:
-        return jsonify({"error": f"Failed to reach linkdapi: {body_str[:500]}"}), 502
+        return jsonify({"error": "Failed to reach linkdapi service"}), 502
 
     try:
         profile_data = json.loads(body_str)
