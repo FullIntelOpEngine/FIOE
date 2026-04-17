@@ -276,6 +276,10 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                         row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
                         if item.get("_source") == "contactout" or selected_search_provider == "contactout":
                             row_entry["_Source"] = "contactout"
+                        elif item.get("_source") == "apollo" or selected_search_provider == "apollo":
+                            row_entry["_Source"] = "apollo"
+                            if item.get("_apollo_id"):
+                                row_entry["_ApolloId"] = item["_apollo_id"]
                         elif item.get("_source") == "rocketreach" or selected_search_provider == "rocketreach":
                             row_entry["_Source"] = "rocketreach"
                         rows.append(row_entry)
@@ -551,6 +555,31 @@ def _write_outputs(job_id, rows):
                         total_inserted+=len(batch)
                     conn.commit()
                     logger.info(f"[Ingest] Inserted {total_inserted} rows into sourcing (userid='{active_userid}' username='{active_username}').")
+                    # Back-fill the source column for any existing rows that were previously
+                    # inserted without a source (ON CONFLICT DO NOTHING skips them on insert).
+                    # This ensures the provider button (CO/AP/RR) appears even for contacts
+                    # that were re-found by a provider search after being added by a prior search.
+                    if has_source_header:
+                        if has_pic_column:
+                            # batch tuple: (userid, username, name, company, jobtitle, country, linkedinurl, pic, source)
+                            update_src_rows = [
+                                (row[8], row[0], row[6])
+                                for row in batch_rows if row[8]
+                            ]
+                        else:
+                            # batch tuple: (userid, username, name, company, jobtitle, country, linkedinurl, source)
+                            update_src_rows = [
+                                (row[7], row[0], row[6])
+                                for row in batch_rows if row[7]
+                            ]
+                        if update_src_rows:
+                            for i in range(0, len(update_src_rows), batch_size):
+                                cur.executemany(
+                                    "UPDATE sourcing SET source = %s WHERE userid = %s AND linkedinurl = %s AND (source IS NULL OR source = '')",
+                                    update_src_rows[i:i+batch_size]
+                                )
+                            conn.commit()
+                            logger.info(f"[Ingest] Back-filled source column for up to {len(update_src_rows)} existing rows.")
                     # Transfer role_tag from login table into sourcing table for this user
                     if active_username:
                         try:
