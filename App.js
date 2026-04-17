@@ -52,6 +52,7 @@ const isInternalNavigation = () => {
 // React state (appTokenCost / appVerifiedDeduct) serves App()-owned JSX so dialogs re-render live.
 let _APP_ANALYTIC_TOKEN_COST        = 1;
 let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
+let _APP_CONTACT_GEN_DEDUCT         = 2;
 (function _loadAppTokenConfig() {
   fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     .then(r => r.ok ? r.json() : null)
@@ -60,6 +61,7 @@ let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
       const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
       if (typeof t.analytic_token_cost        === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
       if (typeof t.verified_selection_deduct  === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+      if (typeof t.contact_gen_deduct         === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
     })
     .catch(() => {});
 })();
@@ -2136,6 +2138,8 @@ function CandidatesTable({
   appTokenCost = _APP_ANALYTIC_TOKEN_COST, // Dynamic analytic token cost from admin config
   dockOutRef, // ref that App sets so it can trigger executeDockOut on session timeout
   onRefresh, // callback to refresh candidate list from server
+  hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
+  hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -2401,6 +2405,26 @@ function CandidatesTable({
         setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
       })
       .catch(() => { /* keep defaults */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Re-fetch analytic rate-limit config when admin changes it via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed' || !user) return;
+      fetch('http://localhost:4000/user/rate-limits', { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data || !data.limits) return;
+          const cvLimit = data.limits.analytic_cv_limit ? data.limits.analytic_cv_limit.requests : 10;
+          const batchSize = data.limits.analytic_batch_size ? data.limits.analytic_batch_size.requests : 3;
+          setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
+        })
+        .catch(() => {});
+    };
+    return () => ch.close();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -3586,9 +3610,9 @@ function CandidatesTable({
           // single-candidate assessments don't appear as "no loading animation".
           await new Promise(r => setTimeout(r, 2000));
           // Deduct 1 token per eligible new record once assessment is complete.
-          // Skip deduction for BYOK users (token deduction disabled except for Verify Selected).
+          // Skip deduction for BYOK users, when a custom LLM provider is active, or when custom email verif keys are present.
           const tokenCost = eligibleForAnalysis.length;
-          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok') {
+          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm && !hasCustomEmailVerif) {
             try {
               const tokenRes = await fetch('http://localhost:4000/candidates/token-deduct', {
                 method: 'POST',
@@ -7408,6 +7432,7 @@ export default function App() {
   // Dynamic token config — fetched from /token-config after login so JSX re-renders with live values.
   const [appTokenCost, setAppTokenCost] = useState(_APP_ANALYTIC_TOKEN_COST);
   const [appVerifiedDeduct, setAppVerifiedDeduct] = useState(_APP_VERIFIED_SELECTION_DEDUCT);
+  const [appContactGenDeduct, setAppContactGenDeduct] = useState(_APP_CONTACT_GEN_DEDUCT);
 
   // Candidates & main state
   const [candidates, setCandidates] = useState([]);
@@ -7453,9 +7478,15 @@ export default function App() {
   const [verifyModalEmail, setVerifyModalEmail] = useState('');
   const [tokenConfirmOpen, setTokenConfirmOpen] = useState(false);
   const [pendingVerifyEmail, setPendingVerifyEmail] = useState(null);
+  const [tokenContactGenConfirmOpen, setTokenContactGenConfirmOpen] = useState(false);
   // Email verification service selection
   const [emailVerifService, setEmailVerifService] = useState('default');
   const [availableEmailServices, setAvailableEmailServices] = useState([]);
+  // Verif Engine toggle: 'verify' = Verify Selected, 'generate' = Generate Email
+  const [verifEngineMode, setVerifEngineMode] = useState('verify');
+  // Generate Email provider selection
+  const [emailGenProvider, setEmailGenProvider] = useState('gemini');
+  const [availableContactGenServices, setAvailableContactGenServices] = useState([]);
   // State for calculating unmatched skills
   const [calculatingUnmatched, setCalculatingUnmatched] = useState(false);
   const [unmatchedCalculated, setUnmatchedCalculated] = useState({});  // Store by candidate ID
@@ -7481,21 +7512,54 @@ export default function App() {
   // Load available email verification services configured by admin.
   // Re-fetch whenever the Verif. Engine bar is expanded so freshly-configured
   // services (Neverbounce / ZeroBounce / Bouncer) appear without a page reload.
+  // Fetch admin-configured email verif services AND per-user service config so that
+  // api_porting.html Option A keys always appear in the Verif Engine dropdown.
+  // Using Promise.all ensures both sources are merged in one definitive list update,
+  // preventing the per-user service from being wiped when only admin services are fetched.
   const _fetchEmailVerifServices = () => {
-    fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data && Array.isArray(data.services)) {
-          setAvailableEmailServices(data.services);
-          // Auto-select the first configured service when the user hasn't
-          // explicitly chosen one yet, so a newly-saved key is immediately active.
-          setEmailVerifService(prev => (prev === 'default' && data.services.length > 0) ? data.services[0] : prev);
+    Promise.all([
+      fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user email verif service (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        if (['neverbounce', 'zerobounce', 'bouncer'].includes(ep) && !svcs.includes(ep)) {
+          svcs.push(ep);
         }
-      })
-      .catch(() => {});
+      }
+      setAvailableEmailServices(svcs);
+      // Auto-select the first configured service when the user hasn't explicitly chosen one yet.
+      setEmailVerifService(prev => (prev === 'default' && svcs.length > 0) ? svcs[0] : prev);
+    }).catch(() => {});
   };
   useEffect(() => { _fetchEmailVerifServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchEmailVerifServices(); }, [verifBarExpanded]); // on bar open
+
+  // Load available contact generation services configured by admin AND per-user config.
+  // Same pattern as _fetchEmailVerifServices — merges both sources into one definitive list.
+  const _fetchContactGenServices = () => {
+    Promise.all([
+      fetch('http://localhost:4000/contact-gen-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user contact gen provider (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const cgp = (svcData.providers.contact_gen || '').toLowerCase();
+        if (['contactout', 'apollo', 'rocketreach'].includes(cgp) && !svcs.includes(cgp)) {
+          svcs.push(cgp);
+          setEmailGenProvider(prev => prev === 'gemini' ? cgp : prev);
+        }
+      }
+      setAvailableContactGenServices(svcs);
+    }).catch(() => {});
+  };
+  useEffect(() => { _fetchContactGenServices(); }, []); // on mount
+  useEffect(() => { if (verifBarExpanded) _fetchContactGenServices(); }, [verifBarExpanded]); // on bar open
 
   // Refresh token cost/deduction config when user logs in so JSX renders live values.
   useEffect(() => {
@@ -7509,9 +7573,11 @@ export default function App() {
         // on the re-render triggered by the state setters below.
         if (typeof t.analytic_token_cost       === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
         if (typeof t.verified_selection_deduct === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+        if (typeof t.contact_gen_deduct        === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
         // Update React state so App()-owned JSX (verified selection popup etc.) re-renders.
         if (typeof t.analytic_token_cost       === 'number') setAppTokenCost(t.analytic_token_cost);
         if (typeof t.verified_selection_deduct === 'number') setAppVerifiedDeduct(t.verified_selection_deduct);
+        if (typeof t.contact_gen_deduct        === 'number') setAppContactGenDeduct(t.contact_gen_deduct);
       })
       .catch(() => {});
   }, [user]);
@@ -7582,6 +7648,11 @@ export default function App() {
   const [tokensLeft, setTokensLeft] = useState(0);
   const [hasCustomEmailVerif, setHasCustomEmailVerif] = useState(false);
   const [hasCustomLlm, setHasCustomLlm] = useState(false);
+  const [hasCustomContactGen, setHasCustomContactGen] = useState(false);
+  // Track the specific provider names so deduction bypass only applies when the
+  // currently selected service matches the user's own api_porting.html key.
+  const [customEmailVerifProvider, setCustomEmailVerifProvider] = useState('');
+  const [customContactGenProvider, setCustomContactGenProvider] = useState('');
 
   // Status Management State
   const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
@@ -7633,24 +7704,92 @@ export default function App() {
     }
   }, [user]);
 
-  // Fetch per-user service config to detect custom email verification activation
+  // Fetch per-user service config AND admin platform-level config to detect custom providers.
+  // Dropdown population (availableEmailServices / availableContactGenServices) is now handled
+  // by _fetchEmailVerifServices / _fetchContactGenServices which merge both admin and per-user
+  // sources atomically.  _refreshServiceConfig only updates the token deduction flags.
+  const _refreshServiceConfig = useCallback(() => {
+    if (!user || !user.username) return;
+    Promise.all([
+      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch('http://localhost:4000/api/platform-provider-status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([svcData, platformData]) => {
+      // Per-user flags (from api_porting.html) — these control token deduction & visibility.
+      let userEmailVerif = false, userLlm = false, userContactGen = false;
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
+        const lp = (svcData.providers.llm || '').toLowerCase();
+        userLlm = lp === 'openai' || lp === 'anthropic';
+        const cp = (svcData.providers.contact_gen || '').toLowerCase();
+        userContactGen = cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach';
+      }
+      // Admin platform flags (from admin_rate_limits.html) — detected so App.js
+      // can confirm it reads both config sources, but intentionally excluded from
+      // token logic.  Only per-user keys (api_porting.html) suppress deduction / hide UI.
+      const platEmailVerif = !!(platformData && platformData.email_verif_custom);
+      const platLlm = !!(platformData && platformData.llm_custom);
+      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s contactGen=%s | admin emailVerif=%s llm=%s',
+        userEmailVerif, userLlm, userContactGen, platEmailVerif, platLlm);
+      // Only per-user flags control token deduction and visibility
+      setHasCustomEmailVerif(userEmailVerif);
+      setHasCustomLlm(userLlm);
+      setHasCustomContactGen(userContactGen);
+      // Track specific provider names — deduction bypass only applies when the
+      // currently selected service matches the user's own provider.
+      if (svcData && svcData.active && svcData.providers) {
+        setCustomEmailVerifProvider((svcData.providers.email_verif || '').toLowerCase());
+        setCustomContactGenProvider((svcData.providers.contact_gen || '').toLowerCase());
+      } else {
+        setCustomEmailVerifProvider('');
+        setCustomContactGenProvider('');
+      }
+    }).catch(err => console.error('[ServiceConfig] refresh failed:', err));
+  }, [user]);
   useEffect(() => {
-    if (user && user.username) {
-      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-        .then(res => res.ok ? res.json() : null)
-        .then(svcData => {
-          if (svcData && svcData.active && svcData.providers) {
-            const ep = (svcData.providers.email_verif || '').toLowerCase();
-            setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
-            const lp = (svcData.providers.llm || '').toLowerCase();
-            setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
-          } else {
-            setHasCustomEmailVerif(false);
-            setHasCustomLlm(false);
-          }
+    _refreshServiceConfig();
+    _fetchEmailVerifServices();
+    _fetchContactGenServices();
+    const onFocus = () => { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); } };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    // Poll every 30 s so dynamic key changes in api_porting.html / admin_rate_limits.html
+    // propagate even when BroadcastChannel cannot cross origins (port 4000 → 3000).
+    const poll = setInterval(() => { _refreshServiceConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); }, 30000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(poll);
+    };
+  }, [_refreshServiceConfig]);
+
+  // Listen for config changes from admin_rate_limits.html / api_porting.html via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed') return;
+      // Re-fetch service config (custom email verif & LLM flags)
+      _refreshServiceConfig();
+      // Re-fetch email verification services list
+      if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
+      // Re-fetch contact generation services list (ContactOut)
+      if (typeof _fetchContactGenServices === 'function') _fetchContactGenServices();
+      // Re-fetch token config
+      fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (!cfg) return;
+          const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+          if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+          if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+          if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
         })
         .catch(() => {});
-    }
+    };
+    return () => ch.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const handleAddStatus = (newStat) => {
@@ -8246,10 +8385,249 @@ export default function App() {
 
   // Handler for generating emails for resume candidate
   const handleGenerateResumeEmails = async () => {
-    if (!resumeCandidate) return;
-    const { name, organisation, company, country, id } = resumeCandidate;
+    if (!resumeCandidate) return false;
+    const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
-    
+
+    // ContactOut path – requires LinkedIn URL
+    if (emailGenProvider === 'contactout') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for ContactOut lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'contactout', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'ContactOut request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        // Map ContactOut fields into candidate
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        // Comment: combine github + personal_email
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          const newComment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          updates.comment = newComment;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        // Add all returned emails (including work_email, personal_email) to the email list
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'ContactOut' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        // Summary message box
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ ContactOut API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('ContactOut error:', e);
+        alert('Failed to generate contacts via ContactOut.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    // Apollo path – requires LinkedIn URL
+    if (emailGenProvider === 'apollo') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for Apollo lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'apollo', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'Apollo request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'Apollo' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ Apollo API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('Apollo error:', e);
+        alert('Failed to generate contacts via Apollo.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    if (emailGenProvider === 'rocketreach') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for RocketReach lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'rocketreach', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'RocketReach request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'RocketReach' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ RocketReach API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('RocketReach error:', e);
+        alert('Failed to generate contacts via RocketReach.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    // Gemini / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
       return;
@@ -8258,10 +8636,10 @@ export default function App() {
     setGeneratingEmails(true);
 
     try {
-      const res = await fetch('http://localhost:4000/generate-email', {
+      const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ name, company: org, country }),
+        body: JSON.stringify({ name, company: org, country, provider: emailGenProvider }),
         credentials: 'include'
       });
       if (!res.ok) throw new Error('Request failed');
@@ -8299,11 +8677,113 @@ export default function App() {
     }
   };
 
+  // Handler for Generate Email/Contacts button click — shows token confirmation for paid providers
+  const handleGenerateContactsClick = async () => {
+    // Gemini is free — no confirmation needed
+    if (emailGenProvider === 'gemini') {
+      handleGenerateResumeEmails();
+      return;
+    }
+    // User's own Option A contact gen keys — no popup, no deduction ONLY when the
+    // currently selected service matches the user's own provider from api_porting.html.
+    // On failure, alert the user and offer Gemini fallback with token deduction.
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (usingOwnContactGenKey) {
+      const succeeded = await handleGenerateResumeEmails();
+      if (!succeeded) {
+        // Fetch latest token balance for the fallback popup
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        // Re-fetch token config for deduction amount
+        let deductAmt = _APP_CONTACT_GEN_DEDUCT;
+        try {
+          const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r.ok) { const cfg = await r.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.contact_gen_deduct === 'number') { deductAmt = t.contact_gen_deduct; _APP_CONTACT_GEN_DEDUCT = deductAmt; setAppContactGenDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doFallback = window.confirm(
+          `Your ${emailGenProvider.charAt(0).toUpperCase() + emailGenProvider.slice(1)} API service failed.\n\n` +
+          `Falling back to Gemini will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed with Gemini?`
+        );
+        if (doFallback) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); return; }
+          // Temporarily switch to gemini, generate, and deduct
+          const origProvider = emailGenProvider;
+          setEmailGenProvider('gemini');
+          // Use setTimeout to allow state update before calling generate
+          setTimeout(async () => {
+            const geminiOk = await handleGenerateResumeEmails();
+            setEmailGenProvider(origProvider);
+            if (geminiOk) {
+              fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(r => r.json())
+                .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+                .catch(err => console.error('Gemini fallback token deduction failed:', err));
+            }
+          }, 0);
+        }
+      }
+      return;
+    }
+    // Re-fetch token config so the popup shows the current admin-configured rate
+    try {
+      const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (r.ok) {
+        const cfg = await r.json();
+        const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
+        if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+        if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+      }
+    } catch (_) {}
+    if (tokensLeft < _APP_CONTACT_GEN_DEDUCT) {
+      alert(`Insufficient tokens. You need at least ${_APP_CONTACT_GEN_DEDUCT} token${_APP_CONTACT_GEN_DEDUCT !== 1 ? 's' : ''} to generate contacts.`);
+      return;
+    }
+    setTokenContactGenConfirmOpen(true);
+  };
+
+  // Called when user confirms the contact-gen token deduction dialog
+  const handleConfirmContactGen = async () => {
+    setTokenContactGenConfirmOpen(false);
+    const succeeded = await handleGenerateResumeEmails();
+    // Only deduct tokens if generation succeeded; skip only when using own matching key
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (!succeeded || usingOwnContactGenKey) return;
+    fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ service: emailGenProvider }),
+    })
+      .then(r => r.json())
+      .then(t => {
+        if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
+        if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens);
+      })
+      .catch(err => console.error('Contact gen token deduction failed:', err));
+  };
+
   // Handler for verifying selected email in resume tab
   const handleVerifySelectedEmail = async () => {
     const selected = resumeEmailList.filter(item => item.checked);
     if (selected.length === 0) { alert('Please select an email to verify.'); return; }
     if (selected.length > 1) { alert('Please verify one email at a time.'); return; }
+    // User's own Option A keys — no popup, no deduction ONLY when the currently
+    // selected service matches the user's own provider from api_porting.html.
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
+    if (usingOwnVerifKey) {
+      setPendingVerifyEmail(selected[0].value);
+      handleConfirmVerify(selected[0].value);
+      return;
+    }
     // Re-fetch token config so the confirmation popup always shows the current admin value.
     try {
       const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
@@ -8312,20 +8792,22 @@ export default function App() {
         const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
         if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
         if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;       setAppTokenCost(t.analytic_token_cost); }
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;        setAppContactGenDeduct(t.contact_gen_deduct); }
       }
     } catch (_) {}
-    if (!(hasCustomEmailVerif || hasCustomLlm) && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
+    if (tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
     setPendingVerifyEmail(selected[0].value);
     setTokenConfirmOpen(true);
   };
 
-  const handleConfirmVerify = async () => {
+  const handleConfirmVerify = async (directEmail) => {
     setTokenConfirmOpen(false);
-    const emailToVerify = pendingVerifyEmail;
+    const emailToVerify = directEmail || pendingVerifyEmail;
     setPendingVerifyEmail(null);
     setVerifyingEmail(true);
     setVerifyModalEmail(emailToVerify);
     setVerifyModalData(null);
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
     try {
       const res = await fetch('http://localhost:4000/verify-email-details', {
         method: 'POST',
@@ -8336,9 +8818,13 @@ export default function App() {
       if (!res.ok) throw new Error('Verification failed');
       const data = await res.json();
       setVerifyModalData(data);
-      // Deduct 2 tokens on successful verification (skipped when custom email verif API or custom LLM is active)
-      if (!(hasCustomEmailVerif || hasCustomLlm)) {
-        fetch('http://localhost:4000/deduct-tokens', { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      // Deduct tokens on successful verification — only when NOT using user's own matching key
+      if (!usingOwnVerifKey) {
+        fetch('http://localhost:4000/deduct-tokens', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ service: emailVerifService }),
+        })
           .then(r => r.json())
           .then(t => {
             if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
@@ -8347,7 +8833,54 @@ export default function App() {
           .catch(err => console.error('Token deduction failed:', err));
       }
     } catch (e) {
-      alert('Email verification failed.');
+      // If user's own key failed mid-process, offer retry with admin key + token deduction
+      if (usingOwnVerifKey) {
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        let deductAmt = _APP_VERIFIED_SELECTION_DEDUCT;
+        try {
+          const r2 = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r2.ok) { const cfg = await r2.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.verified_selection_deduct === 'number') { deductAmt = t.verified_selection_deduct; _APP_VERIFIED_SELECTION_DEDUCT = deductAmt; setAppVerifiedDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doRetry = window.confirm(
+          `Your ${emailVerifService.charAt(0).toUpperCase() + emailVerifService.slice(1)} API service failed.\n\n` +
+          `Retrying with platform key will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed?`
+        );
+        if (doRetry) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); setVerifyingEmail(false); return; }
+          try {
+            const retryRes = await fetch('http://localhost:4000/verify-email-details', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ email: emailToVerify, service: emailVerifService, force_admin: true }),
+              credentials: 'include'
+            });
+            if (!retryRes.ok) throw new Error('Retry failed');
+            const data = await retryRes.json();
+            setVerifyModalData(data);
+            fetch('http://localhost:4000/deduct-tokens', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ service: emailVerifService }),
+            })
+              .then(r => r.json())
+              .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+              .catch(err => console.error('Retry token deduction failed:', err));
+          } catch (_) {
+            alert('Email verification failed even with platform key.');
+          }
+        }
+      } else {
+        alert('Email verification failed.');
+      }
     } finally {
       setVerifyingEmail(false);
     }
@@ -8682,8 +9215,8 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif or custom LLM is active) */}
-      {!(hasCustomEmailVerif || hasCustomLlm) && <div style={{
+      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif keys are active via api_porting.html) */}
+      {!hasCustomEmailVerif && <div style={{
         width: '100%',
         margin: '0 0 24px 0',
         padding: '12px 18px',
@@ -8810,6 +9343,8 @@ export default function App() {
                 appTokenCost={appTokenCost}
                 dockOutRef={dockOutRef}
                 onRefresh={() => { isRefreshingRef.current = true; window.location.reload(); }}
+                hasCustomLlm={hasCustomLlm}
+                hasCustomEmailVerif={hasCustomEmailVerif}
               />
           }
         </div>
@@ -9017,22 +9552,25 @@ export default function App() {
                                     <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
                                         {/* Action row: Generate · Verify Selected · Update & Save */}
                                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                            <button 
-                                                onClick={handleGenerateResumeEmails} 
-                                                disabled={generatingEmails}
-                                                className="btn-primary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {generatingEmails ? 'Generating...' : 'Generate Emails'}
-                                            </button>
-                                            <button 
-                                                onClick={handleVerifySelectedEmail} 
-                                                disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
-                                                className="btn-secondary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
-                                            </button>
+                                            {verifEngineMode === 'generate' ? (
+                                                <button 
+                                                    onClick={handleGenerateContactsClick} 
+                                                    disabled={generatingEmails}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {generatingEmails ? 'Generating...' : (['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email')}
+                                                </button>
+                                            ) : (
+                                                <button 
+                                                    onClick={handleVerifySelectedEmail} 
+                                                    disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
+                                                </button>
+                                            )}
                                             <button 
                                                 onClick={handleUpdateResumeEmail}
                                                 className="btn-secondary"
@@ -9052,9 +9590,13 @@ export default function App() {
                                                 </svg>
                                                 <span className="email-verif-bar__label">
                                                     Verif. Engine
-                                                    {!verifBarExpanded && emailVerifService !== 'default' && (
+                                                    {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
-                                                            {emailVerifService === 'neverbounce' ? ' · Neverbounce' : emailVerifService === 'zerobounce' ? ' · ZeroBounce' : emailVerifService === 'bouncer' ? ' · Bouncer' : ''}
+                                                            {verifEngineMode === 'generate'
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'Lookup' : 'Gemini'}`
+                                                                : emailVerifService !== 'default'
+                                                                    ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
+                                                                    : ' · Verify Selected'}
                                                         </span>
                                                     )}
                                                 </span>
@@ -9062,19 +9604,77 @@ export default function App() {
                                             </div>
                                             {verifBarExpanded && (
                                                 <div className="email-verif-bar__body">
-                                                    <select
-                                                        className="email-verif-bar__select"
-                                                        value={emailVerifService}
-                                                        onChange={e => setEmailVerifService(e.target.value)}
-                                                        title="Select email verification service"
-                                                    >
-                                                        <option value="default">Default (App Verification)</option>
-                                                        {availableEmailServices.map(svc => (
-                                                            <option key={svc} value={svc}>
-                                                                {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                                    {/* Mode toggle: Verify Selected / Generate Email */}
+                                                    <div style={{ display: 'flex', gap: 0, marginBottom: 8, border: '1px solid var(--neutral-border)', borderRadius: 6, overflow: 'hidden' }}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('verify')}
+                                                            className="verif-toggle-btn"
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
+                                                                background: verifEngineMode === 'verify' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'verify' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'verify' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'verify' ? 1 : 0.55,
+                                                            }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'verify') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'verify' ? '1' : '0.55'; }}
+                                                        >
+                                                            Verify Selected
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('generate')}
+                                                            className="verif-toggle-btn"
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
+                                                                borderLeft: '1px solid var(--neutral-border)',
+                                                                background: verifEngineMode === 'generate' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'generate' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'generate' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'generate' ? 1 : 0.55,
+                                                            }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'generate') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'generate' ? '1' : '0.55'; }}
+                                                        >
+                                                            Generate Email
+                                                        </button>
+                                                    </div>
+                                                    {verifEngineMode === 'verify' ? (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailVerifService}
+                                                            onChange={e => setEmailVerifService(e.target.value)}
+                                                            title="Select email verification service"
+                                                        >
+                                                            <option value="default">Default (App Verification)</option>
+                                                            {availableEmailServices.map(svc => (
+                                                                <option key={svc} value={svc}>
+                                                                    {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    ) : (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailGenProvider}
+                                                            onChange={e => setEmailGenProvider(e.target.value)}
+                                                            title="Select email generation provider"
+                                                        >
+                                                            <option value="gemini">Gemini</option>
+                                                            {availableContactGenServices.includes('contactout') && (
+                                                                <option value="contactout">ContactOut</option>
+                                                            )}
+                                                            {availableContactGenServices.includes('apollo') && (
+                                                                <option value="apollo">Apollo</option>
+                                                            )}
+                                                            {availableContactGenServices.includes('rocketreach') && (
+                                                                <option value="rocketreach">Lookup</option>
+                                                            )}
+                                                        </select>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
@@ -9544,13 +10144,38 @@ export default function App() {
              onClick={() => setTokenConfirmOpen(false)}>
           <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Verified Selection</h3>
-            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
               Are you sure you want to proceed?&nbsp;
               <strong>{appVerifiedDeduct} token{appVerifiedDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this verified selection.
             </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appVerifiedDeduct)}</strong></div>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setTokenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
-              <button onClick={handleConfirmVerify} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+              <button onClick={() => handleConfirmVerify()} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tokenContactGenConfirmOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(34,37,41,0.65)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10002 }}
+             onClick={() => setTokenContactGenConfirmOpen(false)}>
+          <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Generate Contacts</h3>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
+              Are you sure you want to proceed?&nbsp;
+              <strong>{appContactGenDeduct} token{appContactGenDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this contact generation.
+            </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appContactGenDeduct)}</strong></div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => setTokenContactGenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
+              <button onClick={handleConfirmContactGen} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
             </div>
           </div>
         </div>
