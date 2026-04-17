@@ -18,7 +18,7 @@ import difflib
 import secrets
 from csv import DictWriter
 from datetime import datetime
-from functools import wraps
+from functools import lru_cache, wraps
 import requests
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
@@ -2736,6 +2736,7 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
 _XRAY_NATIVE_PROVIDERS = frozenset({"serper", "dataforseo", "google_cse"})
 
 
+@lru_cache(maxsize=64)
 def _translate_xray_for_provider(query: str, provider: str) -> str:
     """Translate a Google Xray search query into the syntax expected by *provider*.
 
@@ -2775,14 +2776,15 @@ def _translate_xray_for_provider(query: str, provider: str) -> str:
             max_output_tokens=512,
         )
         if translated and translated.strip():
-            cleaned = translated.strip().strip("`").strip()
+            cleaned = translated.strip().strip("`")
             logger.info(f"[Search] Xray→{provider} translation: {query!r} → {cleaned!r}")
             return cleaned
+        # LLM returned empty/whitespace — fall through to fallback
+        logger.warning(f"[Search] Xray→{provider} translation returned empty; using original query")
     except Exception as exc:
         logger.warning(f"[Search] Xray→{provider} translation failed: {exc}")
 
     # Fallback: return original query so searches still run
-    logger.warning(f"[Search] Xray→{provider} translation returned empty; using original query")
     return query
 
 
