@@ -2735,6 +2735,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         people = data.get("people") or data.get("profiles") or data.get("results") or []
         estimated_total = int(data.get("total") or data.get("count") or len(people))
         out = []
+        skipped = 0
         for person in people:
             linkedin_url = (
                 person.get("linkedin_url")
@@ -2742,6 +2743,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
                 or ""
             )
             if not linkedin_url:
+                skipped += 1
                 continue
             name = (person.get("name") or person.get("full_name") or "").strip()
             title = (person.get("title") or person.get("headline") or "").strip()
@@ -2775,6 +2777,8 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
                 "displayLink": "linkedin.com",
                 "_source": "contactout",
             })
+        if skipped:
+            logger.info(f"[ContactOut] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[ContactOut] people search failed: {e}")

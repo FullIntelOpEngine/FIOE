@@ -493,10 +493,8 @@ def _write_outputs(job_id, rows):
                                     if pic_url:
                                         pic_bytes = fetch_image_bytes_from_url(pic_url)
                                         if pic_bytes:
-                                            import psycopg2
                                             pic_bytes = psycopg2.Binary(pic_bytes)
                                         else:
-                                            import psycopg2
                                             pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
                                 except Exception as pic_err:
                                     logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
