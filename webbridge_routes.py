@@ -5561,10 +5561,14 @@ def rocketreach_download_profile():
 # linkdapi: full LinkedIn profile retrieval
 # ---------------------------------------------------------------------------
 
-def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
-    """Fetch a profile from api.linkd.io and return ``(body_str, http_status)``.
+_LINKDAPI_HOST = "linkdapi.com"
+_LINKDAPI_HEADER = "X-linkdapi-apikey"
 
-    **Strategy** (dual-layer, cross-platform):
+
+def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
+    """Fetch a profile from linkdapi.com and return ``(body_str, http_status)``.
+
+    **Strategy** (dual-layer, cross-platform, with retry):
 
     1. *Primary* – Python ``http.client.HTTPSConnection`` with a custom
        ``connect()`` that creates a TLS 1.2-only context, suppresses SNI
@@ -5575,7 +5579,10 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     2. *Fallback* – ``curl`` subprocess with ``-sSk --tlsv1.2 --tls-max 1.2``
        (pins exactly TLS 1.2) plus ``--ssl-no-revoke`` for Windows Schannel.
 
-    The ``api.linkd.io`` server sends an ``unrecognized_name`` TLS warning
+    Both layers are retried up to ``_LINKDAPI_MAX_RETRIES`` times for
+    transient TLS / network errors before giving up.
+
+    The linkdapi.com server may send an ``unrecognized_name`` TLS warning
     alert.  TLS 1.3 (RFC 8446 §6) treats *all* warning alerts as fatal,
     killing the handshake.  TLS 1.2 (RFC 6066 §3) considers it non-fatal.
     Forcing TLS 1.2 + suppressing SNI avoids the alert entirely.
@@ -5586,88 +5593,104 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
 
     qs = _up.urlencode({"username": username})
     path = f"/api/v1/profile/full?{qs}"
-    headers = {"x-api-key": api_key, "Accept": "application/json"}
+    headers = {_LINKDAPI_HEADER: api_key, "Accept": "application/json"}
 
-    # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
-    conn = None
-    try:
-        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = _ssl.CERT_NONE
-        ctx.maximum_version = _ssl.TLSVersion.TLSv1_2
-        ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
-        if hasattr(_ssl, "OP_LEGACY_SERVER_CONNECT"):
-            ctx.options |= _ssl.OP_LEGACY_SERVER_CONNECT
-        if hasattr(_ssl, "OP_IGNORE_UNEXPECTED_EOF"):
-            ctx.options |= _ssl.OP_IGNORE_UNEXPECTED_EOF
+    max_retries = 3
+    last_exc = None
 
-        import socket as _sock  # noqa: PLC0415
-
-        conn = _hc.HTTPSConnection("api.linkd.io", timeout=timeout, context=ctx)
-        # Override connect() to suppress SNI (server_hostname=None).
-
-        def _no_sni_connect():
-            conn.sock = _sock.create_connection(
-                (conn.host, conn.port or 443), conn.timeout
-            )
-            conn.sock = ctx.wrap_socket(conn.sock, server_hostname=None)
-
-        conn.connect = _no_sni_connect
-        conn.request("GET", path, headers=headers)
-        resp = conn.getresponse()
-        body = resp.read().decode("utf-8", errors="replace")
-        status = resp.status
-        return body, status
-    except Exception as py_exc:
-        logger.debug("[linkdapi] Python http.client failed (%s), trying curl…", py_exc)
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    # ---- fallback: curl subprocess ----
-    try:
-        import subprocess as _sp  # noqa: PLC0415
-
-        url = f"https://api.linkd.io{path}"
-        sep = "\n__LINKDAPI_HTTP_STATUS__"
-        cmd = [
-            "curl", "-sSk",
-            "--tlsv1.2", "--tls-max", "1.2",
-            "--ssl-no-revoke",
-            "--max-time", str(timeout),
-            "-H", f"x-api-key: {api_key}",
-            "-H", "Accept: application/json",
-            "-w", sep + "%{http_code}",
-            url,
-        ]
-        result = _sp.run(cmd, capture_output=True, timeout=timeout + 5)
-        raw = result.stdout.decode("utf-8", errors="replace")
-        if sep in raw:
-            body_str, st = raw.rsplit(sep, 1)
-        else:
-            body_str, st = raw, "0"
+    for attempt in range(1, max_retries + 1):
+        # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
+        conn = None
         try:
-            sc = int(st.strip())
-        except ValueError:
-            sc = 0
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            ctx.maximum_version = _ssl.TLSVersion.TLSv1_2
+            ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+            if hasattr(_ssl, "OP_LEGACY_SERVER_CONNECT"):
+                ctx.options |= _ssl.OP_LEGACY_SERVER_CONNECT
+            if hasattr(_ssl, "OP_IGNORE_UNEXPECTED_EOF"):
+                ctx.options |= _ssl.OP_IGNORE_UNEXPECTED_EOF
 
-        if result.returncode != 0 and sc == 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            logger.warning("[linkdapi] curl error (rc=%d): %s", result.returncode, stderr)
-            return "TLS/connection error reaching linkdapi", 0
-        return body_str, sc
-    except _sp.TimeoutExpired:
-        logger.warning("[linkdapi] get-profile timed out (curl)")
-        return "linkdapi request timed out", 0
-    except FileNotFoundError:
-        logger.error("[linkdapi] curl binary not found")
-        return "curl not found on server", 0
-    except Exception as curl_exc:
-        logger.warning("[linkdapi] get-profile curl fallback error: %s", curl_exc)
-        return "linkdapi service unavailable", 0
+            import socket as _sock  # noqa: PLC0415
+
+            conn = _hc.HTTPSConnection(_LINKDAPI_HOST, timeout=timeout, context=ctx)
+            # Override connect() to suppress SNI (server_hostname=None).
+
+            def _no_sni_connect():
+                conn.sock = _sock.create_connection(
+                    (conn.host, conn.port or 443), conn.timeout
+                )
+                conn.sock = ctx.wrap_socket(conn.sock, server_hostname=None)
+
+            conn.connect = _no_sni_connect
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            status = resp.status
+            return body, status
+        except Exception as py_exc:
+            last_exc = py_exc
+            logger.debug(
+                "[linkdapi] Python http.client attempt %d/%d failed (%s), trying curl…",
+                attempt, max_retries, py_exc,
+            )
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        # ---- fallback: curl subprocess ----
+        try:
+            import subprocess as _sp  # noqa: PLC0415
+
+            url = f"https://{_LINKDAPI_HOST}{path}"
+            sep = "\n__LINKDAPI_HTTP_STATUS__"
+            cmd = [
+                "curl", "-sSk",
+                "--tlsv1.2", "--tls-max", "1.2",
+                "--ssl-no-revoke",
+                "--max-time", str(timeout),
+                "-H", f"{_LINKDAPI_HEADER}: {api_key}",
+                "-H", "Accept: application/json",
+                "-w", sep + "%{http_code}",
+                url,
+            ]
+            result = _sp.run(cmd, capture_output=True, timeout=timeout + 5)
+            raw = result.stdout.decode("utf-8", errors="replace")
+            if sep in raw:
+                body_str, st = raw.rsplit(sep, 1)
+            else:
+                body_str, st = raw, "0"
+            try:
+                sc = int(st.strip())
+            except ValueError:
+                sc = 0
+
+            if result.returncode != 0 and sc == 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                logger.warning(
+                    "[linkdapi] curl error attempt %d/%d (rc=%d): %s",
+                    attempt, max_retries, result.returncode, stderr,
+                )
+                last_exc = RuntimeError(stderr)
+                continue  # retry
+            return body_str, sc
+        except _sp.TimeoutExpired:
+            logger.warning("[linkdapi] get-profile timed out (curl, attempt %d/%d)", attempt, max_retries)
+            last_exc = TimeoutError("curl timed out")
+        except FileNotFoundError:
+            logger.error("[linkdapi] curl binary not found")
+            return "curl not found on server", 0
+        except Exception as curl_exc:
+            logger.warning("[linkdapi] curl fallback error (attempt %d/%d): %s", attempt, max_retries, curl_exc)
+            last_exc = curl_exc
+
+    # All retries exhausted
+    logger.error("[linkdapi] all %d attempts failed; last error: %s", max_retries, last_exc)
+    return "TLS/connection error reaching linkdapi", 0
 
 
 @app.get("/api/linkdapi/get-profile")
@@ -5679,7 +5702,7 @@ def linkdapi_get_profile():
       linkedin_url – the LinkedIn profile URL (required); username is extracted
                      from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
 
-    Calls GET https://api.linkd.io/api/v1/profile/full?username=<username>
+    Calls GET https://linkdapi.com/api/v1/profile/full?username=<username>
     using the admin-configured LINKDAPI_API_KEY.  Returns the raw JSON profile.
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()

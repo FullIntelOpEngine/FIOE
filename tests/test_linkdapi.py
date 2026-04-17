@@ -42,13 +42,13 @@ def _build_curl_cmd(username: str, api_key: str):
     """Build the curl command list (mirrors webbridge_routes.py)."""
     import urllib.parse
     qs = urllib.parse.urlencode({"username": username})
-    url = f"https://api.linkd.io/api/v1/profile/full?{qs}"
+    url = f"https://linkdapi.com/api/v1/profile/full?{qs}"
     return [
         "curl", "-sSk",
         "--tlsv1.2", "--tls-max", "1.2",
         "--ssl-no-revoke",
         "--max-time", "30",
-        "-H", f"x-api-key: {api_key}",
+        "-H", f"X-linkdapi-apikey: {api_key}",
         "-H", "Accept: application/json",
         "-w", _STATUS_SEP + "%{http_code}",
         url,
@@ -146,16 +146,16 @@ class TestCurlCommandConstruction(unittest.TestCase):
     def test_api_key_header(self):
         cmd = _build_curl_cmd("user1", "my-secret-key")
         for i, arg in enumerate(cmd):
-            if arg == "-H" and i + 1 < len(cmd) and "x-api-key" in cmd[i + 1]:
-                self.assertEqual(cmd[i + 1], "x-api-key: my-secret-key")
+            if arg == "-H" and i + 1 < len(cmd) and "X-linkdapi-apikey" in cmd[i + 1]:
+                self.assertEqual(cmd[i + 1], "X-linkdapi-apikey: my-secret-key")
                 return
-        self.fail("x-api-key header not found in curl command")
+        self.fail("X-linkdapi-apikey header not found in curl command")
 
     def test_url_encoding(self):
         cmd = _build_curl_cmd("takano-yuki-0ba87025b", "key")
         url = cmd[-1]
         self.assertIn("username=takano-yuki-0ba87025b", url)
-        self.assertTrue(url.startswith("https://api.linkd.io/api/v1/profile/full?"))
+        self.assertTrue(url.startswith("https://linkdapi.com/api/v1/profile/full?"))
 
     def test_tlsv12_minimum_flag(self):
         """curl --tlsv1.2 flag forces TLS 1.2 minimum."""
@@ -273,15 +273,15 @@ class TestPythonHTTPClientPrimary(unittest.TestCase):
         mock_sock_conn.return_value = mock_raw
 
         with patch.object(ctx, 'wrap_socket', return_value=MagicMock()) as mock_wrap:
-            sock = socket.create_connection(("api.linkd.io", 443), 30)
+            sock = socket.create_connection(("linkdapi.com", 443), 30)
             ctx.wrap_socket(sock, server_hostname=None)
             mock_wrap.assert_called_once_with(mock_raw, server_hostname=None)
 
     def test_http_connection_uses_tls12_context(self):
         """HTTPSConnection is created with TLS 1.2 context."""
         ctx = _build_ssl_context()
-        conn = http.client.HTTPSConnection("api.linkd.io", timeout=30, context=ctx)
-        self.assertEqual(conn.host, "api.linkd.io")
+        conn = http.client.HTTPSConnection("linkdapi.com", timeout=30, context=ctx)
+        self.assertEqual(conn.host, "linkdapi.com")
         self.assertEqual(conn.timeout, 30)
 
 
@@ -363,14 +363,14 @@ class TestDualLayerStrategy(unittest.TestCase):
         resp.read.return_value = json.dumps(profile).encode()
         conn = MagicMock()
         conn.getresponse.return_value = resp
-        conn.host = "api.linkd.io"
+        conn.host = "linkdapi.com"
         conn.port = 443
         conn.timeout = 30
         mock_conn_cls.return_value = conn
 
         # Simulate the primary path succeeding
         ctx = _build_ssl_context()
-        c = http.client.HTTPSConnection("api.linkd.io", timeout=30, context=ctx)
+        c = http.client.HTTPSConnection("linkdapi.com", timeout=30, context=ctx)
         c.request("GET", "/api/v1/profile/full?username=test", headers={})
         r = c.getresponse()
         body = r.read().decode("utf-8", errors="replace")
