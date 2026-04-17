@@ -2700,8 +2700,27 @@ def _infer_apollo_seniority(job_titles: list) -> list:
 
 def _build_contactout_params_from_fields(job_titles: list, companies: list,
                                           country: str, keywords: str = "") -> dict:
-    """Build a ContactOut People Search payload directly from form fields,
-    bypassing Xray query translation."""
+    """Build a ContactOut People Search payload directly from form fields.
+
+    Attempts Gemini-based mapping guided by ``contactout_query_schema.json``
+    first.  Falls back to hardcoded mapping if the LLM call fails or returns
+    nothing useful, ensuring searches always proceed even without an active
+    LLM key.
+    """
+    # --- Gemini-based mapping (preferred) ---
+    schema = _load_provider_query_schema("contactout")
+    if schema:
+        llm_params = _llm_map_fields_to_provider_params(
+            "contactout", job_titles, companies, country, keywords, schema
+        )
+        if llm_params:
+            # Remove pagination keys — those are controlled by the caller
+            llm_params.pop("page", None)
+            llm_params.pop("limit", None)
+            logger.debug(f"[ContactOut] Using LLM-mapped params: {llm_params}")
+            return llm_params
+
+    # --- Hardcoded fallback ---
     params: dict = {}
     titles = [t for t in (job_titles or []) if t]
     if titles:
@@ -2714,7 +2733,7 @@ def _build_contactout_params_from_fields(job_titles: list, companies: list,
     kw = (keywords or "").strip()
     if kw:
         params["keyword"] = kw
-    logger.debug(f"[ContactOut] Built params from fields: {params}")
+    logger.debug(f"[ContactOut] Built params from fields (hardcoded fallback): {params}")
     return params
 
 

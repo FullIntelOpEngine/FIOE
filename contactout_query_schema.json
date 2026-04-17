@@ -1,0 +1,99 @@
+{
+  "_description": "ContactOut People Search API (POST https://api.contactout.com/v1/people/search) query parameter specification. Use this schema to map AutoSourcing.html form fields into a valid ContactOut search payload.",
+  "query_parameters": {
+    "name": {
+      "type": "string",
+      "description": "Full or partial name of the person to search for.",
+      "source_field": "keywords (if it looks like a person name)"
+    },
+    "job_title": {
+      "type": "array of strings",
+      "max_items": 50,
+      "description": "Job titles held by the people you want to find. Accepts an array of job titles (max 50). A person is included if they match any one of the supplied titles. Accepts Boolean expressions.",
+      "examples": ["Software Engineer", "Marketing Manager", "VP of Sales"],
+      "source_field": "jobTitles"
+    },
+    "job_function": {
+      "type": "array of strings",
+      "max_items": 50,
+      "description": "Job functions to filter profiles by their functional area. Accepts Boolean expressions. Examples: Engineering, Marketing, Sales, Finance, Operations.",
+      "examples": ["Engineering", "Marketing", "Sales"]
+    },
+    "company": {
+      "type": "array of strings",
+      "description": "Company names to filter by. A person is included if their current employer matches any of these names.",
+      "examples": ["Google", "Meta", "Goldman Sachs"],
+      "source_field": "companyNames"
+    },
+    "company_size": {
+      "type": "array of strings",
+      "description": "Company size ranges to filter by. Use only when a company size preference is explicitly requested.",
+      "examples": ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+"]
+    },
+    "industry": {
+      "type": "array of strings",
+      "description": "Industry sectors to filter by. Infer from keywords or job titles when appropriate.",
+      "examples": ["Technology", "Financial Services", "Healthcare", "Education"]
+    },
+    "skills": {
+      "type": "array of strings",
+      "description": "Skills or technologies the person should have. Infer from job titles or keywords when appropriate.",
+      "examples": ["Python", "Machine Learning", "Sales", "Project Management"]
+    },
+    "location": {
+      "type": "array of strings",
+      "description": "Locations where people live or work. Accepts city names, country names, or region names.",
+      "examples": ["United States", "Japan", "London", "New York"],
+      "source_field": "country"
+    },
+    "keyword": {
+      "type": "string",
+      "description": "Free-text keyword string to filter results. Searches across name, title, company, skills, and bio fields.",
+      "source_field": "keywords"
+    },
+    "education": {
+      "type": "array of strings",
+      "description": "Educational institution names, degrees, or fields of study. Only include when explicitly searching for education background.",
+      "examples": ["Harvard University", "MBA", "Computer Science"]
+    },
+    "seniority": {
+      "type": "array of strings",
+      "description": "Seniority level filter. Infer from job titles when possible.",
+      "examples": ["Director", "VP", "Manager", "Senior", "Entry-level", "C-Suite"],
+      "infer_from": "jobTitles"
+    },
+    "years_of_experience": {
+      "type": "string",
+      "description": "Years of experience range. Only include when explicitly requested.",
+      "examples": ["0-2", "3-5", "6-10", "10+"]
+    },
+    "page": {
+      "type": "integer",
+      "description": "Page number for pagination (1-based). Set by the caller — do not map from form fields.",
+      "default": 1
+    },
+    "limit": {
+      "type": "integer",
+      "description": "Number of results to return per page. Set by the caller — do not map from form fields.",
+      "default": 10
+    }
+  },
+  "response_fields": {
+    "people": {
+      "type": "array",
+      "description": "List of matching person profiles (also check 'profiles' and 'results' keys for alternate response formats)",
+      "item_fields": {
+        "linkedin_url": "LinkedIn profile URL — use as the primary link",
+        "linkedin": "Alternative LinkedIn URL field",
+        "name": "Full name",
+        "full_name": "Alternative full name field",
+        "title": "Current job title",
+        "headline": "Profile headline (fallback for title)",
+        "company": "Current employer (may be an object with 'name' key)",
+        "location": "Location string"
+      }
+    },
+    "total": "Estimated total number of matching profiles",
+    "count": "Alternative total count field"
+  }
+}
