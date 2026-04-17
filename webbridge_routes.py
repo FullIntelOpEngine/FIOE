@@ -4724,7 +4724,7 @@ def contactout_download_profile():
         return jsonify(profile_data)
     except requests.exceptions.HTTPError as http_err:
         logger.warning(f"[ContactOut] download-profile HTTP error: {http_err}")
-        return jsonify({"error": str(http_err)}), 502
+        return jsonify({"error": "ContactOut API request failed"}), 502
     except Exception as exc:
         logger.warning(f"[ContactOut] download-profile error: {exc}")
         return jsonify({"error": "Failed to fetch ContactOut profile"}), 500

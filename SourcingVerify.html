@@ -3611,7 +3611,9 @@ async function _downloadContactOutProfile(linkedinUrl, btnEl) {
     const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const safeName = (linkedinUrl.replace(/[^a-z0-9]+/gi, '_') || 'contactout_profile');
+    // Extract profile ID/slug from URL for a concise filename
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'contactout_profile';
     a.href = url;
     a.download = `${safeName}.json`;
     document.body.appendChild(a);
