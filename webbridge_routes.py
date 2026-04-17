@@ -5561,6 +5561,109 @@ def rocketreach_download_profile():
 # linkdapi: full LinkedIn profile retrieval
 # ---------------------------------------------------------------------------
 
+def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
+    """Fetch a profile from api.linkd.io and return ``(body_str, http_status)``.
+
+    **Strategy** (dual-layer, cross-platform):
+
+    1. *Primary* – Python ``http.client.HTTPSConnection`` with a custom
+       ``connect()`` that creates a TLS 1.2-only context, suppresses SNI
+       (``server_hostname=None``), and enables ``OP_LEGACY_SERVER_CONNECT``.
+       This uses Python's bundled OpenSSL, *not* the OS TLS stack (so it
+       works identically on Windows, Linux, and macOS).
+
+    2. *Fallback* – ``curl`` subprocess with ``-sSk --tlsv1.2 --tls-max 1.2``
+       (pins exactly TLS 1.2) plus ``--ssl-no-revoke`` for Windows Schannel.
+
+    The ``api.linkd.io`` server sends an ``unrecognized_name`` TLS warning
+    alert.  TLS 1.3 (RFC 8446 §6) treats *all* warning alerts as fatal,
+    killing the handshake.  TLS 1.2 (RFC 6066 §3) considers it non-fatal.
+    Forcing TLS 1.2 + suppressing SNI avoids the alert entirely.
+    """
+    import http.client as _hc   # noqa: PLC0415
+    import ssl as _ssl          # noqa: PLC0415
+    import urllib.parse as _up  # noqa: PLC0415
+
+    qs = _up.urlencode({"username": username})
+    path = f"/api/v1/profile/full?{qs}"
+    headers = {"x-api-key": api_key, "Accept": "application/json"}
+
+    # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
+    try:
+        ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        ctx.maximum_version = _ssl.TLSVersion.TLSv1_2
+        ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+        if hasattr(_ssl, "OP_LEGACY_SERVER_CONNECT"):
+            ctx.options |= _ssl.OP_LEGACY_SERVER_CONNECT
+        if hasattr(_ssl, "OP_IGNORE_UNEXPECTED_EOF"):
+            ctx.options |= _ssl.OP_IGNORE_UNEXPECTED_EOF
+
+        import socket as _sock  # noqa: PLC0415
+
+        conn = _hc.HTTPSConnection("api.linkd.io", timeout=timeout, context=ctx)
+        # Override connect() to suppress SNI (server_hostname=None).
+
+        def _no_sni_connect():
+            conn.sock = _sock.create_connection(
+                (conn.host, conn.port or 443), conn.timeout
+            )
+            conn.sock = ctx.wrap_socket(conn.sock, server_hostname=None)
+
+        conn.connect = _no_sni_connect
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        status = resp.status
+        conn.close()
+        return body, status
+    except Exception as py_exc:
+        logger.debug("[linkdapi] Python http.client failed (%s), trying curl…", py_exc)
+
+    # ---- fallback: curl subprocess ----
+    try:
+        import subprocess as _sp  # noqa: PLC0415
+
+        url = f"https://api.linkd.io{path}"
+        sep = "\n__LINKDAPI_HTTP_STATUS__"
+        cmd = [
+            "curl", "-sSk",
+            "--tlsv1.2", "--tls-max", "1.2",
+            "--ssl-no-revoke",
+            "--max-time", str(timeout),
+            "-H", f"x-api-key: {api_key}",
+            "-H", "Accept: application/json",
+            "-w", sep + "%{http_code}",
+            url,
+        ]
+        result = _sp.run(cmd, capture_output=True, timeout=timeout + 5)
+        raw = result.stdout.decode("utf-8", errors="replace")
+        if sep in raw:
+            body_str, st = raw.rsplit(sep, 1)
+        else:
+            body_str, st = raw, "0"
+        try:
+            sc = int(st.strip())
+        except ValueError:
+            sc = 0
+
+        if result.returncode != 0 and sc == 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            logger.warning("[linkdapi] curl error (rc=%d): %s", result.returncode, stderr)
+            return stderr, 0
+        return body_str, sc
+    except _sp.TimeoutExpired:
+        logger.warning("[linkdapi] get-profile timed out (curl)")
+        return "linkdapi request timed out", 0
+    except FileNotFoundError:
+        logger.error("[linkdapi] curl binary not found")
+        return "curl not found on server", 0
+    except Exception as curl_exc:
+        logger.warning("[linkdapi] get-profile curl fallback error: %s", curl_exc)
+        return str(curl_exc), 0
+
+
 @app.get("/api/linkdapi/get-profile")
 @_require_session
 def linkdapi_get_profile():
@@ -5591,88 +5694,36 @@ def linkdapi_get_profile():
     if not api_key:
         return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
 
-    try:
-        import subprocess as _sp  # noqa: PLC0415
-        import urllib.parse as _uparse  # noqa: PLC0415
+    body_str, status_code = _linkdapi_fetch(username, api_key)
 
-        # Use curl to call api.linkd.io.  Python 3.12 + OpenSSL 3.0's ssl
-        # module raises TLSV1_UNRECOGNIZED_NAME during the TLS handshake
-        # regardless of server_hostname=None / maximum_version settings,
-        # because the _ssl.c bridge treats the warning alert from the server
-        # as fatal.  curl's libcurl handles the same alert gracefully at the
-        # C level, so this completely sidesteps the issue.
-        qs = _uparse.urlencode({"username": username})
-        url = f"https://api.linkd.io/api/v1/profile/full?{qs}"
-        _STATUS_SEP = "\n__LINKDAPI_HTTP_STATUS__"
-
-        result = _sp.run(
-            [
-                "curl", "-sSk",
-                "--tls-max", "1.2",
-                "--max-time", "30",
-                "-H", f"x-api-key: {api_key}",
-                "-H", "Accept: application/json",
-                "-w", _STATUS_SEP + "%{http_code}",
-                url,
-            ],
-            capture_output=True,
-            timeout=35,
+    if status_code == 401:
+        return (
+            jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}),
+            401,
         )
+    if status_code == 403:
+        return (
+            jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}),
+            403,
+        )
+    if status_code == 404:
+        return (
+            jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}),
+            404,
+        )
+    if status_code >= 400:
+        return (
+            jsonify({"error": f"linkdapi error (HTTP {status_code}): {body_str[:500]}"}),
+            status_code,
+        )
+    if status_code == 0:
+        return jsonify({"error": f"Failed to reach linkdapi: {body_str[:500]}"}), 502
 
-        raw_out = result.stdout.decode("utf-8", errors="replace")
-
-        # Split body from the appended HTTP status code
-        if _STATUS_SEP in raw_out:
-            body_str, status_str = raw_out.rsplit(_STATUS_SEP, 1)
-        else:
-            body_str = raw_out
-            status_str = "0"
-
-        try:
-            status_code = int(status_str.strip())
-        except ValueError:
-            status_code = 0
-
-        if result.returncode != 0 and status_code == 0:
-            stderr = result.stderr.decode("utf-8", errors="replace").strip()
-            logger.warning(
-                "[linkdapi] curl error (rc=%d): %s", result.returncode, stderr
-            )
-            return jsonify({"error": f"Failed to reach linkdapi: {stderr}"}), 502
-
-        if status_code == 401:
-            return (
-                jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}),
-                401,
-            )
-        if status_code == 403:
-            return (
-                jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}),
-                403,
-            )
-        if status_code == 404:
-            return (
-                jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}),
-                404,
-            )
-        if status_code >= 400:
-            return (
-                jsonify({"error": f"linkdapi error (HTTP {status_code}): {body_str[:500]}"}),
-                status_code,
-            )
-
+    try:
         profile_data = json.loads(body_str)
-        return jsonify(profile_data)
-
-    except _sp.TimeoutExpired:
-        logger.warning("[linkdapi] get-profile timed out")
-        return jsonify({"error": "linkdapi request timed out"}), 504
-    except FileNotFoundError:
-        logger.error("[linkdapi] curl binary not found — cannot reach api.linkd.io")
-        return jsonify({"error": "Server misconfiguration: curl is required for linkdapi"}), 500
-    except Exception as exc:
-        logger.warning(f"[linkdapi] get-profile error: {exc}")
-        return jsonify({"error": "Failed to fetch linkdapi profile"}), 500
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Invalid JSON from linkdapi"}), 502
+    return jsonify(profile_data)
 
 
 @app.post("/api/user-service-config/activate")
