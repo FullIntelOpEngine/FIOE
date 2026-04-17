@@ -4892,13 +4892,16 @@ def apollo_download_profile():
     if not person_id and not linkedin_url:
         return jsonify({"error": "person_id or linkedin_url is required"}), 400
 
-    # Check per-user service config first, then fall back to admin config
+    # Resolve the Apollo API key: check per-user service config first, then admin config.
+    # request._session_user is set by @_require_session after DB-validated session check.
     ap_key = ""
-    _session_username = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
-    if _session_username:
+    _req_user = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
+    if _req_user:
+        # Sanitise username to a safe filesystem identifier (strips path-traversal chars)
+        _safe_user = _porting_safe_name(_req_user)
         try:
-            _u_enc = _svc_config_path(_session_username)
-            _u_json = _svc_config_json_path(_session_username)
+            _u_enc = _svc_config_path(_safe_user)
+            _u_json = _svc_config_json_path(_safe_user)
             _u_cfg = None
             if os.path.isfile(_u_enc):
                 try:
