@@ -5612,29 +5612,31 @@ def linkdapi_get_profile():
             so the server never sees the name and cannot reject it."""
 
             def connect(self):
-                raw = _socket.create_connection(
-                    (self.host, self.port), self.timeout, self.source_address
-                )
+                timeout = getattr(self, "timeout", _socket._GLOBAL_DEFAULT_TIMEOUT)
+                src = getattr(self, "source_address", None)
+                raw = _socket.create_connection((self.host, self.port), timeout, src)
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
                 # server_hostname=None → no SNI extension in the TLS ClientHello
                 self.sock = ctx.wrap_socket(raw, server_hostname=None)
 
         qs = _uparse.urlencode({"username": username})
         conn = _NoSNIHTTPSConn("api.linkd.io", timeout=30)
-        conn.request(
-            "GET",
-            f"/api/v1/profile/full?{qs}",
-            headers={
-                "x-api-key": api_key,
-                "Accept": "application/json",
-                "Host": "api.linkd.io",
-            },
-        )
-        resp = conn.getresponse()
-        body = resp.read()
-        conn.close()
+        try:
+            conn.request(
+                "GET",
+                f"/api/v1/profile/full?{qs}",
+                headers={
+                    "x-api-key": api_key,
+                    "Accept": "application/json",
+                },
+            )
+            resp = conn.getresponse()
+            body = resp.read()
+        finally:
+            conn.close()
 
         if resp.status == 401:
             return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
