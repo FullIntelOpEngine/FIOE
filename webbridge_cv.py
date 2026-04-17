@@ -365,7 +365,11 @@ def _write_outputs(job_id, rows):
     with JOBS_LOCK:
         job_meta=(JOBS.get(job_id) or {}).get('meta',{})
         job_top=(JOBS.get(job_id) or {})
+        job_username = (JOBS.get(job_id) or {}).get('username', '')
     dropdown_companies=_aggregate_company_dropdown(job_meta)
+    # Build a safe username prefix for output filenames (alphanumeric, _ and - only)
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', job_username).strip('_') if job_username else ''
+    _file_prefix = f"{safe_username}_{job_id}" if safe_username else job_id
     # Detect whether any row has a _Source marker (e.g. 'contactout')
     has_source_col = any(r.get("_Source") for r in rows)
     processed=[]
@@ -392,7 +396,7 @@ def _write_outputs(job_id, rows):
         if has_source_col:
             entry["Source"] = r.get("_Source") or ""
         processed.append(entry)
-    csv_name=f"{job_id}_results.csv"
+    csv_name=f"{_file_prefix}_results.csv"
     csv_path=os.path.join(SEARCH_XLS_DIR, csv_name)
     # Ensure target dir exists
     os.makedirs(SEARCH_XLS_DIR, exist_ok=True)
@@ -429,7 +433,7 @@ def _write_outputs(job_id, rows):
             ws.add_data_validation(dv)
             last_results_row=ws.max_row
             dv.add(f"B2:B{last_results_row}")
-        xlsx_name=f"{job_id}_results.xlsx"
+        xlsx_name=f"{_file_prefix}_results.xlsx"
         # Save to SEARCH_XLS_DIR
         xlsx_full=os.path.join(SEARCH_XLS_DIR, xlsx_name)
         wb.save(xlsx_full)

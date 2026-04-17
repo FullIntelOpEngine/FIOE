@@ -4892,8 +4892,33 @@ def apollo_download_profile():
     if not person_id and not linkedin_url:
         return jsonify({"error": "person_id or linkedin_url is required"}), 400
 
-    ev_cfg = _load_email_verif_config()
-    ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+    # Check per-user service config first, then fall back to admin config
+    ap_key = ""
+    _session_username = getattr(request, "_session_user", None) or (request.cookies.get("username") or "").strip()
+    if _session_username:
+        try:
+            _u_enc = _svc_config_path(_session_username)
+            _u_json = _svc_config_json_path(_session_username)
+            _u_cfg = None
+            if os.path.isfile(_u_enc):
+                try:
+                    with open(_u_enc, "rb") as _fh:
+                        _u_cfg = json.loads(_svc_config_decrypt(_fh.read()).decode("utf-8"))
+                except Exception:
+                    pass
+            if _u_cfg is None and os.path.isfile(_u_json):
+                try:
+                    with open(_u_json, "r", encoding="utf-8") as _fh:
+                        _u_cfg = json.load(_fh)
+                except Exception:
+                    pass
+            if _u_cfg:
+                ap_key = (_u_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        except Exception:
+            pass
+    if not ap_key:
+        ev_cfg = _load_email_verif_config()
+        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
     if not ap_key:
         return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
 
