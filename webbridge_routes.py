@@ -2678,14 +2678,22 @@ _APOLLO_SENIORITY_MAP = {
     "chief": "c_suite", "partner": "partner", "founder": "founder", "owner": "owner",
 }
 
+# Synthetic placeholder used when running a single provider-API search
+_PROVIDER_API_PLACEHOLDER = "provider_api_search"
+
 
 def _infer_apollo_seniority(job_titles: list) -> list:
-    """Return a deduplicated list of Apollo seniority codes inferred from job titles."""
+    """Return a deduplicated list of Apollo seniority codes inferred from job titles.
+
+    Uses word-boundary matching to avoid false positives (e.g. 'assistance'
+    should not match 'senior' or 'associate').
+    """
     result = []
     for title in (job_titles or []):
         low = (title or "").lower()
         for kw, code in _APOLLO_SENIORITY_MAP.items():
-            if kw in low and code not in result:
+            # Use word-boundary regex to prevent substring false-positives
+            if re.search(r'\b' + re.escape(kw) + r'\b', low) and code not in result:
                 result.append(code)
     return result
 
@@ -2706,7 +2714,7 @@ def _build_contactout_params_from_fields(job_titles: list, companies: list,
     kw = (keywords or "").strip()
     if kw:
         params["keyword"] = kw
-    logger.info(f"[ContactOut] Built params from fields: {params}")
+    logger.debug(f"[ContactOut] Built params from fields: {params}")
     return params
 
 
@@ -2731,7 +2739,7 @@ def _build_apollo_params_from_fields(job_titles: list, companies: list,
     kw = (keywords or "").strip()
     if kw:
         params["q_keywords"] = kw
-    logger.info(f"[Apollo] Built params from fields: {params}")
+    logger.debug(f"[Apollo] Built params from fields: {params}")
     return params
 
 
@@ -2751,7 +2759,7 @@ def _build_rocketreach_params_from_fields(job_titles: list, companies: list,
     kw = (keywords or "").strip()
     if kw:
         params["keyword"] = kw
-    logger.info(f"[RocketReach] Built params from fields: {params}")
+    logger.debug(f"[RocketReach] Built params from fields: {params}")
     return params
 
 
@@ -2819,7 +2827,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("ContactOut API key is not configured. Add CONTACTOUT_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_contactout_params(query)
     params["page"] = page
-    logger.info(f"[ContactOut] Calling people/search — page={page} params={params}")
+    logger.debug(f"[ContactOut] Calling people/search — page={page} params={params}")
     try:
         r = requests.post(
             "https://api.contactout.com/v1/people/search",
@@ -2833,7 +2841,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         logger.info(f"[ContactOut] HTTP status: {r.status_code}")
         try:
             resp_body = r.json()
-        except Exception:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             resp_body = r.text[:500]
         logger.debug(f"[ContactOut] Response body: {resp_body}")
         if not r.ok:
@@ -2972,7 +2980,7 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
     params = dict(raw_params) if raw_params else _translate_xray_to_apollo_params(query)
     params["page"] = page
     params["per_page"] = num
-    logger.info(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
+    logger.debug(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
     try:
         r = requests.post(
             "https://api.apollo.io/api/v1/mixed_people/api_search",
@@ -2987,7 +2995,7 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
         logger.info(f"[Apollo] HTTP status: {r.status_code}")
         try:
             resp_body = r.json()
-        except Exception:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             resp_body = r.text[:500]
         logger.debug(f"[Apollo] Response body: {resp_body}")
         if not r.ok:
@@ -3127,7 +3135,7 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("RocketReach API key is not configured. Add ROCKETREACH_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_rocketreach_params(query)
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
-    logger.info(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
+    logger.debug(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
     try:
         r = requests.post(
             "https://api.rocketreach.co/api/v2/search",
@@ -3142,7 +3150,7 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
         logger.info(f"[RocketReach] HTTP status: {r.status_code}")
         try:
             resp_body = r.json()
-        except Exception:
+        except (ValueError, requests.exceptions.JSONDecodeError):
             resp_body = r.text[:500]
         logger.debug(f"[RocketReach] Response body: {resp_body}")
         if not r.ok:
@@ -3869,7 +3877,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
     _query_list = queries
     if _is_provider_api:
         # Use a single synthetic entry so the loop fires exactly once.
-        _query_list = ["provider_api_search"]
+        _query_list = [_PROVIDER_API_PLACEHOLDER]
 
     for q in _query_list:
         # Global stop-loss: target already reached, no need to fire more queries.
