@@ -3712,6 +3712,60 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Unified provider button factory for the first-column cell in buildRow().
+// Returns a <button> element for known API providers (ContactOut, Apollo,
+// RocketReach), or null for rows without a provider source.
+// ---------------------------------------------------------------------------
+const _PROVIDER_BUTTON_CONFIG = {
+  contactout: {
+    label: 'CO',
+    className: 'contactout-tag',
+    title: 'Download full ContactOut profile',
+    borderColor: '#0073b1',
+    bgColor: '#e8f4fb',
+    fgColor: '#0073b1',
+    downloadFn: _downloadContactOutProfile,
+  },
+  apollo: {
+    label: 'AP',
+    className: 'apollo-tag',
+    title: 'Download full Apollo profile',
+    borderColor: '#f05a28',
+    bgColor: '#fff3ef',
+    fgColor: '#f05a28',
+    downloadFn: _downloadApolloProfile,
+  },
+  rocketreach: {
+    label: 'RR',
+    className: 'rocketreach-tag',
+    title: 'Download full RocketReach profile',
+    borderColor: '#5c2d91',
+    bgColor: '#f3edfb',
+    fgColor: '#5c2d91',
+    downloadFn: _downloadRocketReachProfile,
+  },
+};
+
+function _createProviderButton(source, linkedinUrl) {
+  const cfg = _PROVIDER_BUTTON_CONFIG[(source || '').toLowerCase()];
+  if (!cfg) return null;
+
+  const btn = document.createElement('button');
+  btn.className = cfg.className;
+  btn.textContent = cfg.label;
+  btn.title = cfg.title;
+  btn.style.cssText =
+    'width:32px; height:32px; border:2px solid ' + cfg.borderColor +
+    '; background:' + cfg.bgColor + '; color:' + cfg.fgColor +
+    '; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
+    ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+  btn.onmouseover = function () { this.style.background = cfg.fgColor; this.style.color = '#fff'; };
+  btn.onmouseout  = function () { this.style.background = cfg.bgColor; this.style.color = cfg.fgColor; };
+  btn.addEventListener('click', () => cfg.downloadFn(linkedinUrl, btn));
+  return btn;
+}
+
 // Apply bulk assessment results from JSON file to table rows
 function buildRow(row) {
   const tr = document.createElement('tr');
@@ -3742,37 +3796,10 @@ function buildRow(row) {
   }
   
   if (!hasAssessment) {
-      // BEFORE ASSESSMENT: ContactOut/Apollo rows get a download button; others get a checkbox
-      if (row.source === 'contactout') {
-          const coBtn = document.createElement('button');
-          coBtn.className = 'contactout-tag';
-          coBtn.textContent = 'CO';
-          coBtn.title = 'Download full ContactOut profile';
-          coBtn.style.cssText = 'width:32px; height:32px; border:2px solid #0073b1; background:#e8f4fb; color:#0073b1; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-          coBtn.onmouseover = function() { this.style.background = '#0073b1'; this.style.color = '#fff'; };
-          coBtn.onmouseout = function() { this.style.background = '#e8f4fb'; this.style.color = '#0073b1'; };
-          coBtn.addEventListener('click', () => _downloadContactOutProfile(row.linkedinurl, coBtn));
-          checkboxCell.appendChild(coBtn);
-      } else if (row.source === 'apollo') {
-          const apBtn = document.createElement('button');
-          apBtn.className = 'apollo-tag';
-          apBtn.textContent = 'AP';
-          apBtn.title = 'Download full Apollo profile';
-          apBtn.style.cssText = 'width:32px; height:32px; border:2px solid #f05a28; background:#fff3ef; color:#f05a28; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-          apBtn.onmouseover = function() { this.style.background = '#f05a28'; this.style.color = '#fff'; };
-          apBtn.onmouseout = function() { this.style.background = '#fff3ef'; this.style.color = '#f05a28'; };
-          apBtn.addEventListener('click', () => _downloadApolloProfile(row.linkedinurl, apBtn));
-          checkboxCell.appendChild(apBtn);
-      } else if (row.source === 'rocketreach') {
-          const rrBtn = document.createElement('button');
-          rrBtn.className = 'rocketreach-tag';
-          rrBtn.textContent = 'RR';
-          rrBtn.title = 'Download full RocketReach profile';
-          rrBtn.style.cssText = 'width:32px; height:32px; border:2px solid #5c2d91; background:#f3edfb; color:#5c2d91; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-          rrBtn.onmouseover = function() { this.style.background = '#5c2d91'; this.style.color = '#fff'; };
-          rrBtn.onmouseout = function() { this.style.background = '#f3edfb'; this.style.color = '#5c2d91'; };
-          rrBtn.addEventListener('click', () => _downloadRocketReachProfile(row.linkedinurl, rrBtn));
-          checkboxCell.appendChild(rrBtn);
+      // BEFORE ASSESSMENT: ContactOut/Apollo/RocketReach rows get a provider download button; others get a checkbox
+      const providerBtn = _createProviderButton(row.source, row.linkedinurl);
+      if (providerBtn) {
+          checkboxCell.appendChild(providerBtn);
       } else {
           // Standard checkbox for selection
           const cb = document.createElement('input');
