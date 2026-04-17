@@ -1581,8 +1581,9 @@ function renderPage(container) {
     _knob.style.left    = on ? '27px' : '3px';
     _config.rates_enabled = on;
   }
-  // clicking the track toggles
-  _slider.addEventListener('click', () => { _chk.checked = !_chk.checked; _updateToggleUI(_chk.checked); });
+  // clicking the track toggles (stopPropagation prevents the wrapping <label>
+  // from also toggling the checkbox which would double-flip it back)
+  _slider.addEventListener('click', (e) => { e.stopPropagation(); _chk.checked = !_chk.checked; _updateToggleUI(_chk.checked); });
   _chk.addEventListener('change', () => _updateToggleUI(_chk.checked));
   _saveBtn.addEventListener('click', async () => {
     _saveMsg.style.display = 'none';
