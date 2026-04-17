@@ -561,15 +561,15 @@ def _write_outputs(job_id, rows):
                     # that were re-found by a provider search after being added by a prior search.
                     if has_source_header:
                         if has_pic_column:
-                            # batch tuple: (userid, username, name, company, jobtitle, country, linkedinurl, pic, source)
+                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], pic[7], source[8])
                             update_src_rows = [
-                                (row[8], row[0], row[6])
+                                (row[8], row[0], row[6])  # (source, userid, linkedinurl)
                                 for row in batch_rows if row[8]
                             ]
                         else:
-                            # batch tuple: (userid, username, name, company, jobtitle, country, linkedinurl, source)
+                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], source[7])
                             update_src_rows = [
-                                (row[7], row[0], row[6])
+                                (row[7], row[0], row[6])  # (source, userid, linkedinurl)
                                 for row in batch_rows if row[7]
                             ]
                         if update_src_rows:
