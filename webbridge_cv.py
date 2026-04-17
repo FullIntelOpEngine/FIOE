@@ -124,7 +124,8 @@ def _country_from_linkedin_url(url):
     """Extract country name from a LinkedIn profile URL subdomain.
 
     For example, ``https://cn.linkedin.com/in/...`` yields ``China``.
-    URLs with ``www`` or no recognisable subdomain return ``None``.
+    URLs with ``www`` or no recognisable country subdomain return ``None``.
+    Only two-character codes (ISO 3166-1 alpha-2) are matched.
     """
     if not url:
         return None
@@ -133,11 +134,11 @@ def _country_from_linkedin_url(url):
         return None
     host = m.group(1).lower()  # e.g. "cn.linkedin.com"
     parts = host.split(".")
-    # Expect pattern: <code>.linkedin.com  (3 parts, first part is 2-char country code)
+    # Expect pattern: <code>.linkedin.com  (3 parts, first part is a country code)
     if len(parts) < 3:
         return None
     code = parts[0]
-    if code in ("www", ""):
+    if not code or code == "www" or len(code) != 2:
         return None
     country_map = _load_countrycode_map()
     return country_map.get(code) or None

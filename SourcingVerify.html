@@ -3564,24 +3564,24 @@ let _svCountryCodeMap = null;
 (function _loadSvCountryCodes() {
   fetch('countrycode.json')
     .then(r => r.ok ? r.json() : null)
-    .catch(() => null)
+    .catch(err => { console.warn('[SourcingVerify] Failed to load countrycode.json:', err); return null; })
     .then(m => { if (m) _svCountryCodeMap = m; });
 })();
 
 /**
  * Extract the country name from a LinkedIn profile URL subdomain.
  * e.g. https://cn.linkedin.com/in/... → "China"
- * Returns null when no recognisable country subdomain is found.
+ * Returns null when no recognisable two-character country subdomain is found.
  */
 function _countryFromLinkedInUrl(url) {
   if (!url) return null;
   const m = url.trim().match(/^https?:\/\/([^/]+)\/in\//i);
   if (!m) return null;
   const parts = m[1].toLowerCase().split('.');
-  // Expect <code>.linkedin.com (3+ parts, first = 2-letter country code)
+  // Expect <code>.linkedin.com (3+ parts, first = 2-letter ISO country code)
   if (parts.length < 3) return null;
   const code = parts[0];
-  if (!code || code === 'www') return null;
+  if (!code || code === 'www' || code.length !== 2) return null;
   return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
 }
 
