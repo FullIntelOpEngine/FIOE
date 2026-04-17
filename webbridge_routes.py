@@ -5599,17 +5599,20 @@ def linkdapi_get_profile():
         import json as _json  # noqa: PLC0415
 
         class _NoSNIHTTPSConn(_http.HTTPSConnection):
-            """HTTPSConnection that suppresses the TLS SNI extension.
+            """HTTPSConnection that works around api.linkd.io's TLS quirks.
 
-            api.linkd.io returns a fatal ``TLSV1_UNRECOGNIZED_NAME`` (alert 112)
-            when it receives a TLS ClientHello that includes an SNI hostname it
-            does not recognise.  ``ssl.OP_NO_TLSEXT`` (which disabled SNI) was
-            removed in Python 3.12+.
-
-            The reliable cross-version fix is to override ``connect()`` and call
-            ``ctx.wrap_socket`` with ``server_hostname=None``.  Without a
-            ``server_hostname`` the TLS stack omits the SNI extension entirely,
-            so the server never sees the name and cannot reject it."""
+            Two compounding problems:
+            1. The server sends an ``unrecognized_name`` (alert 112) warning
+               during the TLS handshake.  Passing ``server_hostname=None`` to
+               ``ctx.wrap_socket`` suppresses the SNI extension so the server
+               has no name to complain about.
+            2. OpenSSL 3 / Python 3.12 with ``PROTOCOL_TLS_CLIENT`` negotiates
+               TLS 1.3 by default.  RFC 8446 §6 requires TLS 1.3 clients to
+               treat ALL warning-level alerts as fatal, so the server's
+               ``unrecognized_name`` warning kills the handshake even without
+               SNI.  Capping ``maximum_version`` at TLS 1.2 keeps us in
+               RFC 6066 §3 territory, where that alert is explicitly non-fatal
+               and OpenSSL ignores it."""
 
             def connect(self):
                 timeout = getattr(self, "timeout", _socket.getdefaulttimeout())
@@ -5620,6 +5623,14 @@ def linkdapi_get_profile():
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
                     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                    # Cap at TLS 1.2: RFC 8446 §6 requires TLS 1.3 clients
+                    # to treat ALL warning-level alerts as fatal.  The server
+                    # at api.linkd.io sends unrecognized_name(112) as a TLS
+                    # warning during handshake; with TLS 1.3 that terminates
+                    # the connection.  In TLS 1.2 (RFC 6066 §3) that alert is
+                    # explicitly non-fatal so OpenSSL ignores it and the
+                    # handshake completes.
+                    ctx.maximum_version = ssl.TLSVersion.TLSv1_2
                     # server_hostname=None → no SNI extension in the TLS ClientHello
                     self.sock = ctx.wrap_socket(raw, server_hostname=None)
                 except Exception:
