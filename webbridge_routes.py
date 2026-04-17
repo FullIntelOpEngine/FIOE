@@ -2728,6 +2728,64 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
         return [], 0
 
 
+# ---------------------------------------------------------------------------
+# Xray → provider-native query translation
+# ---------------------------------------------------------------------------
+# Providers that natively accept Google-style Xray queries (site:, OR, AND,
+# -intitle:, etc.) and can be passed the query string unchanged.
+_XRAY_NATIVE_PROVIDERS = frozenset({"serper", "dataforseo", "google_cse"})
+
+
+def _translate_xray_for_provider(query: str, provider: str) -> str:
+    """Translate a Google Xray search query into the syntax expected by *provider*.
+
+    For providers in ``_XRAY_NATIVE_PROVIDERS`` the query is returned as-is.
+    For all other providers (e.g. LinkedIn / LinkedAPI.io) the active LLM
+    (Gemini / OpenAI / Anthropic via ``unified_llm_call_text``) is used to
+    rewrite the query into a simpler keyword-based format that the provider
+    API understands.
+
+    Returns the translated query, or falls back to the original query on any
+    LLM failure so searches are never silently skipped.
+    """
+    if provider in _XRAY_NATIVE_PROVIDERS:
+        return query
+
+    prompt = (
+        "You are a search-query translator.  The user has a Google Xray boolean "
+        "search string designed for Google Custom Search / Serper / DataforSEO.  "
+        "Rewrite it into a simple keyword query suitable for a generic people-search "
+        "API (like LinkedIn search).  "
+        "Rules:\n"
+        "1. Remove any 'site:' operators entirely.\n"
+        "2. Replace 'AND' with a space.\n"
+        "3. Keep OR groupings but simplify them — e.g. (\"Java Developer\" OR \"Java Engineer\") "
+        "stays as (\"Java Developer\" OR \"Java Engineer\").\n"
+        "4. Remove exclusions like -intitle:\"jobs\", -inurl:\"dir/\", and seniority "
+        "exclusion blocks (e.g. -(\"intern\" OR \"junior\")).\n"
+        "5. Preserve quoted exact-match phrases.\n"
+        "6. Return ONLY the rewritten query string — no explanation, no markdown.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+
+    try:
+        translated = unified_llm_call_text(
+            prompt,
+            temperature=0.0,
+            max_output_tokens=512,
+        )
+        if translated and translated.strip():
+            cleaned = translated.strip().strip("`").strip()
+            logger.info(f"[Search] Xray→{provider} translation: {query!r} → {cleaned!r}")
+            return cleaned
+    except Exception as exc:
+        logger.warning(f"[Search] Xray→{provider} translation failed: {exc}")
+
+    # Fallback: return original query so searches still run
+    logger.warning(f"[Search] Xray→{provider} translation returned empty; using original query")
+    return query
+
+
 def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = None,
                         user_provider: str = None, user_serper_key: str = None,
                         user_dfs_login: str = None, user_dfs_password: str = None,
@@ -2745,6 +2803,9 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     If the per-user provider returns zero results (suggesting key failure / exhausted
     credits), falls back to the admin config and sets
     ``_search_fallback_flag.used = True`` so callers can detect the fallback.
+
+    For providers that do not natively support Google Xray syntax the query is
+    first translated via the active LLM (see ``_translate_xray_for_provider``).
 
     Returns ``(results, estimated_total)`` identical to the individual adapters.
     """
@@ -2765,7 +2826,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
         _search_fallback_flag.used = True
     if user_provider == 'linkedin' and user_linkedin_key:
-        results, total = linkedin_search_page(query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
+        li_query = _translate_xray_for_provider(query, 'linkedin')
+        results, total = linkedin_search_page(li_query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
         if results:
             return results, total
         logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
@@ -2790,7 +2852,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         li_cfg = cfg.get("linkedin", {})
         li_key = li_cfg.get("api_key", "")
         if li_key:
-            return linkedin_search_page(query, li_key, num, gl_hint=gl_hint, page=page)
+            li_query = _translate_xray_for_provider(query, 'linkedin')
+            return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -2806,7 +2869,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     li_cfg = cfg.get("linkedin", {})
     li_key = li_cfg.get("api_key", "")
     if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
-        return linkedin_search_page(query, li_key, num, gl_hint=gl_hint, page=page)
+        li_query = _translate_xray_for_provider(query, 'linkedin')
+        return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
 
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
@@ -3130,6 +3194,24 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             elif _li_on:
                 _provider_label = "LinkedIn"
 
+    # Determine the effective provider for Xray-translation decisions.
+    _eff_provider = None
+    if user_provider in ('serper', 'dataforseo', 'linkedin'):
+        _eff_provider = user_provider
+    elif selected_provider in ('serper', 'dataforseo', 'linkedin'):
+        _eff_provider = selected_provider
+    else:
+        _sp_cfg = _load_search_provider_config()
+        for _p in ('serper', 'dataforseo', 'linkedin'):
+            _pc = _sp_cfg.get(_p, {})
+            if _pc.get("enabled", "disabled") == "enabled" and (
+                _pc.get("api_key") or (_pc.get("login") and _pc.get("password"))
+            ):
+                _eff_provider = _p
+                break
+
+    _needs_translation = _eff_provider and _eff_provider not in _XRAY_NATIVE_PROVIDERS
+
     global_collected = 0
 
     for q in queries:
@@ -3143,6 +3225,10 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         # overall target, so shortfalls from earlier queries are automatically filled.
         gathered=0; start_index=1; pages_fetched=0
         effective_target = still_needed
+
+        if _needs_translation:
+            add_message(job_id, f"Translating Xray query for {_provider_label}…")
+
         add_message(job_id, f"Running {_provider_label}: {q} target={effective_target} (need {still_needed} more to reach {target_limit})")
 
         while gathered < effective_target:
