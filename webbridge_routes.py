@@ -2905,8 +2905,10 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
                 "snippet": " | ".join(snippet_parts),
                 "displayLink": "linkedin.com",
                 "_source": "apollo",
-                "_apollo_id": person.get("id") or "",
             }
+            apollo_id = (person.get("id") or "").strip()
+            if apollo_id:
+                result["_apollo_id"] = apollo_id
             out.append(result)
         if skipped:
             logger.info(f"[Apollo] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
