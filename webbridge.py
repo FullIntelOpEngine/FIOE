@@ -1261,6 +1261,19 @@ def admin_get_get_profiles_config():
         }
     }), 200
 
+
+@app.get("/api/linkdapi-status")
+@_rate(_make_flask_limit("api"))
+@_require_session
+def api_linkdapi_status():
+    """Return whether linkdapi is enabled — user-accessible (no admin required)."""
+    try:
+        config = _load_get_profiles_config()
+        ld = config.get("linkdapi", {})
+        return jsonify({"enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key"))}), 200
+    except Exception:
+        return jsonify({"enabled": False}), 200
+
 @app.post("/admin/get-profiles-config")
 @_rate(_make_flask_limit("admin_endpoints"))
 @_csrf_required

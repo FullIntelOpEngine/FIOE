@@ -2752,7 +2752,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
-          fetch('/admin/get-profiles-config', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch('/api/linkdapi-status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
         ]).then(function(results){
             var svcData = results[0];
             var gpData  = results[1];
@@ -2760,8 +2760,13 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               var lp = (svcData.providers.llm || '').toLowerCase();
               window.__HAS_CUSTOM_LLM = (lp === 'openai' || lp === 'anthropic');
             }
-            if (gpData && gpData.config && gpData.config.linkdapi) {
-              window.__LINKDAPI_ENABLED = gpData.config.linkdapi.enabled === 'enabled' && gpData.config.linkdapi.api_key_set;
+            if (gpData && typeof gpData.enabled === 'boolean') {
+              window.__LINKDAPI_ENABLED = gpData.enabled;
+            }
+            // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
+            // to show GP buttons (races: config fetch resolves after renderTable ran).
+            if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' && rowsData && rowsData.length > 0) {
+              renderTable();
             }
             if (window.__IS_BYOK || window.__HAS_CUSTOM_LLM) {
               var metricsBox = document.getElementById('metricsBox');
