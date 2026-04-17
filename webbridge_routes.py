@@ -5599,18 +5599,30 @@ def linkdapi_get_profile():
 
         class _LinkdapiAdapter(HTTPAdapter):
             """Custom adapter that works around the TLSV1_UNRECOGNIZED_NAME SSL
-            alert sent by api.linkd.io.  The alert is sent during the TLS
-            handshake (before cert verification), so ``verify=False`` alone is
-            insufficient.  Setting ssl.OP_NO_TLSEXT disables SNI (and other TLS
-            extensions) so the server never sees the SNI it would reject."""
+            alert sent by api.linkd.io.  The alert is issued by the server
+            during the TLS handshake when it receives an SNI name it does not
+            recognise.  ``verify=False`` alone is insufficient because the alert
+            arrives before certificate verification.
+
+            ``ssl.OP_NO_TLSEXT`` (which disables SNI) was removed in Python
+            3.12+, so instead we patch ``ctx.wrap_socket`` to strip the
+            ``server_hostname`` keyword argument before the TLS handshake.
+            Dropping ``server_hostname`` prevents the TLS ClientHello from
+            including the SNI extension at all, which resolves the error on
+            every Python version."""
 
             def init_poolmanager(self, *args, **kwargs):
                 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                if hasattr(ssl, "OP_NO_TLSEXT"):
-                    ctx.options |= ssl.OP_NO_TLSEXT
+                # Patch wrap_socket to omit server_hostname → no SNI extension
+                _orig_wrap = ctx.wrap_socket
+                def _wrap_no_sni(sock, *a, **kw):  # noqa: E306
+                    kw.pop("server_hostname", None)
+                    return _orig_wrap(sock, *a, **kw)
+                ctx.wrap_socket = _wrap_no_sni
                 kwargs["ssl_context"] = ctx
+                kwargs["assert_hostname"] = False
                 super().init_poolmanager(*args, **kwargs)
 
         _linkdapi_session = requests.Session()

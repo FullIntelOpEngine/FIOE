@@ -3856,11 +3856,11 @@ function buildRow(row) {
           gpBtn.textContent = 'GP';
           gpBtn.title = 'Get full LinkedIn profile via linkdapi';
           gpBtn.style.cssText =
-            'width:32px; height:32px; border:2px solid #1a7a4a; background:#e6f5ee;' +
-            ' color:#1a7a4a; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
+            'width:32px; height:32px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.12);' +
+            ' color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
             ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-          gpBtn.onmouseover = function () { this.style.background = '#1a7a4a'; this.style.color = '#fff'; };
-          gpBtn.onmouseout  = function () { this.style.background = '#e6f5ee'; this.style.color = '#1a7a4a'; };
+          gpBtn.onmouseover = function () { this.style.background = 'var(--robins-egg,#6deaf9)'; this.style.color = 'var(--azure-dragon,#073679)'; };
+          gpBtn.onmouseout  = function () { this.style.background = 'rgba(109,234,249,0.12)'; this.style.color = 'var(--azure-dragon,#073679)'; };
           gpBtn.addEventListener('click', () => _downloadLinkdapiProfile(row.linkedinurl, gpBtn));
           checkboxCell.appendChild(gpBtn);
       } else {
