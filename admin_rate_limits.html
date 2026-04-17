@@ -1581,7 +1581,6 @@ function renderPage(container) {
     _knob.style.left    = on ? '27px' : '3px';
     _config.rates_enabled = on;
   }
-  globalToggleCard.querySelector('span[style*="inset:0"]') && void 0; // noop ref
   // clicking the track toggles
   _slider.addEventListener('click', () => { _chk.checked = !_chk.checked; _updateToggleUI(_chk.checked); });
   _chk.addEventListener('change', () => _updateToggleUI(_chk.checked));

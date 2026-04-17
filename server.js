@@ -3466,12 +3466,24 @@ app.delete('/candidates/clear-user', requireLogin, userRateLimit('bulk_delete'),
     try {
       if (fs.existsSync(SEARCH_XLS_DIR)) {
         const _xlsPrefix = `${safe}_`;
+        const _xlsBase   = path.resolve(SEARCH_XLS_DIR);
         const _xlsEntries = fs.readdirSync(SEARCH_XLS_DIR).filter(f => {
+          // Filename must start with safe_username prefix and end with _results.xlsx/.csv.
+          // Also reject any entry whose name contains a path separator to prevent traversal.
+          if (f.includes('/') || f.includes('\\')) return false;
           const lower = f.toLowerCase();
           return f.startsWith(_xlsPrefix) && (lower.endsWith('_results.xlsx') || lower.endsWith('_results.csv'));
         });
         for (const f of _xlsEntries) {
-          try { fs.unlinkSync(path.join(SEARCH_XLS_DIR, f)); } catch (e) {
+          try {
+            const resolved = path.resolve(path.join(SEARCH_XLS_DIR, f));
+            // Verify the resolved path is still inside SEARCH_XLS_DIR
+            if (!resolved.startsWith(_xlsBase + path.sep) && resolved !== _xlsBase) {
+              console.warn(`[clear-user] Skipping searchxls file outside base dir: ${f}`);
+              continue;
+            }
+            fs.unlinkSync(resolved);
+          } catch (e) {
             console.warn(`[clear-user] Could not delete searchxls file ${f}:`, e.message);
           }
         }
