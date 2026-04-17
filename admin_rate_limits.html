@@ -1201,6 +1201,7 @@ let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled'
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, linkedin: { api_key_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
+let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -1260,12 +1261,13 @@ async function loadData() {
   const mainEl = document.getElementById('mainContent');
   mainEl.innerHTML = '<div class="page-msg">Loading…</div>';
   try {
-    const [rlRes, appRes, evRes, spRes, llmRes] = await Promise.all([
+    const [rlRes, appRes, evRes, spRes, llmRes, gpRes] = await Promise.all([
       fetch(`${API}/admin/rate-limits`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/appeals`,     { credentials: 'same-origin' }),
       fetch(`${API}/admin/email-verif-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/search-provider-config`, { credentials: 'same-origin' }),
       fetch(`${API}/admin/llm-provider-config`, { credentials: 'same-origin' }),
+      fetch(`${API}/admin/get-profiles-config`, { credentials: 'same-origin' }),
     ]);
     if (rlRes.status === 401) { location.reload(); return; }
     if (rlRes.status === 403) {
@@ -1316,6 +1318,11 @@ async function loadData() {
     if (llmRes.ok) {
       const llmData = await llmRes.json();
       _llmConfig = llmData || _llmConfig;
+    }
+
+    if (gpRes && gpRes.ok) {
+      const gpData = await gpRes.json();
+      _getProfilesConfig = gpData.config || _getProfilesConfig;
     }
 
     renderPage(mainEl);
@@ -3720,6 +3727,7 @@ function renderApiKeysCard() {
     { id: 'apikeys-search-provider', label: '🔍 Search Provider'   },
     { id: 'apikeys-llm-model',       label: '🤖 LLM Model'         },
     { id: 'apikeys-contact-gen',     label: '📇 Contact Generation' },
+    { id: 'apikeys-get-profiles',    label: '👤 Get Profiles'       },
   ];
   function _switchApiKeySubTab(tabId) {
     subTabBar.querySelectorAll('.apikey-sub-tab').forEach(b => b.classList.toggle('active', b.dataset.subTab === tabId));
@@ -3774,6 +3782,16 @@ function renderApiKeysCard() {
   contactGenPanelDesc.textContent = 'Configure the ContactOut API for contact generation. When enabled and keys are set, App.js "Generate Email" mode can use ContactOut as an alternative to the default Gemini provider.';
   contactGenPanel.appendChild(contactGenPanelDesc);
   card.appendChild(contactGenPanel);
+
+  // ── Get Profiles panel ────────────────────────────────────────────────
+  const getProfilesPanel = document.createElement('div');
+  getProfilesPanel.id = 'apikeys-get-profiles';
+  getProfilesPanel.className = 'apikey-sub-panel';
+  const getProfilesPanelDesc = document.createElement('p');
+  getProfilesPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
+  getProfilesPanelDesc.textContent = 'Configure the linkdapi key for full LinkedIn profile retrieval. When enabled, a "GP" button appears in SourcingVerify.html for results from Google CSE, Serper, or DataforSEO — clicking it downloads the complete LinkedIn profile via linkdapi.';
+  getProfilesPanel.appendChild(getProfilesPanelDesc);
+  card.appendChild(getProfilesPanel);
 
   const SERVICES = ['neverbounce', 'zerobounce', 'bouncer'];
 
@@ -4719,6 +4737,109 @@ function renderApiKeysCard() {
 
     sec.appendChild(row);
     contactGenPanel.appendChild(sec);
+  })();
+
+  // ── linkdapi (Get Profiles) service section ────────────────────────────────
+  (function renderLinkdapiSection() {
+    const ldCfg = (_getProfilesConfig && _getProfilesConfig.linkdapi) || { api_key_set: false, enabled: 'disabled' };
+
+    const sec = document.createElement('div');
+    sec.className = 'apikey-service';
+
+    const h3 = document.createElement('h3');
+    h3.textContent = 'linkdapi';
+    sec.appendChild(h3);
+
+    const subDesc = document.createElement('p');
+    subDesc.style.cssText = 'color:var(--muted);font-size:12px;margin:4px 0 12px';
+    subDesc.textContent = 'Full LinkedIn profile retrieval via linkdapi (api.linkd.io). Used by the "GP" button in SourcingVerify.html for CSE/Serper/DataforSEO search results.';
+    sec.appendChild(subDesc);
+
+    const row = document.createElement('div');
+    row.className = 'apikey-row';
+
+    // API Key input
+    const keyField = document.createElement('div');
+    keyField.className = 'apikey-field';
+    const keyLabel = document.createElement('label');
+    keyLabel.htmlFor = 'apikey-linkdapi';
+    keyLabel.textContent = 'API Key';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.id = 'apikey-linkdapi';
+    keyInput.className = 'apikey-input';
+    keyInput.placeholder = ldCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter linkdapi API key…';
+    keyInput.autocomplete = 'off';
+    keyField.appendChild(keyLabel);
+    keyField.appendChild(keyInput);
+    if (ldCfg.api_key_set) {
+      const badge = document.createElement('div');
+      badge.className = 'apikey-set-badge';
+      badge.textContent = '✅ API key saved';
+      keyField.appendChild(badge);
+    }
+    row.appendChild(keyField);
+
+    // Enable/Disable dropdown
+    const enableField = document.createElement('div');
+    enableField.className = 'apikey-field';
+    enableField.style.maxWidth = '180px';
+    const enableLabel = document.createElement('label');
+    enableLabel.htmlFor = 'apikey-linkdapi-enable';
+    enableLabel.textContent = 'Status';
+    const enableSelect = document.createElement('select');
+    enableSelect.id = 'apikey-linkdapi-enable';
+    enableSelect.className = 'apikey-input';
+    enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
+    enableSelect.value = ldCfg.enabled || 'disabled';
+    enableField.appendChild(enableLabel);
+    enableField.appendChild(enableSelect);
+    row.appendChild(enableField);
+
+    // Save button
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'apikey-save-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.addEventListener('click', async () => {
+      const apiKey  = keyInput.value.trim();
+      const enabled = apiKey ? 'enabled' : enableSelect.value;
+      if (apiKey) enableSelect.value = 'enabled';
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving…';
+      try {
+        const payload = { linkdapi: { enabled } };
+        if (apiKey) payload.linkdapi.api_key = apiKey;
+        const r = await fetch(`${API}/admin/get-profiles-config`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: csrfHeaders(),
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
+        const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || ldCfg.api_key_set);
+        _getProfilesConfig.linkdapi = { api_key_set: keyStillSet, enabled };
+        keyInput.value = '';
+        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter linkdapi API key…';
+        const existingBadge = keyField.querySelector('.apikey-set-badge');
+        if (keyStillSet && !existingBadge) {
+          const badge = document.createElement('div');
+          badge.className = 'apikey-set-badge';
+          badge.textContent = '✅ API key saved';
+          keyField.appendChild(badge);
+        }
+        if (!keyStillSet && existingBadge) existingBadge.remove();
+        toast('linkdapi settings saved', 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save';
+      }
+    });
+    row.appendChild(saveBtn);
+
+    sec.appendChild(row);
+    getProfilesPanel.appendChild(sec);
   })();
 
   return card;

@@ -71,6 +71,7 @@ from webbridge import (
     _load_search_provider_config,
     _load_llm_provider_config,
     _load_email_verif_config,
+    _load_get_profiles_config,
 )
 
 # Thread-local flag set by unified_search_page when a per-user search key fails
@@ -5554,6 +5555,74 @@ def rocketreach_download_profile():
     except Exception as exc:
         logger.warning(f"[RocketReach] download-profile error: {exc}")
         return jsonify({"error": "Failed to fetch RocketReach profile"}), 500
+
+
+# ---------------------------------------------------------------------------
+# linkdapi: full LinkedIn profile retrieval
+# ---------------------------------------------------------------------------
+
+@app.get("/api/linkdapi/get-profile")
+@_require_session
+def linkdapi_get_profile():
+    """Fetch the full LinkedIn profile via linkdapi for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
+
+    Calls GET https://api.linkd.io/api/v1/profile/full?username=<username>
+    using the admin-configured LINKDAPI_API_KEY.  Returns the raw JSON profile.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    # Extract LinkedIn username from URL
+    import re as _re
+    _m = _re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1).rstrip("/")
+
+    gp_cfg = _load_get_profiles_config()
+    linkdapi = gp_cfg.get("linkdapi", {})
+    if linkdapi.get("enabled") != "enabled":
+        return jsonify({"error": "linkdapi is not enabled"}), 503
+    api_key = (linkdapi.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
+
+    try:
+        r = requests.get(
+            "https://api.linkd.io/api/v1/profile/full",
+            params={"username": username},
+            headers={
+                "x-api-key": api_key,
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code == 401:
+            return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "linkdapi returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+        if r.status_code == 404:
+            return jsonify({"error": f"Profile not found for username '{username}' (HTTP 404)"}), 404
+        if not r.ok:
+            _err_body = ""
+            try:
+                _err_body = r.json()
+            except Exception:
+                _err_body = r.text[:200]
+            return jsonify({"error": f"linkdapi error (HTTP {r.status_code}): {_err_body}"}), r.status_code
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[linkdapi] get-profile HTTP error: {http_err}")
+        return jsonify({"error": f"linkdapi API request failed: {http_err}"}), 502
+    except Exception as exc:
+        logger.warning(f"[linkdapi] get-profile error: {exc}")
+        return jsonify({"error": f"Failed to fetch linkdapi profile: {exc}"}), 500
 
 
 @app.post("/api/user-service-config/activate")

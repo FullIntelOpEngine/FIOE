@@ -2748,13 +2748,20 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         // Store BYOK status and hide token metric displays for BYOK users
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
-        // Fetch per-user service config to check custom LLM activation
-        fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-          .then(function(r){ return r.ok ? r.json() : null; })
-          .then(function(svcData){
+        window.__LINKDAPI_ENABLED = false;
+        // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
+        Promise.all([
+          fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+          fetch('/admin/get-profiles-config', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
+        ]).then(function(results){
+            var svcData = results[0];
+            var gpData  = results[1];
             if (svcData && svcData.active && svcData.providers) {
               var lp = (svcData.providers.llm || '').toLowerCase();
               window.__HAS_CUSTOM_LLM = (lp === 'openai' || lp === 'anthropic');
+            }
+            if (gpData && gpData.config && gpData.config.linkdapi) {
+              window.__LINKDAPI_ENABLED = gpData.config.linkdapi.enabled === 'enabled' && gpData.config.linkdapi.api_key_set;
             }
             if (window.__IS_BYOK || window.__HAS_CUSTOM_LLM) {
               var metricsBox = document.getElementById('metricsBox');
@@ -3713,6 +3720,42 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 }
 
 // ---------------------------------------------------------------------------
+// linkdapi full profile download helper (for CSE/Serper/DataforSEO rows)
+// ---------------------------------------------------------------------------
+async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
+    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'linkdapi_profile';
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[linkdapi] get-profile error:', err);
+    alert(`linkdapi profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Unified provider button factory for the first-column cell in buildRow().
 // Returns a <button> element for known API providers (ContactOut, Apollo,
 // RocketReach), or null for rows without a provider source.
@@ -3800,6 +3843,20 @@ function buildRow(row) {
       const providerBtn = _createProviderButton(row.source, row.linkedinurl);
       if (providerBtn) {
           checkboxCell.appendChild(providerBtn);
+      } else if (window.__LINKDAPI_ENABLED) {
+          // GP button: linkdapi full profile retrieval for CSE/Serper/DataforSEO rows
+          const gpBtn = document.createElement('button');
+          gpBtn.className = 'gp-tag';
+          gpBtn.textContent = 'GP';
+          gpBtn.title = 'Get full LinkedIn profile via linkdapi';
+          gpBtn.style.cssText =
+            'width:32px; height:32px; border:2px solid #1a7a4a; background:#e6f5ee;' +
+            ' color:#1a7a4a; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
+            ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+          gpBtn.onmouseover = function () { this.style.background = '#1a7a4a'; this.style.color = '#fff'; };
+          gpBtn.onmouseout  = function () { this.style.background = '#e6f5ee'; this.style.color = '#1a7a4a'; };
+          gpBtn.addEventListener('click', () => _downloadLinkdapiProfile(row.linkedinurl, gpBtn));
+          checkboxCell.appendChild(gpBtn);
       } else {
           // Standard checkbox for selection (invisible — provider buttons are the primary first-column control)
           const cb = document.createElement('input');

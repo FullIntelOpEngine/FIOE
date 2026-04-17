@@ -855,6 +855,68 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   }
 });
 
+// ── Admin: get-profiles-config (linkdapi) ─────────────────────────────────────
+const _GET_PROFILES_CONFIG_PATHS = [
+  path.join(__dirname, 'get_profiles_config.json'),
+  path.join(__dirname, '..', 'get_profiles_config.json'),
+  path.join(__dirname, '..', '..', 'get_profiles_config.json'),
+].filter(Boolean);
+
+function _resolveGetProfilesConfigPath() {
+  for (const p of _GET_PROFILES_CONFIG_PATHS) {
+    try { fs.accessSync(p, fs.constants.R_OK); return p; } catch (_) {}
+  }
+  return _GET_PROFILES_CONFIG_PATHS[0];
+}
+
+function loadGetProfilesConfig() {
+  try {
+    const raw = fs.readFileSync(_resolveGetProfilesConfigPath(), 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return { linkdapi: { api_key: '', enabled: 'disabled' } };
+  }
+}
+
+function saveGetProfilesConfig(config) {
+  const p = _resolveGetProfilesConfigPath();
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+app.get('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const config = loadGetProfilesConfig();
+  const linkdapi = config.linkdapi || {};
+  res.json({
+    config: {
+      linkdapi: { api_key_set: !!linkdapi.api_key, enabled: linkdapi.enabled || 'disabled' },
+    },
+  });
+});
+
+app.post('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
+  const current = loadGetProfilesConfig();
+  if (!current.linkdapi) current.linkdapi = { api_key: '', enabled: 'disabled' };
+  if (body.linkdapi && typeof body.linkdapi === 'object') {
+    const e = body.linkdapi;
+    if (typeof e.api_key === 'string' && e.api_key !== '') current.linkdapi.api_key = e.api_key;
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled value for linkdapi' });
+      current.linkdapi.enabled = e.enabled;
+      if (e.enabled === 'disabled') current.linkdapi.api_key = '';
+    }
+  }
+  try {
+    saveGetProfilesConfig(current);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── User-facing: list enabled email verification services ───────────────────
 // NOTE: registered again after the CORS middleware so cross-origin App.js calls succeed.
 // This placeholder is intentionally left blank (route moved below the cors setup).
