@@ -78,6 +78,13 @@ from webbridge import (
 # search to record fallback in the JOBS dict for the front-end.
 _search_fallback_flag = threading.local()
 
+
+class ProviderSearchError(Exception):
+    """Raised when a selected API provider (ContactOut/Apollo/RocketReach) search
+    fails or has no key configured.  The message contains the specific reason so
+    it can be surfaced directly in job-status messages without a CSE fallback."""
+    pass
+
 @app.post("/login")
 @_rate(_make_flask_limit("login"))
 @_check_user_rate("login")
@@ -2660,6 +2667,94 @@ def linkedin_search_page(query: str, api_key: str, num: int, gl_hint: str = None
         logger.warning(f"[LinkedIn] page fetch failed: {e}")
         return [], 0
 
+_APOLLO_SENIORITY_MAP = {
+    "intern": "intern", "junior": "entry", "entry": "entry", "associate": "entry",
+    "senior": "senior", "sr": "senior", "lead": "senior",
+    "manager": "manager", "mgr": "manager",
+    "director": "director", "dir": "director",
+    "vp": "vp", "vice president": "vp",
+    "head": "head",
+    "c_suite": "c_suite", "ceo": "c_suite", "cto": "c_suite", "cfo": "c_suite",
+    "chief": "c_suite", "partner": "partner", "founder": "founder", "owner": "owner",
+}
+
+
+def _infer_apollo_seniority(job_titles: list) -> list:
+    """Return a deduplicated list of Apollo seniority codes inferred from job titles."""
+    result = []
+    for title in (job_titles or []):
+        low = (title or "").lower()
+        for kw, code in _APOLLO_SENIORITY_MAP.items():
+            if kw in low and code not in result:
+                result.append(code)
+    return result
+
+
+def _build_contactout_params_from_fields(job_titles: list, companies: list,
+                                          country: str, keywords: str = "") -> dict:
+    """Build a ContactOut People Search payload directly from form fields,
+    bypassing Xray query translation."""
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["job_title"] = titles
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        params["company"] = comps
+    if country:
+        params["location"] = [country]
+    kw = (keywords or "").strip()
+    if kw:
+        params["keyword"] = kw
+    logger.info(f"[ContactOut] Built params from fields: {params}")
+    return params
+
+
+def _build_apollo_params_from_fields(job_titles: list, companies: list,
+                                      country: str, keywords: str = "") -> dict:
+    """Build an Apollo People Search payload directly from form fields,
+    bypassing Xray query translation."""
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["person_titles"] = titles
+        params["include_similar_titles"] = True
+    if country:
+        params["person_locations"] = [country]
+    seniority = _infer_apollo_seniority(job_titles)
+    if seniority:
+        params["person_seniorities"] = seniority
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        # Apollo uses organization_names for company filtering
+        params["organization_names"] = comps
+    kw = (keywords or "").strip()
+    if kw:
+        params["q_keywords"] = kw
+    logger.info(f"[Apollo] Built params from fields: {params}")
+    return params
+
+
+def _build_rocketreach_params_from_fields(job_titles: list, companies: list,
+                                           country: str, keywords: str = "") -> dict:
+    """Build a RocketReach Person Search query payload directly from form fields,
+    bypassing Xray query translation."""
+    params: dict = {}
+    titles = [t for t in (job_titles or []) if t]
+    if titles:
+        params["current_title"] = titles
+    comps = [c for c in (companies or []) if c]
+    if comps:
+        params["current_employer"] = comps
+    if country:
+        params["location"] = [country]
+    kw = (keywords or "").strip()
+    if kw:
+        params["keyword"] = kw
+    logger.info(f"[RocketReach] Built params from fields: {params}")
+    return params
+
+
 def _translate_xray_to_contactout_params(query: str) -> dict:
     """Use the active LLM to translate a Google Xray search string into a
     ContactOut People Search API JSON payload.
@@ -2709,17 +2804,22 @@ def _translate_xray_to_contactout_params(query: str) -> dict:
 
 
 def contactout_people_search_page(query: str, api_key: str, num: int = 10,
-                                   gl_hint: str = None, page: int = 1):
+                                   gl_hint: str = None, page: int = 1,
+                                   raw_params: dict = None):
     """Call the ContactOut People Search API and map results to the standard
     ``(results, estimated_total)`` format used by the other search adapters.
 
     Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
     plus a ``_source`` key set to ``'contactout'`` to identify the origin.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
     """
     if not api_key:
-        return [], 0
-    params = _translate_xray_to_contactout_params(query)
+        raise ProviderSearchError("ContactOut API key is not configured. Add CONTACTOUT_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_contactout_params(query)
     params["page"] = page
+    logger.info(f"[ContactOut] Calling people/search — page={page} params={params}")
     try:
         r = requests.post(
             "https://api.contactout.com/v1/people/search",
@@ -2730,8 +2830,22 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
             json=params,
             timeout=30,
         )
-        r.raise_for_status()
-        data = r.json()
+        logger.info(f"[ContactOut] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except Exception:
+            resp_body = r.text[:500]
+        logger.debug(f"[ContactOut] Response body: {resp_body}")
+        if not r.ok:
+            # Extract the specific error message from the API response
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[ContactOut] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"ContactOut API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
         people = data.get("people") or data.get("profiles") or data.get("results") or []
         estimated_total = int(data.get("total") or data.get("count") or len(people))
         out = []
@@ -2779,10 +2893,19 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
             })
         if skipped:
             logger.info(f"[ContactOut] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[ContactOut] Returned {len(out)} results (total≈{estimated_total})")
         return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[ContactOut] Request timed out after 30 s")
+        raise ProviderSearchError("ContactOut API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[ContactOut] Connection error: {e}")
+        raise ProviderSearchError(f"ContactOut connection error: {e}")
     except Exception as e:
-        logger.warning(f"[ContactOut] people search failed: {e}")
-        return [], 0
+        logger.error(f"[ContactOut] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"ContactOut people search failed: {e}")
 
 
 def _translate_xray_to_apollo_params(query: str) -> dict:
@@ -2832,19 +2955,24 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
 
 
 def apollo_people_search_page(query: str, api_key: str, num: int = 10,
-                               gl_hint: str = None, page: int = 1):
+                               gl_hint: str = None, page: int = 1,
+                               raw_params: dict = None):
     """Call the Apollo People Search API and map results to the standard
     ``(results, estimated_total)`` format used by the other search adapters.
 
     Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
     plus a ``_source`` key set to ``'apollo'`` to identify the origin.
     A ``_apollo_id`` key is also stored to support the download-profile endpoint.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
     """
     if not api_key:
-        return [], 0
-    params = _translate_xray_to_apollo_params(query)
+        raise ProviderSearchError("Apollo API key is not configured. Add APOLLO_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_apollo_params(query)
     params["page"] = page
     params["per_page"] = num
+    logger.info(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
     try:
         r = requests.post(
             "https://api.apollo.io/api/v1/mixed_people/api_search",
@@ -2856,8 +2984,21 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
             json=params,
             timeout=30,
         )
-        r.raise_for_status()
-        data = r.json()
+        logger.info(f"[Apollo] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except Exception:
+            resp_body = r.text[:500]
+        logger.debug(f"[Apollo] Response body: {resp_body}")
+        if not r.ok:
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[Apollo] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"Apollo API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
         people = data.get("people") or []
         estimated_total = int(data.get("total_entries") or data.get("total") or len(people))
         out = []
@@ -2912,10 +3053,19 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
             out.append(result)
         if skipped:
             logger.info(f"[Apollo] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[Apollo] Returned {len(out)} results (total≈{estimated_total})")
         return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[Apollo] Request timed out after 30 s")
+        raise ProviderSearchError("Apollo API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[Apollo] Connection error: {e}")
+        raise ProviderSearchError(f"Apollo connection error: {e}")
     except Exception as e:
-        logger.warning(f"[Apollo] people search failed: {e}")
-        return [], 0
+        logger.error(f"[Apollo] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"Apollo people search failed: {e}")
 
 
 def _translate_xray_to_rocketreach_params(query: str) -> dict:
@@ -2962,17 +3112,22 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
 
 
 def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
-                                    gl_hint: str = None, page: int = 1):
+                                    gl_hint: str = None, page: int = 1,
+                                    raw_params: dict = None):
     """Call the RocketReach Person Search API and map results to the standard
     ``(results, estimated_total)`` format used by the other search adapters.
 
     Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
     plus a ``_source`` key set to ``'rocketreach'`` to identify the origin.
+
+    When ``raw_params`` is supplied (built from form fields), Xray translation
+    is bypassed and the params are used directly.
     """
     if not api_key:
-        return [], 0
-    params = _translate_xray_to_rocketreach_params(query)
+        raise ProviderSearchError("RocketReach API key is not configured. Add ROCKETREACH_API_KEY in admin_rate_limits.html → Contact Generation.")
+    params = dict(raw_params) if raw_params else _translate_xray_to_rocketreach_params(query)
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
+    logger.info(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
     try:
         r = requests.post(
             "https://api.rocketreach.co/api/v2/search",
@@ -2984,8 +3139,21 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
             json=body,
             timeout=30,
         )
-        r.raise_for_status()
-        data = r.json()
+        logger.info(f"[RocketReach] HTTP status: {r.status_code}")
+        try:
+            resp_body = r.json()
+        except Exception:
+            resp_body = r.text[:500]
+        logger.debug(f"[RocketReach] Response body: {resp_body}")
+        if not r.ok:
+            if isinstance(resp_body, dict):
+                api_msg = (resp_body.get("message") or resp_body.get("error")
+                           or resp_body.get("detail") or str(resp_body))
+            else:
+                api_msg = str(resp_body)[:300]
+            logger.error(f"[RocketReach] API error HTTP {r.status_code}: {api_msg}")
+            raise ProviderSearchError(f"RocketReach API error (HTTP {r.status_code}): {api_msg}")
+        data = resp_body if isinstance(resp_body, dict) else {}
         people = data.get("profiles") or data.get("people") or data.get("results") or []
         estimated_total = int(data.get("pagination", {}).get("total") or data.get("total") or len(people))
         out = []
@@ -3035,10 +3203,19 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
             out.append(result)
         if skipped:
             logger.info(f"[RocketReach] skipped {skipped}/{len(people)} profile(s) with no linkedin_url")
+        logger.info(f"[RocketReach] Returned {len(out)} results (total≈{estimated_total})")
         return out, estimated_total
+    except ProviderSearchError:
+        raise
+    except requests.exceptions.Timeout:
+        logger.error("[RocketReach] Request timed out after 30 s")
+        raise ProviderSearchError("RocketReach API request timed out after 30 seconds.")
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[RocketReach] Connection error: {e}")
+        raise ProviderSearchError(f"RocketReach connection error: {e}")
     except Exception as e:
-        logger.warning(f"[RocketReach] people search failed: {e}")
-        return [], 0
+        logger.error(f"[RocketReach] Unexpected error during people search: {e}")
+        raise ProviderSearchError(f"RocketReach people search failed: {e}")
 
 
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
@@ -3174,7 +3351,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
                         user_provider: str = None, user_serper_key: str = None,
                         user_dfs_login: str = None, user_dfs_password: str = None,
                         user_linkedin_key: str = None,
-                        selected_provider: str = None):
+                        selected_provider: str = None,
+                        raw_form_fields: dict = None):
     """Search wrapper that routes to the configured active provider.
 
     Per-user provider (from Option A service config) takes priority over the global
@@ -3184,6 +3362,12 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
     config lookup is overridden to route to that specific provider instead.
 
+    When ``selected_provider`` is 'contactout', 'apollo', or 'rocketreach', the search
+    is executed *directly* against that provider's API using ``raw_form_fields`` (if
+    supplied) to build native params without any Xray translation.  No fallback to
+    Google CSE is performed — a ``ProviderSearchError`` is raised if the key is missing
+    or the API call fails.
+
     If the per-user provider returns zero results (suggesting key failure / exhausted
     credits), falls back to the admin config and sets
     ``_search_fallback_flag.used = True`` so callers can detect the fallback.
@@ -3192,6 +3376,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     first translated via the active LLM (see ``_translate_xray_for_provider``).
 
     Returns ``(results, estimated_total)`` identical to the individual adapters.
+    Raises ``ProviderSearchError`` for ContactOut/Apollo/RocketReach failures.
     """
     page = max(1, ((start_index - 1) // max(num, 1)) + 1)
 
@@ -3218,6 +3403,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
+    ev_cfg = _load_email_verif_config()
 
     # When a specific provider is selected via the AutoSourcing toggle, route to
     # that provider directly (if admin has keys configured for it).
@@ -3238,33 +3424,70 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if li_key:
             li_query = _translate_xray_for_provider(query, 'linkedin')
             return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
+
+    # ── Provider API searches (ContactOut / Apollo / RocketReach) ────────────
+    # These providers are called DIRECTLY with native API params built from the
+    # form fields.  NO fallback to Google CSE is permitted.  If the key is
+    # missing or the API call fails, ProviderSearchError is raised so the caller
+    # can surface the specific reason in the job status messages.
     elif selected_provider == 'contactout':
-        # ContactOut has its own structured People Search API.  Translate the Xray
-        # query to ContactOut JSON params via LLM and call it directly.
-        ev_cfg = _load_email_verif_config()
         co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
-        if co_key:
-            return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page)
-        # No ContactOut key configured — translate query and fall through to web search
-        query = _translate_xray_for_provider(query, 'contactout')
+        if not co_key:
+            raise ProviderSearchError(
+                "ContactOut API key is not configured. Add CONTACTOUT_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        # Build params directly from form fields when available; otherwise
+        # translate the Xray query via LLM as fallback.
+        if raw_form_fields:
+            raw_params = _build_contactout_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
+
     elif selected_provider == 'apollo':
-        # Apollo has its own structured People Search API.  Translate the Xray
-        # query to Apollo JSON params via LLM and call it directly.
-        ev_cfg = _load_email_verif_config()
         ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
-        if ap_key:
-            return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page)
-        # No Apollo key configured — translate query and fall through to web search
-        query = _translate_xray_for_provider(query, 'apollo')
+        if not ap_key:
+            raise ProviderSearchError(
+                "Apollo API key is not configured. Add APOLLO_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        if raw_form_fields:
+            raw_params = _build_apollo_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
+
     elif selected_provider == 'rocketreach':
-        # RocketReach has its own structured Person Search API.  Translate the Xray
-        # query to RocketReach JSON params via LLM and call it directly.
-        ev_cfg = _load_email_verif_config()
         rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
-        if rr_key:
-            return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page)
-        # No RocketReach key configured — translate query and fall through to web search
-        query = _translate_xray_for_provider(query, 'rocketreach')
+        if not rr_key:
+            raise ProviderSearchError(
+                "RocketReach API key is not configured. Add ROCKETREACH_API_KEY in "
+                "admin_rate_limits.html → Contact Generation, then re-run the search."
+            )
+        if raw_form_fields:
+            raw_params = _build_rocketreach_params_from_fields(
+                job_titles=raw_form_fields.get("jobTitles") or [],
+                companies=raw_form_fields.get("companyNames") or [],
+                country=raw_form_fields.get("country") or (gl_hint or ""),
+                keywords=raw_form_fields.get("keywords") or "",
+            )
+        else:
+            raw_params = None
+        # Raises ProviderSearchError on API failure — no CSE fallback
+        return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     serper_cfg = cfg.get("serper", {})
     serper_key = serper_cfg.get("api_key", "")
@@ -3562,10 +3785,16 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                          user_provider=None, user_serper_key=None,
                          user_dfs_login=None, user_dfs_password=None,
                          user_linkedin_key=None,
-                         selected_provider=None):
+                         selected_provider=None,
+                         raw_form_fields=None):
     results=[]
-    m_cc=re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
-    country_code_hint = m_cc.group(1).lower() if m_cc else None
+    # For provider-API searches we extract the country hint from the form fields
+    # rather than from Xray URL patterns (no site: operator present).
+    if selected_provider in ('contactout', 'apollo', 'rocketreach') and raw_form_fields:
+        country_code_hint = None  # provider APIs accept full country names
+    else:
+        m_cc = re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
+        country_code_hint = m_cc.group(1).lower() if m_cc else None
 
     # Determine active search provider label for job status messages
     # Per-user provider takes priority over admin config for label determination
@@ -3627,11 +3856,22 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 _eff_provider = _p
                 break
 
-    _needs_translation = _eff_provider and _eff_provider not in _XRAY_NATIVE_PROVIDERS
+    # Provider API searches (ContactOut/Apollo/RocketReach) use native params
+    # built from form fields — no Xray translation needed.
+    _is_provider_api = selected_provider in ('contactout', 'apollo', 'rocketreach')
+    _needs_translation = not _is_provider_api and _eff_provider and _eff_provider not in _XRAY_NATIVE_PROVIDERS
 
     global_collected = 0
 
-    for q in queries:
+    # For provider API searches, execute only a single logical search (the
+    # provider returns paginated results on its own).  For Xray-based searches,
+    # iterate over each generated query string as before.
+    _query_list = queries
+    if _is_provider_api:
+        # Use a single synthetic entry so the loop fires exactly once.
+        _query_list = ["provider_api_search"]
+
+    for q in _query_list:
         # Global stop-loss: target already reached, no need to fire more queries.
         still_needed = target_limit - global_collected
         if still_needed <= 0:
@@ -3646,26 +3886,35 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         if _needs_translation:
             add_message(job_id, f"Translating Xray query for {_provider_label}…")
 
-        add_message(job_id, f"Running {_provider_label}: {q} target={effective_target} (need {still_needed} more to reach {target_limit})")
+        if _is_provider_api:
+            add_message(job_id, f"Running {_provider_label}: direct API search (target={effective_target})")
+        else:
+            add_message(job_id, f"Running {_provider_label}: {q} target={effective_target} (need {still_needed} more to reach {target_limit})")
 
         while gathered < effective_target:
             remaining = effective_target - gathered
             page_size = min(CSE_PAGE_SIZE, remaining)
 
-            page, estimated_total = unified_search_page(
-                q, page_size, start_index, gl_hint=country_code_hint,
-                user_provider=user_provider, user_serper_key=user_serper_key,
-                user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
-                user_linkedin_key=user_linkedin_key,
-                selected_provider=selected_provider,
-            )
+            try:
+                page, estimated_total = unified_search_page(
+                    q, page_size, start_index, gl_hint=country_code_hint,
+                    user_provider=user_provider, user_serper_key=user_serper_key,
+                    user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
+                    user_linkedin_key=user_linkedin_key,
+                    selected_provider=selected_provider,
+                    raw_form_fields=raw_form_fields,
+                )
+            except ProviderSearchError as pse:
+                add_message(job_id, f"ERROR [{_provider_label}]: {pse}")
+                logger.error(f"[_perform_cse_queries] ProviderSearchError for {_provider_label}: {pse}")
+                return _dedupe_links(results)  # abort — no CSE fallback
+
             pages_fetched+=1
 
-            # Per-query stop-loss: if Google reports fewer total results than we
-            # are requesting from this query, cap the query target to what Google
-            # says is actually available.  This prevents wasting API quota on
-            # pages that will always return empty, but does NOT prevent subsequent
-            # queries from running to make up the shortfall.
+            # Per-query stop-loss: if provider reports fewer total results than we
+            # are requesting from this query, cap the query target to what it says
+            # is actually available.  This prevents wasting API quota on
+            # pages that will always return empty.
             if pages_fetched == 1 and estimated_total > 0 and estimated_total < effective_target:
                 effective_target = estimated_total
                 add_message(job_id, f"  Stop-loss: {_provider_label} reports ~{estimated_total} results for this query — capping to {effective_target}")

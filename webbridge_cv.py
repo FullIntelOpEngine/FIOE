@@ -179,7 +179,8 @@ def _geography_flask_limit():
 def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, search_results_only, country, dynamic_target, job_titles,
                 user_search_provider=None, user_serper_key=None, user_dfs_login=None, user_dfs_password=None,
                 user_linkedin_key=None,
-                selected_search_provider=None):
+                selected_search_provider=None,
+                raw_form_fields=None):
     global SEARCH_RESULTS_TARGET
     add_message(job_id, "Starting search pipeline...")
     rows=[]; urls=[]
@@ -213,6 +214,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
                     user_linkedin_key=user_linkedin_key,
                     selected_provider=selected_search_provider,
+                    raw_form_fields=raw_form_fields,
                 )
                 cse_queries_fired += len(primary_q)
                 urls=[r["link"] for r in cse_results]
@@ -256,6 +258,7 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 user_dfs_login=user_dfs_login, user_dfs_password=user_dfs_password,
                 user_linkedin_key=user_linkedin_key,
                 selected_provider=selected_search_provider,
+                raw_form_fields=raw_form_fields,
             )
             cse_queries_fired += len(fallback_queries)
             # Collect already-seen URLs so duplicates from fallback are discarded
@@ -714,6 +717,18 @@ def start_job():
     # UI-selected search provider from the AutoSourcing.html toggle (admin-configured)
     _selected_search_provider = (data.get('_selectedSearchProvider') or '').strip().lower() or None
 
+    # Raw form fields forwarded to the provider API when a ContactOut/Apollo/RocketReach
+    # provider is selected.  These are used to build native API params directly,
+    # bypassing the Xray query translation step entirely.
+    _raw_form_fields = None
+    if _selected_search_provider in ('contactout', 'apollo', 'rocketreach'):
+        _raw_form_fields = {
+            'jobTitles':    job_titles,
+            'companyNames': user_companies,
+            'country':      country,
+            'keywords':     (data.get('languageQuery') or '').strip(),
+        }
+
     # --- PATCH START: Automatically update role_tag in login and sourcing tables based on job_titles ---
     # The requirement is that autosourcing.html search title must pass automatically to login.role_tag
     # and also be transferred to sourcing.role_tag for all records of this user.
@@ -801,7 +816,8 @@ def start_job():
                            search_results_only, country, dynamic_target, job_titles,
                            _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
                            _user_linkedin_key,
-                           _selected_search_provider),
+                           _selected_search_provider,
+                           _raw_form_fields),
                      daemon=True).start()
     # Log agentic intent event
     _agentic_filters = []
