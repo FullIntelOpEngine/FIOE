@@ -3585,6 +3585,47 @@ function _countryFromLinkedInUrl(url) {
   return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
 }
 
+// ---------------------------------------------------------------------------
+// ContactOut profile download helper
+// ---------------------------------------------------------------------------
+/**
+ * Fetch the full ContactOut profile for a LinkedIn URL and trigger a JSON
+ * file download.  The button element is passed so its label can be updated
+ * during the async request.
+ */
+async function _downloadContactOutProfile(linkedinUrl, btnEl) {
+  if (!linkedinUrl) return;
+  const origText = btnEl ? btnEl.textContent : '';
+  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  try {
+    const resp = await fetch(
+      `/api/contactout/download-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+    );
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      alert(`ContactOut profile fetch failed: ${errData.error || resp.statusText}`);
+      return;
+    }
+    const profile = await resp.json();
+    // Trigger JSON file download
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const safeName = (linkedinUrl.replace(/[^a-z0-9]+/gi, '_') || 'contactout_profile');
+    a.href = url;
+    a.download = `${safeName}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('[ContactOut] download-profile error:', err);
+    alert(`ContactOut profile fetch error: ${err.message || err}`);
+  } finally {
+    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+  }
+}
+
 // Apply bulk assessment results from JSON file to table rows
 function buildRow(row) {
   const tr = document.createElement('tr');
@@ -3615,16 +3656,29 @@ function buildRow(row) {
   }
   
   if (!hasAssessment) {
-      // BEFORE ASSESSMENT: Show checkbox for selection
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.className = 'row-select';
-      if(isRowDetailDisabled(row.linkedinurl) || isRowDetailCompleted(row.linkedinurl)){
-        cb.disabled = true;
-        cb.title = isRowDetailCompleted(row.linkedinurl) ? 'Completed (View)' : 'Disabled after View action';
+      // BEFORE ASSESSMENT: ContactOut rows get a download button; others get a checkbox
+      if (row.source === 'contactout') {
+          const coBtn = document.createElement('button');
+          coBtn.className = 'contactout-tag';
+          coBtn.textContent = 'CO';
+          coBtn.title = 'Download full ContactOut profile';
+          coBtn.style.cssText = 'width:32px; height:32px; border:2px solid #0073b1; background:#e8f4fb; color:#0073b1; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+          coBtn.onmouseover = function() { this.style.background = '#0073b1'; this.style.color = '#fff'; };
+          coBtn.onmouseout = function() { this.style.background = '#e8f4fb'; this.style.color = '#0073b1'; };
+          coBtn.addEventListener('click', () => _downloadContactOutProfile(row.linkedinurl, coBtn));
+          checkboxCell.appendChild(coBtn);
+      } else {
+          // Standard checkbox for selection
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'row-select';
+          if(isRowDetailDisabled(row.linkedinurl) || isRowDetailCompleted(row.linkedinurl)){
+            cb.disabled = true;
+            cb.title = isRowDetailCompleted(row.linkedinurl) ? 'Completed (View)' : 'Disabled after View action';
+          }
+          cb.addEventListener('change', showDeleteIfNeeded);
+          checkboxCell.appendChild(cb);
       }
-      cb.addEventListener('change', showDeleteIfNeeded);
-      checkboxCell.appendChild(cb);
   } else {
       // AFTER ASSESSMENT: Show tick or cross icon based on score
       const cachedScore = (cached && typeof cached.totalScore === 'number') ? cached.totalScore : null;

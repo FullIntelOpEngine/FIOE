@@ -228,7 +228,10 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                     if is_linkedin_profile(link):
                         name, jobtitle, company = parse_linkedin_title(title)
                         if name or jobtitle or company:
-                            rows.append({"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link})
+                            row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
+                            if item.get("_source") == "contactout" or selected_search_provider == "contactout":
+                                row_entry["_Source"] = "contactout"
+                            rows.append(row_entry)
                     processed+=1
                     with JOBS_LOCK:
                         JOBS[job_id]['progress']['processed']=processed
@@ -264,7 +267,10 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 if is_linkedin_profile(link):
                     name, jobtitle, company = parse_linkedin_title(title)
                     if name or jobtitle or company:
-                        rows.append({"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link})
+                        row_entry = {"Name":name or "", "Company":company or "", "JobTitle":jobtitle or "", "Country":country or "", "LinkedInURL":link}
+                        if item.get("_source") == "contactout" or selected_search_provider == "contactout":
+                            row_entry["_Source"] = "contactout"
+                        rows.append(row_entry)
                         existing_urls.add(link)
                 processed+=1
                 with JOBS_LOCK:
@@ -356,6 +362,8 @@ def _write_outputs(job_id, rows):
         job_meta=(JOBS.get(job_id) or {}).get('meta',{})
         job_top=(JOBS.get(job_id) or {})
     dropdown_companies=_aggregate_company_dropdown(job_meta)
+    # Detect whether any row has a _Source marker (e.g. 'contactout')
+    has_source_col = any(r.get("_Source") for r in rows)
     processed=[]
     for r in rows:
         link=r.get("LinkedInURL","")
@@ -376,13 +384,17 @@ def _write_outputs(job_id, rows):
         name_val=_sanitize_for_excel(raw_name)
         job_val=_sanitize_for_excel(adjusted_job)
         company_val=(moved_company or "").strip()
-        processed.append({"Name":name_val,"Company":company_val,"JobTitle":job_val,"Country":country_val,"LinkedInURL":link})
+        entry = {"Name":name_val,"Company":company_val,"JobTitle":job_val,"Country":country_val,"LinkedInURL":link}
+        if has_source_col:
+            entry["Source"] = r.get("_Source") or ""
+        processed.append(entry)
     csv_name=f"{job_id}_results.csv"
     csv_path=os.path.join(SEARCH_XLS_DIR, csv_name)
     # Ensure target dir exists
     os.makedirs(SEARCH_XLS_DIR, exist_ok=True)
+    _csv_fields = ["Name","Company","JobTitle","Country","LinkedInURL"] + (["Source"] if has_source_col else [])
     with open(csv_path,"w",encoding="utf-8",newline="") as f:
-        w=DictWriter(f, fieldnames=["Name","Company","JobTitle","Country","LinkedInURL"])
+        w=DictWriter(f, fieldnames=_csv_fields)
         w.writeheader()
         for pr in processed: w.writerow(pr)
         try:
@@ -396,8 +408,12 @@ def _write_outputs(job_id, rows):
         from openpyxl.worksheet.datavalidation import DataValidation
         wb=Workbook(); ws=wb.active
         ws.title="Results"
-        ws.append(["Name","Company","JobTitle","Country","LinkedInURL"])
-        for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"]])
+        if has_source_col:
+            ws.append(["Name","Company","JobTitle","Country","LinkedInURL","Source"])
+            for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"],pr.get("Source","")])
+        else:
+            ws.append(["Name","Company","JobTitle","Country","LinkedInURL"])
+            for pr in processed: ws.append([pr["Name"],pr["Company"],pr["JobTitle"],pr["Country"],pr["LinkedInURL"]])
         company_dropdown=dropdown_companies
         if company_dropdown:
             cs=wb.create_sheet(title="Companies")
@@ -428,7 +444,9 @@ def _write_outputs(job_id, rows):
             sheet=wb_ing["Results"]
             headers=[cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
             expected=["Name","Company","JobTitle","Country","LinkedInURL"]
-            if headers!=expected:
+            expected_with_source=["Name","Company","JobTitle","Country","LinkedInURL","Source"]
+            has_source_header = (headers == expected_with_source)
+            if headers != expected and not has_source_header:
                 logger.warning(f"[Ingest] Header mismatch. Expected {expected}, got {headers}. Skipping ingestion.")
             else:
                 data_rows=[]
@@ -445,7 +463,12 @@ def _write_outputs(job_id, rows):
                     conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
                     conn.autocommit=False
                     cur=conn.cursor()
-                    
+
+                    # Ensure source column exists when file includes Source header
+                    if has_source_header:
+                        cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
+                        conn.commit()
+
                     # Check if pic column exists in sourcing table
                     cur.execute("""
                         SELECT column_name 
@@ -457,7 +480,31 @@ def _write_outputs(job_id, rows):
                     active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
                     active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
                     
-                    if has_pic_column:
+                    if has_source_header:
+                        if has_pic_column:
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows = []
+                            for r in data_rows:
+                                linkedin_url = r[4]
+                                source_val = (r[5] or "") if len(r) > 5 else ""
+                                pic_bytes = None
+                                try:
+                                    pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
+                                    if pic_url:
+                                        pic_bytes = fetch_image_bytes_from_url(pic_url)
+                                        if pic_bytes:
+                                            import psycopg2
+                                            pic_bytes = psycopg2.Binary(pic_bytes)
+                                        else:
+                                            import psycopg2
+                                            pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
+                                except Exception as pic_err:
+                                    logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
+                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes, source_val))
+                        else:
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
+                    elif has_pic_column:
                         # Include pic column in insert
                         insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                         batch_rows = []
@@ -893,6 +940,14 @@ def sourcing_list():
         pic_idx = 6 if has_pic else None  # 0-based index of pic in result tuple
         rating_idx = 7 if has_pic else 6
 
+        # Detect optional source column
+        cur.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='sourcing' AND column_name='source'
+        """)
+        has_source_col = cur.fetchone() is not None
+        source_col = "COALESCE(s.source, '') AS source" if has_source_col else "'' AS source"
+
         # ------------------------------------------------------------------
         # Build ORDER BY clause
         # ------------------------------------------------------------------
@@ -1017,7 +1072,8 @@ def sourcing_list():
                    {pic_col}
                    p.rating,
                    {relevance_expr},
-                   COALESCE(s.role_tag, '') AS role_tag
+                   COALESCE(s.role_tag, '') AS role_tag,
+                   {source_col}
             FROM sourcing s
             LEFT JOIN process p ON s.linkedinurl = p.linkedinurl
             WHERE {where_sql}
@@ -1035,9 +1091,10 @@ def sourcing_list():
         # ------------------------------------------------------------------
         import base64
         rows = []
-        # Column index for relevance_score is after rating; role_tag follows it
+        # Column index for relevance_score is after rating; role_tag follows it; source follows role_tag
         relevance_col_idx = (rating_idx + 1)
         role_tag_col_idx = relevance_col_idx + 1
+        source_col_idx = role_tag_col_idx + 1
 
         def _strip_nim(name: str) -> str:
             """Strip the Korean honorific suffix '님' (U+B2D8) and surrounding whitespace from a name."""
@@ -1057,6 +1114,7 @@ def sourcing_list():
                 "rating_level": "",
                 "relevance_score": float(r[relevance_col_idx]) if r[relevance_col_idx] is not None else 0.0,
                 "role_tag": r[role_tag_col_idx] or "",
+                "source": r[source_col_idx] or "",
             }
             if has_pic and pic_idx is not None:
                 pic_data = r[pic_idx]

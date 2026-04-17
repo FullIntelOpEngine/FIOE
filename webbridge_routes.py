@@ -70,6 +70,7 @@ from webbridge import (
     _APP_LOGGER_AVAILABLE,
     _load_search_provider_config,
     _load_llm_provider_config,
+    _load_email_verif_config,
 )
 
 # Thread-local flag set by unified_search_page when a per-user search key fails
@@ -2659,6 +2660,127 @@ def linkedin_search_page(query: str, api_key: str, num: int, gl_hint: str = None
         logger.warning(f"[LinkedIn] page fetch failed: {e}")
         return [], 0
 
+def _translate_xray_to_contactout_params(query: str) -> dict:
+    """Use the active LLM to translate a Google Xray search string into a
+    ContactOut People Search API JSON payload.
+
+    The function extracts recognised ContactOut filter fields (job_title, skills,
+    company, location, keyword, education, industry) from the Xray boolean query.
+    Falls back to a ``{"keyword": <cleaned_query>}`` payload on any failure.
+    """
+    prompt = (
+        "You are a search-query translator. Convert the Google Xray boolean search "
+        "query below into a JSON object suitable for the ContactOut People Search API "
+        "(POST https://api.contactout.com/v1/people/search).\n\n"
+        "Rules:\n"
+        "1. Extract job titles into \"job_title\" (array of strings, max 50).\n"
+        "2. Extract required skills / technologies into \"skills\" (array of strings, max 50).\n"
+        "3. Extract company names into \"company\" (array of strings).\n"
+        "4. Extract location hints into \"location\" (array of strings).\n"
+        "5. Extract field-of-study / degree / school into \"education\" (array of strings).\n"
+        "6. Extract industry keywords into \"industry\" (array of strings).\n"
+        "7. Put any remaining meaningful keywords into \"keyword\" (single string).\n"
+        "8. Omit fields for which no clear value can be found.\n"
+        "9. Remove all 'site:' operators, '-intitle:', '-inurl:', and boolean connectors (AND/OR/NOT).\n"
+        "10. Return ONLY valid JSON — no explanation, no markdown fences.\n\n"
+        f"Google Xray query:\n{query}"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
+        if raw and raw.strip():
+            cleaned = raw.strip().strip("`")
+            # Remove any ```json``` fences
+            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
+            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            params = json.loads(cleaned.strip())
+            if isinstance(params, dict):
+                logger.info(f"[ContactOut] Xray→ContactOut params: {params}")
+                return params
+    except Exception as exc:
+        logger.warning(f"[ContactOut] Xray translation failed: {exc}")
+    # Fallback: use the raw query as a keyword search
+    # Strip obvious Google Xray operators before falling back
+    kw = re.sub(r'site:\S+', '', query, flags=re.I)
+    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
+    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
+    kw = re.sub(r'[()"]', ' ', kw)
+    kw = re.sub(r'\s+', ' ', kw).strip()
+    return {"keyword": kw} if kw else {}
+
+
+def contactout_people_search_page(query: str, api_key: str, num: int = 10,
+                                   gl_hint: str = None, page: int = 1):
+    """Call the ContactOut People Search API and map results to the standard
+    ``(results, estimated_total)`` format used by the other search adapters.
+
+    Each result dict has the standard ``link``, ``title`` and ``snippet`` keys
+    plus a ``_source`` key set to ``'contactout'`` to identify the origin.
+    """
+    if not api_key:
+        return [], 0
+    params = _translate_xray_to_contactout_params(query)
+    params["page"] = page
+    try:
+        r = requests.post(
+            "https://api.contactout.com/v1/people/search",
+            headers={
+                "Authorization": f"Token {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=params,
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        people = data.get("people") or data.get("profiles") or data.get("results") or []
+        estimated_total = int(data.get("total") or data.get("count") or len(people))
+        out = []
+        for person in people:
+            linkedin_url = (
+                person.get("linkedin_url")
+                or person.get("linkedin")
+                or ""
+            )
+            if not linkedin_url:
+                continue
+            name = (person.get("name") or person.get("full_name") or "").strip()
+            title = (person.get("title") or person.get("headline") or "").strip()
+            company_obj = person.get("company") or {}
+            if isinstance(company_obj, dict):
+                company = company_obj.get("name") or ""
+            else:
+                company = str(company_obj)
+            # Format title string so parse_linkedin_title can extract fields
+            if name and (title or company):
+                formatted_title = name
+                if title:
+                    formatted_title += f" - {title}"
+                if company:
+                    formatted_title += f" at {company}"
+            elif name:
+                formatted_title = name
+            else:
+                formatted_title = title or ""
+            snippet_parts = []
+            if person.get("location"):
+                snippet_parts.append(str(person["location"]))
+            if title:
+                snippet_parts.append(title)
+            if company:
+                snippet_parts.append(company)
+            out.append({
+                "link": linkedin_url,
+                "title": formatted_title,
+                "snippet": " | ".join(snippet_parts),
+                "displayLink": "linkedin.com",
+                "_source": "contactout",
+            })
+        return out, estimated_total
+    except Exception as e:
+        logger.warning(f"[ContactOut] people search failed: {e}")
+        return [], 0
+
+
 def dataforseo_search_page(query: str, login: str, password: str, num: int = 10, gl_hint: str = None, page: int = 1):
     """Fetch one page of results from the DataforSEO Google Organic Live API.
 
@@ -2856,7 +2978,16 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         if li_key:
             li_query = _translate_xray_for_provider(query, 'linkedin')
             return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
-    elif selected_provider in ('contactout', 'apollo', 'rocketreach'):
+    elif selected_provider == 'contactout':
+        # ContactOut has its own structured People Search API.  Translate the Xray
+        # query to ContactOut JSON params via LLM and call it directly.
+        ev_cfg = _load_email_verif_config()
+        co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+        if co_key:
+            return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page)
+        # No ContactOut key configured — translate query and fall through to web search
+        query = _translate_xray_for_provider(query, 'contactout')
+    elif selected_provider in ('apollo', 'rocketreach'):
         # These providers do not have a dedicated web-search API.  Translate the
         # Xray query into simpler keyword syntax via Gemini, then fall through to
         # whichever admin-configured web search backend is available.
@@ -4545,6 +4676,58 @@ def user_svc_config_validate():
     except Exception as exc:
         logger.exception("[user-service-config/validate]")
         return jsonify({"error": "Validation failed"}), 500
+
+
+
+@app.get("/api/contactout/download-profile")
+@_require_session
+def contactout_download_profile():
+    """Fetch the full ContactOut profile for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Calls the ContactOut LinkedIn lookup endpoint
+    (GET /v1/people/linkedin) with ``reveal_info=true`` so that contact
+    details are included in the response, and returns the raw JSON document.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    ev_cfg = _load_email_verif_config()
+    co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+    if not co_key:
+        return jsonify({"error": "CONTACTOUT_API_KEY is not configured"}), 503
+
+    try:
+        r = requests.get(
+            "https://api.contactout.com/v1/people/linkedin",
+            params={
+                "profile": linkedin_url,
+                "email_type": "personal",
+                "include_phone": "true",
+                "reveal_info": "true",
+            },
+            headers={
+                "Authorization": f"Token {co_key}",
+                "Accept": "application/json",
+            },
+            timeout=30,
+        )
+        if r.status_code == 401:
+            return jsonify({"error": "ContactOut authentication failed (HTTP 401)"}), 401
+        if r.status_code == 403:
+            return jsonify({"error": "ContactOut returned HTTP 403 — quota may be exceeded"}), 403
+        r.raise_for_status()
+        profile_data = r.json()
+        return jsonify(profile_data)
+    except requests.exceptions.HTTPError as http_err:
+        logger.warning(f"[ContactOut] download-profile HTTP error: {http_err}")
+        return jsonify({"error": str(http_err)}), 502
+    except Exception as exc:
+        logger.warning(f"[ContactOut] download-profile error: {exc}")
+        return jsonify({"error": "Failed to fetch ContactOut profile"}), 500
 
 
 @app.post("/api/user-service-config/activate")
