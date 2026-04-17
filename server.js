@@ -511,6 +511,8 @@ const _userRateState = new Map(); // key: "username::feature" -> [ timestamp, ..
 function isUserAllowed(username, feature) {
   if (!username) return true;
   const config = loadRateLimits();
+  // When rate limits are globally disabled, allow all requests.
+  if (config.rates_enabled === false) return true;
   const userLimits = (config.users || {})[username] || {};
   const defaultLimits = config.defaults || {};
   const limitCfg = userLimits[feature] || defaultLimits[feature];
@@ -699,6 +701,8 @@ app.post('/admin/rate-limits', dashboardRateLimit, requireAdmin, (req, res) => {
     if (tokens && typeof tokens === 'object') toSave.tokens = tokens;
     if (access_levels && typeof access_levels === 'object') toSave.access_levels = access_levels;
     if (ml && typeof ml === 'object') toSave.ml = ml;
+    // Preserve global rates_enabled toggle (boolean)
+    if (typeof body.rates_enabled === 'boolean') toSave.rates_enabled = body.rates_enabled;
     saveRateLimits(toSave);
     res.json({ ok: true });
   } catch (err) {
@@ -845,6 +849,68 @@ app.post('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req
   }
   try {
     saveSearchProviderConfig(current);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Admin: get-profiles-config (linkdapi) ─────────────────────────────────────
+const _GET_PROFILES_CONFIG_PATHS = [
+  path.join(__dirname, 'get_profiles_config.json'),
+  path.join(__dirname, '..', 'get_profiles_config.json'),
+  path.join(__dirname, '..', '..', 'get_profiles_config.json'),
+].filter(Boolean);
+
+function _resolveGetProfilesConfigPath() {
+  for (const p of _GET_PROFILES_CONFIG_PATHS) {
+    try { fs.accessSync(p, fs.constants.R_OK); return p; } catch (_) {}
+  }
+  return _GET_PROFILES_CONFIG_PATHS[0];
+}
+
+function loadGetProfilesConfig() {
+  try {
+    const raw = fs.readFileSync(_resolveGetProfilesConfigPath(), 'utf8');
+    return JSON.parse(raw);
+  } catch (_) {
+    return { linkdapi: { api_key: '', enabled: 'disabled' } };
+  }
+}
+
+function saveGetProfilesConfig(config) {
+  const p = _resolveGetProfilesConfigPath();
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+app.get('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const config = loadGetProfilesConfig();
+  const linkdapi = config.linkdapi || {};
+  res.json({
+    config: {
+      linkdapi: { api_key_set: !!linkdapi.api_key, enabled: linkdapi.enabled || 'disabled' },
+    },
+  });
+});
+
+app.post('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== 'object') return res.status(400).json({ error: 'JSON object required' });
+  const current = loadGetProfilesConfig();
+  if (!current.linkdapi) current.linkdapi = { api_key: '', enabled: 'disabled' };
+  if (body.linkdapi && typeof body.linkdapi === 'object') {
+    const e = body.linkdapi;
+    if (typeof e.api_key === 'string' && e.api_key !== '') current.linkdapi.api_key = e.api_key;
+    if (e.enabled !== undefined) {
+      if (!['enabled', 'disabled'].includes(e.enabled)) return res.status(400).json({ error: 'Invalid enabled value for linkdapi' });
+      current.linkdapi.enabled = e.enabled;
+      if (e.enabled === 'disabled') current.linkdapi.api_key = '';
+    }
+  }
+  try {
+    saveGetProfilesConfig(current);
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2245,6 +2311,17 @@ app.get('/api/platform-provider-status', requireLogin, dashboardRateLimit, (req,
   }
 });
 
+// ── User-facing: linkdapi enabled status (no key, just boolean) ────────────
+app.get('/api/linkdapi-status', requireLogin, dashboardRateLimit, (req, res) => {
+  try {
+    const cfg = loadGetProfilesConfig();
+    const ld = cfg.linkdapi || {};
+    res.json({ enabled: ld.enabled === 'enabled' && !!ld.api_key });
+  } catch (err) {
+    res.json({ enabled: false });
+  }
+});
+
 app.post('/login', userRateLimit('login'), async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
@@ -3455,6 +3532,37 @@ app.delete('/candidates/clear-user', requireLogin, userRateLimit('bulk_delete'),
       }
     } catch (e) {
       console.warn('[clear-user] Could not wipe BYOK keys (non-fatal):', e.message);
+    }
+
+    // 7. Delete Autosourcing search XLS/CSV output files belonging to this user.
+    //    Files are named {username}_{job_id}_results.xlsx / .csv (safe chars only).
+    try {
+      if (fs.existsSync(SEARCH_XLS_DIR)) {
+        const _xlsPrefix = `${safe}_`;
+        const _xlsBase   = path.resolve(SEARCH_XLS_DIR);
+        const _xlsEntries = fs.readdirSync(SEARCH_XLS_DIR).filter(f => {
+          // Filename must start with safe_username prefix and end with _results.xlsx/.csv.
+          // Also reject any entry whose name contains a path separator to prevent traversal.
+          if (f.includes('/') || f.includes('\\')) return false;
+          const lower = f.toLowerCase();
+          return f.startsWith(_xlsPrefix) && (lower.endsWith('_results.xlsx') || lower.endsWith('_results.csv'));
+        });
+        for (const f of _xlsEntries) {
+          try {
+            const resolved = path.resolve(path.join(SEARCH_XLS_DIR, f));
+            // Verify the resolved path is still inside SEARCH_XLS_DIR
+            if (!resolved.startsWith(_xlsBase + path.sep) && resolved !== _xlsBase) {
+              console.warn(`[clear-user] Skipping searchxls file outside base dir: ${f}`);
+              continue;
+            }
+            fs.unlinkSync(resolved);
+          } catch (e) {
+            console.warn(`[clear-user] Could not delete searchxls file ${f}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[clear-user] searchxls cleanup failed (non-fatal):', e.message);
     }
 
     res.json({ deleted: result.rowCount });
@@ -9328,6 +9436,31 @@ const PORTING_MAPPINGS_DIR = (() => {
   return path.join(__dirname, 'porting_mappings');
 })();
 console.log('[startup] PORTING_MAPPINGS_DIR resolved to', PORTING_MAPPINGS_DIR);
+
+// Output XLS/CSV directory for Autosourcing results.
+// Same webbridge.py-first search pattern as PORTING_INPUT_DIR.
+const SEARCH_XLS_DIR = (() => {
+  if (process.env.SEARCH_XLS_DIR) return path.resolve(process.env.SEARCH_XLS_DIR);
+  const levels = [];
+  let cur = __dirname;
+  for (let i = 0; i < 6; i++) {
+    levels.push(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  // Canonical: directory containing webbridge.py + '/searchxls'
+  for (const d of levels) {
+    if (fs.existsSync(path.join(d, 'webbridge.py'))) return path.join(d, 'searchxls');
+  }
+  // Fallback: an already-existing searchxls directory
+  for (const d of levels) {
+    const p = path.join(d, 'searchxls');
+    if (fs.existsSync(p)) return p;
+  }
+  return path.join(__dirname, 'searchxls');
+})();
+console.log('[startup] SEARCH_XLS_DIR resolved to', SEARCH_XLS_DIR);
 
 // All columns present in the `process` table – used for Gemini mapping.
 const PROCESS_TABLE_FIELDS = [
