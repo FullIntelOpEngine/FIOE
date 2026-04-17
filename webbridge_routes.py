@@ -5592,9 +5592,30 @@ def linkdapi_get_profile():
         return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
 
     try:
+        import ssl  # noqa: PLC0415
         import urllib3  # noqa: PLC0415
+        from requests.adapters import HTTPAdapter  # noqa: PLC0415
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        r = requests.get(
+
+        class _LinkdapiAdapter(HTTPAdapter):
+            """Custom adapter that works around the TLSV1_UNRECOGNIZED_NAME SSL
+            alert sent by api.linkd.io.  The alert is sent during the TLS
+            handshake (before cert verification), so ``verify=False`` alone is
+            insufficient.  Setting ssl.OP_NO_TLSEXT disables SNI (and other TLS
+            extensions) so the server never sees the SNI it would reject."""
+
+            def init_poolmanager(self, *args, **kwargs):
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                if hasattr(ssl, "OP_NO_TLSEXT"):
+                    ctx.options |= ssl.OP_NO_TLSEXT
+                kwargs["ssl_context"] = ctx
+                super().init_poolmanager(*args, **kwargs)
+
+        _linkdapi_session = requests.Session()
+        _linkdapi_session.mount("https://api.linkd.io", _LinkdapiAdapter())
+        r = _linkdapi_session.get(
             "https://api.linkd.io/api/v1/profile/full",
             params={"username": username},
             headers={
@@ -5602,7 +5623,6 @@ def linkdapi_get_profile():
                 "Accept": "application/json",
             },
             timeout=30,
-            verify=False,
         )
         if r.status_code == 401:
             return jsonify({"error": "linkdapi authentication failed (HTTP 401). Check your API key."}), 401
