@@ -5563,6 +5563,7 @@ def rocketreach_download_profile():
 
 _LINKDAPI_HOST = "linkdapi.com"
 _LINKDAPI_HEADER = "X-linkdapi-apikey"
+_LINKDAPI_MAX_RETRIES = 3
 
 
 def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
@@ -5595,10 +5596,12 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     path = f"/api/v1/profile/full?{qs}"
     headers = {_LINKDAPI_HEADER: api_key, "Accept": "application/json"}
 
-    max_retries = 3
+    # Sanitise api_key for safe shell-arg use (reject embedded control chars).
+    _safe_key = re.sub(r"[^\x20-\x7E]", "", api_key)
+
     last_exc = None
 
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, _LINKDAPI_MAX_RETRIES + 1):
         # ---- primary: Python http.client (uses Python/OpenSSL, not OS TLS) ----
         conn = None
         try:
@@ -5633,7 +5636,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
             last_exc = py_exc
             logger.debug(
                 "[linkdapi] Python http.client attempt %d/%d failed (%s), trying curl…",
-                attempt, max_retries, py_exc,
+                attempt, _LINKDAPI_MAX_RETRIES, py_exc,
             )
         finally:
             if conn is not None:
@@ -5653,7 +5656,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
                 "--tlsv1.2", "--tls-max", "1.2",
                 "--ssl-no-revoke",
                 "--max-time", str(timeout),
-                "-H", f"{_LINKDAPI_HEADER}: {api_key}",
+                "-H", f"{_LINKDAPI_HEADER}: {_safe_key}",
                 "-H", "Accept: application/json",
                 "-w", sep + "%{http_code}",
                 url,
@@ -5669,27 +5672,31 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
             except ValueError:
                 sc = 0
 
+            # Non-transient HTTP errors — do not retry
+            if sc in (401, 403, 404):
+                return body_str, sc
+
             if result.returncode != 0 and sc == 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 logger.warning(
                     "[linkdapi] curl error attempt %d/%d (rc=%d): %s",
-                    attempt, max_retries, result.returncode, stderr,
+                    attempt, _LINKDAPI_MAX_RETRIES, result.returncode, stderr,
                 )
                 last_exc = RuntimeError(stderr)
-                continue  # retry
+                continue  # retry transient TLS/network errors
             return body_str, sc
         except _sp.TimeoutExpired:
-            logger.warning("[linkdapi] get-profile timed out (curl, attempt %d/%d)", attempt, max_retries)
+            logger.warning("[linkdapi] get-profile timed out (curl, attempt %d/%d)", attempt, _LINKDAPI_MAX_RETRIES)
             last_exc = TimeoutError("curl timed out")
         except FileNotFoundError:
             logger.error("[linkdapi] curl binary not found")
             return "curl not found on server", 0
         except Exception as curl_exc:
-            logger.warning("[linkdapi] curl fallback error (attempt %d/%d): %s", attempt, max_retries, curl_exc)
+            logger.warning("[linkdapi] curl fallback error (attempt %d/%d): %s", attempt, _LINKDAPI_MAX_RETRIES, curl_exc)
             last_exc = curl_exc
 
     # All retries exhausted
-    logger.error("[linkdapi] all %d attempts failed; last error: %s", max_retries, last_exc)
+    logger.error("[linkdapi] all %d attempts failed; last error: %s", _LINKDAPI_MAX_RETRIES, last_exc)
     return "TLS/connection error reaching linkdapi", 0
 
 
