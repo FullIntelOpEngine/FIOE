@@ -2765,7 +2765,8 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
             }
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
-            if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' && rowsData && rowsData.length > 0) {
+            if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' &&
+                typeof rowsData !== 'undefined' && rowsData && rowsData.length > 0) {
               renderTable();
             }
             if (window.__IS_BYOK || window.__HAS_CUSTOM_LLM) {
