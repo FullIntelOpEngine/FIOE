@@ -6639,6 +6639,49 @@ def linkdapi_profile_to_pdf():
     })
 
 
+@app.get("/api/linkdapi/check-profile-pdf")
+@_require_session
+def linkdapi_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists for the given LinkedIn URL.
+
+    Used by the frontend to decide whether to hide/disable the GP button and
+    whether clicking the profile picture should trigger a PDF download.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Returns ``{"exists": true, "filename": "<slug>_<user>.pdf"}`` if found,
+    or ``{"exists": false, "filename": ""}`` if not.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"exists": False, "filename": ""}), 200
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"exists": False, "filename": ""}), 200
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active = _safe_slug(active_username, "unknown")
+    safe_profile = _safe_slug(username, "linkdapi_profile")
+    pdf_filename = f"{safe_profile}_{safe_active}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    try:
+        existing = set(os.listdir(out_dir))
+    except Exception:
+        return jsonify({"exists": False, "filename": ""}), 200
+
+    exists = pdf_filename in existing
+    return jsonify({"exists": exists, "filename": pdf_filename if exists else ""}), 200
+
+
 @app.get("/api/linkdapi/get-profile-pdf")
 @_require_session
 def linkdapi_get_profile_pdf():
