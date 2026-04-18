@@ -6674,11 +6674,10 @@ def linkdapi_check_profile_pdf():
 
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
     try:
-        existing = set(os.listdir(out_dir))
+        exists = os.path.isfile(os.path.join(out_dir, pdf_filename))
     except Exception:
         return jsonify({"exists": False, "filename": ""}), 200
 
-    exists = pdf_filename in existing
     return jsonify({"exists": exists, "filename": pdf_filename if exists else ""}), 200
 
 

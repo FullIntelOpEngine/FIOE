@@ -3806,7 +3806,10 @@ async function _downloadGpProfilePdf(linkedinUrl) {
       { credentials: 'same-origin' }
     );
     if (!resp.ok) return false;
-    const filename = resp.headers.get('X-PDF-Filename') || 'profile.pdf';
+    // Prefer the server-supplied filename (includes profile slug + user);
+    // derive a fallback from the URL slug so it is always unique per profile.
+    const urlSlug = (linkedinUrl.match(/\/in\/([A-Za-z0-9_-]+)/)||[])[1] || 'profile';
+    const filename = resp.headers.get('X-PDF-Filename') || (urlSlug + '.pdf');
     const bytes = await resp.arrayBuffer();
     const blob  = new Blob([bytes], { type: 'application/pdf' });
     const url   = URL.createObjectURL(blob);
@@ -3921,22 +3924,23 @@ function buildRow(row) {
           gpBtn.className = 'gp-tag';
           gpBtn.textContent = 'GP';
           gpBtn.title = 'Get full LinkedIn profile via linkdapi';
+          // Start hidden; shown only once the PDF-existence check confirms no PDF is saved
           gpBtn.style.cssText =
             'width:32px; height:32px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.12);' +
             ' color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
-            ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
+            ' display:none; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
           gpBtn.onmouseover = function () { this.style.background = 'var(--robins-egg,#6deaf9)'; this.style.color = 'var(--azure-dragon,#073679)'; };
           gpBtn.onmouseout  = function () { this.style.background = 'rgba(109,234,249,0.12)'; this.style.color = 'var(--azure-dragon,#073679)'; };
           gpBtn.addEventListener('click', () => _downloadLinkdapiProfile(row.linkedinurl, gpBtn));
           checkboxCell.appendChild(gpBtn);
-          // Async check: if a GP PDF already exists for this profile, hide the button
+          // Async check: show GP button only if no PDF is saved yet for this profile
           fetch('/api/linkdapi/check-profile-pdf?linkedin_url=' + encodeURIComponent(row.linkedinurl), { credentials: 'same-origin' })
             .then(r => r.json()).then(chk => {
-              if (chk && chk.exists) {
-                gpBtn.disabled = true;
-                gpBtn.style.display = 'none';
+              if (!chk || !chk.exists) {
+                gpBtn.style.display = 'flex';
               }
-            }).catch(() => {});
+              // If PDF already exists, button stays hidden
+            }).catch(() => { gpBtn.style.display = 'flex'; }); // show on error (fail-open)
       } else {
           // Standard checkbox for selection (invisible — provider buttons are the primary first-column control)
           const cb = document.createElement('input');
