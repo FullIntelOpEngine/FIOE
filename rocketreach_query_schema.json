@@ -1,5 +1,5 @@
 {
-  "_description": "RocketReach Person Search API (POST https://api.rocketreach.co/api/v2/search) query parameter specification. Use this schema to map AutoSourcing.html form fields into a valid RocketReach search payload. The request body must wrap all filters in a 'query' key: { 'query': { ... }, 'start': 1, 'page_size': 10 }.",
+  "_description": "RocketReach Person Search API (POST https://api.rocketreach.co/api/v2/person/search) query parameter specification. Use this schema to map AutoSourcing.html form fields into a valid RocketReach search payload. The request body must wrap all filters in a 'query' key: { 'query': { ... }, 'start': 1, 'page_size': 10 }.",
   "request_wrapper": {
     "query": "object — all filter parameters go inside this key",
     "start": "integer — 1-based offset (first page = 1)",

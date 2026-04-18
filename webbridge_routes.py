@@ -2970,8 +2970,9 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         r = requests.post(
             "https://api.contactout.com/v1/people/search",
             headers={
-                "Authorization": f"Token {api_key}",
+                "token": api_key,
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             },
             json=params,
             timeout=30,
@@ -3224,7 +3225,7 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
     prompt = (
         "You are a search-query translator. Convert the Google Xray boolean search "
         "query below into a JSON object suitable for the RocketReach Person Search API "
-        "(POST https://api.rocketreach.co/api/v2/search).\n\n"
+        "(POST https://api.rocketreach.co/api/v2/person/search).\n\n"
         "Rules:\n"
         "1. Extract job titles into \"current_title\" (array of strings).\n"
         "2. Extract company names into \"current_employer\" (array of strings).\n"
@@ -3273,10 +3274,10 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("RocketReach API key is not configured. Add ROCKETREACH_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_rocketreach_params(query)
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
-    logger.debug(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
+    logger.debug(f"[RocketReach] Calling api/v2/person/search — page={page} page_size={num} params={params}")
     try:
         r = requests.post(
-            "https://api.rocketreach.co/api/v2/search",
+            "https://api.rocketreach.co/api/v2/person/search",
             headers={
                 "Api-Key": api_key,
                 "Content-Type": "application/json",
@@ -5382,7 +5383,7 @@ def contactout_download_profile():
                 "reveal_info": "true",
             },
             headers={
-                "Authorization": f"Token {co_key}",
+                "token": co_key,
                 "Accept": "application/json",
             },
             timeout=30,
