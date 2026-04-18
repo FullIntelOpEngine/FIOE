@@ -6639,6 +6639,80 @@ def linkdapi_profile_to_pdf():
     })
 
 
+@app.get("/api/linkdapi/get-profile-pdf")
+@_require_session
+def linkdapi_get_profile_pdf():
+    """Return the saved GP profile PDF bytes for a given LinkedIn URL.
+
+    Used by the Assess button to fetch the PDF before submitting it to
+    ``/process/upload_multiple_cvs`` (the same bulk-upload pipeline used by
+    the Bulk Assessment button).
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Returns the PDF as ``application/pdf`` with header
+    ``X-PDF-Filename`` carrying the safe filename (used by the frontend
+    when constructing the FormData entry).
+    """
+    from flask import Response as _FlaskResponse
+
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    # The PDF filename encodes both the profile slug and the active session
+    # username — so each user can only retrieve PDFs they generated themselves
+    # (implicit per-user access control via filename convention).
+    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi get-pdf] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if pdf_filename not in existing:
+        return jsonify({
+            "error": "GP profile PDF not found. Click the GP button first to generate the PDF."
+        }), 404
+
+    # Use OS-sourced entry (breaks taint chain from user input)
+    matched_pdf = next((f for f in existing if f == pdf_filename), None)
+    if not matched_pdf:
+        return jsonify({"error": "GP profile PDF not found on disk"}), 404
+    pdf_path = os.path.join(out_dir, matched_pdf)
+
+    try:
+        with open(pdf_path, "rb") as fh:
+            pdf_bytes = fh.read()
+    except Exception as exc:
+        logger.exception("[linkdapi get-pdf] failed to read PDF: %s", exc)
+        return jsonify({"error": "Failed to read GP profile PDF"}), 500
+
+    resp = _FlaskResponse(pdf_bytes, mimetype="application/pdf")
+    resp.headers["Content-Disposition"] = f"inline; filename=\"{matched_pdf}\""
+    resp.headers["X-PDF-Filename"] = matched_pdf
+    return resp
+
+
 @app.route("/api/linkdapi/upload-profile-pdf", methods=["POST"])
 @_require_session
 def linkdapi_upload_profile_pdf():

@@ -4144,46 +4144,63 @@ function buildRow(row) {
                     if (assessBtn.disabled) return;
                     assessBtn.disabled = true;
                     assessBtn.classList.add('btn-spinning');
+                    setSearchResultButtonsEnabled(false);
 
                     try {
-                        // Step 1: Upload saved GP PDF from profiles directory to DB.
-                        // The endpoint also runs a synchronous CV parse and returns
-                        // the parse result directly — no separate parse_cv_and_update
-                        // round-trip needed.
+                        // ── Step 1: Fetch saved GP PDF bytes from the profiles directory ──
+                        // GET /api/linkdapi/get-profile-pdf returns the raw PDF so we can
+                        // submit it to upload_multiple_cvs (exactly like the Bulk Assessment
+                        // button does with files picked from the directory).
+                        assessBtn.textContent = 'Fetching PDF…';
+                        const pdfResp = await fetch(
+                            '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                            { credentials: 'same-origin' }
+                        );
+                        if (!pdfResp.ok) {
+                            const errData = await pdfResp.json().catch(() => ({}));
+                            throw new Error(errData.error || `PDF fetch failed HTTP ${pdfResp.status}`);
+                        }
+                        const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
+                        const pdfBytes   = await pdfResp.arrayBuffer();
+                        const pdfBlob    = new Blob([pdfBytes], { type: 'application/pdf' });
+
+                        // ── Step 2: Upload via /process/upload_multiple_cvs ──
+                        // Same endpoint as the Bulk Assessment button — runs
+                        // analyze_cv_background in a background thread so all ML fields
+                        // (sector, seniority, product, job_family) land in DB correctly.
                         assessBtn.textContent = 'Uploading PDF…';
-                        const nameCell = tr.querySelector('td[data-field="name"]');
-                        const candName = nameCell ? (nameCell.textContent || '').trim() : '';
-                        const uploadResp = await fetch('/api/linkdapi/upload-profile-pdf', {
+                        const formData = new FormData();
+                        formData.append('files', pdfBlob, pdfFilename);
+                        const uid = window.__SV_ACTIVE_USERID || '';
+                        if (uid) formData.append('userid', uid);
+
+                        const uploadResp = await fetch('/process/upload_multiple_cvs', {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ linkedin_url: value, name: candName }),
+                            body: formData,
                             credentials: 'same-origin'
                         });
                         const uploadData = await uploadResp.json().catch(() => ({}));
                         if (!uploadResp.ok) {
                             throw new Error(uploadData.error || `Upload failed HTTP ${uploadResp.status}`);
                         }
+                        console.log('[GP Assess] upload_multiple_cvs response:', uploadData);
 
-                        // Use parse result from step 1 (company / job title / country)
-                        const analyzeData = uploadData;
+                        // ── Step 3: Wait for CV parse / ML enrichment (same as Bulk Assessment) ──
+                        // verifyBulkUploadedProfiles polls until all DB fields are populated
+                        // (jobtitle, company, sector, seniority, product, skillset, tenure, country).
                         assessBtn.textContent = 'Parsing CV…';
+                        await verifyBulkUploadedProfiles([value]);
 
-                        // Update cells from parse result
-                        const newCompany = analyzeData.company || analyzeData.organisation || '';
-                        const newJob = analyzeData.job_title || analyzeData.jobtitle || '';
-                        const newCountry = analyzeData.country || analyzeData.location || '';
-                        if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
-                        if (newJob)     { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
-                        if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
-
-                        // Step 2: Run assessment via performCombinedAssessment.
-                        // skipNameGate=true bypasses the criteria-JSON name check for
-                        // GP profiles which are not yet present in the criteria file.
+                        // ── Step 4: Run assessment via performCombinedAssessment ──
+                        // skipNameGate=true bypasses the criteria-JSON name check for GP profiles
+                        // (they are not present in the criteria file by default).
+                        // Pass {} for analyzeData — all profile fields are now in the DB
+                        // (written by analyze_cv_background background thread + verified by
+                        // verifyBulkUploadedProfiles above), so bulk_assess reads them directly.
                         assessBtn.textContent = 'Processing…';
-                        const assessOk = await performCombinedAssessment(tr, value, analyzeData, true, true);
+                        const assessOk = await performCombinedAssessment(tr, value, {}, true, true);
 
                         if (assessOk === false) {
-                            // Assessment was blocked — restore Assess button state.
                             assessBtn.textContent = 'Assess';
                             assessBtn.disabled = false;
                             assessBtn.classList.remove('btn-spinning');
@@ -4203,6 +4220,8 @@ function buildRow(row) {
                         assessBtn.disabled = false;
                         assessBtn.classList.remove('btn-spinning');
                         alert('GP Assess failed: ' + (err.message || err));
+                    } finally {
+                        setSearchResultButtonsEnabled(true);
                     }
                 };
 
