@@ -4292,15 +4292,15 @@ function buildRow(row) {
                 td.appendChild(assessBtn);
                 td.appendChild(ingestBtn);
 
-                // Async PDF check: show Ingest if PDF exists, otherwise show Assess
+                // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
                 fetch('/api/linkdapi/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
-                            ingestBtn.style.display = 'block';
-                        } else {
                             assessBtn.style.display = 'block';
+                        } else {
+                            ingestBtn.style.display = 'block';
                         }
-                    }).catch(() => { assessBtn.style.display = 'block'; }); // fail-open: show Assess
+                    }).catch(() => { ingestBtn.style.display = 'block'; }); // fail-open: show Ingest
 
                 return td;
             }
