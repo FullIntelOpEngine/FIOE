@@ -6028,7 +6028,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
-        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=4000)
+        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=8000)
         if raw:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
@@ -6157,8 +6157,11 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         s = str(t or "")
         # 1. Strip control characters that are invalid in XML (U+0000-U+0008,
         #    U+000B, U+000C, U+000E-U+001F) — these crash Platypus's XML parser.
+        #    Also strip DEL (U+007F) and the C1 control range (U+0080-U+009F)
+        #    which includes NEL (U+0085) — some Platypus parsers misinterpret
+        #    NEL as a newline and raise an XML error mid-paragraph.
         #    Normalise CR/LF/TAB to a plain space so text flows as a single line.
-        s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+        s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]', '', s)
         s = _re.sub(r'[\r\n\t]', ' ', s)
         # 2. NFKC normalisation
         s = _ud.normalize('NFKC', s)
@@ -6405,6 +6408,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if exp_list:
             _section("Experience")
             for exp in exp_list:
+                if not isinstance(exp, dict):
+                    continue
                 title   = _sp(exp.get("title") or "")
                 company = _sp(exp.get("company") or "")
                 dates   = _sp(exp.get("dates") or "")
@@ -6427,6 +6432,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if edu_list:
             _section("Education")
             for edu in edu_list:
+                if not isinstance(edu, dict):
+                    continue
                 school = _sp(edu.get("school") or "")
                 degree = _sp(edu.get("degree") or "")
                 dates  = _sp(edu.get("dates") or "")
@@ -6709,7 +6716,11 @@ def linkdapi_upload_profile_pdf():
         cur = conn.cursor()
         binary_cv = psycopg2.Binary(pdf_bytes)
 
-        # Try by exact URL first, then normalised partial match
+        # Try by exact URL first, then normalised partial match.
+        # Track the process table primary key so we can pass it to
+        # analyze_cv_background, ensuring it updates the correct row
+        # (avoids the sourcing-table ID mismatch that caused only-skillset scoring).
+        _proc_id_for_bg = None
         from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
         from psycopg2 import sql as _pgsql
         normalized = _normalize_linkedin_to_path(linkedin_url)
@@ -6717,16 +6728,34 @@ def linkdapi_upload_profile_pdf():
             "UPDATE process SET cv = %s WHERE linkedinurl = %s",
             (binary_cv, linkedin_url)
         )
-        if cur.rowcount == 0 and normalized:
+        _cv_rowcount = cur.rowcount
+        if _cv_rowcount > 0:
+            cur.execute(
+                "SELECT id FROM process WHERE linkedinurl = %s LIMIT 1",
+                (linkedin_url,)
+            )
+            _id_row = cur.fetchone()
+            if _id_row:
+                _proc_id_for_bg = _id_row[0]
+        if _cv_rowcount == 0 and normalized:
             cur.execute(
                 "UPDATE process SET cv = %s WHERE LOWER(linkedinurl) LIKE %s",
                 (binary_cv, f"%{normalized}%")
             )
+            _cv_rowcount = cur.rowcount
+            if _cv_rowcount > 0:
+                cur.execute(
+                    "SELECT id FROM process WHERE LOWER(linkedinurl) LIKE %s LIMIT 1",
+                    (f"%{normalized}%",)
+                )
+                _id_row = cur.fetchone()
+                if _id_row:
+                    _proc_id_for_bg = _id_row[0]
 
         # If no existing process row was found, INSERT a minimal stub so that
         # bulk_assess can locate the record and the background CV parse can
         # write profile fields back to it.
-        if cur.rowcount == 0:
+        if _cv_rowcount == 0:
             cand_name   = (body.get("name") or "").strip()
             active_user = getattr(request, "_session_user", "") or ""
             try:
@@ -6746,16 +6775,21 @@ def linkdapi_upload_profile_pdf():
                     _ins_fields.append("username")
                     _ins_vals.append(active_user)
 
+                # Use RETURNING id so we can pass the exact row PK to
+                # analyze_cv_background (avoids sourcing-ID mismatch).
                 _ins_sql = _pgsql.SQL(
-                    "INSERT INTO process ({}) VALUES ({})"
+                    "INSERT INTO process ({}) VALUES ({}) RETURNING id"
                 ).format(
                     _pgsql.SQL(", ").join(_pgsql.Identifier(f) for f in _ins_fields),
                     _pgsql.SQL(", ").join(_pgsql.Placeholder() for _ in _ins_fields),
                 )
                 cur.execute(_ins_sql, _ins_vals)
+                _ins_ret = cur.fetchone()
+                if _ins_ret:
+                    _proc_id_for_bg = _ins_ret[0]
                 logger.info(
-                    "[linkdapi upload-pdf] Inserted new process row for %s",
-                    linkedin_url,
+                    "[linkdapi upload-pdf] Inserted new process row id=%s for %s",
+                    _proc_id_for_bg, linkedin_url,
                 )
             except Exception as _ins_exc:
                 logger.warning(
@@ -6805,10 +6839,13 @@ def linkdapi_upload_profile_pdf():
         # pre_parsed_obj avoids a second Gemini call; skip_auto_assess=True
         # because the frontend will immediately call performCombinedAssessment
         # (L2) which is richer than the L1 auto-assessment.
+        # process_id targets the exact process row so analyze_cv_background
+        # never accidentally updates a different row via sourcing-table ID lookup.
         analyze_cv_background(
             linkedin_url, pdf_bytes,
             pre_parsed_obj=obj,
             skip_auto_assess=True,
+            process_id=_proc_id_for_bg,
         )
         logger.info(
             "[linkdapi upload-pdf] ML enrichment complete for %s; all fields in DB",
