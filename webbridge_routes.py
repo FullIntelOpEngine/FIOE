@@ -3016,15 +3016,18 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
                 )
         _total_hint = (
             data.get("total") or data.get("count")
-            or (people_raw.get("total") or people_raw.get("count")
-                if isinstance(people_raw, dict) else None)
+            or (
+                (people_raw.get("total") or people_raw.get("count"))
+                if isinstance(people_raw, dict) else None
+            )
             or len(people)
         )
         estimated_total = int(_total_hint)
         if not people and resp_body:
+            _preview_keys = list(resp_body.keys()) if isinstance(resp_body, dict) else str(type(resp_body))
             logger.info(
-                f"[ContactOut] Zero results — HTTP {r.status_code} response preview: "
-                f"{str(resp_body)[:600]}"
+                f"[ContactOut] Zero results — HTTP {r.status_code} "
+                f"response top-level keys: {_preview_keys}"
             )
         out = []
         skipped = 0
@@ -3352,9 +3355,10 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
                     f"({type(people_raw).__name__}); treating as empty"
                 )
         if not people and resp_body:
+            _preview_keys = list(resp_body.keys()) if isinstance(resp_body, dict) else str(type(resp_body))
             logger.info(
-                f"[RocketReach] Zero results — HTTP {r.status_code} response preview: "
-                f"{str(resp_body)[:600]}"
+                f"[RocketReach] Zero results — HTTP {r.status_code} "
+                f"response top-level keys: {_preview_keys}"
             )
         estimated_total = int(
             data.get("pagination", {}).get("total")
