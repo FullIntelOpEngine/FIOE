@@ -5924,7 +5924,7 @@ def linkdapi_read_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -5941,7 +5941,8 @@ def linkdapi_read_profile():
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
     out_path = os.path.abspath(os.path.join(out_dir, out_filename))
 
-    # Path-traversal guard
+    # Path-traversal guard — resolve symlinks and ensure the target stays
+    # inside the expected output directory.
     try:
         real_out_dir = os.path.realpath(out_dir)
         real_out_path = os.path.realpath(out_path)
@@ -5950,11 +5951,14 @@ def linkdapi_read_profile():
     except ValueError:
         return jsonify({"error": "Invalid output path"}), 400
 
-    if not os.path.isfile(out_path):
+    # Use the resolved (canonical) path for all file operations
+    safe_path = real_out_path
+
+    if not os.path.isfile(safe_path):
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
     try:
-        with open(out_path, "r", encoding="utf-8") as fh:
+        with open(safe_path, "r", encoding="utf-8") as fh:
             profile_data = json.load(fh)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
