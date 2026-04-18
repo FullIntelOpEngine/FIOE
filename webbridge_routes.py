@@ -3577,7 +3577,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     # missing or the API call fails, ProviderSearchError is raised so the caller
     # can surface the specific reason in the job status messages.
     elif selected_provider == 'contactout':
-        co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+        _co_cfg = ev_cfg.get("contactout", {})
+        co_key = (_co_cfg.get("api_key") or "").strip() if _co_cfg.get("enabled") == "enabled" else ""
         if not co_key:
             raise ProviderSearchError(
                 "ContactOut API key is not configured. Add CONTACTOUT_API_KEY in "
@@ -3598,7 +3599,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     elif selected_provider == 'apollo':
-        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        _ap_cfg = ev_cfg.get("apollo", {})
+        ap_key = (_ap_cfg.get("api_key") or "").strip() if _ap_cfg.get("enabled") == "enabled" else ""
         if not ap_key:
             raise ProviderSearchError(
                 "Apollo API key is not configured. Add APOLLO_API_KEY in "
@@ -3617,7 +3619,8 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     elif selected_provider == 'rocketreach':
-        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        _rr_cfg = ev_cfg.get("rocketreach", {})
+        rr_key = (_rr_cfg.get("api_key") or "").strip() if _rr_cfg.get("enabled") == "enabled" else ""
         if not rr_key:
             raise ProviderSearchError(
                 "RocketReach API key is not configured. Add ROCKETREACH_API_KEY in "
@@ -5364,7 +5367,8 @@ def contactout_download_profile():
         return jsonify({"error": "linkedin_url is required"}), 400
 
     ev_cfg = _load_email_verif_config()
-    co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+    _co_admin = ev_cfg.get("contactout", {})
+    co_key = (_co_admin.get("api_key") or "").strip() if _co_admin.get("enabled") == "enabled" else ""
     if not co_key:
         return jsonify({"error": "CONTACTOUT_API_KEY is not configured"}), 503
 
@@ -5443,7 +5447,8 @@ def apollo_download_profile():
             pass
     if not ap_key:
         ev_cfg = _load_email_verif_config()
-        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        _ap_admin = ev_cfg.get("apollo", {})
+        ap_key = (_ap_admin.get("api_key") or "").strip() if _ap_admin.get("enabled") == "enabled" else ""
     if not ap_key:
         return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
 
@@ -5528,7 +5533,8 @@ def rocketreach_download_profile():
             pass
     if not rr_key:
         ev_cfg = _load_email_verif_config()
-        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        _rr_admin = ev_cfg.get("rocketreach", {})
+        rr_key = (_rr_admin.get("api_key") or "").strip() if _rr_admin.get("enabled") == "enabled" else ""
     if not rr_key:
         return jsonify({"error": "ROCKETREACH_API_KEY is not configured"}), 503
 
