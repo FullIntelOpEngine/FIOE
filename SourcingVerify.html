@@ -3745,7 +3745,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
     const data = await resp.json();
     const savedFilename = String(data?.saved_filename || '');
     if (!savedFilename) {
-      alert('Profile was retrieved but could not be saved. Please contact support.');
+      alert('Unexpected server response: missing file information. Please contact support.');
       return;
     }
     if (typeof setStatus === 'function') {

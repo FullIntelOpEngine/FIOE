@@ -5885,11 +5885,9 @@ def linkdapi_get_profile():
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
     out_path = os.path.abspath(os.path.join(out_dir, out_filename))
     try:
-        out_drive, _ = os.path.splitdrive(out_dir)
-        file_drive, _ = os.path.splitdrive(out_path)
-        if (out_drive or "").lower() != (file_drive or "").lower():
-            return jsonify({"error": "Invalid output path"}), 400
-        if os.path.commonpath([out_dir, out_path]) != out_dir:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
             return jsonify({"error": "Invalid output path"}), 400
     except ValueError:
         return jsonify({"error": "Invalid output path"}), 400
