@@ -4227,7 +4227,7 @@ function buildRow(row) {
                             assessBtn.textContent = 'Assess';
                             assessBtn.disabled = false;
                             assessBtn.classList.remove('btn-spinning');
-                            assessBtn.style.background = 'white';
+                            // background stays white (set by initial cssText)
                         } else {
                             updateUploadButtonToView(value);
                             persistCompletedDetailRow(value);
@@ -4261,6 +4261,8 @@ function buildRow(row) {
                     setSearchResultButtonsEnabled(false);
                     try {
                         // ── GP duties: fetch JSON profile + generate FIOE-branded PDF ──
+                        // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
+                        // manage any button UI itself; the Ingest button is managed here instead.
                         ingestBtn.textContent = 'Getting profile…';
                         const gpOk = await _downloadLinkdapiProfile(value, null);
                         if (!gpOk) throw new Error('GP profile fetch failed. Check the console for details.');
