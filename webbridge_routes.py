@@ -6761,7 +6761,69 @@ def linkdapi_upload_profile_pdf():
                 "experience_text": "\n".join(obj.get("experience", [])),
                 "education_text":  "\n".join(obj.get("education", [])),
             }
-        # Also fire background thread so DB fields are updated asynchronously
+            # Write parsed profile fields to DB immediately so bulk_assess finds
+            # them on its first query without waiting for the background thread.
+            # The background thread still runs for full ML enrichment (sector,
+            # company normalisation, product extraction, etc.).
+            _p_jobtitle    = obj.get("job_title", "")
+            _p_company     = obj.get("company", "")
+            _p_country     = obj.get("country", "")
+            _p_skillset    = ", ".join(str(s) for s in obj.get("skillset", []) if s)
+            _p_experience  = "\n".join(str(s) for s in obj.get("experience", []) if s)
+            _p_tenure      = obj.get("tenure") or 0.0
+            if any([_p_jobtitle, _p_company, _p_country, _p_skillset]):
+                try:
+                    import psycopg2 as _pg2_pf
+                    _pf_conn = _pg2_pf.connect(
+                        host=os.getenv("PGHOST", "localhost"),
+                        port=int(os.getenv("PGPORT", "5432")),
+                        user=os.getenv("PGUSER", "postgres"),
+                        password=os.getenv("PGPASSWORD", ""),
+                        dbname=os.getenv("PGDATABASE", "candidate_db"),
+                    )
+                    _pf_cur = _pf_conn.cursor()
+                    from webbridge_cv import _normalize_linkedin_to_path as _nllp  # type: ignore
+                    _pf_norm = _nllp(linkedin_url)
+                    _pf_cur.execute(
+                        """UPDATE process
+                              SET jobtitle   = COALESCE(NULLIF(jobtitle,''),   %s),
+                                  company    = COALESCE(NULLIF(company,''),    %s),
+                                  country    = COALESCE(NULLIF(country,''),    %s),
+                                  skillset   = COALESCE(NULLIF(skillset,''),   %s),
+                                  experience = COALESCE(NULLIF(experience,''), %s),
+                                  tenure     = COALESCE(tenure, %s)
+                            WHERE linkedinurl = %s""",
+                        (_p_jobtitle, _p_company, _p_country, _p_skillset,
+                         _p_experience, _p_tenure, linkedin_url),
+                    )
+                    if _pf_cur.rowcount == 0 and _pf_norm:
+                        _pf_cur.execute(
+                            """UPDATE process
+                                  SET jobtitle   = COALESCE(NULLIF(jobtitle,''),   %s),
+                                      company    = COALESCE(NULLIF(company,''),    %s),
+                                      country    = COALESCE(NULLIF(country,''),    %s),
+                                      skillset   = COALESCE(NULLIF(skillset,''),   %s),
+                                      experience = COALESCE(NULLIF(experience,''), %s),
+                                      tenure     = COALESCE(tenure, %s)
+                                WHERE LOWER(linkedinurl) LIKE %s""",
+                            (_p_jobtitle, _p_company, _p_country, _p_skillset,
+                             _p_experience, _p_tenure, f"%{_pf_norm}%"),
+                        )
+                    _pf_conn.commit()
+                    _pf_cur.close()
+                    _pf_conn.close()
+                    logger.info(
+                        "[linkdapi upload-pdf] Wrote sync-parse profile fields to DB for %s",
+                        linkedin_url,
+                    )
+                except Exception as _pf_exc:
+                    logger.warning(
+                        "[linkdapi upload-pdf] Could not write profile fields to DB (non-fatal): %s",
+                        _pf_exc,
+                    )
+
+        # Also fire background thread for full ML enrichment (sector, company
+        # normalisation, product extraction) — runs after the sync fields are in DB.
         import threading as _threading
         _threading.Thread(
             target=analyze_cv_background, args=(linkedin_url, pdf_bytes)
