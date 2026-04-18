@@ -6459,7 +6459,6 @@ def linkdapi_profile_to_pdf():
     safe_active_username = _safe_slug(active_username, "unknown")
     safe_profile_username = _safe_slug(username, "linkdapi_profile")
     json_filename = f"{safe_profile_username}_{safe_active_username}.json"
-    pdf_filename  = f"{safe_profile_username}_{safe_active_username}.pdf"
 
     if os.sep in json_filename or (os.altsep and os.altsep in json_filename):
         return jsonify({"error": "Invalid filename"}), 400
@@ -6497,15 +6496,13 @@ def linkdapi_profile_to_pdf():
         logger.exception("[linkdapi PDF] PDF generation failed: %s", exc)
         return jsonify({"error": "PDF generation failed"}), 500
 
-    # Save the PDF to the profiles output directory (same location as JSON)
-    pdf_path = os.path.abspath(os.path.join(out_dir, pdf_filename))
-    try:
-        real_out_dir  = os.path.realpath(out_dir)
-        real_pdf_path = os.path.realpath(pdf_path)
-        if os.path.commonpath([real_out_dir, real_pdf_path]) != real_out_dir:
-            return jsonify({"error": "Invalid output path"}), 400
-    except ValueError:
-        return jsonify({"error": "Invalid output path"}), 400
+    # Derive the PDF filename from the OS-sourced JSON directory entry
+    # (replacing the .json extension with .pdf) so the write path is not
+    # tainted by any user-provided value.
+    if not matched_json.endswith(".json"):
+        return jsonify({"error": "Unexpected JSON filename format"}), 500
+    pdf_filename = matched_json[:-5] + ".pdf"
+    pdf_path = os.path.join(out_dir, pdf_filename)
     try:
         with open(pdf_path, "wb") as fh:
             fh.write(pdf_bytes)
