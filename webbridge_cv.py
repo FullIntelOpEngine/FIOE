@@ -4812,7 +4812,7 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
 
             if role_tag_db:
                 # --- NEW: Trigger role_tag -> jskill sync during background CV analysis ---
-                if role_tag_db and "jskill" in cols:
+                if "jskill" in cols:
                      upd_js_sql = pgsql.SQL("UPDATE process SET jskill = %s WHERE {}").format(pgsql.SQL(where_clause))
                      cur.execute(upd_js_sql, (role_tag_db, *params))
                      conn.commit()

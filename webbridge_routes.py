@@ -6190,21 +6190,19 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         #     to ASCII space.  This catches U+2010 HYPHEN, U+2011 NB-HYPHEN,
         #     U+2012 FIGURE DASH and any other LLM-generated separator that
         #     would otherwise survive as a ``?`` after Latin-1 encoding.
-        result = []
-        for c in s:
-            if ord(c) <= 0x00FF:
-                result.append(c)
-            else:
-                cat = _ud.category(c)
-                if cat in ('Pd', 'Pc'):
-                    result.append('-')
-                elif cat == 'Zs':
-                    result.append(' ')
-                # else: keep the character so the final encode() can turn it
-                # into '?' (which is the existing behaviour for stray chars)
-                else:
-                    result.append(c)
-        s = ''.join(result)
+        #     Only characters outside Latin-1 (code-point > U+00FF) that survived
+        #     the earlier CJK/named-replacement passes are visited here, so the
+        #     ord() guard means _ud.category() is never called for Latin-1 chars.
+        def _map_non_latin1(m):
+            c = m.group(0)
+            cat = _ud.category(c)
+            if cat in ('Pd', 'Pc'):
+                return '-'
+            if cat == 'Zs':
+                return ' '
+            return c  # keep; encode() will replace with '?' if not Latin-1
+
+        s = _re.sub(r'[\u0100-\uffff]', _map_non_latin1, s)
         return s.encode("latin-1", errors="replace").decode("latin-1")
 
     def _sp(t):
