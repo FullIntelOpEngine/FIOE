@@ -6009,19 +6009,21 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             '  "summary": "Professional summary text (2-4 sentences)",\n'
             '  "experience": [\n'
             '    {"title": "Job Title", "company": "Company Name",\n'
-            '     "dates": "Jan 2020 \u2013 Present",\n'
+            '     "dates": "Jan 2020 - Present",\n'
             '     "description": "Key responsibilities in 1-3 sentences"}\n'
             '  ],\n'
             '  "education": [\n'
             '    {"school": "University Name",\n'
             '     "degree": "Bachelor of Science in Computer Science",\n'
-            '     "dates": "2016 \u2013 2020"}\n'
+            '     "dates": "2016 - 2020"}\n'
             '  ],\n'
             '  "skills": ["Skill 1", "Skill 2"]\n'
             "}\n\n"
             "Rules:\n"
-            "- Format experience dates as 'Mon YYYY \u2013 Mon YYYY' or 'Mon YYYY \u2013 Present'\n"
+            "- Format experience dates as 'Mon YYYY - Mon YYYY' or 'Mon YYYY - Present'\n"
             "- Keep descriptions concise (max 3 sentences per role)\n"
+            "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
+            "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
             "- Omit keys whose values are empty or unknown\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
@@ -6073,7 +6075,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             start_str = _fmt_date(pos.get("startDate") or pos.get("start_date") or {})
             end_str = "Present" if is_current else _fmt_date(
                 pos.get("endDate") or pos.get("end_date") or {})
-            dates = f"{start_str} \u2013 {end_str}" if (start_str or end_str) else ""
+            dates = f"{start_str} - {end_str}" if (start_str or end_str) else ""
             exp_list.append({
                 "title":       (pos.get("title") or "").strip(),
                 "company":     (pos.get("companyName") or pos.get("company")
@@ -6092,7 +6094,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
                 degree = field
             sy = _fmt_year(edu.get("startDate") or edu.get("start_date") or {})
             ey = _fmt_year(edu.get("endDate") or edu.get("end_date") or {})
-            dates = f"{sy} \u2013 {ey}" if (sy and ey) else (sy or ey)
+            dates = f"{sy} - {ey}" if (sy and ey) else (sy or ey)
             edu_list.append({
                 "school": (edu.get("schoolName") or edu.get("school")
                            or edu.get("name") or "").strip(),
@@ -6644,24 +6646,46 @@ def linkdapi_upload_profile_pdf():
                 (binary_cv, f"%{normalized}%")
             )
         conn.commit()
-        # Fire background parse if module is available
-        try:
-            from webbridge_cv import analyze_cv_background  # type: ignore
-            import threading as _threading
-            _threading.Thread(
-                target=analyze_cv_background, args=(linkedin_url, pdf_bytes)
-            ).start()
-        except ImportError:
-            pass
         cur.close()
         conn.close()
     except Exception as exc:
         logger.exception("[linkdapi upload-pdf] DB write failed: %s", exc)
         return jsonify({"error": "Failed to store GP profile PDF in database"}), 500
 
+    # Run synchronous CV parse so the result can be returned directly to the
+    # frontend (avoids the separate /process/parse_cv_and_update round-trip).
+    parse_result = {}
+    try:
+        from webbridge_cv import _analyze_cv_bytes_sync, analyze_cv_background  # type: ignore
+        obj = _analyze_cv_bytes_sync(pdf_bytes)
+        if obj:
+            parse_result = {
+                "skillset":        obj.get("skillset", []),
+                "total_years":     obj.get("total_experience_years", 0),
+                "tenure":          obj.get("tenure", 0.0),
+                "experience":      obj.get("experience", []),
+                "education":       obj.get("education", []),
+                "product":         obj.get("product_list", []),
+                "company":         obj.get("company", ""),
+                "job_title":       obj.get("job_title", ""),
+                "country":         obj.get("country", ""),
+                "experience_text": "\n".join(obj.get("experience", [])),
+                "education_text":  "\n".join(obj.get("education", [])),
+            }
+        # Also fire background thread so DB fields are updated asynchronously
+        import threading as _threading
+        _threading.Thread(
+            target=analyze_cv_background, args=(linkedin_url, pdf_bytes)
+        ).start()
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("[linkdapi upload-pdf] sync parse failed (non-fatal): %s", exc)
+
     return jsonify({
         "status": "uploaded",
         "pdf_filename": pdf_filename,
+        **parse_result,
     })
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,

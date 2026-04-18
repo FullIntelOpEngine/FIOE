@@ -4146,7 +4146,10 @@ function buildRow(row) {
                     assessBtn.classList.add('btn-spinning');
 
                     try {
-                        // Step 1: Upload saved GP PDF from profiles directory to DB
+                        // Step 1: Upload saved GP PDF from profiles directory to DB.
+                        // The endpoint also runs a synchronous CV parse and returns
+                        // the parse result directly — no separate parse_cv_and_update
+                        // round-trip needed.
                         assessBtn.textContent = 'Uploading PDF…';
                         const nameCell = tr.querySelector('td[data-field="name"]');
                         const candName = nameCell ? (nameCell.textContent || '').trim() : '';
@@ -4156,23 +4159,14 @@ function buildRow(row) {
                             body: JSON.stringify({ linkedin_url: value, name: candName }),
                             credentials: 'same-origin'
                         });
+                        const uploadData = await uploadResp.json().catch(() => ({}));
                         if (!uploadResp.ok) {
-                            const errData = await uploadResp.json().catch(() => ({}));
-                            throw new Error(errData.error || `Upload failed HTTP ${uploadResp.status}`);
+                            throw new Error(uploadData.error || `Upload failed HTTP ${uploadResp.status}`);
                         }
 
-                        // Step 2: Parse the uploaded CV
+                        // Use parse result from step 1 (company / job title / country)
+                        const analyzeData = uploadData;
                         assessBtn.textContent = 'Parsing CV…';
-                        const parseResp = await fetch(API_PARSE_CV_AND_UPDATE, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ linkedinurl: value }),
-                            credentials: 'same-origin'
-                        });
-                        const analyzeData = await parseResp.json().catch(() => ({}));
-                        if (!parseResp.ok) {
-                            throw new Error(analyzeData.error || `Parse failed HTTP ${parseResp.status}`);
-                        }
 
                         // Update cells from parse result
                         const newCompany = analyzeData.company || analyzeData.organisation || '';
@@ -4182,7 +4176,7 @@ function buildRow(row) {
                         if (newJob)     { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                         if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
 
-                        // Step 3: Run assessment via performCombinedAssessment
+                        // Step 2: Run assessment via performCombinedAssessment
                         assessBtn.textContent = 'Processing…';
                         const assessOk = await performCombinedAssessment(tr, value, analyzeData, true);
 
