@@ -1296,10 +1296,12 @@ function updateUploadButtonToView(linkedinurl) {
         const uploadBtn = credentialCell.querySelector('button');
         if (uploadBtn) {
             const btnText = uploadBtn.textContent || '';
-            // Convert if it's "Upload CV", "Analyzing...", "Processing...", or similar states
+            // Convert if it's "Upload CV", "Assess", "Analyzing...", "Processing...", or similar states
             const shouldConvert = btnText.includes('Upload CV') || 
+                                 btnText.includes('Assess') ||
                                  btnText.includes('Analyzing') || 
                                  btnText.includes('Processing') ||
+                                 btnText.includes('Reading GP') ||
                                  uploadBtn.classList.contains('assessment-active');
             
             if (shouldConvert) {
@@ -2201,7 +2203,7 @@ async function _runBulkBatchWithSSE(batchUrls, uid, forceReassess, onProgress) {
                                                 const sel = (window.CSS && CSS.escape) ? CSS.escape(item.linkedinurl) : item.linkedinurl.replace(/"/g, '\\"');
                                                 const tr = document.querySelector(`#sourcingTable tbody tr[data-linkedinurl="${sel}"]`);
                                                 const uploadBtn = tr && tr.querySelector('td[data-field="linkedinurl"] button, td[data-field="credential"] button');
-                                                if (uploadBtn) { uploadBtn.textContent = 'Upload CV'; uploadBtn.disabled = false; uploadBtn.style.opacity = '1'; uploadBtn.classList.remove('btn-spinning'); }
+                                                if (uploadBtn) { const _hasGp = tr && tr.querySelector('.gp-tag'); uploadBtn.textContent = _hasGp ? 'Assess' : 'Upload CV'; uploadBtn.disabled = false; uploadBtn.style.opacity = '1'; uploadBtn.classList.remove('btn-spinning'); }
                                             } catch(_) {}
                                         }
                                     }, idx * BUTTON_TRANSITION_DELAY_MS);
@@ -3726,13 +3728,15 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 }
 
 // ---------------------------------------------------------------------------
-// linkdapi full profile download helper (for CSE/Serper/DataforSEO rows)
+// linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
+// Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
 async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (!linkedinUrl) return;
-  const origText = btnEl ? btnEl.textContent : '';
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
+  let allDone = false;
   try {
+    // Step 1: Fetch and save JSON profile to F:\Recruiting Tools\Autosourcing\output\profiles
     const resp = await fetch(
       `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
     );
@@ -3741,23 +3745,84 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
       return;
     }
-    const profile = await resp.json();
-    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
-    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'linkdapi_profile';
-    a.href = url;
-    a.download = `${safeName}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const data = await resp.json();
+    const savedFilename = String(data?.saved_filename || '');
+    if (!savedFilename) {
+      alert('Unexpected server response: missing file information. Please contact support.');
+      return;
+    }
+
+    // Step 2: Immediately generate and save FIOE-branded PDF server-side
+    if (btnEl) { btnEl.textContent = 'PDF…'; }
+    const pdfResp = await fetch(
+      `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
+      { credentials: 'same-origin' }
+    );
+    const pdfData = await pdfResp.json().catch(() => ({}));
+    if (!pdfResp.ok) {
+      alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
+      return;
+    }
+
+    allDone = true;
+    const pdfFile = pdfData.saved_pdf_filename || '';
+    if (typeof setStatus === 'function') {
+      setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+    } else {
+      console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
+    }
+
+    // Disable the GP button once the profile + PDF have been saved
+    if (btnEl) {
+      btnEl.textContent = 'GP';
+      btnEl.disabled = true;
+      btnEl.title = `Profile saved to: ${pdfFile}`;
+      btnEl.style.opacity = '0.4';
+      btnEl.style.cursor = 'default';
+      btnEl.style.background = 'rgba(109,234,249,0.05)';
+      btnEl.style.borderColor = '#bbb';
+      btnEl.style.color = '#aaa';
+    }
   } catch (err) {
     console.error('[linkdapi] get-profile error:', err);
     alert(`linkdapi profile fetch error: ${err.message || err}`);
   } finally {
-    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+    // Restore the GP button only if the operation did NOT complete successfully
+    if (!allDone && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
+  }
+  return allDone;
+}
+
+// ---------------------------------------------------------------------------
+// Download the saved GP profile PDF for a LinkedIn URL.
+// Tries GET /api/linkdapi/get-profile-pdf; if the PDF exists the browser
+// downloads it as a file attachment.  Returns true on success, false if the
+// PDF is not found (so callers can fall back gracefully).
+// ---------------------------------------------------------------------------
+async function _downloadGpProfilePdf(linkedinUrl) {
+  if (!linkedinUrl) return false;
+  try {
+    const resp = await fetch(
+      '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
+      { credentials: 'same-origin' }
+    );
+    if (!resp.ok) return false;
+    // Prefer the server-supplied filename (includes profile slug + user);
+    // derive a fallback from the URL slug so it is always unique per profile.
+    const urlSlug = (linkedinUrl.match(/\/in\/([A-Za-z0-9_-]+)/)||[])[1] || 'profile';
+    const filename = resp.headers.get('X-PDF-Filename') || (urlSlug + '.pdf');
+    const bytes = await resp.arrayBuffer();
+    const blob  = new Blob([bytes], { type: 'application/pdf' });
+    const url   = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (e) {
+    console.warn('[GP] PDF download failed:', e);
+    return false;
   }
 }
 
@@ -3837,7 +3902,12 @@ function buildRow(row) {
       }
   } catch(e) {}
   
-  if (row.experience && (row.experience.includes('Assessment') || row.experience.match(/\d+%/))) {
+  const experienceText = String(row.experience || '');
+  const experienceLower = experienceText.toLowerCase();
+  const isAssessmentPending = experienceLower.includes('assessment pending');
+  if (row.rating && row.rating_score !== null && row.rating_score !== undefined && row.rating_score !== '') {
+      hasAssessment = true;
+  } else if (!isAssessmentPending && (experienceLower.includes('assessment') || /\d+%/.test(experienceText))) {
       hasAssessment = true;
   }
   if (cached && cached.assessmentHTML) {
@@ -3849,22 +3919,8 @@ function buildRow(row) {
       const providerBtn = _createProviderButton(row.source, row.linkedinurl);
       if (providerBtn) {
           checkboxCell.appendChild(providerBtn);
-      } else if (window.__LINKDAPI_ENABLED) {
-          // GP button: linkdapi full profile retrieval for CSE/Serper/DataforSEO rows
-          const gpBtn = document.createElement('button');
-          gpBtn.className = 'gp-tag';
-          gpBtn.textContent = 'GP';
-          gpBtn.title = 'Get full LinkedIn profile via linkdapi';
-          gpBtn.style.cssText =
-            'width:32px; height:32px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.12);' +
-            ' color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
-            ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-          gpBtn.onmouseover = function () { this.style.background = 'var(--robins-egg,#6deaf9)'; this.style.color = 'var(--azure-dragon,#073679)'; };
-          gpBtn.onmouseout  = function () { this.style.background = 'rgba(109,234,249,0.12)'; this.style.color = 'var(--azure-dragon,#073679)'; };
-          gpBtn.addEventListener('click', () => _downloadLinkdapiProfile(row.linkedinurl, gpBtn));
-          checkboxCell.appendChild(gpBtn);
       } else {
-          // Standard checkbox for selection (invisible — provider buttons are the primary first-column control)
+          // Standard checkbox (hidden) — GP/Ingest button has moved to the Action column
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.className = 'row-select';
@@ -3933,9 +3989,16 @@ function buildRow(row) {
     img.src = picSrc;
     img.alt = row.name || 'Profile';
     img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
-    img.title = 'Click to view details';
-    img.onclick = (e) => {
+    img.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
+      ? 'Click to download GP profile PDF (or view details if no PDF)'
+      : 'Click to view details';
+    img.onclick = async (e) => {
       e.stopPropagation();
+      // For GP rows: attempt PDF download first; fall back to namecard if no PDF saved
+      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
+        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
+        if (downloaded) return;
+      }
       window.__sv_namecard.toggleNameCard(tr);
     };
     img.onmouseover = function() {
@@ -3952,9 +4015,15 @@ function buildRow(row) {
       const placeholder = document.createElement('div');
       placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
       placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
-      placeholder.title = 'Click to view details';
-      placeholder.onclick = (e) => {
+      placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
+        ? 'Click to download GP profile PDF (or view details if no PDF)'
+        : 'Click to view details';
+      placeholder.onclick = async (e) => {
         e.stopPropagation();
+        if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
+          const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
+          if (downloaded) return;
+        }
         window.__sv_namecard.toggleNameCard(tr);
       };
       placeholder.onmouseover = function() {
@@ -3973,9 +4042,15 @@ function buildRow(row) {
     const placeholder = document.createElement('div');
     placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
-    placeholder.title = 'Click to view details';
-    placeholder.onclick = (e) => {
+    placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
+      ? 'Click to download GP profile PDF (or view details if no PDF)'
+      : 'Click to view details';
+    placeholder.onclick = async (e) => {
       e.stopPropagation();
+      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
+        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
+        if (downloaded) return;
+      }
       window.__sv_namecard.toggleNameCard(tr);
     };
     placeholder.onmouseover = function() {
@@ -4084,6 +4159,149 @@ function buildRow(row) {
                 // Revert to previous button styling (default gray button)
                 btn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; cursor:pointer;';
                 td.appendChild(btn);
+                return td;
+            }
+
+            // ── GP Assess mode: when linkdapi is enabled and this is NOT a
+            //    provider-sourced row, show "Assess" instead of "Upload CV".
+            //    The Assess button finds the saved PDF in the profiles directory,
+            //    uploads it to the DB, parses the CV, then runs assessment.
+            const _isGpRow = window.__LINKDAPI_ENABLED &&
+                             !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()];
+
+            if (_isGpRow) {
+                const _gpBtnCss = 'width:100%; padding:6px 12px; font-size:13px; font-weight:500; border-radius:6px; cursor:pointer; transition:all 0.2s; display:none;';
+
+                // ── Assess button (shown when no GP PDF exists yet) ──────────────
+                const assessBtn = document.createElement('button');
+                assessBtn.textContent = 'Assess';
+                assessBtn.className = 'view-btn';
+                assessBtn.style.cssText = _gpBtnCss + ' background:white; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679);';
+                assessBtn.title = 'Assess profile using saved GP PDF';
+                assessBtn.onmouseover = function() { this.style.background = '#eff3f8'; };
+                assessBtn.onmouseout  = function() { this.style.background = 'white'; };
+
+                // shared 4-step assess pipeline (used by both Assess and Ingest buttons)
+                async function _runAssessPipeline(btn, label) {
+                    btn.textContent = 'Fetching PDF…';
+                    const pdfResp = await fetch(
+                        '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                        { credentials: 'same-origin' }
+                    );
+                    if (!pdfResp.ok) {
+                        const errData = await pdfResp.json().catch(() => ({}));
+                        throw new Error(errData.error || `PDF fetch failed HTTP ${pdfResp.status}`);
+                    }
+                    const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
+                    const pdfBytes   = await pdfResp.arrayBuffer();
+                    const pdfBlob    = new Blob([pdfBytes], { type: 'application/pdf' });
+
+                    btn.textContent = 'Uploading PDF…';
+                    const formData = new FormData();
+                    formData.append('files', pdfBlob, pdfFilename);
+                    const uid = window.__SV_ACTIVE_USERID || '';
+                    if (uid) formData.append('userid', uid);
+                    const uploadResp = await fetch('/process/upload_multiple_cvs', {
+                        method: 'POST', body: formData, credentials: 'same-origin'
+                    });
+                    const uploadData = await uploadResp.json().catch(() => ({}));
+                    if (!uploadResp.ok) throw new Error(uploadData.error || `Upload failed HTTP ${uploadResp.status}`);
+                    console.log('[GP ' + label + '] upload_multiple_cvs response:', uploadData);
+
+                    btn.textContent = 'Parsing CV…';
+                    await verifyBulkUploadedProfiles([value]);
+
+                    btn.textContent = 'Processing…';
+                    return await performCombinedAssessment(tr, value, {}, true, true);
+                }
+
+                assessBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (assessBtn.disabled) return;
+                    assessBtn.disabled = true;
+                    assessBtn.classList.add('btn-spinning');
+                    setSearchResultButtonsEnabled(false);
+                    try {
+                        const assessOk = await _runAssessPipeline(assessBtn, 'Assess');
+                        if (assessOk === false) {
+                            assessBtn.textContent = 'Assess';
+                            assessBtn.disabled = false;
+                            assessBtn.classList.remove('btn-spinning');
+                            // background stays white (set by initial cssText)
+                        } else {
+                            updateUploadButtonToView(value);
+                            persistCompletedDetailRow(value);
+                            setTimeout(() => { const r = document.getElementById('reloadBtn'); if (r) r.click(); }, 1000);
+                        }
+                    } catch (err) {
+                        console.error('[GP Assess] failed:', err);
+                        assessBtn.textContent = 'Assess';
+                        assessBtn.disabled = false;
+                        assessBtn.classList.remove('btn-spinning');
+                        alert('GP Assess failed: ' + (err.message || err));
+                    } finally {
+                        setSearchResultButtonsEnabled(true);
+                    }
+                };
+
+                // ── Ingest button (shown when GP PDF already exists; GP duties + Assess) ──
+                const ingestBtn = document.createElement('button');
+                ingestBtn.textContent = 'Ingest';
+                ingestBtn.className = 'view-btn';
+                ingestBtn.style.cssText = _gpBtnCss + ' background:var(--azure-dragon,#073679); color:white; border:1px solid var(--azure-dragon,#073679);';
+                ingestBtn.title = 'Fetch GP profile + PDF, then assess';
+                ingestBtn.onmouseover = function() { this.style.background = '#0a4a9f'; };
+                ingestBtn.onmouseout  = function() { this.style.background = 'var(--azure-dragon,#073679)'; };
+
+                ingestBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (ingestBtn.disabled) return;
+                    ingestBtn.disabled = true;
+                    ingestBtn.classList.add('btn-spinning');
+                    setSearchResultButtonsEnabled(false);
+                    try {
+                        // ── GP duties: fetch JSON profile + generate FIOE-branded PDF ──
+                        // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
+                        // manage any button UI itself; the Ingest button is managed here instead.
+                        ingestBtn.textContent = 'Getting profile…';
+                        const gpOk = await _downloadLinkdapiProfile(value, null);
+                        if (!gpOk) throw new Error('GP profile fetch failed. Check the console for details.');
+
+                        // ── 4-step Assess pipeline ──
+                        const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest');
+                        if (assessOk === false) {
+                            ingestBtn.textContent = 'Ingest';
+                            ingestBtn.disabled = false;
+                            ingestBtn.classList.remove('btn-spinning');
+                        } else {
+                            updateUploadButtonToView(value);
+                            persistCompletedDetailRow(value);
+                            setTimeout(() => { const r = document.getElementById('reloadBtn'); if (r) r.click(); }, 1000);
+                        }
+                    } catch (err) {
+                        console.error('[GP Ingest] failed:', err);
+                        ingestBtn.textContent = 'Ingest';
+                        ingestBtn.disabled = false;
+                        ingestBtn.classList.remove('btn-spinning');
+                        alert('GP Ingest failed: ' + (err.message || err));
+                    } finally {
+                        setSearchResultButtonsEnabled(true);
+                    }
+                };
+
+                td.appendChild(assessBtn);
+                td.appendChild(ingestBtn);
+
+                // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
+                fetch('/api/linkdapi/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
+                    .then(r => r.json()).then(chk => {
+                        if (chk && chk.exists) {
+                            assessBtn.style.display = 'block';
+                        } else {
+                            ingestBtn.style.display = 'block';
+                        }
+                    }).catch(() => { ingestBtn.style.display = 'block'; }); // fail-open: show Ingest
+
                 return td;
             }
 
@@ -4870,7 +5088,7 @@ async function triggerLevel1Assessment(tr, anchor) {
     }
 }
 
-async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Request = false) {
+async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Request = false, skipNameGate = false) {
     if(!tr) return;
     
     // All assessments use the bulk workflow: the backend fetches all profile data from DB,
@@ -4879,16 +5097,19 @@ async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Reques
 
     // JSON profile-name gate: silently skip if this profile's name is not in the criteria JSON
     // that corresponds to the row's OWN role_tag (from sourcing table).
-    try {
-        const rowData = rowsData.find(r => (r.linkedinurl || '').trim() === (anchor || '').trim());
-        const profileName = (rowData && rowData.name) || '';
-        const rowRoleTag = ((tr && tr.dataset && tr.dataset.roleTag) || '').trim();
-        const jsonProfiles = await _getCriteriaProfiles(rowRoleTag);
-        if (!_isProfileNameInJson(profileName, jsonProfiles)) {
-            console.warn(`[Assessment] Silently skipped ${anchor}: profile name "${profileName}" not found in criteria JSON for role_tag "${rowRoleTag}".`);
-            return false;
-        }
-    } catch(e) { console.warn('[performCombinedAssessment] Profile name check failed:', e); }
+    // skipNameGate=true bypasses this check (used for GP/linkdapi Assess which are not in criteria JSON).
+    if (!skipNameGate) {
+        try {
+            const rowData = rowsData.find(r => (r.linkedinurl || '').trim() === (anchor || '').trim());
+            const profileName = (rowData && rowData.name) || '';
+            const rowRoleTag = ((tr && tr.dataset && tr.dataset.roleTag) || '').trim();
+            const jsonProfiles = await _getCriteriaProfiles(rowRoleTag);
+            if (!_isProfileNameInJson(profileName, jsonProfiles)) {
+                console.warn(`[Assessment] Silently skipped ${anchor}: profile name "${profileName}" not found in criteria JSON for role_tag "${rowRoleTag}".`);
+                return false;
+            }
+        } catch(e) { console.warn('[performCombinedAssessment] Profile name check failed:', e); }
+    }
 
     // GUARD
     if (window.__sv_assessment_in_flight && window.__sv_assessment_in_flight.has(anchor)) {

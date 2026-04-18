@@ -5805,6 +5805,12 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     return "TLS/connection error reaching linkdapi", 0
 
 
+LINKDAPI_PROFILE_OUTPUT_DIR = os.getenv(
+    "LINKDAPI_PROFILE_OUTPUT_DIR",
+    r"F:\Recruiting Tools\Autosourcing\output\profiles",
+)
+
+
 @app.get("/api/linkdapi/get-profile")
 @_require_session
 def linkdapi_get_profile():
@@ -5815,7 +5821,9 @@ def linkdapi_get_profile():
                      from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
 
     Calls GET https://linkdapi.com/api/v1/profile/full?username=<username>
-    using the admin-configured LINKDAPI_API_KEY.  Returns the raw JSON profile.
+    using the admin-configured LINKDAPI_API_KEY, then saves the JSON to
+    LINKDAPI_PROFILE_OUTPUT_DIR with the authenticated username appended to
+    the filename.
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
     if not linkedin_url:
@@ -5865,10 +5873,1169 @@ def linkdapi_get_profile():
         profile_data = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Invalid JSON from linkdapi"}), 502
-    return jsonify(profile_data)
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[linkdapi] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_for_user": safe_active_username,
+    })
 
 
-@app.post("/api/user-service-config/activate")
+@app.get("/api/linkdapi/read-profile")
+@_require_session
+def linkdapi_read_profile():
+    """Read a previously-saved GP profile JSON from the output directory.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
+
+    The file is expected at
+    ``LINKDAPI_PROFILE_OUTPUT_DIR/<linkedin_slug>_<session_username>.json``.
+    Returns the parsed profile JSON so the UI can use it for assessment.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+
+    # Filename whitelist: after _safe_slug only [A-Za-z0-9_-] remain,
+    # so the composed name is always safe (no path separators, no dots
+    # except the ".json" suffix).
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    # Build path from the fixed output directory + the sanitised filename.
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    # List directory and match: avoids constructing a path from
+    # user-influenced values so the file-open cannot be steered by input.
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if out_filename not in existing:
+        return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
+
+    # Use the entry from the directory listing (OS-sourced, not user-derived)
+    # to construct the path — this breaks the taint chain from user input.
+    matched_entry = next(f for f in existing if f == out_filename)
+    safe_path = os.path.join(out_dir, matched_entry)
+
+    try:
+        with open(safe_path, "r", encoding="utf-8") as fh:
+            profile_data = json.load(fh)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
+    except Exception as exc:
+        logger.exception("[linkdapi] failed to read profile JSON: %s", exc)
+        return jsonify({"error": "Failed to read GP profile JSON"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "filename": out_filename,
+        "username": safe_active_username,
+    })
+
+
+def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
+    """Convert a linkdapi profile JSON dict to a FIOE-branded A4 PDF.
+
+    Uses the configured LLM (Gemini by default via ``unified_llm_call_text``)
+    to extract and normalise profile data, then renders with the FIOE colour
+    scheme (azure dragon / cool blue / robin's egg).  Falls back to direct
+    field extraction when the LLM call fails or returns unparseable output.
+    """
+
+    # ── Attempt LLM-assisted structuring ──────────────────────────────────
+    formatted = None
+    try:
+        profile_json_str = json.dumps(profile, ensure_ascii=False, indent=2)
+        prompt = (
+            "You are preparing a LinkedIn profile for a professional PDF document.\n"
+            "Given the profile JSON below, extract and organise the information "
+            "into this exact JSON structure (return ONLY valid JSON — no markdown "
+            "code blocks, no extra text):\n\n"
+            "{\n"
+            '  "name": "Full Name",\n'
+            '  "headline": "Job Title at Company",\n'
+            '  "location": "City, Country",\n'
+            '  "email": "email@example.com",\n'
+            '  "linkedin_url": "https://linkedin.com/in/...",\n'
+            '  "summary": "Professional summary text (2-4 sentences)",\n'
+            '  "experience": [\n'
+            '    {"title": "Job Title", "company": "Company Name",\n'
+            '     "dates": "Jan 2020 - Present",\n'
+            '     "description": "Key responsibilities in 1-3 sentences"}\n'
+            '  ],\n'
+            '  "education": [\n'
+            '    {"school": "University Name",\n'
+            '     "degree": "Bachelor of Science in Computer Science",\n'
+            '     "dates": "2016 - 2020"}\n'
+            '  ],\n'
+            '  "skills": ["Skill 1", "Skill 2"]\n'
+            "}\n\n"
+            "Rules:\n"
+            "- Format experience dates as 'Mon YYYY - Mon YYYY' or 'Mon YYYY - Present'\n"
+            "- Keep descriptions concise (max 3 sentences per role)\n"
+            "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
+            "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
+            "- Omit keys whose values are empty or unknown\n"
+            "- Return ONLY valid JSON\n\n"
+            f"Profile JSON:\n{profile_json_str}"
+        )
+        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=8000)
+        if raw:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+            formatted = json.loads(cleaned)
+    except Exception as exc:
+        logger.warning("[linkdapi PDF] LLM formatting failed: %s", exc)
+        formatted = None
+
+    # ── Fallback: direct extraction from raw linkdapi JSON fields ──────────
+    def _fmt_date(d):
+        if not d:
+            return ""
+        if isinstance(d, str):
+            return d
+        _MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        m = d.get("month", "")
+        y = d.get("year", "")
+        try:
+            m_str = _MONTHS[int(m)] if m and 1 <= int(m) <= 12 else str(m)
+        except (ValueError, TypeError):
+            m_str = str(m) if m else ""
+        return f"{m_str} {y}".strip() if m_str else str(y)
+
+    def _fmt_year(d):
+        if not d:
+            return ""
+        if isinstance(d, (int, str)):
+            return str(d)
+        return str(d.get("year", ""))
+
+    if not (formatted and isinstance(formatted, dict)):
+        first = (profile.get("firstName") or profile.get("first_name") or "").strip()
+        last = (profile.get("lastName") or profile.get("last_name") or "").strip()
+        positions_raw = profile.get("positions") or profile.get("experience") or []
+        schools_raw = profile.get("schools") or profile.get("education") or []
+        skills_raw = profile.get("skills") or []
+
+        exp_list = []
+        for pos in positions_raw:
+            is_current = pos.get("isCurrent") or pos.get("is_current") or False
+            start_str = _fmt_date(pos.get("startDate") or pos.get("start_date") or {})
+            end_str = "Present" if is_current else _fmt_date(
+                pos.get("endDate") or pos.get("end_date") or {})
+            dates = f"{start_str} - {end_str}" if (start_str or end_str) else ""
+            exp_list.append({
+                "title":       (pos.get("title") or "").strip(),
+                "company":     (pos.get("companyName") or pos.get("company")
+                                or pos.get("company_name") or "").strip(),
+                "dates":       dates,
+                "description": (pos.get("description") or "").strip(),
+            })
+
+        edu_list = []
+        for edu in schools_raw:
+            degree = (edu.get("degree") or edu.get("degreeName") or "").strip()
+            field = (edu.get("fieldOfStudy") or edu.get("field_of_study") or "").strip()
+            if degree and field:
+                degree = f"{degree} in {field}"
+            elif field:
+                degree = field
+            sy = _fmt_year(edu.get("startDate") or edu.get("start_date") or {})
+            ey = _fmt_year(edu.get("endDate") or edu.get("end_date") or {})
+            dates = f"{sy} - {ey}" if (sy and ey) else (sy or ey)
+            edu_list.append({
+                "school": (edu.get("schoolName") or edu.get("school")
+                           or edu.get("name") or "").strip(),
+                "degree": degree,
+                "dates":  dates,
+            })
+
+        skill_names = [
+            (s.get("name") or s.get("skill") or str(s)) if isinstance(s, dict) else str(s)
+            for s in skills_raw
+        ]
+
+        formatted = {
+            "name":         (profile.get("fullName") or profile.get("full_name")
+                             or f"{first} {last}").strip(),
+            "headline":     (profile.get("headline") or "").strip(),
+            "location":     (profile.get("location")
+                             or (profile.get("geo") or {}).get("full") or "").strip(),
+            "email":        (profile.get("email") or "").strip(),
+            "linkedin_url": (profile.get("profileUrl") or profile.get("profile_url")
+                             or profile.get("url") or "").strip(),
+            "summary":      (profile.get("summary") or profile.get("about") or "").strip(),
+            "experience":   exp_list,
+            "education":    edu_list,
+            "skills":       skill_names,
+        }
+
+    # ── Render with FIOE branding ──────────────────────────────────────────
+    return _render_fioe_profile_pdf(formatted)
+
+
+def _render_fioe_profile_pdf(data: dict) -> bytes:
+    """Render a FIOE-branded A4 PDF from a structured profile dict using
+    reportlab Platypus for proper text flow (no right-side cut-off).
+
+    FIOE colour scheme:
+      Azure Dragon  #073679  — primary header background, section titles
+      Cool Blue     #4c82b8  — dates, sub-labels
+      Robin's Egg   #6deaf9  — decorative rules, contact strip
+
+    Falls back to ``_lines_to_pdf_bytes`` when reportlab is unavailable.
+    """
+    # ── Shared text sanitiser ──────────────────────────────────────────────
+    def _s(t):
+        """Normalise text for Latin-1 PDF rendering (canvas-safe).
+
+        1. Strips XML-invalid control characters (which would crash Platypus).
+        2. NFKC-normalises (handles fullwidth/halfwidth variants).
+        3. Replaces entire *runs* of CJK / non-Latin characters with ``[...]``
+           so the output clearly shows where untransliterated text exists
+           rather than producing a string of ``?`` characters.
+        4. Applies targeted replacements for common Unicode punctuation and
+           maps ALL Unicode Pd (dash) / Pc (connector) characters to ASCII ``-``
+           and non-Latin-1 Zs (space-separator) characters to ASCII space so
+           date separators produced by LLMs never appear as ``?``.
+        5. Encodes to Latin-1, replacing any remaining stragglers with ``?``.
+        """
+        import unicodedata as _ud
+        import re as _re
+        s = str(t or "")
+        # 1. Strip control characters that are invalid in XML (U+0000-U+0008,
+        #    U+000B, U+000C, U+000E-U+001F) — these crash Platypus's XML parser.
+        #    Also strip DEL (U+007F) and the C1 control range (U+0080-U+009F)
+        #    which includes NEL (U+0085) — some Platypus parsers misinterpret
+        #    NEL as a newline and raise an XML error mid-paragraph.
+        #    Normalise CR/LF/TAB to a plain space so text flows as a single line.
+        s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]', '', s)
+        s = _re.sub(r'[\r\n\t]', ' ', s)
+        # 2. NFKC normalisation
+        s = _ud.normalize('NFKC', s)
+        # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
+        s = _re.sub(
+            r'[\u0400-\u04ff'           # Cyrillic
+            r'\u0600-\u06ff'           # Arabic
+            r'\u3000-\u303f'           # CJK symbols/punctuation
+            r'\u3040-\u30ff'           # Hiragana + Katakana
+            r'\u4e00-\u9fff'           # CJK unified ideographs
+            r'\uf900-\ufaff'           # CJK compatibility ideographs
+            r'\uac00-\ud7af'           # Hangul syllables
+            r'\uff00-\uffef'           # Halfwidth/fullwidth forms
+            r']+'
+            ,
+            '[...]', s
+        )
+        # 4a. Named Unicode punctuation replacements
+        s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+        s = s.replace('\u2018', "'").replace('\u2019', "'")
+        s = s.replace('\u201c', '"').replace('\u201d', '"')
+        s = s.replace('\u2026', '...')
+        s = s.replace('\u2022', '-')
+        s = s.replace('\u2212', '-')
+        s = s.replace('\u30fb', '\u00b7')
+        s = s.replace('\u301c', '~').replace('\uff5e', '~')
+        # 4b. Map ALL remaining non-Latin-1 Unicode dashes/connectors (Pd/Pc
+        #     category) to ASCII hyphen and non-Latin-1 space separators (Zs)
+        #     to ASCII space.  This catches U+2010 HYPHEN, U+2011 NB-HYPHEN,
+        #     U+2012 FIGURE DASH and any other LLM-generated separator that
+        #     would otherwise survive as a ``?`` after Latin-1 encoding.
+        #     Only characters outside Latin-1 (code-point > U+00FF) that survived
+        #     the earlier CJK/named-replacement passes are visited here, so the
+        #     ord() guard means _ud.category() is never called for Latin-1 chars.
+        def _map_non_latin1(m):
+            c = m.group(0)
+            cat = _ud.category(c)
+            if cat in ('Pd', 'Pc'):
+                return '-'
+            if cat == 'Zs':
+                return ' '
+            return c  # keep; encode() will replace with '?' if not Latin-1
+
+        s = _re.sub(r'[\u0100-\uffff]', _map_non_latin1, s)
+        return s.encode("latin-1", errors="replace").decode("latin-1")
+
+    def _sp(t):
+        """Return text safe for Platypus Paragraph (Latin-1 + XML-escaped).
+
+        Platypus Paragraph parses its input as XML, so literal ``<``, ``>``
+        and ``&`` characters must be escaped to prevent the XML parser from
+        failing or misrendering the text.
+        """
+        from xml.sax.saxutils import escape as _xmlesc
+        return _xmlesc(_s(t))
+
+    # ── Try reportlab.platypus (primary path) ──────────────────────────────
+    try:
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            HRFlowable,
+        )
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import pt
+        from reportlab.lib.colors import HexColor, white, black
+        import io as _io
+
+        AZURE    = HexColor('#073679')
+        COOL     = HexColor('#4c82b8')
+        ROBIN    = HexColor('#6deaf9')
+        ROBIN_BG = HexColor('#edf9ff')
+        DARK     = HexColor('#1a1a1a')
+        GRAY     = HexColor('#5a5a5a')
+
+        PAGE_W, PAGE_H = A4
+        ML, MR, MT, MB = 45, 45, 20, 30   # margins (pt); top is extra for header
+
+        # Header band height (drawn in page callbacks)
+        HDR_H = 60
+
+        def _hdr_name(name_text, headline_text):
+            """Return rough header band height needed for name + headline.
+
+            Estimates line count using approximate chars-per-line values:
+              * 60 chars/line for name (20pt bold)
+              * 80 chars/line for headline (10pt regular)
+            Each line adds ~20pt of height; 20pt base padding each side.
+            """
+            _NAME_CHARS_PER_LINE = 60
+            _HL_CHARS_PER_LINE   = 80
+            _LINE_HEIGHT_PT      = 20  # vertical step per text line
+            _MIN_BAND_HEIGHT     = 60  # never shorter than this (pt)
+            lines = 1 + (len(name_text) // _NAME_CHARS_PER_LINE)
+            if headline_text:
+                lines += 1 + (len(headline_text) // _HL_CHARS_PER_LINE)
+            return max(_MIN_BAND_HEIGHT, lines * _LINE_HEIGHT_PT + _LINE_HEIGHT_PT)
+
+        name     = _s(data.get("name") or "Unknown")
+        headline = _s(data.get("headline") or "")
+        dynamic_hdr_h = _hdr_name(name, headline)
+
+        def _draw_header(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            # Azure band
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, PAGE_H - dynamic_hdr_h, PAGE_W, dynamic_hdr_h,
+                            fill=1, stroke=0)
+            # Robin's egg bottom stripe
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.rect(0, PAGE_H - dynamic_hdr_h, PAGE_W, 3, fill=1, stroke=0)
+            # Name: compute target font size to fit available header width.
+            _MAX_HDR_W = PAGE_W - ML - MR
+            canvas_obj.setFillColor(white)
+            # Calculate fitting font size directly instead of looping.
+            # stringWidth scales linearly with font size, so:
+            #   target_sz = floor(max_sz * max_w / current_w)  (clamped to min)
+            _w_at_20 = canvas_obj.stringWidth(name, "Helvetica-Bold", 20)
+            if _w_at_20 > 0:
+                _name_sz = max(10, min(20, int(20 * _MAX_HDR_W / _w_at_20)))
+            else:
+                _name_sz = 20
+            canvas_obj.setFont("Helvetica-Bold", _name_sz)
+            _NAME_FONT_HALF = _name_sz + 2
+            name_y = PAGE_H - dynamic_hdr_h + (dynamic_hdr_h - _NAME_FONT_HALF) // 2 + \
+                     (14 if headline else 0)
+            canvas_obj.drawString(ML, name_y, name)
+            # Headline: compute target font size similarly
+            if headline:
+                _w_hl_at_10 = canvas_obj.stringWidth(headline, "Helvetica", 10)
+                if _w_hl_at_10 > 0:
+                    _hl_sz = max(7, min(10, int(10 * _MAX_HDR_W / _w_hl_at_10)))
+                else:
+                    _hl_sz = 10
+                canvas_obj.setFont("Helvetica", _hl_sz)
+                canvas_obj.drawString(ML, name_y - _hl_sz - 4, headline)
+            # Footer
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.setFont("Helvetica", 7)
+            canvas_obj.drawCentredString(
+                PAGE_W / 2, 4,
+                _s("Generated by FIOE Recruiting Platform")
+            )
+            canvas_obj.restoreState()
+
+        def _draw_later(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.setFont("Helvetica", 7)
+            canvas_obj.drawCentredString(
+                PAGE_W / 2, 4,
+                _s("Generated by FIOE Recruiting Platform")
+            )
+            canvas_obj.restoreState()
+
+        buf = _io.BytesIO()
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=A4,
+            leftMargin=ML, rightMargin=MR,
+            topMargin=dynamic_hdr_h + MT,
+            bottomMargin=MB + 16,
+        )
+
+        # ── Styles ─────────────────────────────────────────────────────────
+        contact_style = ParagraphStyle(
+            'FIOEContact',
+            fontName='Helvetica', fontSize=8.5,
+            textColor=AZURE, leading=13,
+            backColor=ROBIN_BG,
+            leftIndent=8, rightIndent=8,
+            spaceBefore=0, spaceAfter=0,
+        )
+        section_hdr_style = ParagraphStyle(
+            'FIOESectionHdr',
+            fontName='Helvetica-Bold', fontSize=10,
+            textColor=AZURE,
+            spaceBefore=12, spaceAfter=2,
+            leading=14,
+        )
+        body_style = ParagraphStyle(
+            'FIOEBody',
+            fontName='Helvetica', fontSize=9,
+            textColor=DARK, leading=13,
+            spaceBefore=0, spaceAfter=2,
+        )
+        title_style = ParagraphStyle(
+            'FIOETitle',
+            fontName='Helvetica-Bold', fontSize=10,
+            textColor=AZURE, leading=14,
+            spaceBefore=6, spaceAfter=1,
+        )
+        sub_style = ParagraphStyle(
+            'FIOESub',
+            fontName='Helvetica', fontSize=8.5,
+            textColor=COOL, leading=12,
+            spaceBefore=0, spaceAfter=2,
+        )
+        skill_style = ParagraphStyle(
+            'FIOESkill',
+            fontName='Helvetica', fontSize=9,
+            textColor=DARK, leading=13,
+            spaceBefore=0, spaceAfter=2,
+        )
+
+        story = []
+        CW = PAGE_W - ML - MR   # usable content width
+
+        def _section(title):
+            story.append(Paragraph(_sp(title).upper(), section_hdr_style))
+            story.append(HRFlowable(
+                width='100%', thickness=1.5,
+                color=ROBIN, spaceAfter=4,
+            ))
+
+        # ── Contact strip ──────────────────────────────────────────────────
+        loc   = _sp(data.get("location") or "")
+        lnkd  = _sp(data.get("linkedin_url") or "")
+        email = _sp(data.get("email") or "")
+
+        contact_items = []
+        if loc:   contact_items.append(f"Location: {loc}")
+        if lnkd:  contact_items.append(f"LinkedIn: {lnkd}")
+        if email: contact_items.append(f"Email: {email}")
+
+        if contact_items:
+            for ci in contact_items:
+                story.append(Paragraph(ci, contact_style))
+            story.append(Spacer(1, 8))
+
+        # ── Professional Summary ───────────────────────────────────────────
+        summary = _sp(data.get("summary") or "")
+        if summary:
+            _section("Professional Summary")
+            story.append(Paragraph(summary, body_style))
+            story.append(Spacer(1, 6))
+
+        # ── Experience ────────────────────────────────────────────────────
+        exp_list = data.get("experience") or []
+        if exp_list:
+            _section("Experience")
+            for exp in exp_list:
+                if not isinstance(exp, dict):
+                    continue
+                title   = _sp(exp.get("title") or "")
+                company = _sp(exp.get("company") or "")
+                dates   = _sp(exp.get("dates") or "")
+                desc    = _sp(exp.get("description") or "")
+                if not any([title, company, dates, desc]):
+                    continue
+                if title:
+                    story.append(Paragraph(title, title_style))
+                sub_parts = []
+                if company: sub_parts.append(company)
+                if dates:   sub_parts.append(dates)
+                if sub_parts:
+                    story.append(Paragraph("  |  ".join(sub_parts), sub_style))
+                if desc:
+                    story.append(Paragraph(desc, body_style))
+                story.append(Spacer(1, 4))
+
+        # ── Education ─────────────────────────────────────────────────────
+        edu_list = data.get("education") or []
+        if edu_list:
+            _section("Education")
+            for edu in edu_list:
+                if not isinstance(edu, dict):
+                    continue
+                school = _sp(edu.get("school") or "")
+                degree = _sp(edu.get("degree") or "")
+                dates  = _sp(edu.get("dates") or "")
+                if not any([school, degree, dates]):
+                    continue
+                if school:
+                    story.append(Paragraph(school, title_style))
+                sub_parts = []
+                if degree: sub_parts.append(degree)
+                if dates:  sub_parts.append(dates)
+                if sub_parts:
+                    story.append(Paragraph("  |  ".join(sub_parts), sub_style))
+                story.append(Spacer(1, 4))
+
+        # ── Skills ────────────────────────────────────────────────────────
+        skills = data.get("skills") or []
+        if skills:
+            _section("Skills")
+            # Group skills into rows of 3 using a Table for clean layout
+            CHUNK = 3
+            tbl_data = []
+            for i in range(0, len(skills), CHUNK):
+                row_cells = [cell for cell in (_sp(s) for s in skills[i:i + CHUNK]) if cell.strip()]
+                # Pad to CHUNK columns
+                while len(row_cells) < CHUNK:
+                    row_cells.append("")
+                tbl_data.append([
+                    Paragraph(cell, skill_style) for cell in row_cells
+                ])
+            if tbl_data:
+                col_w = CW / CHUNK
+                skills_tbl = Table(tbl_data, colWidths=[col_w] * CHUNK)
+                skills_tbl.setStyle(TableStyle([
+                    ('VALIGN',     (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING',  (0, 0), (-1, -1), 2),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                    ('TOPPADDING',   (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING',(0, 0), (-1, -1), 2),
+                ]))
+                story.append(skills_tbl)
+
+        if not story:
+            story.append(Paragraph("No profile data available.", body_style))
+
+        try:
+            doc.build(story,
+                      onFirstPage=_draw_header,
+                      onLaterPages=_draw_later)
+            return buf.getvalue()
+        except Exception as _build_err:
+            logger.warning(
+                "[PDF] Platypus doc.build() failed (%s: %s) — falling back to plain-text renderer",
+                type(_build_err).__name__, _build_err,
+            )
+            # Fall through to the plain-text fallback below
+
+    except ImportError:
+        pass
+
+    # ── Fallback: plain text via _lines_to_pdf_bytes ───────────────────────
+    lines = []
+    if data.get("name"):
+        lines.append(("title", str(data["name"])))
+    if data.get("headline"):
+        lines.append(("key", str(data["headline"])))
+    lines.append(("gap", ""))
+    for label, val in [("Location", data.get("location")),
+                       ("Email",    data.get("email")),
+                       ("LinkedIn", data.get("linkedin_url"))]:
+        if val:
+            lines.append(("item", f"{label}: {val}"))
+    lines.append(("gap", ""))
+    if data.get("summary"):
+        lines.append(("section", "SUMMARY"))
+        lines.append(("item", str(data["summary"])))
+        lines.append(("gap", ""))
+    if data.get("experience"):
+        lines.append(("section", "EXPERIENCE"))
+    for exp in (data.get("experience") or []):
+        h  = str(exp.get("title") or "")
+        co = str(exp.get("company") or "")
+        dt = str(exp.get("dates") or "")
+        dc = str(exp.get("description") or "")
+        if co:
+            h = f"{h}  \u00b7  {co}" if h else co
+        if dt:
+            h = f"{h}  |  {dt}" if h else dt
+        if h:
+            lines.append(("key", h))
+        if dc:
+            lines.append(("item", dc))
+        lines.append(("gap", ""))
+    if data.get("education"):
+        lines.append(("section", "EDUCATION"))
+        for edu in (data.get("education") or []):
+            s  = str(edu.get("school") or "")
+            d  = str(edu.get("degree") or "")
+            dt = str(edu.get("dates") or "")
+            if d:
+                s = f"{s}  \u00b7  {d}" if s else d
+            if dt:
+                s = f"{s}  ({dt})" if s else dt
+            if s:
+                lines.append(("item", s))
+        lines.append(("gap", ""))
+    if data.get("skills"):
+        lines.append(("section", "SKILLS"))
+        skls = data.get("skills") or []
+        for i in range(0, len(skls), 5):
+            row = [str(x) for x in skls[i:i + 5] if str(x).strip()]
+            if row:
+                lines.append(("item", "  \u2022  ".join(row)))
+    return _lines_to_pdf_bytes(lines)
+
+
+@app.get("/api/linkdapi/profile-to-pdf")
+@_require_session
+def linkdapi_profile_to_pdf():
+    """Convert a saved GP profile JSON to a FIOE-branded PDF and save it to disk.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path.
+
+    Reads the previously-saved JSON from ``LINKDAPI_PROFILE_OUTPUT_DIR``,
+    converts it to a FIOE-branded A4 PDF, and saves it alongside the JSON in
+    the same directory as ``<slug>_<user>.pdf``.  Returns JSON:
+      ``{"saved_pdf_filename": "...", "status": "saved"}``
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    json_filename = f"{safe_profile_username}_{safe_active_username}.json"
+
+    if os.sep in json_filename or (os.altsep and os.altsep in json_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi PDF] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if json_filename not in existing:
+        return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
+
+    # Use the entry from the directory listing (OS-sourced, not user-derived)
+    # to construct the read path — this breaks the taint chain from user input.
+    matched_json = next(f for f in existing if f == json_filename)
+    json_path = os.path.join(out_dir, matched_json)
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as fh:
+            profile_data = json.load(fh)
+    except json.JSONDecodeError:
+        return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] failed to read profile JSON: %s", exc)
+        return jsonify({"error": "Failed to read GP profile JSON"}), 500
+
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    # Derive the PDF filename from the OS-sourced JSON directory entry
+    # (replacing the .json extension with .pdf) so the write path is not
+    # tainted by any user-provided value.
+    if not matched_json.endswith(".json"):
+        return jsonify({"error": "Unexpected JSON filename format"}), 500
+    pdf_filename = matched_json[:-5] + ".pdf"
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[linkdapi PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "saved_pdf_filename": pdf_filename,
+        "status": "saved",
+    })
+
+
+@app.get("/api/linkdapi/check-profile-pdf")
+@_require_session
+def linkdapi_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists for the given LinkedIn URL.
+
+    Used by the frontend to decide whether to hide/disable the GP button and
+    whether clicking the profile picture should trigger a PDF download.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Returns ``{"exists": true, "filename": "<slug>_<user>.pdf"}`` if found,
+    or ``{"exists": false, "filename": ""}`` if not.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"exists": False, "filename": ""}), 200
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"exists": False, "filename": ""}), 200
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active = _safe_slug(active_username, "unknown")
+    safe_profile = _safe_slug(username, "linkdapi_profile")
+    pdf_filename = f"{safe_profile}_{safe_active}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    try:
+        exists = os.path.isfile(os.path.join(out_dir, pdf_filename))
+    except Exception:
+        return jsonify({"exists": False, "filename": ""}), 200
+
+    return jsonify({"exists": exists, "filename": pdf_filename if exists else ""}), 200
+
+
+@app.get("/api/linkdapi/get-profile-pdf")
+@_require_session
+def linkdapi_get_profile_pdf():
+    """Return the saved GP profile PDF bytes for a given LinkedIn URL.
+
+    Used by the Assess button to fetch the PDF before submitting it to
+    ``/process/upload_multiple_cvs`` (the same bulk-upload pipeline used by
+    the Bulk Assessment button).
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Returns the PDF as ``application/pdf`` with header
+    ``X-PDF-Filename`` carrying the safe filename (used by the frontend
+    when constructing the FormData entry).
+    """
+    from flask import Response as _FlaskResponse
+
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    # The PDF filename encodes both the profile slug and the active session
+    # username — so each user can only retrieve PDFs they generated themselves
+    # (implicit per-user access control via filename convention).
+    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi get-pdf] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if pdf_filename not in existing:
+        return jsonify({
+            "error": "GP profile PDF not found. Click the GP button first to generate the PDF."
+        }), 404
+
+    # Use OS-sourced entry (breaks taint chain from user input)
+    matched_pdf = next((f for f in existing if f == pdf_filename), None)
+    if not matched_pdf:
+        return jsonify({"error": "GP profile PDF not found on disk"}), 404
+    pdf_path = os.path.join(out_dir, matched_pdf)
+
+    try:
+        with open(pdf_path, "rb") as fh:
+            pdf_bytes = fh.read()
+    except Exception as exc:
+        logger.exception("[linkdapi get-pdf] failed to read PDF: %s", exc)
+        return jsonify({"error": "Failed to read GP profile PDF"}), 500
+
+    resp = _FlaskResponse(pdf_bytes, mimetype="application/pdf")
+    resp.headers["Content-Disposition"] = f"inline; filename=\"{matched_pdf}\""
+    resp.headers["X-PDF-Filename"] = matched_pdf
+    return resp
+
+
+@app.route("/api/linkdapi/upload-profile-pdf", methods=["POST"])
+@_require_session
+def linkdapi_upload_profile_pdf():
+    """Upload a pre-saved GP profile PDF from the profiles directory into the DB.
+
+    Request body (JSON):
+      linkedin_url – the LinkedIn profile URL (required)
+      name         – candidate name (optional, for name-validation skip)
+
+    Finds the saved ``<slug>_<user>.pdf`` in ``LINKDAPI_PROFILE_OUTPUT_DIR``,
+    reads it, stores it in the ``process.cv`` column (same as
+    ``/process/upload_cv``), then triggers background CV parsing via
+    ``analyze_cv_background``.  Returns the parsed CV data dict on success.
+    """
+    body = request.get_json(silent=True) or {}
+    linkedin_url = (body.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi upload-pdf] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if pdf_filename not in existing:
+        return jsonify({
+            "error": "GP profile PDF not found. Click the GP button first to generate the PDF."
+        }), 404
+
+    # Use OS-sourced entry to build the read path (breaks taint chain)
+    matched_pdf = next((f for f in existing if f == pdf_filename), None)
+    if not matched_pdf:
+        return jsonify({"error": "GP profile PDF not found on disk"}), 404
+    pdf_path = os.path.join(out_dir, matched_pdf)
+
+    try:
+        with open(pdf_path, "rb") as fh:
+            pdf_bytes = fh.read()
+    except Exception as exc:
+        logger.exception("[linkdapi upload-pdf] failed to read PDF: %s", exc)
+        return jsonify({"error": "Failed to read GP profile PDF"}), 500
+
+    # Store PDF in process table (same logic as process_upload_cv)
+    try:
+        import psycopg2
+        pg_host     = os.getenv("PGHOST", "localhost")
+        pg_port     = int(os.getenv("PGPORT", "5432"))
+        pg_user     = os.getenv("PGUSER", "postgres")
+        pg_password = os.getenv("PGPASSWORD", "")
+        pg_db       = os.getenv("PGDATABASE", "candidate_db")
+        conn = psycopg2.connect(
+            host=pg_host, port=pg_port, user=pg_user,
+            password=pg_password, dbname=pg_db
+        )
+        cur = conn.cursor()
+        binary_cv = psycopg2.Binary(pdf_bytes)
+
+        # Try by exact URL first, then normalised partial match.
+        # Track the process table primary key so we can pass it to
+        # analyze_cv_background, ensuring it updates the correct row
+        # (avoids the sourcing-table ID mismatch that caused only-skillset scoring).
+        _proc_id_for_bg = None
+        from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
+        from psycopg2 import sql as _pgsql
+        normalized = _normalize_linkedin_to_path(linkedin_url)
+        cur.execute(
+            "UPDATE process SET cv = %s WHERE linkedinurl = %s",
+            (binary_cv, linkedin_url)
+        )
+        _cv_rowcount = cur.rowcount
+        if _cv_rowcount > 0:
+            cur.execute(
+                "SELECT id FROM process WHERE linkedinurl = %s LIMIT 1",
+                (linkedin_url,)
+            )
+            _id_row = cur.fetchone()
+            if _id_row:
+                _proc_id_for_bg = _id_row[0]
+        if _cv_rowcount == 0 and normalized:
+            cur.execute(
+                "UPDATE process SET cv = %s WHERE LOWER(linkedinurl) LIKE %s",
+                (binary_cv, f"%{normalized}%")
+            )
+            _cv_rowcount = cur.rowcount
+            if _cv_rowcount > 0:
+                cur.execute(
+                    "SELECT id FROM process WHERE LOWER(linkedinurl) LIKE %s LIMIT 1",
+                    (f"%{normalized}%",)
+                )
+                _id_row = cur.fetchone()
+                if _id_row:
+                    _proc_id_for_bg = _id_row[0]
+
+        # If no existing process row was found, INSERT a minimal stub so that
+        # bulk_assess can locate the record and the background CV parse can
+        # write profile fields back to it.
+        if _cv_rowcount == 0:
+            cand_name   = (body.get("name") or "").strip()
+            active_user = getattr(request, "_session_user", "") or ""
+            try:
+                # Discover which columns exist so we only insert what is present.
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'process'
+                """)
+                _existing_cols = {r[0].lower() for r in cur.fetchall()}
+
+                _ins_fields: list = ["linkedinurl", "cv"]
+                _ins_vals:   list = [linkedin_url, binary_cv]
+                if "name" in _existing_cols:
+                    _ins_fields.append("name")
+                    _ins_vals.append(cand_name or linkedin_url)
+                if "username" in _existing_cols and active_user:
+                    _ins_fields.append("username")
+                    _ins_vals.append(active_user)
+
+                # Use RETURNING id so we can pass the exact row PK to
+                # analyze_cv_background (avoids sourcing-ID mismatch).
+                _ins_sql = _pgsql.SQL(
+                    "INSERT INTO process ({}) VALUES ({}) RETURNING id"
+                ).format(
+                    _pgsql.SQL(", ").join(_pgsql.Identifier(f) for f in _ins_fields),
+                    _pgsql.SQL(", ").join(_pgsql.Placeholder() for _ in _ins_fields),
+                )
+                cur.execute(_ins_sql, _ins_vals)
+                _ins_ret = cur.fetchone()
+                if _ins_ret:
+                    _proc_id_for_bg = _ins_ret[0]
+                logger.info(
+                    "[linkdapi upload-pdf] Inserted new process row id=%s for %s",
+                    _proc_id_for_bg, linkedin_url,
+                )
+            except Exception as _ins_exc:
+                logger.warning(
+                    "[linkdapi upload-pdf] Could not insert process row (non-fatal): %s",
+                    _ins_exc,
+                )
+                try:
+                    conn.rollback()
+                except Exception as _rb_exc:
+                    logger.debug(
+                        "[linkdapi upload-pdf] rollback after failed INSERT: %s", _rb_exc
+                    )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as exc:
+        logger.exception("[linkdapi upload-pdf] DB write failed: %s", exc)
+        return jsonify({"error": "Failed to store GP profile PDF in database"}), 500
+
+    # Run synchronous CV parse so the result can be returned directly to the
+    # frontend (avoids the separate /process/parse_cv_and_update round-trip).
+    parse_result = {}
+    try:
+        from webbridge_cv import _analyze_cv_bytes_sync, analyze_cv_background  # type: ignore
+        obj = _analyze_cv_bytes_sync(pdf_bytes)
+        if obj:
+            parse_result = {
+                "skillset":        obj.get("skillset", []),
+                "total_years":     obj.get("total_experience_years", 0),
+                "tenure":          obj.get("tenure", 0.0),
+                "experience":      obj.get("experience", []),
+                "education":       obj.get("education", []),
+                "product":         obj.get("product_list", []),
+                "company":         obj.get("company", ""),
+                "job_title":       obj.get("job_title", ""),
+                "country":         obj.get("country", ""),
+                "job_family":      obj.get("job_family", ""),
+                "seniority":       obj.get("seniority", ""),
+                "experience_text": "\n".join(obj.get("experience", [])),
+                "education_text":  "\n".join(obj.get("education", [])),
+            }
+
+        # Run ML enrichment (sector, company normalisation, product/job_family
+        # extraction) SYNCHRONOUSLY using the already-parsed obj so all fields
+        # are committed to DB before this HTTP response returns.  Passing
+        # pre_parsed_obj avoids a second Gemini call; skip_auto_assess=True
+        # because the frontend will immediately call performCombinedAssessment
+        # (L2) which is richer than the L1 auto-assessment.
+        # process_id targets the exact process row so analyze_cv_background
+        # never accidentally updates a different row via sourcing-table ID lookup.
+        analyze_cv_background(
+            linkedin_url, pdf_bytes,
+            pre_parsed_obj=obj,
+            skip_auto_assess=True,
+            process_id=_proc_id_for_bg,
+        )
+        logger.info(
+            "[linkdapi upload-pdf] ML enrichment complete for %s; all fields in DB",
+            linkedin_url,
+        )
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("[linkdapi upload-pdf] sync parse failed (non-fatal): %s", exc)
+
+    return jsonify({
+        "status": "uploaded",
+        "pdf_filename": pdf_filename,
+        **parse_result,
+    })
+
+
+@app.route("/process/update", methods=["POST"])
+@_require_session
+def process_update_tenure():
+    """Best-effort endpoint to update the tenure field in the process table.
+
+    Request body (JSON):
+      linkedinurl – LinkedIn profile URL
+      tenure      – computed tenure (float, years)
+
+    Returns ``{"ok": true}`` on success.  Non-critical; callers should
+    swallow errors.
+    """
+    body = request.get_json(silent=True) or {}
+    linkedin_url = (body.get("linkedinurl") or "").strip()
+    tenure = body.get("tenure")
+    if not linkedin_url or tenure is None:
+        return jsonify({"ok": False, "error": "missing params"}), 400
+    try:
+        tenure_val = float(tenure)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid tenure"}), 400
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("PGHOST", "localhost"),
+            port=int(os.getenv("PGPORT", "5432")),
+            user=os.getenv("PGUSER", "postgres"),
+            password=os.getenv("PGPASSWORD", ""),
+            dbname=os.getenv("PGDATABASE", "candidate_db"),
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE process SET tenure = %s WHERE linkedinurl = %s",
+            (tenure_val, linkedin_url),
+        )
+        if cur.rowcount == 0:
+            from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
+            normalized = _normalize_linkedin_to_path(linkedin_url)
+            if normalized:
+                # Escape SQL wildcard chars to prevent unintended pattern matches
+                safe_norm = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                cur.execute(
+                    "UPDATE process SET tenure = %s WHERE LOWER(linkedinurl) LIKE %s ESCAPE '\\'",
+                    (tenure_val, f"%{safe_norm}%"),
+                )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True})
+    except ImportError:
+        return jsonify({"ok": False, "error": "psycopg2 not available"}), 500
+    except Exception as exc:
+        logger.warning("[process/update] tenure update failed (non-fatal): %s", exc)
+        return jsonify({"ok": False, "error": "tenure update failed"}), 500
+
+
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
     otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""
