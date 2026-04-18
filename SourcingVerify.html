@@ -3840,7 +3840,7 @@ function buildRow(row) {
   const experienceText = String(row.experience || '');
   const experienceLower = experienceText.toLowerCase();
   const isAssessmentPending = experienceLower.includes('assessment pending');
-  if (row.rating && row.rating_score != null && row.rating_score !== '') {
+  if (row.rating && row.rating_score !== null && row.rating_score !== undefined && row.rating_score !== '') {
       hasAssessment = true;
   } else if (!isAssessmentPending && (experienceLower.includes('assessment') || /\d+%/.test(experienceText))) {
       hasAssessment = true;
