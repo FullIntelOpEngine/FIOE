@@ -5939,31 +5939,34 @@ def linkdapi_read_profile():
     safe_profile_username = _safe_slug(username, "linkdapi_profile")
     out_filename = f"{safe_profile_username}_{safe_active_username}.json"
 
-    # Filename whitelist: after _safe_slug the only chars are [A-Za-z0-9_-]
-    # plus the literal underscore separator and ".json" suffix.
-    if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", out_filename):
+    # Filename whitelist: after _safe_slug only [A-Za-z0-9_-] remain,
+    # so the composed name is always safe (no path separators, no dots
+    # except the ".json" suffix).
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
         return jsonify({"error": "Invalid filename"}), 400
 
-    # Build path using only the validated constant directory + safe filename
+    # Build path from the fixed output directory + the sanitised filename.
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
-    # os.path.join is safe here: out_filename contains no path separators
-    candidate_path = os.path.join(out_dir, out_filename)
 
-    # Path-traversal guard — resolve symlinks and ensure the target stays
-    # inside the expected output directory.
+    # List directory and match: avoids constructing a path from
+    # user-influenced values so the file-open cannot be steered by input.
     try:
-        real_out_dir = os.path.realpath(out_dir)
-        real_candidate = os.path.realpath(candidate_path)
-        if os.path.commonpath([real_out_dir, real_candidate]) != real_out_dir:
-            return jsonify({"error": "Invalid output path"}), 400
-    except ValueError:
-        return jsonify({"error": "Invalid output path"}), 400
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
 
-    if not os.path.isfile(real_candidate):
+    if out_filename not in existing:
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
+    # Construct the final path from the trusted directory + the filename
+    # that was verified to exist in the directory listing.
+    safe_path = os.path.join(out_dir, out_filename)
+
     try:
-        with open(real_candidate, "r", encoding="utf-8") as fh:
+        with open(safe_path, "r", encoding="utf-8") as fh:
             profile_data = json.load(fh)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
