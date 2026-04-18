@@ -3743,8 +3743,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       return;
     }
     const data = await resp.json();
-    const savedFilename = (data && data.saved_filename) ? String(data.saved_filename) : '';
-    const savedPath = (data && data.saved_path) ? String(data.saved_path) : '';
+    const savedFilename = String(data?.saved_filename || '');
     if (!savedFilename) {
       alert('linkdapi profile fetched, but no saved filename was returned.');
       return;
@@ -3752,7 +3751,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
     if (typeof setStatus === 'function') {
       setStatus(`GP profile saved: ${savedFilename}`, 'success');
     }
-    alert(`GP profile saved:\n${savedFilename}${savedPath ? `\n\n${savedPath}` : ''}`);
+    alert(`GP profile saved:\n${savedFilename}`);
   } catch (err) {
     console.error('[linkdapi] get-profile error:', err);
     alert(`linkdapi profile fetch error: ${err.message || err}`);

@@ -5873,12 +5873,22 @@ def linkdapi_get_profile():
         profile_data = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Invalid JSON from linkdapi"}), 502
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
     active_username = getattr(request, "_session_user", "") or ""
-    safe_active_username = re.sub(r'[^A-Za-z0-9_-]+', '_', active_username).strip('_') or "unknown"
-    safe_profile_username = re.sub(r'[^A-Za-z0-9_-]+', '_', username).strip('_') or "linkdapi_profile"
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
     out_filename = f"{safe_profile_username}_{safe_active_username}.json"
-    out_dir = LINKDAPI_PROFILE_OUTPUT_DIR
-    out_path = os.path.join(out_dir, out_filename)
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+    try:
+        if os.path.commonpath([out_dir, out_path]) != out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
 
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -5891,7 +5901,6 @@ def linkdapi_get_profile():
     return jsonify({
         "profile": profile_data,
         "saved_filename": out_filename,
-        "saved_path": out_path,
         "saved_for_user": safe_active_username,
     })
 
