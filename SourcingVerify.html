@@ -1296,10 +1296,12 @@ function updateUploadButtonToView(linkedinurl) {
         const uploadBtn = credentialCell.querySelector('button');
         if (uploadBtn) {
             const btnText = uploadBtn.textContent || '';
-            // Convert if it's "Upload CV", "Analyzing...", "Processing...", or similar states
+            // Convert if it's "Upload CV", "Assess", "Analyzing...", "Processing...", or similar states
             const shouldConvert = btnText.includes('Upload CV') || 
+                                 btnText.includes('Assess') ||
                                  btnText.includes('Analyzing') || 
                                  btnText.includes('Processing') ||
+                                 btnText.includes('Reading GP') ||
                                  uploadBtn.classList.contains('assessment-active');
             
             if (shouldConvert) {
@@ -2201,7 +2203,7 @@ async function _runBulkBatchWithSSE(batchUrls, uid, forceReassess, onProgress) {
                                                 const sel = (window.CSS && CSS.escape) ? CSS.escape(item.linkedinurl) : item.linkedinurl.replace(/"/g, '\\"');
                                                 const tr = document.querySelector(`#sourcingTable tbody tr[data-linkedinurl="${sel}"]`);
                                                 const uploadBtn = tr && tr.querySelector('td[data-field="linkedinurl"] button, td[data-field="credential"] button');
-                                                if (uploadBtn) { uploadBtn.textContent = 'Upload CV'; uploadBtn.disabled = false; uploadBtn.style.opacity = '1'; uploadBtn.classList.remove('btn-spinning'); }
+                                                if (uploadBtn) { const _hasGp = tr && tr.querySelector('.gp-tag'); uploadBtn.textContent = _hasGp ? 'Assess' : 'Upload CV'; uploadBtn.disabled = false; uploadBtn.style.opacity = '1'; uploadBtn.classList.remove('btn-spinning'); }
                                             } catch(_) {}
                                         }
                                     }, idx * BUTTON_TRANSITION_DELAY_MS);
@@ -4089,6 +4091,74 @@ function buildRow(row) {
                 // Revert to previous button styling (default gray button)
                 btn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; cursor:pointer;';
                 td.appendChild(btn);
+                return td;
+            }
+
+            // ── GP Assess mode: when linkdapi is enabled and this is NOT a
+            //    provider-sourced row, show "Assess" instead of "Upload CV".
+            //    The Assess button reads the GP profile JSON from the server
+            //    output directory and triggers performCombinedAssessment.
+            const _isGpRow = window.__LINKDAPI_ENABLED &&
+                             !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()];
+
+            if (_isGpRow) {
+                const assessBtn = document.createElement('button');
+                assessBtn.textContent = 'Assess';
+                assessBtn.className = 'view-btn';
+                assessBtn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; font-weight:500; background:white; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; transition:all 0.2s;';
+                assessBtn.title = 'Assess profile using GP data';
+                assessBtn.onmouseover = function() { this.style.background = '#eff3f8'; };
+                assessBtn.onmouseout  = function() { this.style.background = 'white'; };
+
+                assessBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (assessBtn.disabled) return;
+                    assessBtn.disabled = true;
+                    assessBtn.textContent = 'Reading GP…';
+                    assessBtn.classList.add('btn-spinning');
+
+                    try {
+                        // 1. Read saved GP profile JSON from the server output dir
+                        const gpResp = await fetch(
+                            `/api/linkdapi/read-profile?linkedin_url=${encodeURIComponent(value)}`,
+                            { credentials: 'same-origin' }
+                        );
+                        if (!gpResp.ok) {
+                            const errData = await gpResp.json().catch(() => ({}));
+                            throw new Error(errData.error || `HTTP ${gpResp.status}`);
+                        }
+                        const gpData = await gpResp.json();
+                        const profilePayload = gpData.profile || {};
+
+                        // 2. Run assessment via performCombinedAssessment
+                        assessBtn.textContent = 'Processing…';
+                        const assessOk = await performCombinedAssessment(tr, value, profilePayload, true);
+
+                        if (assessOk === false) {
+                            // Assessment was blocked — restore Assess button state.
+                            assessBtn.textContent = 'Assess';
+                            assessBtn.disabled = false;
+                            assessBtn.classList.remove('btn-spinning');
+                            assessBtn.style.background = 'white';
+                            assessBtn.style.color = 'var(--azure-dragon,#073679)';
+                        } else {
+                            updateUploadButtonToView(value);
+                            persistCompletedDetailRow(value);
+                            setTimeout(() => {
+                                const reloadBtn = document.getElementById('reloadBtn');
+                                if (reloadBtn) { reloadBtn.click(); }
+                            }, 1000);
+                        }
+                    } catch (err) {
+                        console.error('[GP Assess] failed:', err);
+                        assessBtn.textContent = 'Assess';
+                        assessBtn.disabled = false;
+                        assessBtn.classList.remove('btn-spinning');
+                        alert('GP Assess failed: ' + (err.message || err));
+                    }
+                };
+
+                td.appendChild(assessBtn);
                 return td;
             }
 

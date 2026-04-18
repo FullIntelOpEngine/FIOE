@@ -5907,6 +5907,68 @@ def linkdapi_get_profile():
     })
 
 
+@app.get("/api/linkdapi/read-profile")
+@_require_session
+def linkdapi_read_profile():
+    """Read a previously-saved GP profile JSON from the output directory.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
+
+    The file is expected at
+    ``LINKDAPI_PROFILE_OUTPUT_DIR/<linkedin_slug>_<session_username>.json``.
+    Returns the parsed profile JSON so the UI can use it for assessment.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+
+    # Path-traversal guard
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    if not os.path.isfile(out_path):
+        return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
+
+    try:
+        with open(out_path, "r", encoding="utf-8") as fh:
+            profile_data = json.load(fh)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
+    except Exception as exc:
+        logger.exception("[linkdapi] failed to read profile JSON: %s", exc)
+        return jsonify({"error": "Failed to read GP profile JSON"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "filename": out_filename,
+        "username": safe_active_username,
+    })
+
+
 @app.post("/api/user-service-config/activate")
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
