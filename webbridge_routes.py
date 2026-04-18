@@ -3581,7 +3581,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         co_key = (_co_cfg.get("api_key") or "").strip() if _co_cfg.get("enabled") == "enabled" else ""
         if not co_key:
             raise ProviderSearchError(
-                "ContactOut API key is not configured. Add CONTACTOUT_API_KEY in "
+                "ContactOut API key is not configured. Enable ContactOut and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         # Build params directly from form fields when available; otherwise
@@ -3603,7 +3603,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         ap_key = (_ap_cfg.get("api_key") or "").strip() if _ap_cfg.get("enabled") == "enabled" else ""
         if not ap_key:
             raise ProviderSearchError(
-                "Apollo API key is not configured. Add APOLLO_API_KEY in "
+                "Apollo API key is not configured. Enable Apollo and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         if raw_form_fields:
@@ -3623,7 +3623,7 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         rr_key = (_rr_cfg.get("api_key") or "").strip() if _rr_cfg.get("enabled") == "enabled" else ""
         if not rr_key:
             raise ProviderSearchError(
-                "RocketReach API key is not configured. Add ROCKETREACH_API_KEY in "
+                "RocketReach API key is not configured. Enable RocketReach and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         if raw_form_fields:
@@ -5370,7 +5370,7 @@ def contactout_download_profile():
     _co_admin = ev_cfg.get("contactout", {})
     co_key = (_co_admin.get("api_key") or "").strip() if _co_admin.get("enabled") == "enabled" else ""
     if not co_key:
-        return jsonify({"error": "CONTACTOUT_API_KEY is not configured"}), 503
+        return jsonify({"error": "ContactOut API key is not configured or not enabled"}), 503
 
     try:
         r = requests.get(
@@ -5450,7 +5450,7 @@ def apollo_download_profile():
         _ap_admin = ev_cfg.get("apollo", {})
         ap_key = (_ap_admin.get("api_key") or "").strip() if _ap_admin.get("enabled") == "enabled" else ""
     if not ap_key:
-        return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
+        return jsonify({"error": "Apollo API key is not configured or not enabled"}), 503
 
     try:
         if person_id:
@@ -5536,7 +5536,7 @@ def rocketreach_download_profile():
         _rr_admin = ev_cfg.get("rocketreach", {})
         rr_key = (_rr_admin.get("api_key") or "").strip() if _rr_admin.get("enabled") == "enabled" else ""
     if not rr_key:
-        return jsonify({"error": "ROCKETREACH_API_KEY is not configured"}), 503
+        return jsonify({"error": "RocketReach API key is not configured or not enabled"}), 503
 
     try:
         r = requests.get(
