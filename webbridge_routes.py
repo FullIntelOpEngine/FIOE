@@ -6498,7 +6498,14 @@ def linkdapi_profile_to_pdf():
         return jsonify({"error": "PDF generation failed"}), 500
 
     # Save the PDF to the profiles output directory (same location as JSON)
-    pdf_path = os.path.join(out_dir, pdf_filename)
+    pdf_path = os.path.abspath(os.path.join(out_dir, pdf_filename))
+    try:
+        real_out_dir  = os.path.realpath(out_dir)
+        real_pdf_path = os.path.realpath(pdf_path)
+        if os.path.commonpath([real_out_dir, real_pdf_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
     try:
         with open(pdf_path, "wb") as fh:
             fh.write(pdf_bytes)
