@@ -6581,7 +6581,9 @@ def linkdapi_upload_profile_pdf():
         }), 404
 
     # Use OS-sourced entry to build the read path (breaks taint chain)
-    matched_pdf = next(f for f in existing if f == pdf_filename)
+    matched_pdf = next((f for f in existing if f == pdf_filename), None)
+    if not matched_pdf:
+        return jsonify({"error": "GP profile PDF not found on disk"}), 404
     pdf_path = os.path.join(out_dir, matched_pdf)
 
     try:
