@@ -6028,7 +6028,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
-        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=2000)
+        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=4000)
         if raw:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
@@ -6127,7 +6127,8 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
 
 
 def _render_fioe_profile_pdf(data: dict) -> bytes:
-    """Render a FIOE-branded A4 PDF from a structured profile dict.
+    """Render a FIOE-branded A4 PDF from a structured profile dict using
+    reportlab Platypus for proper text flow (no right-side cut-off).
 
     FIOE colour scheme:
       Azure Dragon  #073679  — primary header background, section titles
@@ -6136,208 +6137,222 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
 
     Falls back to ``_lines_to_pdf_bytes`` when reportlab is unavailable.
     """
-    # ── Try reportlab (primary path) ───────────────────────────────────────
+    # ── Shared text sanitiser ──────────────────────────────────────────────
+    def _s(t):
+        """Normalise text for Latin-1 PDF rendering.
+
+        1. NFKC-normalises (handles fullwidth/halfwidth variants).
+        2. Replaces entire *runs* of CJK / non-Latin characters with ``[...]``
+           so the output clearly shows where untransliterated text exists
+           rather than producing a string of ``?`` characters.
+        3. Applies targeted replacements for common Unicode punctuation.
+        4. Encodes to Latin-1, replacing any remaining stragglers with ``?``.
+        """
+        import unicodedata as _ud
+        import re as _re
+        s = str(t or "")
+        s = _ud.normalize('NFKC', s)
+        # Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
+        s = _re.sub(
+            r'[\u0400-\u04ff'           # Cyrillic
+            r'\u0600-\u06ff'           # Arabic
+            r'\u3000-\u303f'           # CJK symbols/punctuation
+            r'\u3040-\u30ff'           # Hiragana + Katakana
+            r'\u4e00-\u9fff'           # CJK unified ideographs
+            r'\uf900-\ufaff'           # CJK compatibility ideographs
+            r'\uac00-\ud7af'           # Hangul syllables
+            r'\uff00-\uffef'           # Halfwidth/fullwidth forms
+            r']+'
+            ,
+            '[...]', s
+        )
+        # Common Unicode punctuation
+        s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+        s = s.replace('\u2018', "'").replace('\u2019', "'")
+        s = s.replace('\u201c', '"').replace('\u201d', '"')
+        s = s.replace('\u2026', '...')
+        s = s.replace('\u2022', '-')
+        s = s.replace('\u2212', '-')
+        s = s.replace('\u30fb', '\u00b7')
+        s = s.replace('\u301c', '~').replace('\uff5e', '~')
+        return s.encode("latin-1", errors="replace").decode("latin-1")
+
+    # ── Try reportlab.platypus (primary path) ──────────────────────────────
     try:
-        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.platypus import (
+            SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+            HRFlowable,
+        )
+        from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import pt
+        from reportlab.lib.colors import HexColor, white, black
         import io as _io
 
-        # FIOE Colours (normalised 0-1 RGB)
-        _AZURE    = (0.027, 0.212, 0.475)   # #073679  azure dragon
-        _COOL     = (0.298, 0.510, 0.722)   # #4c82b8  cool blue
-        _ROBIN    = (0.427, 0.918, 0.976)   # #6deaf9  robin's egg
-        _ROBIN_BG = (0.929, 0.973, 1.000)   # very light robin's egg tint
-        _WHITE    = (1.000, 1.000, 1.000)
-        _TEXT     = (0.100, 0.100, 0.100)
-        _GRAY     = (0.420, 0.420, 0.420)
+        AZURE    = HexColor('#073679')
+        COOL     = HexColor('#4c82b8')
+        ROBIN    = HexColor('#6deaf9')
+        ROBIN_BG = HexColor('#edf9ff')
+        DARK     = HexColor('#1a1a1a')
+        GRAY     = HexColor('#5a5a5a')
+
+        PAGE_W, PAGE_H = A4
+        ML, MR, MT, MB = 45, 45, 20, 30   # margins (pt); top is extra for header
+
+        # Header band height (drawn in page callbacks)
+        HDR_H = 60
+
+        def _hdr_name(name_text, headline_text):
+            """Return rough header band height needed for name + headline.
+
+            Estimates line count using approximate chars-per-line values:
+              * 60 chars/line for name (20pt bold)
+              * 80 chars/line for headline (10pt regular)
+            Each line adds ~20pt of height; 20pt base padding each side.
+            """
+            _NAME_CHARS_PER_LINE = 60
+            _HL_CHARS_PER_LINE   = 80
+            _LINE_HEIGHT_PT      = 20  # vertical step per text line
+            _MIN_BAND_HEIGHT     = 60  # never shorter than this (pt)
+            lines = 1 + (len(name_text) // _NAME_CHARS_PER_LINE)
+            if headline_text:
+                lines += 1 + (len(headline_text) // _HL_CHARS_PER_LINE)
+            return max(_MIN_BAND_HEIGHT, lines * _LINE_HEIGHT_PT + _LINE_HEIGHT_PT)
+
+        name     = _s(data.get("name") or "Unknown")
+        headline = _s(data.get("headline") or "")
+        dynamic_hdr_h = _hdr_name(name, headline)
+
+        def _draw_header(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            # Azure band
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, PAGE_H - dynamic_hdr_h, PAGE_W, dynamic_hdr_h,
+                            fill=1, stroke=0)
+            # Robin's egg bottom stripe
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.rect(0, PAGE_H - dynamic_hdr_h, PAGE_W, 3, fill=1, stroke=0)
+            # Name: centred vertically within the band.
+            # 22pt ≈ half the name font size (20pt) plus small visual padding.
+            canvas_obj.setFillColor(white)
+            canvas_obj.setFont("Helvetica-Bold", 20)
+            _NAME_FONT_HALF = 22  # half-height offset for 20pt bold font baseline
+            name_y = PAGE_H - dynamic_hdr_h + (dynamic_hdr_h - _NAME_FONT_HALF) // 2 + \
+                     (14 if headline else 0)
+            canvas_obj.drawString(ML, name_y, name)
+            # Headline
+            if headline:
+                canvas_obj.setFont("Helvetica", 10)
+                canvas_obj.drawString(ML, name_y - 18, headline)
+            # Footer
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.setFont("Helvetica", 7)
+            canvas_obj.drawCentredString(
+                PAGE_W / 2, 4,
+                _s("Generated by FIOE Recruiting Platform")
+            )
+            canvas_obj.restoreState()
+
+        def _draw_later(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            canvas_obj.setFillColor(AZURE)
+            canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+            canvas_obj.setFillColor(ROBIN)
+            canvas_obj.setFont("Helvetica", 7)
+            canvas_obj.drawCentredString(
+                PAGE_W / 2, 4,
+                _s("Generated by FIOE Recruiting Platform")
+            )
+            canvas_obj.restoreState()
 
         buf = _io.BytesIO()
-        c   = rl_canvas.Canvas(buf, pagesize=A4)
-        PAGE_W, PAGE_H = A4
-        ML = 45    # left margin (wider for balanced whitespace)
-        MR = 45    # right margin (wider to prevent text running off edge)
-        CW = PAGE_W - ML - MR  # usable content width (~505pt for A4)
+        doc = SimpleDocTemplate(
+            buf,
+            pagesize=A4,
+            leftMargin=ML, rightMargin=MR,
+            topMargin=dynamic_hdr_h + MT,
+            bottomMargin=MB + 16,
+        )
 
-        def _s(t):
-            """Normalise text for Latin-1 PDF rendering.
+        # ── Styles ─────────────────────────────────────────────────────────
+        contact_style = ParagraphStyle(
+            'FIOEContact',
+            fontName='Helvetica', fontSize=8.5,
+            textColor=AZURE, leading=13,
+            backColor=ROBIN_BG,
+            leftIndent=8, rightIndent=8,
+            spaceBefore=0, spaceAfter=0,
+        )
+        section_hdr_style = ParagraphStyle(
+            'FIOESectionHdr',
+            fontName='Helvetica-Bold', fontSize=10,
+            textColor=AZURE,
+            spaceBefore=12, spaceAfter=2,
+            leading=14,
+        )
+        body_style = ParagraphStyle(
+            'FIOEBody',
+            fontName='Helvetica', fontSize=9,
+            textColor=DARK, leading=13,
+            spaceBefore=0, spaceAfter=2,
+        )
+        title_style = ParagraphStyle(
+            'FIOETitle',
+            fontName='Helvetica-Bold', fontSize=10,
+            textColor=AZURE, leading=14,
+            spaceBefore=6, spaceAfter=1,
+        )
+        sub_style = ParagraphStyle(
+            'FIOESub',
+            fontName='Helvetica', fontSize=8.5,
+            textColor=COOL, leading=12,
+            spaceBefore=0, spaceAfter=2,
+        )
+        skill_style = ParagraphStyle(
+            'FIOESkill',
+            fontName='Helvetica', fontSize=9,
+            textColor=DARK, leading=13,
+            spaceBefore=0, spaceAfter=2,
+        )
 
-            1. NFKC-normalises the string: converts fullwidth/halfwidth
-               variants to their ASCII equivalents (e.g. fullwidth digits,
-               halfwidth katakana U+FF65 → U+30FB, etc.).
-            2. Applies targeted replacements for chars that NFKC leaves
-               outside Latin-1 (en/em-dash, katakana middle dot, smart
-               quotes, bullet, etc.).
-            3. Encodes to Latin-1, replacing any remaining unmappable char
-               with '?' so the PDF never raises an encoding error.
-            """
-            import unicodedata as _ud
-            s = str(t or "")
-            # NFKC normalisation handles fullwidth chars, halfwidth variants, etc.
-            s = _ud.normalize('NFKC', s)
-            # Targeted replacements for chars still outside Latin-1 after NFKC
-            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')  # dashes
-            s = s.replace('\u2018', "'").replace('\u2019', "'")   # smart single quotes
-            s = s.replace('\u201c', '"').replace('\u201d', '"')   # smart double quotes
-            s = s.replace('\u2026', '...')                        # ellipsis
-            s = s.replace('\u2022', '-')                          # bullet (U+2022 not in Latin-1)
-            s = s.replace('\u2212', '-')                          # minus sign
-            s = s.replace('\u30fb', '\u00b7')                       # katakana middle dot → Latin-1 middle dot
-            s = s.replace('\u301c', '~').replace('\uff5e', '~')   # wave dash variants
-            return s.encode("latin-1", errors="replace").decode("latin-1")
+        story = []
+        CW = PAGE_W - ML - MR   # usable content width
 
-        def _wrap(text, font, size, avail_w):
-            """Word-wrap *text* so every line fits within *avail_w* pts."""
-            safe = _s(text)
-            if not safe.strip():
-                return [""]
-            words = safe.split()
-            lines, cur = [], ""
-            for w in words:
-                test = (cur + " " + w).strip() if cur else w
-                if c.stringWidth(test, font, size) <= avail_w:
-                    cur = test
-                else:
-                    if cur:
-                        lines.append(cur)
-                    # If the word itself is too wide, break at character level
-                    if c.stringWidth(w, font, size) > avail_w:
-                        char_cur = ""
-                        for ch in w:
-                            if c.stringWidth(char_cur + ch, font, size) <= avail_w:
-                                char_cur += ch
-                            else:
-                                if char_cur:
-                                    lines.append(char_cur)
-                                char_cur = ch
-                        cur = char_cur
-                    else:
-                        cur = w
-            if cur:
-                lines.append(cur)
-            return lines or [""]
+        def _section(title):
+            story.append(Paragraph(_s(title).upper(), section_hdr_style))
+            story.append(HRFlowable(
+                width='100%', thickness=1.5,
+                color=ROBIN, spaceAfter=4,
+            ))
 
-        y = PAGE_H  # current cursor (top of page)
-
-        def _new_page():
-            nonlocal y
-            # Footer on each page
-            c.setFillColorRGB(*_AZURE)
-            c.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
-            c.setFillColorRGB(*_ROBIN)
-            c.setFont("Helvetica", 7)
-            c.drawCentredString(PAGE_W / 2, 4,
-                                _s("Generated by FIOE Recruiting Platform"))
-            c.showPage()
-            y = PAGE_H
-
-        def _ensure(need):
-            nonlocal y
-            if y - need < 50:
-                _new_page()
-
-        # ── 1. Header Band ─────────────────────────────────────────────────
-        name     = _s(data.get("name") or "")
-        headline = _s(data.get("headline") or "")
-
-        name_lines = _wrap(name, "Helvetica-Bold", 20, CW - 4) if name else []
-        hl_lines   = _wrap(headline, "Helvetica", 11, CW - 4) if headline else []
-
-        HDR_PAD = 14
-        HDR_H = (HDR_PAD
-                 + len(name_lines) * 26
-                 + (len(hl_lines) * 16 if hl_lines else 0)
-                 + HDR_PAD)
-        HDR_H = max(HDR_H, 52)
-
-        # Background fill (azure dragon)
-        c.setFillColorRGB(*_AZURE)
-        c.rect(0, PAGE_H - HDR_H, PAGE_W, HDR_H, fill=1, stroke=0)
-        # Decorative bottom stripe (robin's egg)
-        c.setFillColorRGB(*_ROBIN)
-        c.rect(0, PAGE_H - HDR_H, PAGE_W, 3, fill=1, stroke=0)
-
-        c.setFillColorRGB(*_WHITE)
-        text_y = PAGE_H - HDR_PAD - 6
-        for nl in name_lines:
-            c.setFont("Helvetica-Bold", 20)
-            c.drawString(ML, text_y, nl)
-            text_y -= 26
-        for hl in hl_lines:
-            c.setFont("Helvetica", 11)
-            c.drawString(ML, text_y, hl)
-            text_y -= 16
-
-        y = PAGE_H - HDR_H
-
-        # ── 2. Contact Strip ───────────────────────────────────────────────
+        # ── Contact strip ──────────────────────────────────────────────────
         loc   = _s(data.get("location") or "")
-        email = _s(data.get("email") or "")
         lnkd  = _s(data.get("linkedin_url") or "")
+        email = _s(data.get("email") or "")
 
-        contact_parts = []
-        if loc:   contact_parts.append(f"Location: {loc}")
-        if lnkd:  contact_parts.append(f"LinkedIn: {lnkd}")
-        if email: contact_parts.append(f"Email: {email}")
+        contact_items = []
+        if loc:   contact_items.append(f"Location: {loc}")
+        if lnkd:  contact_items.append(f"LinkedIn: {lnkd}")
+        if email: contact_items.append(f"Email: {email}")
 
-        if contact_parts:
-            # Each contact item on its own line for clarity
-            all_ct_lines = []
-            for part in contact_parts:
-                all_ct_lines.extend(_wrap(part, "Helvetica", 8.5, CW - 8))
-            CT_H = max(22, len(all_ct_lines) * 12 + 10)
-            c.setFillColorRGB(*_ROBIN_BG)
-            c.rect(0, y - CT_H, PAGE_W, CT_H, fill=1, stroke=0)
-            c.setFillColorRGB(*_ROBIN)
-            c.rect(0, y - CT_H, 4, CT_H, fill=1, stroke=0)
-            c.setFillColorRGB(*_AZURE)
-            ct_y = y - 9
-            for ct_line in all_ct_lines:
-                c.setFont("Helvetica", 8.5)
-                c.drawString(ML + 6, ct_y, ct_line)
-                ct_y -= 12
-            y -= CT_H + 8
+        if contact_items:
+            for ci in contact_items:
+                story.append(Paragraph(ci, contact_style))
+            story.append(Spacer(1, 8))
 
-        # ── Body helpers ───────────────────────────────────────────────────
-        def _section_hdr(title):
-            nonlocal y
-            _ensure(30)
-            y -= 10
-            c.setFont("Helvetica-Bold", 10)
-            c.setFillColorRGB(*_AZURE)
-            c.drawString(ML, y, _s(title).upper())
-            y -= 5
-            c.setStrokeColorRGB(*_ROBIN)
-            c.setLineWidth(1.5)
-            c.line(ML, y, ML + CW, y)
-            c.setStrokeColorRGB(*_COOL)
-            c.setLineWidth(0.4)
-            c.line(ML, y - 1, ML + CW, y - 1)
-            y -= 8
-
-        def _text_block(text, font="Helvetica", size=9,
-                        indent=0, color=None, gap=3):
-            nonlocal y
-            if color is None:
-                color = _TEXT
-            avail = CW - indent
-            for ln in _wrap(text, font, size, avail):
-                _ensure(size + gap + 2)
-                c.setFillColorRGB(*color)
-                c.setFont(font, size)
-                c.drawString(ML + indent, y, ln)
-                y -= size + gap
-
-        # ── 3. Professional Summary ────────────────────────────────────────
+        # ── Professional Summary ───────────────────────────────────────────
         summary = _s(data.get("summary") or "")
         if summary:
-            _section_hdr("Professional Summary")
-            _text_block(summary, indent=0, color=_TEXT, gap=4)
-            y -= 6
+            _section("Professional Summary")
+            story.append(Paragraph(summary, body_style))
+            story.append(Spacer(1, 6))
 
-        # ── 4. Experience ─────────────────────────────────────────────────
+        # ── Experience ────────────────────────────────────────────────────
         exp_list = data.get("experience") or []
         if exp_list:
-            _section_hdr("Experience")
+            _section("Experience")
             for exp in exp_list:
                 title   = _s(exp.get("title") or "")
                 company = _s(exp.get("company") or "")
@@ -6345,28 +6360,21 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 desc    = _s(exp.get("description") or "")
                 if not any([title, company, dates, desc]):
                     continue
-                # Title on its own line (bold azure)
                 if title:
-                    _text_block(title, font="Helvetica-Bold",
-                                size=10, color=_AZURE, gap=3)
-                # Company + dates on second line (cool blue)
+                    story.append(Paragraph(title, title_style))
                 sub_parts = []
                 if company: sub_parts.append(company)
                 if dates:   sub_parts.append(dates)
                 if sub_parts:
-                    _text_block("  |  ".join(sub_parts), font="Helvetica",
-                                size=8.5, color=_COOL, gap=3)
-                # Description indented
+                    story.append(Paragraph("  |  ".join(sub_parts), sub_style))
                 if desc:
-                    _text_block(desc, font="Helvetica",
-                                size=9, indent=10, color=_TEXT, gap=4)
-                y -= 7
-            y -= 2
+                    story.append(Paragraph(desc, body_style))
+                story.append(Spacer(1, 4))
 
-        # ── 5. Education ──────────────────────────────────────────────────
+        # ── Education ─────────────────────────────────────────────────────
         edu_list = data.get("education") or []
         if edu_list:
-            _section_hdr("Education")
+            _section("Education")
             for edu in edu_list:
                 school = _s(edu.get("school") or "")
                 degree = _s(edu.get("degree") or "")
@@ -6374,37 +6382,47 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 if not any([school, degree, dates]):
                     continue
                 if school:
-                    _text_block(school, font="Helvetica-Bold",
-                                size=10, color=_AZURE, gap=3)
+                    story.append(Paragraph(school, title_style))
                 sub_parts = []
                 if degree: sub_parts.append(degree)
                 if dates:  sub_parts.append(dates)
                 if sub_parts:
-                    _text_block("  |  ".join(sub_parts), font="Helvetica",
-                                size=8.5, color=_COOL, gap=3)
-                y -= 5
-            y -= 2
+                    story.append(Paragraph("  |  ".join(sub_parts), sub_style))
+                story.append(Spacer(1, 4))
 
-        # ── 6. Skills ─────────────────────────────────────────────────────
+        # ── Skills ────────────────────────────────────────────────────────
         skills = data.get("skills") or []
         if skills:
-            _section_hdr("Skills")
+            _section("Skills")
+            # Group skills into rows of 3 using a Table for clean layout
             CHUNK = 3
+            tbl_data = []
             for i in range(0, len(skills), CHUNK):
-                row = [_s(s) for s in skills[i:i + CHUNK] if _s(s).strip()]
-                if row:
-                    _text_block("  \u00b7  ".join(row), font="Helvetica",
-                                size=9, color=_TEXT, gap=4)
+                row_cells = [_s(s) for s in skills[i:i + CHUNK] if _s(s).strip()]
+                # Pad to CHUNK columns
+                while len(row_cells) < CHUNK:
+                    row_cells.append("")
+                tbl_data.append([
+                    Paragraph(cell, skill_style) for cell in row_cells
+                ])
+            if tbl_data:
+                col_w = CW / CHUNK
+                skills_tbl = Table(tbl_data, colWidths=[col_w] * CHUNK)
+                skills_tbl.setStyle(TableStyle([
+                    ('VALIGN',     (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING',  (0, 0), (-1, -1), 2),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 2),
+                    ('TOPPADDING',   (0, 0), (-1, -1), 2),
+                    ('BOTTOMPADDING',(0, 0), (-1, -1), 2),
+                ]))
+                story.append(skills_tbl)
 
-        # ── Footer on last page ────────────────────────────────────────────
-        c.setFillColorRGB(*_AZURE)
-        c.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
-        c.setFillColorRGB(*_ROBIN)
-        c.setFont("Helvetica", 7)
-        c.drawCentredString(PAGE_W / 2, 4,
-                            _s("Generated by FIOE Recruiting Platform"))
+        if not story:
+            story.append(Paragraph("No profile data available.", body_style))
 
-        c.save()
+        doc.build(story,
+                  onFirstPage=_draw_header,
+                  onLaterPages=_draw_later)
         return buf.getvalue()
 
     except ImportError:
@@ -6687,6 +6705,65 @@ def linkdapi_upload_profile_pdf():
         "pdf_filename": pdf_filename,
         **parse_result,
     })
+
+
+@app.route("/process/update", methods=["POST"])
+@_require_session
+def process_update_tenure():
+    """Best-effort endpoint to update the tenure field in the process table.
+
+    Request body (JSON):
+      linkedinurl – LinkedIn profile URL
+      tenure      – computed tenure (float, years)
+
+    Returns ``{"ok": true}`` on success.  Non-critical; callers should
+    swallow errors.
+    """
+    body = request.get_json(silent=True) or {}
+    linkedin_url = (body.get("linkedinurl") or "").strip()
+    tenure = body.get("tenure")
+    if not linkedin_url or tenure is None:
+        return jsonify({"ok": False, "error": "missing params"}), 400
+    try:
+        tenure_val = float(tenure)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid tenure"}), 400
+
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("PGHOST", "localhost"),
+            port=int(os.getenv("PGPORT", "5432")),
+            user=os.getenv("PGUSER", "postgres"),
+            password=os.getenv("PGPASSWORD", ""),
+            dbname=os.getenv("PGDATABASE", "candidate_db"),
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE process SET tenure = %s WHERE linkedinurl = %s",
+            (tenure_val, linkedin_url),
+        )
+        if cur.rowcount == 0:
+            from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
+            normalized = _normalize_linkedin_to_path(linkedin_url)
+            if normalized:
+                # Escape SQL wildcard chars to prevent unintended pattern matches
+                safe_norm = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                cur.execute(
+                    "UPDATE process SET tenure = %s WHERE LOWER(linkedinurl) LIKE %s ESCAPE '\\'",
+                    (tenure_val, f"%{safe_norm}%"),
+                )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"ok": True})
+    except ImportError:
+        return jsonify({"ok": False, "error": "psycopg2 not available"}), 500
+    except Exception as exc:
+        logger.warning("[process/update] tenure update failed (non-fatal): %s", exc)
+        return jsonify({"ok": False, "error": "tenure update failed"}), 500
+
+
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
     otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""

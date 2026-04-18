@@ -4176,9 +4176,11 @@ function buildRow(row) {
                         if (newJob)     { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                         if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
 
-                        // Step 2: Run assessment via performCombinedAssessment
+                        // Step 2: Run assessment via performCombinedAssessment.
+                        // skipNameGate=true bypasses the criteria-JSON name check for
+                        // GP profiles which are not yet present in the criteria file.
                         assessBtn.textContent = 'Processing…';
-                        const assessOk = await performCombinedAssessment(tr, value, analyzeData, true);
+                        const assessOk = await performCombinedAssessment(tr, value, analyzeData, true, true);
 
                         if (assessOk === false) {
                             // Assessment was blocked — restore Assess button state.
@@ -4991,7 +4993,7 @@ async function triggerLevel1Assessment(tr, anchor) {
     }
 }
 
-async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Request = false) {
+async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Request = false, skipNameGate = false) {
     if(!tr) return;
     
     // All assessments use the bulk workflow: the backend fetches all profile data from DB,
@@ -5000,16 +5002,19 @@ async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Reques
 
     // JSON profile-name gate: silently skip if this profile's name is not in the criteria JSON
     // that corresponds to the row's OWN role_tag (from sourcing table).
-    try {
-        const rowData = rowsData.find(r => (r.linkedinurl || '').trim() === (anchor || '').trim());
-        const profileName = (rowData && rowData.name) || '';
-        const rowRoleTag = ((tr && tr.dataset && tr.dataset.roleTag) || '').trim();
-        const jsonProfiles = await _getCriteriaProfiles(rowRoleTag);
-        if (!_isProfileNameInJson(profileName, jsonProfiles)) {
-            console.warn(`[Assessment] Silently skipped ${anchor}: profile name "${profileName}" not found in criteria JSON for role_tag "${rowRoleTag}".`);
-            return false;
-        }
-    } catch(e) { console.warn('[performCombinedAssessment] Profile name check failed:', e); }
+    // skipNameGate=true bypasses this check (used for GP/linkdapi Assess which are not in criteria JSON).
+    if (!skipNameGate) {
+        try {
+            const rowData = rowsData.find(r => (r.linkedinurl || '').trim() === (anchor || '').trim());
+            const profileName = (rowData && rowData.name) || '';
+            const rowRoleTag = ((tr && tr.dataset && tr.dataset.roleTag) || '').trim();
+            const jsonProfiles = await _getCriteriaProfiles(rowRoleTag);
+            if (!_isProfileNameInJson(profileName, jsonProfiles)) {
+                console.warn(`[Assessment] Silently skipped ${anchor}: profile name "${profileName}" not found in criteria JSON for role_tag "${rowRoleTag}".`);
+                return false;
+            }
+        } catch(e) { console.warn('[performCombinedAssessment] Profile name check failed:', e); }
+    }
 
     // GUARD
     if (window.__sv_assessment_in_flight && window.__sv_assessment_in_flight.has(anchor)) {
