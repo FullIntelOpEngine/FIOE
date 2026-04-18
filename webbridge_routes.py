@@ -2815,10 +2815,12 @@ def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
             cleaned = raw.strip().strip("`")
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
             cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
-            mapped = json.loads(cleaned.strip())
-            if isinstance(mapped, dict) and mapped:
-                logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
-                return mapped
+            cleaned = cleaned.strip()
+            if cleaned:
+                mapped = json.loads(cleaned)
+                if isinstance(mapped, dict) and mapped:
+                    logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
+                    return mapped
     except Exception as exc:
         logger.warning(f"[{provider_label}] LLM field-mapping failed: {exc}")
     return {}
@@ -2998,15 +3000,32 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         if isinstance(people_raw, list):
             people = people_raw
         elif isinstance(people_raw, dict):
-            # Some API versions wrap the profile list in a nested object
-            people = (people_raw.get("profiles") or people_raw.get("data")
-                      or people_raw.get("list") or [])
-            if not isinstance(people, list):
+            # Two possible dict structures:
+            # 1. Nested list under a standard key: {"profiles": [...], "data": [...]}
+            # 2. URL-keyed dict:  {"https://linkedin.com/in/john": {...profile...}, ...}
+            nested = (people_raw.get("profiles") or people_raw.get("data")
+                      or people_raw.get("list"))
+            if isinstance(nested, list):
+                people = nested
+                logger.info(
+                    f"[ContactOut] 'people' field is a dict — extracted {len(people)} items "
+                    f"from nested list"
+                )
+            else:
+                # Keys are likely LinkedIn URLs; values are profile dicts.
+                # Inject the URL as linkedin_url if the profile doesn't already have one.
                 people = []
-            logger.info(
-                f"[ContactOut] 'people' field is a dict — extracted {len(people)} items "
-                f"(keys: {list(people_raw.keys())})"
-            )
+                for k, v in people_raw.items():
+                    if isinstance(v, dict):
+                        p = dict(v)
+                        if not p.get("linkedin_url") and not p.get("linkedin"):
+                            p["linkedin_url"] = k
+                        people.append(p)
+                logger.info(
+                    f"[ContactOut] 'people' field is a URL-keyed dict — "
+                    f"extracted {len(people)} profiles "
+                    f"(sample keys: {list(people_raw.keys())[:3]})"
+                )
         else:
             people = []
             if people_raw:
@@ -3339,14 +3358,31 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
         if isinstance(people_raw, list):
             people = people_raw
         elif isinstance(people_raw, dict):
-            people = (people_raw.get("profiles") or people_raw.get("data")
-                      or people_raw.get("list") or [])
-            if not isinstance(people, list):
+            # Two possible dict structures:
+            # 1. Nested list under a standard key: {"data": [...], "list": [...]}
+            # 2. URL-keyed dict:  {"https://linkedin.com/in/john": {...profile...}, ...}
+            nested = (people_raw.get("profiles") or people_raw.get("data")
+                      or people_raw.get("list"))
+            if isinstance(nested, list):
+                people = nested
+                logger.info(
+                    f"[RocketReach] 'profiles' field is a dict — extracted {len(people)} items "
+                    f"from nested list"
+                )
+            else:
+                # Keys are likely LinkedIn URLs; values are profile dicts.
                 people = []
-            logger.info(
-                f"[RocketReach] 'profiles' field is a dict — extracted {len(people)} items "
-                f"(keys: {list(people_raw.keys())})"
-            )
+                for k, v in people_raw.items():
+                    if isinstance(v, dict):
+                        p = dict(v)
+                        if not p.get("linkedin_url") and not p.get("linkedin"):
+                            p["linkedin_url"] = k
+                        people.append(p)
+                logger.info(
+                    f"[RocketReach] 'profiles' field is a URL-keyed dict — "
+                    f"extracted {len(people)} profiles "
+                    f"(sample keys: {list(people_raw.keys())[:3]})"
+                )
         else:
             people = []
             if people_raw:
