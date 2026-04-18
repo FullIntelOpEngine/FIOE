@@ -6152,26 +6152,35 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         buf = _io.BytesIO()
         c   = rl_canvas.Canvas(buf, pagesize=A4)
         PAGE_W, PAGE_H = A4
-        ML = 40    # left margin
-        MR = 36    # right margin
-        CW = PAGE_W - ML - MR  # usable content width
+        ML = 45    # left margin (wider for balanced whitespace)
+        MR = 45    # right margin (wider to prevent text running off edge)
+        CW = PAGE_W - ML - MR  # usable content width (~505pt for A4)
 
         def _s(t):
             """Normalise text for Latin-1 PDF rendering.
 
-            Replaces common Unicode punctuation that cannot be encoded in
-            Latin-1 with their ASCII equivalents so they display correctly
-            instead of appearing as '?'.
+            1. NFKC-normalises the string: converts fullwidth/halfwidth
+               variants to their ASCII equivalents (e.g. fullwidth digits,
+               halfwidth katakana U+FF65 → U+30FB, etc.).
+            2. Applies targeted replacements for chars that NFKC leaves
+               outside Latin-1 (en/em-dash, katakana middle dot, smart
+               quotes, bullet, etc.).
+            3. Encodes to Latin-1, replacing any remaining unmappable char
+               with '?' so the PDF never raises an encoding error.
             """
+            import unicodedata as _ud
             s = str(t or "")
-            # Replace Unicode dashes with ASCII hyphen-minus
-            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
-            # Replace Unicode quotes with straight quotes
-            s = s.replace('\u2018', "'").replace('\u2019', "'")
-            s = s.replace('\u201c', '"').replace('\u201d', '"')
-            # Replace ellipsis and other common symbols
-            s = s.replace('\u2026', '...')
-            s = s.replace('\u2022', '*').replace('\u00b7', '.')
+            # NFKC normalisation handles fullwidth chars, halfwidth variants, etc.
+            s = _ud.normalize('NFKC', s)
+            # Targeted replacements for chars still outside Latin-1 after NFKC
+            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')  # dashes
+            s = s.replace('\u2018', "'").replace('\u2019', "'")   # smart single quotes
+            s = s.replace('\u201c', '"').replace('\u201d', '"')   # smart double quotes
+            s = s.replace('\u2026', '...')                        # ellipsis
+            s = s.replace('\u2022', '-')                          # bullet (U+2022 not in Latin-1)
+            s = s.replace('\u2212', '-')                          # minus sign
+            s = s.replace('\u30fb', '\u00b7')                       # katakana middle dot → Latin-1 middle dot
+            s = s.replace('\u301c', '~').replace('\uff5e', '~')   # wave dash variants
             return s.encode("latin-1", errors="replace").decode("latin-1")
 
         def _wrap(text, font, size, avail_w):
@@ -6188,10 +6197,19 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 else:
                     if cur:
                         lines.append(cur)
-                    # Hard-truncate a single word that is still too wide
-                    while w and c.stringWidth(w, font, size) > avail_w and len(w) > 1:
-                        w = w[:-1]
-                    cur = w
+                    # If the word itself is too wide, break at character level
+                    if c.stringWidth(w, font, size) > avail_w:
+                        char_cur = ""
+                        for ch in w:
+                            if c.stringWidth(char_cur + ch, font, size) <= avail_w:
+                                char_cur += ch
+                            else:
+                                if char_cur:
+                                    lines.append(char_cur)
+                                char_cur = ch
+                        cur = char_cur
+                    else:
+                        cur = w
             if cur:
                 lines.append(cur)
             return lines or [""]
@@ -6256,24 +6274,26 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
 
         contact_parts = []
         if loc:   contact_parts.append(f"Location: {loc}")
-        if email: contact_parts.append(f"Email: {email}")
         if lnkd:  contact_parts.append(f"LinkedIn: {lnkd}")
+        if email: contact_parts.append(f"Email: {email}")
 
         if contact_parts:
-            ct_txt   = "   |   ".join(contact_parts)
-            ct_lines = _wrap(ct_txt, "Helvetica", 8, CW - 8)
-            CT_H = max(20, len(ct_lines) * 11 + 10)
+            # Each contact item on its own line for clarity
+            all_ct_lines = []
+            for part in contact_parts:
+                all_ct_lines.extend(_wrap(part, "Helvetica", 8.5, CW - 8))
+            CT_H = max(22, len(all_ct_lines) * 12 + 10)
             c.setFillColorRGB(*_ROBIN_BG)
             c.rect(0, y - CT_H, PAGE_W, CT_H, fill=1, stroke=0)
             c.setFillColorRGB(*_ROBIN)
             c.rect(0, y - CT_H, 4, CT_H, fill=1, stroke=0)
             c.setFillColorRGB(*_AZURE)
-            ct_y = y - 8
-            for ct_line in ct_lines:
-                c.setFont("Helvetica", 8)
-                c.drawString(ML, ct_y, ct_line)
-                ct_y -= 11
-            y -= CT_H + 6
+            ct_y = y - 9
+            for ct_line in all_ct_lines:
+                c.setFont("Helvetica", 8.5)
+                c.drawString(ML + 6, ct_y, ct_line)
+                ct_y -= 12
+            y -= CT_H + 8
 
         # ── Body helpers ───────────────────────────────────────────────────
         def _section_hdr(title):
@@ -6309,8 +6329,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         summary = _s(data.get("summary") or "")
         if summary:
             _section_hdr("Professional Summary")
-            _text_block(summary, indent=0, color=_TEXT)
-            y -= 4
+            _text_block(summary, indent=0, color=_TEXT, gap=4)
+            y -= 6
 
         # ── 4. Experience ─────────────────────────────────────────────────
         exp_list = data.get("experience") or []
@@ -6323,19 +6343,22 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 desc    = _s(exp.get("description") or "")
                 if not any([title, company, dates, desc]):
                     continue
-                role_line = title
-                if company:
-                    role_line = f"{title}  \u00b7  {company}" if title else company
-                if role_line:
-                    _text_block(role_line, font="Helvetica-Bold",
-                                size=10, color=_AZURE)
-                if dates:
-                    _text_block(dates, font="Helvetica",
-                                size=8, color=_COOL)
+                # Title on its own line (bold azure)
+                if title:
+                    _text_block(title, font="Helvetica-Bold",
+                                size=10, color=_AZURE, gap=3)
+                # Company + dates on second line (cool blue)
+                sub_parts = []
+                if company: sub_parts.append(company)
+                if dates:   sub_parts.append(dates)
+                if sub_parts:
+                    _text_block("  |  ".join(sub_parts), font="Helvetica",
+                                size=8.5, color=_COOL, gap=3)
+                # Description indented
                 if desc:
                     _text_block(desc, font="Helvetica",
-                                size=9, indent=8, color=_TEXT)
-                y -= 6
+                                size=9, indent=10, color=_TEXT, gap=4)
+                y -= 7
             y -= 2
 
         # ── 5. Education ──────────────────────────────────────────────────
@@ -6350,26 +6373,26 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                     continue
                 if school:
                     _text_block(school, font="Helvetica-Bold",
-                                size=10, color=_AZURE)
-                if degree:
-                    _text_block(degree, font="Helvetica",
-                                size=9, color=_TEXT)
-                if dates:
-                    _text_block(dates, font="Helvetica",
-                                size=8, color=_COOL)
-                y -= 4
+                                size=10, color=_AZURE, gap=3)
+                sub_parts = []
+                if degree: sub_parts.append(degree)
+                if dates:  sub_parts.append(dates)
+                if sub_parts:
+                    _text_block("  |  ".join(sub_parts), font="Helvetica",
+                                size=8.5, color=_COOL, gap=3)
+                y -= 5
             y -= 2
 
         # ── 6. Skills ─────────────────────────────────────────────────────
         skills = data.get("skills") or []
         if skills:
             _section_hdr("Skills")
-            CHUNK = 4
+            CHUNK = 3
             for i in range(0, len(skills), CHUNK):
                 row = [_s(s) for s in skills[i:i + CHUNK] if _s(s).strip()]
                 if row:
                     _text_block("  \u00b7  ".join(row), font="Helvetica",
-                                size=9, color=_TEXT)
+                                size=9, color=_TEXT, gap=4)
 
         # ── Footer on last page ────────────────────────────────────────────
         c.setFillColorRGB(*_AZURE)
@@ -6531,7 +6554,7 @@ def linkdapi_profile_to_pdf():
     })
 
 
-@app.post("/api/linkdapi/upload-profile-pdf")
+@app.route("/api/linkdapi/upload-profile-pdf", methods=["POST"])
 @_require_session
 def linkdapi_upload_profile_pdf():
     """Upload a pre-saved GP profile PDF from the profiles directory into the DB.
