@@ -2965,7 +2965,8 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("ContactOut API key is not configured. Add CONTACTOUT_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_contactout_params(query)
     params["page"] = page
-    logger.debug(f"[ContactOut] Calling people/search — page={page} params={params}")
+    params.setdefault("limit", num)
+    logger.debug(f"[ContactOut] Calling people/search — page={page} limit={params['limit']} params={params}")
     try:
         r = requests.post(
             "https://api.contactout.com/v1/people/search",
@@ -2993,7 +2994,10 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
             logger.error(f"[ContactOut] API error HTTP {r.status_code}: {api_msg}")
             raise ProviderSearchError(f"ContactOut API error (HTTP {r.status_code}): {api_msg}")
         data = resp_body if isinstance(resp_body, dict) else {}
-        people = data.get("people") or data.get("profiles") or data.get("results") or []
+        people_raw = data.get("people") or data.get("profiles") or data.get("results") or []
+        people = people_raw if isinstance(people_raw, list) else []
+        if not isinstance(people_raw, list) and people_raw:
+            logger.warning(f"[ContactOut] Unexpected 'people' field type ({type(people_raw).__name__}); treating as empty")
         estimated_total = int(data.get("total") or data.get("count") or len(people))
         out = []
         skipped = 0
@@ -3301,7 +3305,10 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
             logger.error(f"[RocketReach] API error HTTP {r.status_code}: {api_msg}")
             raise ProviderSearchError(f"RocketReach API error (HTTP {r.status_code}): {api_msg}")
         data = resp_body if isinstance(resp_body, dict) else {}
-        people = data.get("profiles") or data.get("people") or data.get("results") or []
+        people_raw = data.get("profiles") or data.get("people") or data.get("results") or []
+        people = people_raw if isinstance(people_raw, list) else []
+        if not isinstance(people_raw, list) and people_raw:
+            logger.warning(f"[RocketReach] Unexpected 'profiles' field type ({type(people_raw).__name__}); treating as empty")
         estimated_total = int(data.get("pagination", {}).get("total") or data.get("total") or len(people))
         out = []
         skipped = 0
