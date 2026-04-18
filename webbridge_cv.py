@@ -4432,23 +4432,29 @@ def _core_assess_profile(data):
 
     return out_obj
 
-def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role_tag=None):
+def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role_tag=None,
+                          pre_parsed_obj=None, skip_auto_assess=False):
     """
     Extracts text from PDF bytes using synchronous helper,
     updates DB, and performs automatic assessment.
-    
+
     SOURCE OF TRUTH: CV Column
     - Gemini exclusively references the cv column in the process table (Postgres)
     - No merging with existing process.skillset data
     - No reconciliation with login.jskillset
     - Employment history strictly follows format: "Job Title, Company, StartYear to EndYear"
       OR "Job Title, Company, StartYear to present" (for current positions)
-    
+
     process_id: optional int — process table primary key. Used to identify the record
     when linkedinurl is empty (e.g. candidates docked without a LinkedIn URL).
     override_role_tag: optional str — role_tag selected by the recruiter in Step 3.
     When provided, takes precedence over the role_tag stored in the process table,
     ensuring the criteria-file jskillset for the selected role is written immediately.
+    pre_parsed_obj: optional dict — already-parsed CV object from _analyze_cv_bytes_sync.
+    When provided the Gemini parse call is skipped so the caller avoids a double API round-trip.
+    skip_auto_assess: bool — when True the L1 auto-assessment at the end is omitted.
+    Callers that immediately trigger an L2 assessment (e.g. the Assess button) should
+    set this to True so the ML enrichment fields land in DB before bulk_assess runs.
     """
     linkedinurl = (linkedinurl or "").strip()
     if not linkedinurl and not process_id:
@@ -4458,7 +4464,14 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
     _id_label = linkedinurl[:50] if linkedinurl else f"process_id={process_id}"
     _CV_ANALYZE_SEMAPHORE.acquire()
     try:
-        obj = _analyze_cv_bytes_sync(pdf_bytes)
+        # Re-use the caller's already-parsed object when available to avoid a
+        # second Gemini API call (pre_parsed_obj is provided by upload-profile-pdf
+        # which already called _analyze_cv_bytes_sync synchronously).
+        if pre_parsed_obj is not None:
+            obj = pre_parsed_obj
+            logger.info(f"[CV BG] Using pre-parsed obj for {_id_label} (skipping Gemini re-parse)")
+        else:
+            obj = _analyze_cv_bytes_sync(pdf_bytes)
         if not obj:
             logger.warning(f"[CV BG] Analysis returned None for {_id_label}")
             return
@@ -4733,7 +4746,10 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
             except Exception as e_save:
                 logger.warning(f"[CV BG] Failed to persist CV skillset: {e_save}")
 
-            if role_tag_db:
+            # skip_auto_assess=True is set by callers (e.g. upload-profile-pdf) that
+            # will immediately trigger an L2 assessment via performCombinedAssessment.
+            # This prevents a redundant L1 assessment and lets the caller control timing.
+            if not skip_auto_assess and role_tag_db:
                 # Use criteria file skillset as target_skills (role-specific), with
                 # login.jskillset only as a last resort.  This matches _assess_and_persist
                 # behaviour and prevents the L1 assessment from scoring against the wrong role.
@@ -4793,13 +4809,14 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
                         ).format(pgsql.SQL(where_clause))
                         cur.execute(upd_sql, (rating_json, "L1", *params))
                         conn.commit()
-                
+
+            if role_tag_db:
                 # --- NEW: Trigger role_tag -> jskill sync during background CV analysis ---
                 if role_tag_db and "jskill" in cols:
                      upd_js_sql = pgsql.SQL("UPDATE process SET jskill = %s WHERE {}").format(pgsql.SQL(where_clause))
                      cur.execute(upd_js_sql, (role_tag_db, *params))
                      conn.commit()
-                
+
                 # Trigger role-specific jskillset sync from criteria file (login.jskillset is fallback only)
                 # override_role_tag (from Step 3 selection) takes precedence over DB value
                 effective_role_tag = override_role_tag or role_tag_db

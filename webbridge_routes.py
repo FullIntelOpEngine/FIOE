@@ -6141,18 +6141,28 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     def _s(t):
         """Normalise text for Latin-1 PDF rendering (canvas-safe).
 
-        1. NFKC-normalises (handles fullwidth/halfwidth variants).
-        2. Replaces entire *runs* of CJK / non-Latin characters with ``[...]``
+        1. Strips XML-invalid control characters (which would crash Platypus).
+        2. NFKC-normalises (handles fullwidth/halfwidth variants).
+        3. Replaces entire *runs* of CJK / non-Latin characters with ``[...]``
            so the output clearly shows where untransliterated text exists
            rather than producing a string of ``?`` characters.
-        3. Applies targeted replacements for common Unicode punctuation.
-        4. Encodes to Latin-1, replacing any remaining stragglers with ``?``.
+        4. Applies targeted replacements for common Unicode punctuation and
+           maps ALL Unicode Pd (dash) / Pc (connector) characters to ASCII ``-``
+           and non-Latin-1 Zs (space-separator) characters to ASCII space so
+           date separators produced by LLMs never appear as ``?``.
+        5. Encodes to Latin-1, replacing any remaining stragglers with ``?``.
         """
         import unicodedata as _ud
         import re as _re
         s = str(t or "")
+        # 1. Strip control characters that are invalid in XML (U+0000-U+0008,
+        #    U+000B, U+000C, U+000E-U+001F) — these crash Platypus's XML parser.
+        #    Normalise CR/LF/TAB to a plain space so text flows as a single line.
+        s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', s)
+        s = _re.sub(r'[\r\n\t]', ' ', s)
+        # 2. NFKC normalisation
         s = _ud.normalize('NFKC', s)
-        # Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
+        # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
         s = _re.sub(
             r'[\u0400-\u04ff'           # Cyrillic
             r'\u0600-\u06ff'           # Arabic
@@ -6166,7 +6176,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             ,
             '[...]', s
         )
-        # Common Unicode punctuation
+        # 4a. Named Unicode punctuation replacements
         s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
         s = s.replace('\u2018', "'").replace('\u2019', "'")
         s = s.replace('\u201c', '"').replace('\u201d', '"')
@@ -6175,6 +6185,26 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         s = s.replace('\u2212', '-')
         s = s.replace('\u30fb', '\u00b7')
         s = s.replace('\u301c', '~').replace('\uff5e', '~')
+        # 4b. Map ALL remaining non-Latin-1 Unicode dashes/connectors (Pd/Pc
+        #     category) to ASCII hyphen and non-Latin-1 space separators (Zs)
+        #     to ASCII space.  This catches U+2010 HYPHEN, U+2011 NB-HYPHEN,
+        #     U+2012 FIGURE DASH and any other LLM-generated separator that
+        #     would otherwise survive as a ``?`` after Latin-1 encoding.
+        result = []
+        for c in s:
+            if ord(c) <= 0x00FF:
+                result.append(c)
+            else:
+                cat = _ud.category(c)
+                if cat in ('Pd', 'Pc'):
+                    result.append('-')
+                elif cat == 'Zs':
+                    result.append(' ')
+                # else: keep the character so the final encode() can turn it
+                # into '?' (which is the existing behaviour for stray chars)
+                else:
+                    result.append(c)
+        s = ''.join(result)
         return s.encode("latin-1", errors="replace").decode("latin-1")
 
     def _sp(t):
@@ -6443,10 +6473,17 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if not story:
             story.append(Paragraph("No profile data available.", body_style))
 
-        doc.build(story,
-                  onFirstPage=_draw_header,
-                  onLaterPages=_draw_later)
-        return buf.getvalue()
+        try:
+            doc.build(story,
+                      onFirstPage=_draw_header,
+                      onLaterPages=_draw_later)
+            return buf.getvalue()
+        except Exception as _build_err:
+            logger.warning(
+                "[PDF] Platypus doc.build() failed (%s: %s) — falling back to plain-text renderer",
+                type(_build_err).__name__, _build_err,
+            )
+            # Fall through to the plain-text fallback below
 
     except ImportError:
         pass
@@ -6758,76 +6795,27 @@ def linkdapi_upload_profile_pdf():
                 "company":         obj.get("company", ""),
                 "job_title":       obj.get("job_title", ""),
                 "country":         obj.get("country", ""),
+                "job_family":      obj.get("job_family", ""),
+                "seniority":       obj.get("seniority", ""),
                 "experience_text": "\n".join(obj.get("experience", [])),
                 "education_text":  "\n".join(obj.get("education", [])),
             }
-            # Write parsed profile fields to DB immediately so bulk_assess finds
-            # them on its first query without waiting for the background thread.
-            # The background thread still runs for full ML enrichment (sector,
-            # company normalisation, product extraction, etc.).
-            _p_jobtitle    = obj.get("job_title", "")
-            _p_company     = obj.get("company", "")
-            _p_country     = obj.get("country", "")
-            _p_skillset    = ", ".join(str(s) for s in obj.get("skillset", []) if s)
-            _p_experience  = "\n".join(str(s) for s in obj.get("experience", []) if s)
-            _p_tenure      = obj.get("tenure") or 0.0
-            if any([_p_jobtitle, _p_company, _p_country, _p_skillset]):
-                try:
-                    import psycopg2 as _pg2_pf
-                    _pf_conn = _pg2_pf.connect(
-                        host=os.getenv("PGHOST", "localhost"),
-                        port=int(os.getenv("PGPORT", "5432")),
-                        user=os.getenv("PGUSER", "postgres"),
-                        password=os.getenv("PGPASSWORD", ""),
-                        dbname=os.getenv("PGDATABASE", "candidate_db"),
-                    )
-                    _pf_cur = _pf_conn.cursor()
-                    from webbridge_cv import _normalize_linkedin_to_path as _nllp  # type: ignore
-                    _pf_norm = _nllp(linkedin_url)
-                    _pf_cur.execute(
-                        """UPDATE process
-                              SET jobtitle   = COALESCE(NULLIF(jobtitle,''),   %s),
-                                  company    = COALESCE(NULLIF(company,''),    %s),
-                                  country    = COALESCE(NULLIF(country,''),    %s),
-                                  skillset   = COALESCE(NULLIF(skillset,''),   %s),
-                                  experience = COALESCE(NULLIF(experience,''), %s),
-                                  tenure     = COALESCE(tenure, %s)
-                            WHERE linkedinurl = %s""",
-                        (_p_jobtitle, _p_company, _p_country, _p_skillset,
-                         _p_experience, _p_tenure, linkedin_url),
-                    )
-                    if _pf_cur.rowcount == 0 and _pf_norm:
-                        _pf_cur.execute(
-                            """UPDATE process
-                                  SET jobtitle   = COALESCE(NULLIF(jobtitle,''),   %s),
-                                      company    = COALESCE(NULLIF(company,''),    %s),
-                                      country    = COALESCE(NULLIF(country,''),    %s),
-                                      skillset   = COALESCE(NULLIF(skillset,''),   %s),
-                                      experience = COALESCE(NULLIF(experience,''), %s),
-                                      tenure     = COALESCE(tenure, %s)
-                                WHERE LOWER(linkedinurl) LIKE %s""",
-                            (_p_jobtitle, _p_company, _p_country, _p_skillset,
-                             _p_experience, _p_tenure, f"%{_pf_norm}%"),
-                        )
-                    _pf_conn.commit()
-                    _pf_cur.close()
-                    _pf_conn.close()
-                    logger.info(
-                        "[linkdapi upload-pdf] Wrote sync-parse profile fields to DB for %s",
-                        linkedin_url,
-                    )
-                except Exception as _pf_exc:
-                    logger.warning(
-                        "[linkdapi upload-pdf] Could not write profile fields to DB (non-fatal): %s",
-                        _pf_exc,
-                    )
 
-        # Also fire background thread for full ML enrichment (sector, company
-        # normalisation, product extraction) — runs after the sync fields are in DB.
-        import threading as _threading
-        _threading.Thread(
-            target=analyze_cv_background, args=(linkedin_url, pdf_bytes)
-        ).start()
+        # Run ML enrichment (sector, company normalisation, product/job_family
+        # extraction) SYNCHRONOUSLY using the already-parsed obj so all fields
+        # are committed to DB before this HTTP response returns.  Passing
+        # pre_parsed_obj avoids a second Gemini call; skip_auto_assess=True
+        # because the frontend will immediately call performCombinedAssessment
+        # (L2) which is richer than the L1 auto-assessment.
+        analyze_cv_background(
+            linkedin_url, pdf_bytes,
+            pre_parsed_obj=obj,
+            skip_auto_assess=True,
+        )
+        logger.info(
+            "[linkdapi upload-pdf] ML enrichment complete for %s; all fields in DB",
+            linkedin_url,
+        )
     except ImportError:
         pass
     except Exception as exc:
