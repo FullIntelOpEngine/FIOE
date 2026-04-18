@@ -5805,6 +5805,12 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     return "TLS/connection error reaching linkdapi", 0
 
 
+LINKDAPI_PROFILE_OUTPUT_DIR = os.getenv(
+    "LINKDAPI_PROFILE_OUTPUT_DIR",
+    r"F:\Recruiting Tools\Autosourcing\output\profiles",
+)
+
+
 @app.get("/api/linkdapi/get-profile")
 @_require_session
 def linkdapi_get_profile():
@@ -5815,7 +5821,9 @@ def linkdapi_get_profile():
                      from the URL path (e.g. /in/ryanroslansky → ryanroslansky)
 
     Calls GET https://linkdapi.com/api/v1/profile/full?username=<username>
-    using the admin-configured LINKDAPI_API_KEY.  Returns the raw JSON profile.
+    using the admin-configured LINKDAPI_API_KEY, then saves the JSON to
+    LINKDAPI_PROFILE_OUTPUT_DIR with the authenticated username appended to
+    the filename.
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
     if not linkedin_url:
@@ -5865,7 +5873,27 @@ def linkdapi_get_profile():
         profile_data = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Invalid JSON from linkdapi"}), 502
-    return jsonify(profile_data)
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = re.sub(r'[^A-Za-z0-9_-]+', '_', active_username).strip('_') or "unknown"
+    safe_profile_username = re.sub(r'[^A-Za-z0-9_-]+', '_', username).strip('_') or "linkdapi_profile"
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = LINKDAPI_PROFILE_OUTPUT_DIR
+    out_path = os.path.join(out_dir, out_filename)
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[linkdapi] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_path": out_path,
+        "saved_for_user": safe_active_username,
+    })
 
 
 @app.post("/api/user-service-config/activate")

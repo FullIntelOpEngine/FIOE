@@ -3726,7 +3726,8 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 }
 
 // ---------------------------------------------------------------------------
-// linkdapi full profile download helper (for CSE/Serper/DataforSEO rows)
+// linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
+// Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
 async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (!linkedinUrl) return;
@@ -3741,18 +3742,17 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
       return;
     }
-    const profile = await resp.json();
-    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const profileMatch = linkedinUrl.match(/\/in\/([^/?#]+)/);
-    const safeName = profileMatch ? profileMatch[1].replace(/[^a-z0-9_-]/gi, '_') : 'linkdapi_profile';
-    a.href = url;
-    a.download = `${safeName}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const data = await resp.json();
+    const savedFilename = (data && data.saved_filename) ? String(data.saved_filename) : '';
+    const savedPath = (data && data.saved_path) ? String(data.saved_path) : '';
+    if (!savedFilename) {
+      alert('linkdapi profile fetched, but no saved filename was returned.');
+      return;
+    }
+    if (typeof setStatus === 'function') {
+      setStatus(`GP profile saved: ${savedFilename}`, 'success');
+    }
+    alert(`GP profile saved:\n${savedFilename}${savedPath ? `\n\n${savedPath}` : ''}`);
   } catch (err) {
     console.error('[linkdapi] get-profile error:', err);
     alert(`linkdapi profile fetch error: ${err.message || err}`);
