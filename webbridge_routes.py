@@ -5938,27 +5938,32 @@ def linkdapi_read_profile():
     safe_active_username = _safe_slug(active_username, "unknown")
     safe_profile_username = _safe_slug(username, "linkdapi_profile")
     out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+
+    # Filename whitelist: after _safe_slug the only chars are [A-Za-z0-9_-]
+    # plus the literal underscore separator and ".json" suffix.
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    # Build path using only the validated constant directory + safe filename
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
-    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+    # os.path.join is safe here: out_filename contains no path separators
+    candidate_path = os.path.join(out_dir, out_filename)
 
     # Path-traversal guard — resolve symlinks and ensure the target stays
     # inside the expected output directory.
     try:
         real_out_dir = os.path.realpath(out_dir)
-        real_out_path = os.path.realpath(out_path)
-        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+        real_candidate = os.path.realpath(candidate_path)
+        if os.path.commonpath([real_out_dir, real_candidate]) != real_out_dir:
             return jsonify({"error": "Invalid output path"}), 400
     except ValueError:
         return jsonify({"error": "Invalid output path"}), 400
 
-    # Use the resolved (canonical) path for all file operations
-    safe_path = real_out_path
-
-    if not os.path.isfile(safe_path):
+    if not os.path.isfile(real_candidate):
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
     try:
-        with open(safe_path, "r", encoding="utf-8") as fh:
+        with open(real_candidate, "r", encoding="utf-8") as fh:
             profile_data = json.load(fh)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
