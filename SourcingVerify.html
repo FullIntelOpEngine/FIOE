@@ -3734,8 +3734,9 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
-  let succeeded = false;
+  let allDone = false;
   try {
+    // Step 1: Fetch and save JSON profile to F:\Recruiting Tools\Autosourcing\output\profiles
     const resp = await fetch(
       `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
     );
@@ -3750,77 +3751,44 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       alert('Unexpected server response: missing file information. Please contact support.');
       return;
     }
-    succeeded = true;
-    if (typeof setStatus === 'function') {
-      setStatus(`GP profile saved: ${savedFilename}`, 'success');
-    } else {
-      console.log(`[GP] Profile saved: ${savedFilename}`);
+
+    // Step 2: Immediately generate and save FIOE-branded PDF server-side
+    if (btnEl) { btnEl.textContent = 'PDF…'; }
+    const pdfResp = await fetch(
+      `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
+      { credentials: 'same-origin' }
+    );
+    const pdfData = await pdfResp.json().catch(() => ({}));
+    if (!pdfResp.ok) {
+      alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
+      return;
     }
-    // Replace GP button with DL button (download-as-PDF)
-    if (btnEl && btnEl.parentElement) {
-      const dlBtn = document.createElement('button');
-      dlBtn.className = 'dl-tag';
-      dlBtn.textContent = 'DL';
-      dlBtn.title = 'Download profile as PDF';
-      dlBtn.style.cssText =
-        'width:32px; height:32px; border:2px solid #f5a623; background:rgba(245,166,35,0.12);' +
-        ' color:#c17c00; border-radius:6px; cursor:pointer; font-size:10px; font-weight:700;' +
-        ' display:flex; align-items:center; justify-content:center; transition:all 0.2s; padding:0;';
-      dlBtn.onmouseover = function () { this.style.background = '#f5a623'; this.style.color = '#fff'; };
-      dlBtn.onmouseout  = function () { this.style.background = 'rgba(245,166,35,0.12)'; this.style.color = '#c17c00'; };
-      dlBtn.addEventListener('click', () => _downloadProfileAsPdf(linkedinUrl, dlBtn));
-      btnEl.parentElement.replaceChild(dlBtn, btnEl);
+
+    allDone = true;
+    const pdfFile = pdfData.saved_pdf_filename || '';
+    if (typeof setStatus === 'function') {
+      setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+    } else {
+      console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
+    }
+
+    // Disable the GP button once the profile + PDF have been saved
+    if (btnEl) {
+      btnEl.textContent = 'GP';
+      btnEl.disabled = true;
+      btnEl.title = `Profile downloaded: ${pdfFile}`;
+      btnEl.style.opacity = '0.4';
+      btnEl.style.cursor = 'default';
+      btnEl.style.background = 'rgba(109,234,249,0.05)';
+      btnEl.style.borderColor = '#bbb';
+      btnEl.style.color = '#aaa';
     }
   } catch (err) {
     console.error('[linkdapi] get-profile error:', err);
     alert(`linkdapi profile fetch error: ${err.message || err}`);
   } finally {
-    // Only restore the GP button if the download did NOT succeed
-    if (!succeeded && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Convert a saved GP profile JSON to PDF and trigger a browser download.
-// Called when the DL button (shown after a successful GP fetch) is clicked.
-// ---------------------------------------------------------------------------
-async function _downloadProfileAsPdf(linkedinUrl, btnEl) {
-  if (!linkedinUrl) return;
-  const origText = btnEl ? btnEl.textContent : 'DL';
-  if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
-  try {
-    const resp = await fetch(
-      `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
-      { credentials: 'same-origin' }
-    );
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      alert(`PDF generation failed: ${errData.error || resp.statusText}`);
-      return;
-    }
-    const blob = await resp.blob();
-    const contentDisp = resp.headers.get('Content-Disposition') || '';
-    let filename = 'profile.pdf';
-    const mQuoted = contentDisp.match(/filename="([^"\\]+)"/);
-    const mPlain  = contentDisp.match(/filename=([^;\s]+)/);
-    if (mQuoted) filename = mQuoted[1].trim();
-    else if (mPlain) filename = mPlain[1].trim();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    if (typeof setStatus === 'function') {
-      setStatus(`PDF downloaded: ${filename}`, 'success');
-    }
-  } catch (err) {
-    console.error('[linkdapi] profile-to-pdf error:', err);
-    alert(`PDF download error: ${err.message || err}`);
-  } finally {
-    if (btnEl) { btnEl.textContent = origText; btnEl.disabled = false; }
+    // Restore the GP button only if the operation did NOT complete successfully
+    if (!allDone && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
   }
 }
 

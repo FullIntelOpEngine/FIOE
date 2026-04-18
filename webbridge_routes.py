@@ -5983,20 +5983,20 @@ def linkdapi_read_profile():
 
 
 def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
-    """Convert a linkdapi profile JSON dict to PDF bytes.
+    """Convert a linkdapi profile JSON dict to a FIOE-branded A4 PDF.
 
     Uses the configured LLM (Gemini by default via ``unified_llm_call_text``)
-    to extract and format profile data into clearly labelled sections, then
-    renders the result with ``_lines_to_pdf_bytes``.  Falls back to direct
+    to extract and normalise profile data, then renders with the FIOE colour
+    scheme (azure dragon / cool blue / robin's egg).  Falls back to direct
     field extraction when the LLM call fails or returns unparseable output.
     """
 
-    # -- Attempt LLM-assisted structuring -----------------------------------
+    # ── Attempt LLM-assisted structuring ──────────────────────────────────
     formatted = None
     try:
         profile_json_str = json.dumps(profile, ensure_ascii=False, indent=2)
         prompt = (
-            "You are preparing a LinkedIn profile for a PDF CV document.\n"
+            "You are preparing a LinkedIn profile for a professional PDF document.\n"
             "Given the profile JSON below, extract and organise the information "
             "into this exact JSON structure (return ONLY valid JSON — no markdown "
             "code blocks, no extra text):\n\n"
@@ -6006,10 +6006,11 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             '  "location": "City, Country",\n'
             '  "email": "email@example.com",\n'
             '  "linkedin_url": "https://linkedin.com/in/...",\n'
-            '  "summary": "Professional summary text",\n'
+            '  "summary": "Professional summary text (2-4 sentences)",\n'
             '  "experience": [\n'
             '    {"title": "Job Title", "company": "Company Name",\n'
-            '     "dates": "Jan 2020 \u2013 Present", "description": "Key responsibilities"}\n'
+            '     "dates": "Jan 2020 \u2013 Present",\n'
+            '     "description": "Key responsibilities in 1-3 sentences"}\n'
             '  ],\n'
             '  "education": [\n'
             '    {"school": "University Name",\n'
@@ -6020,7 +6021,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "}\n\n"
             "Rules:\n"
             "- Format experience dates as 'Mon YYYY \u2013 Mon YYYY' or 'Mon YYYY \u2013 Present'\n"
-            "- Keep descriptions concise (max 3 sentences)\n"
+            "- Keep descriptions concise (max 3 sentences per role)\n"
             "- Omit keys whose values are empty or unknown\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
@@ -6036,7 +6037,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
         logger.warning("[linkdapi PDF] LLM formatting failed: %s", exc)
         formatted = None
 
-    # -- Helper: fall back to direct extraction from raw linkdapi JSON ------
+    # ── Fallback: direct extraction from raw linkdapi JSON fields ──────────
     def _fmt_date(d):
         if not d:
             return ""
@@ -6070,12 +6071,14 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
         for pos in positions_raw:
             is_current = pos.get("isCurrent") or pos.get("is_current") or False
             start_str = _fmt_date(pos.get("startDate") or pos.get("start_date") or {})
-            end_str = "Present" if is_current else _fmt_date(pos.get("endDate") or pos.get("end_date") or {})
+            end_str = "Present" if is_current else _fmt_date(
+                pos.get("endDate") or pos.get("end_date") or {})
             dates = f"{start_str} \u2013 {end_str}" if (start_str or end_str) else ""
             exp_list.append({
-                "title": (pos.get("title") or "").strip(),
-                "company": (pos.get("companyName") or pos.get("company") or pos.get("company_name") or "").strip(),
-                "dates": dates,
+                "title":       (pos.get("title") or "").strip(),
+                "company":     (pos.get("companyName") or pos.get("company")
+                                or pos.get("company_name") or "").strip(),
+                "dates":       dates,
                 "description": (pos.get("description") or "").strip(),
             })
 
@@ -6091,9 +6094,10 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             ey = _fmt_year(edu.get("endDate") or edu.get("end_date") or {})
             dates = f"{sy} \u2013 {ey}" if (sy and ey) else (sy or ey)
             edu_list.append({
-                "school": (edu.get("schoolName") or edu.get("school") or edu.get("name") or "").strip(),
+                "school": (edu.get("schoolName") or edu.get("school")
+                           or edu.get("name") or "").strip(),
                 "degree": degree,
-                "dates": dates,
+                "dates":  dates,
             })
 
         skill_names = [
@@ -6102,110 +6106,340 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
         ]
 
         formatted = {
-            "name": (profile.get("fullName") or profile.get("full_name") or f"{first} {last}").strip(),
-            "headline": (profile.get("headline") or "").strip(),
-            "location": (profile.get("location") or (profile.get("geo") or {}).get("full") or "").strip(),
-            "email": (profile.get("email") or "").strip(),
-            "linkedin_url": (profile.get("profileUrl") or profile.get("profile_url") or profile.get("url") or "").strip(),
-            "summary": (profile.get("summary") or profile.get("about") or "").strip(),
-            "experience": exp_list,
-            "education": edu_list,
-            "skills": skill_names,
+            "name":         (profile.get("fullName") or profile.get("full_name")
+                             or f"{first} {last}").strip(),
+            "headline":     (profile.get("headline") or "").strip(),
+            "location":     (profile.get("location")
+                             or (profile.get("geo") or {}).get("full") or "").strip(),
+            "email":        (profile.get("email") or "").strip(),
+            "linkedin_url": (profile.get("profileUrl") or profile.get("profile_url")
+                             or profile.get("url") or "").strip(),
+            "summary":      (profile.get("summary") or profile.get("about") or "").strip(),
+            "experience":   exp_list,
+            "education":    edu_list,
+            "skills":       skill_names,
         }
 
-    # -- Build _lines_to_pdf_bytes tuples -----------------------------------
+    # ── Render with FIOE branding ──────────────────────────────────────────
+    return _render_fioe_profile_pdf(formatted)
+
+
+def _render_fioe_profile_pdf(data: dict) -> bytes:
+    """Render a FIOE-branded A4 PDF from a structured profile dict.
+
+    FIOE colour scheme:
+      Azure Dragon  #073679  — primary header background, section titles
+      Cool Blue     #4c82b8  — dates, sub-labels
+      Robin's Egg   #6deaf9  — decorative rules, contact strip
+
+    Falls back to ``_lines_to_pdf_bytes`` when reportlab is unavailable.
+    """
+    # ── Try reportlab (primary path) ───────────────────────────────────────
+    try:
+        from reportlab.pdfgen import canvas as rl_canvas
+        from reportlab.lib.pagesizes import A4
+        import io as _io
+
+        # FIOE Colours (normalised 0-1 RGB)
+        _AZURE    = (0.027, 0.212, 0.475)   # #073679  azure dragon
+        _COOL     = (0.298, 0.510, 0.722)   # #4c82b8  cool blue
+        _ROBIN    = (0.427, 0.918, 0.976)   # #6deaf9  robin's egg
+        _ROBIN_BG = (0.929, 0.973, 1.000)   # very light robin's egg tint
+        _WHITE    = (1.000, 1.000, 1.000)
+        _TEXT     = (0.100, 0.100, 0.100)
+        _GRAY     = (0.420, 0.420, 0.420)
+
+        buf = _io.BytesIO()
+        c   = rl_canvas.Canvas(buf, pagesize=A4)
+        PAGE_W, PAGE_H = A4
+        ML = 40    # left margin
+        MR = 36    # right margin
+        CW = PAGE_W - ML - MR  # usable content width
+
+        def _s(t):
+            """Safe latin-1 text (replaces non-latin-1 chars)."""
+            return str(t or "").encode("latin-1", errors="replace").decode("latin-1")
+
+        def _wrap(text, font, size, avail_w):
+            """Word-wrap *text* so every line fits within *avail_w* pts."""
+            safe = _s(text)
+            if not safe.strip():
+                return [""]
+            words = safe.split()
+            lines, cur = [], ""
+            for w in words:
+                test = (cur + " " + w).strip() if cur else w
+                if c.stringWidth(test, font, size) <= avail_w:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    # Hard-truncate a single word that is still too wide
+                    while w and c.stringWidth(w, font, size) > avail_w and len(w) > 1:
+                        w = w[:-1]
+                    cur = w
+            if cur:
+                lines.append(cur)
+            return lines or [""]
+
+        y = PAGE_H  # current cursor (top of page)
+
+        def _new_page():
+            nonlocal y
+            # Footer on each page
+            c.setFillColorRGB(*_AZURE)
+            c.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+            c.setFillColorRGB(*_ROBIN)
+            c.setFont("Helvetica", 7)
+            c.drawCentredString(PAGE_W / 2, 4,
+                                _s("Generated by FIOE Recruiting Platform"))
+            c.showPage()
+            y = PAGE_H
+
+        def _ensure(need):
+            nonlocal y
+            if y - need < 50:
+                _new_page()
+
+        # ── 1. Header Band ─────────────────────────────────────────────────
+        name     = _s(data.get("name") or "")
+        headline = _s(data.get("headline") or "")
+
+        name_lines = _wrap(name, "Helvetica-Bold", 20, CW - 4) if name else []
+        hl_lines   = _wrap(headline, "Helvetica", 11, CW - 4) if headline else []
+
+        HDR_PAD = 14
+        HDR_H = (HDR_PAD
+                 + len(name_lines) * 26
+                 + (len(hl_lines) * 16 if hl_lines else 0)
+                 + HDR_PAD)
+        HDR_H = max(HDR_H, 52)
+
+        # Background fill (azure dragon)
+        c.setFillColorRGB(*_AZURE)
+        c.rect(0, PAGE_H - HDR_H, PAGE_W, HDR_H, fill=1, stroke=0)
+        # Decorative bottom stripe (robin's egg)
+        c.setFillColorRGB(*_ROBIN)
+        c.rect(0, PAGE_H - HDR_H, PAGE_W, 3, fill=1, stroke=0)
+
+        c.setFillColorRGB(*_WHITE)
+        text_y = PAGE_H - HDR_PAD - 6
+        for nl in name_lines:
+            c.setFont("Helvetica-Bold", 20)
+            c.drawString(ML, text_y, nl)
+            text_y -= 26
+        for hl in hl_lines:
+            c.setFont("Helvetica", 11)
+            c.drawString(ML, text_y, hl)
+            text_y -= 16
+
+        y = PAGE_H - HDR_H
+
+        # ── 2. Contact Strip ───────────────────────────────────────────────
+        loc   = _s(data.get("location") or "")
+        email = _s(data.get("email") or "")
+        lnkd  = _s(data.get("linkedin_url") or "")
+
+        contact_parts = []
+        if loc:   contact_parts.append(f"Location: {loc}")
+        if email: contact_parts.append(f"Email: {email}")
+        if lnkd:  contact_parts.append(f"LinkedIn: {lnkd}")
+
+        if contact_parts:
+            ct_txt   = "   |   ".join(contact_parts)
+            ct_lines = _wrap(ct_txt, "Helvetica", 8, CW - 8)
+            CT_H = max(20, len(ct_lines) * 11 + 10)
+            c.setFillColorRGB(*_ROBIN_BG)
+            c.rect(0, y - CT_H, PAGE_W, CT_H, fill=1, stroke=0)
+            c.setFillColorRGB(*_ROBIN)
+            c.rect(0, y - CT_H, 4, CT_H, fill=1, stroke=0)
+            c.setFillColorRGB(*_AZURE)
+            ct_y = y - 8
+            for ct_line in ct_lines:
+                c.setFont("Helvetica", 8)
+                c.drawString(ML, ct_y, ct_line)
+                ct_y -= 11
+            y -= CT_H + 6
+
+        # ── Body helpers ───────────────────────────────────────────────────
+        def _section_hdr(title):
+            nonlocal y
+            _ensure(30)
+            y -= 10
+            c.setFont("Helvetica-Bold", 10)
+            c.setFillColorRGB(*_AZURE)
+            c.drawString(ML, y, _s(title).upper())
+            y -= 5
+            c.setStrokeColorRGB(*_ROBIN)
+            c.setLineWidth(1.5)
+            c.line(ML, y, ML + CW, y)
+            c.setStrokeColorRGB(*_COOL)
+            c.setLineWidth(0.4)
+            c.line(ML, y - 1, ML + CW, y - 1)
+            y -= 8
+
+        def _text_block(text, font="Helvetica", size=9,
+                        indent=0, color=None, gap=3):
+            nonlocal y
+            if color is None:
+                color = _TEXT
+            avail = CW - indent
+            for ln in _wrap(text, font, size, avail):
+                _ensure(size + gap + 2)
+                c.setFillColorRGB(*color)
+                c.setFont(font, size)
+                c.drawString(ML + indent, y, ln)
+                y -= size + gap
+
+        # ── 3. Professional Summary ────────────────────────────────────────
+        summary = _s(data.get("summary") or "")
+        if summary:
+            _section_hdr("Professional Summary")
+            _text_block(summary, indent=0, color=_TEXT)
+            y -= 4
+
+        # ── 4. Experience ─────────────────────────────────────────────────
+        exp_list = data.get("experience") or []
+        if exp_list:
+            _section_hdr("Experience")
+            for exp in exp_list:
+                title   = _s(exp.get("title") or "")
+                company = _s(exp.get("company") or "")
+                dates   = _s(exp.get("dates") or "")
+                desc    = _s(exp.get("description") or "")
+                if not any([title, company, dates, desc]):
+                    continue
+                role_line = title
+                if company:
+                    role_line = f"{title}  \u00b7  {company}" if title else company
+                if role_line:
+                    _text_block(role_line, font="Helvetica-Bold",
+                                size=10, color=_AZURE)
+                if dates:
+                    _text_block(dates, font="Helvetica",
+                                size=8, color=_COOL)
+                if desc:
+                    _text_block(desc, font="Helvetica",
+                                size=9, indent=8, color=_TEXT)
+                y -= 6
+            y -= 2
+
+        # ── 5. Education ──────────────────────────────────────────────────
+        edu_list = data.get("education") or []
+        if edu_list:
+            _section_hdr("Education")
+            for edu in edu_list:
+                school = _s(edu.get("school") or "")
+                degree = _s(edu.get("degree") or "")
+                dates  = _s(edu.get("dates") or "")
+                if not any([school, degree, dates]):
+                    continue
+                if school:
+                    _text_block(school, font="Helvetica-Bold",
+                                size=10, color=_AZURE)
+                if degree:
+                    _text_block(degree, font="Helvetica",
+                                size=9, color=_TEXT)
+                if dates:
+                    _text_block(dates, font="Helvetica",
+                                size=8, color=_COOL)
+                y -= 4
+            y -= 2
+
+        # ── 6. Skills ─────────────────────────────────────────────────────
+        skills = data.get("skills") or []
+        if skills:
+            _section_hdr("Skills")
+            CHUNK = 4
+            for i in range(0, len(skills), CHUNK):
+                row = [_s(s) for s in skills[i:i + CHUNK] if _s(s).strip()]
+                if row:
+                    _text_block("  \u00b7  ".join(row), font="Helvetica",
+                                size=9, color=_TEXT)
+
+        # ── Footer on last page ────────────────────────────────────────────
+        c.setFillColorRGB(*_AZURE)
+        c.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
+        c.setFillColorRGB(*_ROBIN)
+        c.setFont("Helvetica", 7)
+        c.drawCentredString(PAGE_W / 2, 4,
+                            _s("Generated by FIOE Recruiting Platform"))
+
+        c.save()
+        return buf.getvalue()
+
+    except ImportError:
+        pass
+
+    # ── Fallback: plain text via _lines_to_pdf_bytes ───────────────────────
     lines = []
-
-    name = str(formatted.get("name") or "").strip()
-    headline = str(formatted.get("headline") or "").strip()
-    if name:
-        lines.append(("title", name))
-    if headline:
-        lines.append(("key", headline))
+    if data.get("name"):
+        lines.append(("title", str(data["name"])))
+    if data.get("headline"):
+        lines.append(("key", str(data["headline"])))
     lines.append(("gap", ""))
-
-    # Contact
-    contact_pairs = [
-        ("Location", formatted.get("location")),
-        ("Email",    formatted.get("email")),
-        ("LinkedIn", formatted.get("linkedin_url")),
-    ]
-    if any(v for _, v in contact_pairs):
-        lines.append(("section", "CONTACT"))
-        for label, val in contact_pairs:
-            if val and str(val).strip():
-                lines.append(("item", f"{label}: {val}"))
-        lines.append(("gap", ""))
-
-    # Summary
-    summary = str(formatted.get("summary") or "").strip()
-    if summary:
+    for label, val in [("Location", data.get("location")),
+                       ("Email",    data.get("email")),
+                       ("LinkedIn", data.get("linkedin_url"))]:
+        if val:
+            lines.append(("item", f"{label}: {val}"))
+    lines.append(("gap", ""))
+    if data.get("summary"):
         lines.append(("section", "SUMMARY"))
-        lines.append(("item", summary))
+        lines.append(("item", str(data["summary"])))
         lines.append(("gap", ""))
-
-    # Experience
-    for exp in (formatted.get("experience") or []):
-        title   = str(exp.get("title")   or "").strip()
-        company = str(exp.get("company") or "").strip()
-        dates   = str(exp.get("dates")   or "").strip()
-        desc    = str(exp.get("description") or "").strip()
-        if not any([title, company, dates, desc]):
-            continue
-        header = title
-        if company:
-            header = f"{header}  \u00b7  {company}" if header else company
-        if dates:
-            header = f"{header}  |  {dates}" if header else dates
-        if header:
-            lines.append(("key", header))
-        if desc:
-            lines.append(("item", desc))
+    if data.get("experience"):
+        lines.append(("section", "EXPERIENCE"))
+    for exp in (data.get("experience") or []):
+        h  = str(exp.get("title") or "")
+        co = str(exp.get("company") or "")
+        dt = str(exp.get("dates") or "")
+        dc = str(exp.get("description") or "")
+        if co:
+            h = f"{h}  \u00b7  {co}" if h else co
+        if dt:
+            h = f"{h}  |  {dt}" if h else dt
+        if h:
+            lines.append(("key", h))
+        if dc:
+            lines.append(("item", dc))
         lines.append(("gap", ""))
-
-    # Education
-    edu_items = formatted.get("education") or []
-    if edu_items:
+    if data.get("education"):
         lines.append(("section", "EDUCATION"))
-        for edu in edu_items:
-            school = str(edu.get("school") or "").strip()
-            degree = str(edu.get("degree") or "").strip()
-            dates  = str(edu.get("dates")  or "").strip()
-            edu_header = school
-            if degree:
-                edu_header = f"{edu_header}  \u00b7  {degree}" if edu_header else degree
-            if dates:
-                edu_header = f"{edu_header}  ({dates})" if edu_header else dates
-            if edu_header:
-                lines.append(("item", edu_header))
+        for edu in (data.get("education") or []):
+            s  = str(edu.get("school") or "")
+            d  = str(edu.get("degree") or "")
+            dt = str(edu.get("dates") or "")
+            if d:
+                s = f"{s}  \u00b7  {d}" if s else d
+            if dt:
+                s = f"{s}  ({dt})" if s else dt
+            if s:
+                lines.append(("item", s))
         lines.append(("gap", ""))
-
-    # Skills
-    skills = formatted.get("skills") or []
-    if skills:
+    if data.get("skills"):
         lines.append(("section", "SKILLS"))
-        chunk_size = 5
-        for i in range(0, len(skills), chunk_size):
-            chunk = [str(s) for s in skills[i:i + chunk_size] if str(s).strip()]
-            if chunk:
-                lines.append(("item", "  \u2022  ".join(chunk)))
-        lines.append(("gap", ""))
-
+        skls = data.get("skills") or []
+        for i in range(0, len(skls), 5):
+            row = [str(x) for x in skls[i:i + 5] if str(x).strip()]
+            if row:
+                lines.append(("item", "  \u2022  ".join(row)))
     return _lines_to_pdf_bytes(lines)
 
 
 @app.get("/api/linkdapi/profile-to-pdf")
 @_require_session
 def linkdapi_profile_to_pdf():
-    """Convert a saved GP profile JSON to PDF and return it as a file download.
+    """Convert a saved GP profile JSON to a FIOE-branded PDF and save it to disk.
 
     Query parameters:
       linkedin_url – the LinkedIn profile URL (required); username is extracted
                      from the URL path.
 
     Reads the previously-saved JSON from ``LINKDAPI_PROFILE_OUTPUT_DIR``,
-    converts it to a professionally-formatted PDF (using the active LLM for
-    layout assistance), and returns it with ``Content-Disposition: attachment``.
+    converts it to a FIOE-branded A4 PDF, and saves it alongside the JSON in
+    the same directory as ``<slug>_<user>.pdf``.  Returns JSON:
+      ``{"saved_pdf_filename": "...", "status": "saved"}``
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
     if not linkedin_url:
@@ -6225,6 +6459,7 @@ def linkdapi_profile_to_pdf():
     safe_active_username = _safe_slug(active_username, "unknown")
     safe_profile_username = _safe_slug(username, "linkdapi_profile")
     json_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    pdf_filename  = f"{safe_profile_username}_{safe_active_username}.pdf"
 
     if os.sep in json_filename or (os.altsep and os.altsep in json_filename):
         return jsonify({"error": "Invalid filename"}), 400
@@ -6243,12 +6478,12 @@ def linkdapi_profile_to_pdf():
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
     # Use the entry from the directory listing (OS-sourced, not user-derived)
-    # to construct the path — this breaks the taint chain from user input.
-    matched_entry = next(f for f in existing if f == json_filename)
-    safe_path = os.path.join(out_dir, matched_entry)
+    # to construct the read path — this breaks the taint chain from user input.
+    matched_json = next(f for f in existing if f == json_filename)
+    json_path = os.path.join(out_dir, matched_json)
 
     try:
-        with open(safe_path, "r", encoding="utf-8") as fh:
+        with open(json_path, "r", encoding="utf-8") as fh:
             profile_data = json.load(fh)
     except json.JSONDecodeError:
         return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
@@ -6262,15 +6497,20 @@ def linkdapi_profile_to_pdf():
         logger.exception("[linkdapi PDF] PDF generation failed: %s", exc)
         return jsonify({"error": "PDF generation failed"}), 500
 
-    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
-    return Response(
-        pdf_bytes,
-        mimetype="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{pdf_filename}"',
-            "Content-Length": str(len(pdf_bytes)),
-        },
-    )
+    # Save the PDF to the profiles output directory (same location as JSON)
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[linkdapi PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "saved_pdf_filename": pdf_filename,
+        "status": "saved",
+    })
 
 
 @app.post("/api/user-service-config/activate")
