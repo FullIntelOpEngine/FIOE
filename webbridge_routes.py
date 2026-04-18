@@ -6139,7 +6139,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     """
     # ── Shared text sanitiser ──────────────────────────────────────────────
     def _s(t):
-        """Normalise text for Latin-1 PDF rendering.
+        """Normalise text for Latin-1 PDF rendering (canvas-safe).
 
         1. NFKC-normalises (handles fullwidth/halfwidth variants).
         2. Replaces entire *runs* of CJK / non-Latin characters with ``[...]``
@@ -6176,6 +6176,16 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         s = s.replace('\u30fb', '\u00b7')
         s = s.replace('\u301c', '~').replace('\uff5e', '~')
         return s.encode("latin-1", errors="replace").decode("latin-1")
+
+    def _sp(t):
+        """Return text safe for Platypus Paragraph (Latin-1 + XML-escaped).
+
+        Platypus Paragraph parses its input as XML, so literal ``<``, ``>``
+        and ``&`` characters must be escaped to prevent the XML parser from
+        failing or misrendering the text.
+        """
+        from xml.sax.saxutils import escape as _xmlesc
+        return _xmlesc(_s(t))
 
     # ── Try reportlab.platypus (primary path) ──────────────────────────────
     try:
@@ -6232,18 +6242,31 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             # Robin's egg bottom stripe
             canvas_obj.setFillColor(ROBIN)
             canvas_obj.rect(0, PAGE_H - dynamic_hdr_h, PAGE_W, 3, fill=1, stroke=0)
-            # Name: centred vertically within the band.
-            # 22pt ≈ half the name font size (20pt) plus small visual padding.
+            # Name: compute target font size to fit available header width.
+            _MAX_HDR_W = PAGE_W - ML - MR
             canvas_obj.setFillColor(white)
-            canvas_obj.setFont("Helvetica-Bold", 20)
-            _NAME_FONT_HALF = 22  # half-height offset for 20pt bold font baseline
+            # Calculate fitting font size directly instead of looping.
+            # stringWidth scales linearly with font size, so:
+            #   target_sz = floor(max_sz * max_w / current_w)  (clamped to min)
+            _w_at_20 = canvas_obj.stringWidth(name, "Helvetica-Bold", 20)
+            if _w_at_20 > 0:
+                _name_sz = max(10, min(20, int(20 * _MAX_HDR_W / _w_at_20)))
+            else:
+                _name_sz = 20
+            canvas_obj.setFont("Helvetica-Bold", _name_sz)
+            _NAME_FONT_HALF = _name_sz + 2
             name_y = PAGE_H - dynamic_hdr_h + (dynamic_hdr_h - _NAME_FONT_HALF) // 2 + \
                      (14 if headline else 0)
             canvas_obj.drawString(ML, name_y, name)
-            # Headline
+            # Headline: compute target font size similarly
             if headline:
-                canvas_obj.setFont("Helvetica", 10)
-                canvas_obj.drawString(ML, name_y - 18, headline)
+                _w_hl_at_10 = canvas_obj.stringWidth(headline, "Helvetica", 10)
+                if _w_hl_at_10 > 0:
+                    _hl_sz = max(7, min(10, int(10 * _MAX_HDR_W / _w_hl_at_10)))
+                else:
+                    _hl_sz = 10
+                canvas_obj.setFont("Helvetica", _hl_sz)
+                canvas_obj.drawString(ML, name_y - _hl_sz - 4, headline)
             # Footer
             canvas_obj.setFillColor(AZURE)
             canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
@@ -6321,16 +6344,16 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         CW = PAGE_W - ML - MR   # usable content width
 
         def _section(title):
-            story.append(Paragraph(_s(title).upper(), section_hdr_style))
+            story.append(Paragraph(_sp(title).upper(), section_hdr_style))
             story.append(HRFlowable(
                 width='100%', thickness=1.5,
                 color=ROBIN, spaceAfter=4,
             ))
 
         # ── Contact strip ──────────────────────────────────────────────────
-        loc   = _s(data.get("location") or "")
-        lnkd  = _s(data.get("linkedin_url") or "")
-        email = _s(data.get("email") or "")
+        loc   = _sp(data.get("location") or "")
+        lnkd  = _sp(data.get("linkedin_url") or "")
+        email = _sp(data.get("email") or "")
 
         contact_items = []
         if loc:   contact_items.append(f"Location: {loc}")
@@ -6343,7 +6366,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             story.append(Spacer(1, 8))
 
         # ── Professional Summary ───────────────────────────────────────────
-        summary = _s(data.get("summary") or "")
+        summary = _sp(data.get("summary") or "")
         if summary:
             _section("Professional Summary")
             story.append(Paragraph(summary, body_style))
@@ -6354,10 +6377,10 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if exp_list:
             _section("Experience")
             for exp in exp_list:
-                title   = _s(exp.get("title") or "")
-                company = _s(exp.get("company") or "")
-                dates   = _s(exp.get("dates") or "")
-                desc    = _s(exp.get("description") or "")
+                title   = _sp(exp.get("title") or "")
+                company = _sp(exp.get("company") or "")
+                dates   = _sp(exp.get("dates") or "")
+                desc    = _sp(exp.get("description") or "")
                 if not any([title, company, dates, desc]):
                     continue
                 if title:
@@ -6376,9 +6399,9 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if edu_list:
             _section("Education")
             for edu in edu_list:
-                school = _s(edu.get("school") or "")
-                degree = _s(edu.get("degree") or "")
-                dates  = _s(edu.get("dates") or "")
+                school = _sp(edu.get("school") or "")
+                degree = _sp(edu.get("degree") or "")
+                dates  = _sp(edu.get("dates") or "")
                 if not any([school, degree, dates]):
                     continue
                 if school:
@@ -6398,7 +6421,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             CHUNK = 3
             tbl_data = []
             for i in range(0, len(skills), CHUNK):
-                row_cells = [_s(s) for s in skills[i:i + CHUNK] if _s(s).strip()]
+                row_cells = [cell for cell in (_sp(s) for s in skills[i:i + CHUNK]) if cell.strip()]
                 # Pad to CHUNK columns
                 while len(row_cells) < CHUNK:
                     row_cells.append("")
@@ -6653,6 +6676,7 @@ def linkdapi_upload_profile_pdf():
 
         # Try by exact URL first, then normalised partial match
         from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
+        from psycopg2 import sql as _pgsql
         normalized = _normalize_linkedin_to_path(linkedin_url)
         cur.execute(
             "UPDATE process SET cv = %s WHERE linkedinurl = %s",
@@ -6663,6 +6687,53 @@ def linkdapi_upload_profile_pdf():
                 "UPDATE process SET cv = %s WHERE LOWER(linkedinurl) LIKE %s",
                 (binary_cv, f"%{normalized}%")
             )
+
+        # If no existing process row was found, INSERT a minimal stub so that
+        # bulk_assess can locate the record and the background CV parse can
+        # write profile fields back to it.
+        if cur.rowcount == 0:
+            cand_name   = (body.get("name") or "").strip()
+            active_user = getattr(request, "_session_user", "") or ""
+            try:
+                # Discover which columns exist so we only insert what is present.
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'process'
+                """)
+                _existing_cols = {r[0].lower() for r in cur.fetchall()}
+
+                _ins_fields: list = ["linkedinurl", "cv"]
+                _ins_vals:   list = [linkedin_url, binary_cv]
+                if "name" in _existing_cols:
+                    _ins_fields.append("name")
+                    _ins_vals.append(cand_name or linkedin_url)
+                if "username" in _existing_cols and active_user:
+                    _ins_fields.append("username")
+                    _ins_vals.append(active_user)
+
+                _ins_sql = _pgsql.SQL(
+                    "INSERT INTO process ({}) VALUES ({})"
+                ).format(
+                    _pgsql.SQL(", ").join(_pgsql.Identifier(f) for f in _ins_fields),
+                    _pgsql.SQL(", ").join(_pgsql.Placeholder() for _ in _ins_fields),
+                )
+                cur.execute(_ins_sql, _ins_vals)
+                logger.info(
+                    "[linkdapi upload-pdf] Inserted new process row for %s",
+                    linkedin_url,
+                )
+            except Exception as _ins_exc:
+                logger.warning(
+                    "[linkdapi upload-pdf] Could not insert process row (non-fatal): %s",
+                    _ins_exc,
+                )
+                try:
+                    conn.rollback()
+                except Exception as _rb_exc:
+                    logger.debug(
+                        "[linkdapi upload-pdf] rollback after failed INSERT: %s", _rb_exc
+                    )
+
         conn.commit()
         cur.close()
         conn.close()
