@@ -5981,6 +5981,294 @@ def linkdapi_read_profile():
     })
 
 
+def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
+    """Convert a linkdapi profile JSON dict to PDF bytes.
+
+    Uses the configured LLM (Gemini by default via ``unified_llm_call_text``)
+    to extract and format profile data into clearly labelled sections, then
+    renders the result with ``_lines_to_pdf_bytes``.  Falls back to direct
+    field extraction when the LLM call fails or returns unparseable output.
+    """
+
+    # -- Attempt LLM-assisted structuring -----------------------------------
+    formatted = None
+    try:
+        profile_json_str = json.dumps(profile, ensure_ascii=False, indent=2)
+        prompt = (
+            "You are preparing a LinkedIn profile for a PDF CV document.\n"
+            "Given the profile JSON below, extract and organise the information "
+            "into this exact JSON structure (return ONLY valid JSON — no markdown "
+            "code blocks, no extra text):\n\n"
+            "{\n"
+            '  "name": "Full Name",\n'
+            '  "headline": "Job Title at Company",\n'
+            '  "location": "City, Country",\n'
+            '  "email": "email@example.com",\n'
+            '  "linkedin_url": "https://linkedin.com/in/...",\n'
+            '  "summary": "Professional summary text",\n'
+            '  "experience": [\n'
+            '    {"title": "Job Title", "company": "Company Name",\n'
+            '     "dates": "Jan 2020 \u2013 Present", "description": "Key responsibilities"}\n'
+            '  ],\n'
+            '  "education": [\n'
+            '    {"school": "University Name",\n'
+            '     "degree": "Bachelor of Science in Computer Science",\n'
+            '     "dates": "2016 \u2013 2020"}\n'
+            '  ],\n'
+            '  "skills": ["Skill 1", "Skill 2"]\n'
+            "}\n\n"
+            "Rules:\n"
+            "- Format experience dates as 'Mon YYYY \u2013 Mon YYYY' or 'Mon YYYY \u2013 Present'\n"
+            "- Keep descriptions concise (max 3 sentences)\n"
+            "- Omit keys whose values are empty or unknown\n"
+            "- Return ONLY valid JSON\n\n"
+            f"Profile JSON:\n{profile_json_str}"
+        )
+        raw = unified_llm_call_text(prompt, temperature=0.1, max_output_tokens=2000)
+        if raw:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+            formatted = json.loads(cleaned)
+    except Exception as exc:
+        logger.warning("[linkdapi PDF] LLM formatting failed: %s", exc)
+        formatted = None
+
+    # -- Helper: fall back to direct extraction from raw linkdapi JSON ------
+    def _fmt_date(d):
+        if not d:
+            return ""
+        if isinstance(d, str):
+            return d
+        _MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        m = d.get("month", "")
+        y = d.get("year", "")
+        try:
+            m_str = _MONTHS[int(m)] if m and 1 <= int(m) <= 12 else str(m)
+        except (ValueError, TypeError):
+            m_str = str(m) if m else ""
+        return f"{m_str} {y}".strip() if m_str else str(y)
+
+    def _fmt_year(d):
+        if not d:
+            return ""
+        if isinstance(d, (int, str)):
+            return str(d)
+        return str(d.get("year", ""))
+
+    if not (formatted and isinstance(formatted, dict)):
+        first = (profile.get("firstName") or profile.get("first_name") or "").strip()
+        last = (profile.get("lastName") or profile.get("last_name") or "").strip()
+        positions_raw = profile.get("positions") or profile.get("experience") or []
+        schools_raw = profile.get("schools") or profile.get("education") or []
+        skills_raw = profile.get("skills") or []
+
+        exp_list = []
+        for pos in positions_raw:
+            is_current = pos.get("isCurrent") or pos.get("is_current") or False
+            start_str = _fmt_date(pos.get("startDate") or pos.get("start_date") or {})
+            end_str = "Present" if is_current else _fmt_date(pos.get("endDate") or pos.get("end_date") or {})
+            dates = f"{start_str} \u2013 {end_str}" if (start_str or end_str) else ""
+            exp_list.append({
+                "title": (pos.get("title") or "").strip(),
+                "company": (pos.get("companyName") or pos.get("company") or pos.get("company_name") or "").strip(),
+                "dates": dates,
+                "description": (pos.get("description") or "").strip(),
+            })
+
+        edu_list = []
+        for edu in schools_raw:
+            degree = (edu.get("degree") or edu.get("degreeName") or "").strip()
+            field = (edu.get("fieldOfStudy") or edu.get("field_of_study") or "").strip()
+            if degree and field:
+                degree = f"{degree} in {field}"
+            elif field:
+                degree = field
+            sy = _fmt_year(edu.get("startDate") or edu.get("start_date") or {})
+            ey = _fmt_year(edu.get("endDate") or edu.get("end_date") or {})
+            dates = f"{sy} \u2013 {ey}" if (sy and ey) else (sy or ey)
+            edu_list.append({
+                "school": (edu.get("schoolName") or edu.get("school") or edu.get("name") or "").strip(),
+                "degree": degree,
+                "dates": dates,
+            })
+
+        skill_names = [
+            (s.get("name") or s.get("skill") or str(s)) if isinstance(s, dict) else str(s)
+            for s in skills_raw
+        ]
+
+        formatted = {
+            "name": (profile.get("fullName") or profile.get("full_name") or f"{first} {last}").strip(),
+            "headline": (profile.get("headline") or "").strip(),
+            "location": (profile.get("location") or (profile.get("geo") or {}).get("full") or "").strip(),
+            "email": (profile.get("email") or "").strip(),
+            "linkedin_url": (profile.get("profileUrl") or profile.get("profile_url") or profile.get("url") or "").strip(),
+            "summary": (profile.get("summary") or profile.get("about") or "").strip(),
+            "experience": exp_list,
+            "education": edu_list,
+            "skills": skill_names,
+        }
+
+    # -- Build _lines_to_pdf_bytes tuples -----------------------------------
+    lines = []
+
+    name = str(formatted.get("name") or "").strip()
+    headline = str(formatted.get("headline") or "").strip()
+    if name:
+        lines.append(("title", name))
+    if headline:
+        lines.append(("key", headline))
+    lines.append(("gap", ""))
+
+    # Contact
+    contact_pairs = [
+        ("Location", formatted.get("location")),
+        ("Email",    formatted.get("email")),
+        ("LinkedIn", formatted.get("linkedin_url")),
+    ]
+    if any(v for _, v in contact_pairs):
+        lines.append(("section", "CONTACT"))
+        for label, val in contact_pairs:
+            if val and str(val).strip():
+                lines.append(("item", f"{label}: {val}"))
+        lines.append(("gap", ""))
+
+    # Summary
+    summary = str(formatted.get("summary") or "").strip()
+    if summary:
+        lines.append(("section", "SUMMARY"))
+        lines.append(("item", summary))
+        lines.append(("gap", ""))
+
+    # Experience
+    for exp in (formatted.get("experience") or []):
+        title   = str(exp.get("title")   or "").strip()
+        company = str(exp.get("company") or "").strip()
+        dates   = str(exp.get("dates")   or "").strip()
+        desc    = str(exp.get("description") or "").strip()
+        if not any([title, company, dates, desc]):
+            continue
+        header = title
+        if company:
+            header = f"{header}  \u00b7  {company}" if header else company
+        if dates:
+            header = f"{header}  |  {dates}" if header else dates
+        if header:
+            lines.append(("key", header))
+        if desc:
+            lines.append(("item", desc))
+        lines.append(("gap", ""))
+
+    # Education
+    edu_items = formatted.get("education") or []
+    if edu_items:
+        lines.append(("section", "EDUCATION"))
+        for edu in edu_items:
+            school = str(edu.get("school") or "").strip()
+            degree = str(edu.get("degree") or "").strip()
+            dates  = str(edu.get("dates")  or "").strip()
+            edu_header = school
+            if degree:
+                edu_header = f"{edu_header}  \u00b7  {degree}" if edu_header else degree
+            if dates:
+                edu_header = f"{edu_header}  ({dates})" if edu_header else dates
+            if edu_header:
+                lines.append(("item", edu_header))
+        lines.append(("gap", ""))
+
+    # Skills
+    skills = formatted.get("skills") or []
+    if skills:
+        lines.append(("section", "SKILLS"))
+        chunk_size = 5
+        for i in range(0, len(skills), chunk_size):
+            chunk = [str(s) for s in skills[i:i + chunk_size] if str(s).strip()]
+            if chunk:
+                lines.append(("item", "  \u2022  ".join(chunk)))
+        lines.append(("gap", ""))
+
+    return _lines_to_pdf_bytes(lines)
+
+
+@app.get("/api/linkdapi/profile-to-pdf")
+@_require_session
+def linkdapi_profile_to_pdf():
+    """Convert a saved GP profile JSON to PDF and return it as a file download.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required); username is extracted
+                     from the URL path.
+
+    Reads the previously-saved JSON from ``LINKDAPI_PROFILE_OUTPUT_DIR``,
+    converts it to a professionally-formatted PDF (using the active LLM for
+    layout assistance), and returns it with ``Content-Disposition: attachment``.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    json_filename = f"{safe_profile_username}_{safe_active_username}.json"
+
+    if os.sep in json_filename or (os.altsep and os.altsep in json_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi PDF] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if json_filename not in existing:
+        return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
+
+    safe_path = os.path.join(out_dir, json_filename)
+
+    try:
+        with open(safe_path, "r", encoding="utf-8") as fh:
+            profile_data = json.load(fh)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] failed to read profile JSON: %s", exc)
+        return jsonify({"error": "Failed to read GP profile JSON"}), 500
+
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[linkdapi PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pdf_filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+        },
+    )
+
+
 @app.post("/api/user-service-config/activate")
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
