@@ -3745,13 +3745,14 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
     const data = await resp.json();
     const savedFilename = String(data?.saved_filename || '');
     if (!savedFilename) {
-      alert('linkdapi profile fetched, but no saved filename was returned.');
+      alert('Profile was retrieved but could not be saved. Please contact support.');
       return;
     }
     if (typeof setStatus === 'function') {
       setStatus(`GP profile saved: ${savedFilename}`, 'success');
+    } else {
+      alert(`GP profile saved:\n${savedFilename}`);
     }
-    alert(`GP profile saved:\n${savedFilename}`);
   } catch (err) {
     console.error('[linkdapi] get-profile error:', err);
     alert(`linkdapi profile fetch error: ${err.message || err}`);
