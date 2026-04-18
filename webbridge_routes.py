@@ -2815,10 +2815,12 @@ def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
             cleaned = raw.strip().strip("`")
             cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
             cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
-            mapped = json.loads(cleaned.strip())
-            if isinstance(mapped, dict) and mapped:
-                logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
-                return mapped
+            cleaned = cleaned.strip()
+            if cleaned:
+                mapped = json.loads(cleaned)
+                if isinstance(mapped, dict) and mapped:
+                    logger.info(f"[{provider_label}] LLM-mapped params from form fields: {mapped}")
+                    return mapped
     except Exception as exc:
         logger.warning(f"[{provider_label}] LLM field-mapping failed: {exc}")
     return {}
@@ -2965,13 +2967,15 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("ContactOut API key is not configured. Add CONTACTOUT_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_contactout_params(query)
     params["page"] = page
-    logger.debug(f"[ContactOut] Calling people/search — page={page} params={params}")
+    params.setdefault("limit", num)
+    logger.info(f"[ContactOut] Calling people/search — page={page} limit={params.get('limit', num)} params_keys={list(params.keys())}")
     try:
         r = requests.post(
             "https://api.contactout.com/v1/people/search",
             headers={
-                "Authorization": f"Token {api_key}",
+                "token": api_key,
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             },
             json=params,
             timeout=30,
@@ -2992,8 +2996,58 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
             logger.error(f"[ContactOut] API error HTTP {r.status_code}: {api_msg}")
             raise ProviderSearchError(f"ContactOut API error (HTTP {r.status_code}): {api_msg}")
         data = resp_body if isinstance(resp_body, dict) else {}
-        people = data.get("people") or data.get("profiles") or data.get("results") or []
-        estimated_total = int(data.get("total") or data.get("count") or len(people))
+        people_raw = data.get("people") or data.get("profiles") or data.get("results") or []
+        if isinstance(people_raw, list):
+            people = people_raw
+        elif isinstance(people_raw, dict):
+            # Two possible dict structures:
+            # 1. Nested list under a standard key: {"profiles": [...], "data": [...]}
+            # 2. URL-keyed dict:  {"https://linkedin.com/in/john": {...profile...}, ...}
+            nested = (people_raw.get("profiles") or people_raw.get("data")
+                      or people_raw.get("list"))
+            if isinstance(nested, list):
+                people = nested
+                logger.info(
+                    f"[ContactOut] 'people' field is a dict — extracted {len(people)} items "
+                    f"from nested list"
+                )
+            else:
+                # Keys are likely LinkedIn URLs; values are profile dicts.
+                # Inject the URL as linkedin_url if the profile doesn't already have one.
+                people = []
+                for k, v in people_raw.items():
+                    if isinstance(v, dict):
+                        p = dict(v)
+                        if not p.get("linkedin_url") and not p.get("linkedin"):
+                            p["linkedin_url"] = k
+                        people.append(p)
+                logger.info(
+                    f"[ContactOut] 'people' field is a URL-keyed dict — "
+                    f"extracted {len(people)} profiles "
+                    f"(sample keys: {list(people_raw.keys())[:3]})"
+                )
+        else:
+            people = []
+            if people_raw:
+                logger.warning(
+                    f"[ContactOut] Unexpected 'people' field type "
+                    f"({type(people_raw).__name__}); treating as empty"
+                )
+        _total_hint = (
+            data.get("total") or data.get("count")
+            or (
+                (people_raw.get("total") or people_raw.get("count"))
+                if isinstance(people_raw, dict) else None
+            )
+            or len(people)
+        )
+        estimated_total = int(_total_hint)
+        if not people and resp_body:
+            _preview_keys = list(resp_body.keys()) if isinstance(resp_body, dict) else str(type(resp_body))
+            logger.info(
+                f"[ContactOut] Zero results — HTTP {r.status_code} "
+                f"response top-level keys: {_preview_keys}"
+            )
         out = []
         skipped = 0
         for person in people:
@@ -3224,7 +3278,7 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
     prompt = (
         "You are a search-query translator. Convert the Google Xray boolean search "
         "query below into a JSON object suitable for the RocketReach Person Search API "
-        "(POST https://api.rocketreach.co/api/v2/search).\n\n"
+        "(POST https://api.rocketreach.co/api/v2/person/search).\n\n"
         "Rules:\n"
         "1. Extract job titles into \"current_title\" (array of strings).\n"
         "2. Extract company names into \"current_employer\" (array of strings).\n"
@@ -3273,10 +3327,10 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
         raise ProviderSearchError("RocketReach API key is not configured. Add ROCKETREACH_API_KEY in admin_rate_limits.html → Contact Generation.")
     params = dict(raw_params) if raw_params else _translate_xray_to_rocketreach_params(query)
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
-    logger.debug(f"[RocketReach] Calling api/v2/search — page={page} page_size={num} params={params}")
+    logger.info(f"[RocketReach] Calling api/v2/person/search — page={page} page_size={num} query_keys={list(params.keys())}")
     try:
         r = requests.post(
-            "https://api.rocketreach.co/api/v2/search",
+            "https://api.rocketreach.co/api/v2/person/search",
             headers={
                 "Api-Key": api_key,
                 "Content-Type": "application/json",
@@ -3300,8 +3354,53 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
             logger.error(f"[RocketReach] API error HTTP {r.status_code}: {api_msg}")
             raise ProviderSearchError(f"RocketReach API error (HTTP {r.status_code}): {api_msg}")
         data = resp_body if isinstance(resp_body, dict) else {}
-        people = data.get("profiles") or data.get("people") or data.get("results") or []
-        estimated_total = int(data.get("pagination", {}).get("total") or data.get("total") or len(people))
+        people_raw = data.get("profiles") or data.get("people") or data.get("results") or []
+        if isinstance(people_raw, list):
+            people = people_raw
+        elif isinstance(people_raw, dict):
+            # Two possible dict structures:
+            # 1. Nested list under a standard key: {"data": [...], "list": [...]}
+            # 2. URL-keyed dict:  {"https://linkedin.com/in/john": {...profile...}, ...}
+            nested = (people_raw.get("profiles") or people_raw.get("data")
+                      or people_raw.get("list"))
+            if isinstance(nested, list):
+                people = nested
+                logger.info(
+                    f"[RocketReach] 'profiles' field is a dict — extracted {len(people)} items "
+                    f"from nested list"
+                )
+            else:
+                # Keys are likely LinkedIn URLs; values are profile dicts.
+                people = []
+                for k, v in people_raw.items():
+                    if isinstance(v, dict):
+                        p = dict(v)
+                        if not p.get("linkedin_url") and not p.get("linkedin"):
+                            p["linkedin_url"] = k
+                        people.append(p)
+                logger.info(
+                    f"[RocketReach] 'profiles' field is a URL-keyed dict — "
+                    f"extracted {len(people)} profiles "
+                    f"(sample keys: {list(people_raw.keys())[:3]})"
+                )
+        else:
+            people = []
+            if people_raw:
+                logger.warning(
+                    f"[RocketReach] Unexpected 'profiles' field type "
+                    f"({type(people_raw).__name__}); treating as empty"
+                )
+        if not people and resp_body:
+            _preview_keys = list(resp_body.keys()) if isinstance(resp_body, dict) else str(type(resp_body))
+            logger.info(
+                f"[RocketReach] Zero results — HTTP {r.status_code} "
+                f"response top-level keys: {_preview_keys}"
+            )
+        estimated_total = int(
+            data.get("pagination", {}).get("total")
+            or data.get("total")
+            or len(people)
+        )
         out = []
         skipped = 0
         for person in people:
@@ -3577,10 +3676,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     # missing or the API call fails, ProviderSearchError is raised so the caller
     # can surface the specific reason in the job status messages.
     elif selected_provider == 'contactout':
-        co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+        _co_cfg = ev_cfg.get("contactout", {})
+        co_key = (_co_cfg.get("api_key") or "").strip() if _co_cfg.get("enabled") == "enabled" else ""
         if not co_key:
             raise ProviderSearchError(
-                "ContactOut API key is not configured. Add CONTACTOUT_API_KEY in "
+                "ContactOut API key is not configured. Enable ContactOut and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         # Build params directly from form fields when available; otherwise
@@ -3598,10 +3698,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         return contactout_people_search_page(query, co_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     elif selected_provider == 'apollo':
-        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        _ap_cfg = ev_cfg.get("apollo", {})
+        ap_key = (_ap_cfg.get("api_key") or "").strip() if _ap_cfg.get("enabled") == "enabled" else ""
         if not ap_key:
             raise ProviderSearchError(
-                "Apollo API key is not configured. Add APOLLO_API_KEY in "
+                "Apollo API key is not configured. Enable Apollo and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         if raw_form_fields:
@@ -3617,10 +3718,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         return apollo_people_search_page(query, ap_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
     elif selected_provider == 'rocketreach':
-        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        _rr_cfg = ev_cfg.get("rocketreach", {})
+        rr_key = (_rr_cfg.get("api_key") or "").strip() if _rr_cfg.get("enabled") == "enabled" else ""
         if not rr_key:
             raise ProviderSearchError(
-                "RocketReach API key is not configured. Add ROCKETREACH_API_KEY in "
+                "RocketReach API key is not configured. Enable RocketReach and add the API key in "
                 "admin_rate_limits.html → Contact Generation, then re-run the search."
             )
         if raw_form_fields:
@@ -5364,9 +5466,10 @@ def contactout_download_profile():
         return jsonify({"error": "linkedin_url is required"}), 400
 
     ev_cfg = _load_email_verif_config()
-    co_key = (ev_cfg.get("contact_gen", {}).get("CONTACTOUT_API_KEY") or "").strip()
+    _co_admin = ev_cfg.get("contactout", {})
+    co_key = (_co_admin.get("api_key") or "").strip() if _co_admin.get("enabled") == "enabled" else ""
     if not co_key:
-        return jsonify({"error": "CONTACTOUT_API_KEY is not configured"}), 503
+        return jsonify({"error": "ContactOut API key is not configured or not enabled"}), 503
 
     try:
         r = requests.get(
@@ -5378,7 +5481,7 @@ def contactout_download_profile():
                 "reveal_info": "true",
             },
             headers={
-                "Authorization": f"Token {co_key}",
+                "token": co_key,
                 "Accept": "application/json",
             },
             timeout=30,
@@ -5443,9 +5546,10 @@ def apollo_download_profile():
             pass
     if not ap_key:
         ev_cfg = _load_email_verif_config()
-        ap_key = (ev_cfg.get("contact_gen", {}).get("APOLLO_API_KEY") or "").strip()
+        _ap_admin = ev_cfg.get("apollo", {})
+        ap_key = (_ap_admin.get("api_key") or "").strip() if _ap_admin.get("enabled") == "enabled" else ""
     if not ap_key:
-        return jsonify({"error": "APOLLO_API_KEY is not configured"}), 503
+        return jsonify({"error": "Apollo API key is not configured or not enabled"}), 503
 
     try:
         if person_id:
@@ -5528,9 +5632,10 @@ def rocketreach_download_profile():
             pass
     if not rr_key:
         ev_cfg = _load_email_verif_config()
-        rr_key = (ev_cfg.get("contact_gen", {}).get("ROCKETREACH_API_KEY") or "").strip()
+        _rr_admin = ev_cfg.get("rocketreach", {})
+        rr_key = (_rr_admin.get("api_key") or "").strip() if _rr_admin.get("enabled") == "enabled" else ""
     if not rr_key:
-        return jsonify({"error": "ROCKETREACH_API_KEY is not configured"}), 503
+        return jsonify({"error": "RocketReach API key is not configured or not enabled"}), 503
 
     try:
         r = requests.get(
