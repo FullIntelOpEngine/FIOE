@@ -3801,8 +3801,10 @@ async function _downloadProfileAsPdf(linkedinUrl, btnEl) {
     const blob = await resp.blob();
     const contentDisp = resp.headers.get('Content-Disposition') || '';
     let filename = 'profile.pdf';
-    const m = contentDisp.match(/filename="?([^";]+)"?/);
-    if (m) filename = m[1].trim();
+    const mQuoted = contentDisp.match(/filename="([^"\\]+)"/);
+    const mPlain  = contentDisp.match(/filename=([^;\s]+)/);
+    if (mQuoted) filename = mQuoted[1].trim();
+    else if (mPlain) filename = mPlain[1].trim();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

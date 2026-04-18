@@ -5961,9 +5961,10 @@ def linkdapi_read_profile():
     if out_filename not in existing:
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
-    # Construct the final path from the trusted directory + the filename
-    # that was verified to exist in the directory listing.
-    safe_path = os.path.join(out_dir, out_filename)
+    # Use the entry from the directory listing (OS-sourced, not user-derived)
+    # to construct the path — this breaks the taint chain from user input.
+    matched_entry = next(f for f in existing if f == out_filename)
+    safe_path = os.path.join(out_dir, matched_entry)
 
     try:
         with open(safe_path, "r", encoding="utf-8") as fh:
@@ -6241,12 +6242,15 @@ def linkdapi_profile_to_pdf():
     if json_filename not in existing:
         return jsonify({"error": "GP profile not found. Click the GP button first to fetch the profile."}), 404
 
-    safe_path = os.path.join(out_dir, json_filename)
+    # Use the entry from the directory listing (OS-sourced, not user-derived)
+    # to construct the path — this breaks the taint chain from user input.
+    matched_entry = next(f for f in existing if f == json_filename)
+    safe_path = os.path.join(out_dir, matched_entry)
 
     try:
         with open(safe_path, "r", encoding="utf-8") as fh:
             profile_data = json.load(fh)
-    except (json.JSONDecodeError, ValueError):
+    except json.JSONDecodeError:
         return jsonify({"error": "Saved GP profile JSON is corrupted"}), 500
     except Exception as exc:
         logger.exception("[linkdapi PDF] failed to read profile JSON: %s", exc)
