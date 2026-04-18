@@ -6157,8 +6157,22 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         CW = PAGE_W - ML - MR  # usable content width
 
         def _s(t):
-            """Safe latin-1 text (replaces non-latin-1 chars)."""
-            return str(t or "").encode("latin-1", errors="replace").decode("latin-1")
+            """Normalise text for Latin-1 PDF rendering.
+
+            Replaces common Unicode punctuation that cannot be encoded in
+            Latin-1 with their ASCII equivalents so they display correctly
+            instead of appearing as '?'.
+            """
+            s = str(t or "")
+            # Replace Unicode dashes with ASCII hyphen-minus
+            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+            # Replace Unicode quotes with straight quotes
+            s = s.replace('\u2018', "'").replace('\u2019', "'")
+            s = s.replace('\u201c', '"').replace('\u201d', '"')
+            # Replace ellipsis and other common symbols
+            s = s.replace('\u2026', '...')
+            s = s.replace('\u2022', '*').replace('\u00b7', '.')
+            return s.encode("latin-1", errors="replace").decode("latin-1")
 
         def _wrap(text, font, size, avail_w):
             """Word-wrap *text* so every line fits within *avail_w* pts."""
@@ -6517,7 +6531,113 @@ def linkdapi_profile_to_pdf():
     })
 
 
-@app.post("/api/user-service-config/activate")
+@app.post("/api/linkdapi/upload-profile-pdf")
+@_require_session
+def linkdapi_upload_profile_pdf():
+    """Upload a pre-saved GP profile PDF from the profiles directory into the DB.
+
+    Request body (JSON):
+      linkedin_url – the LinkedIn profile URL (required)
+      name         – candidate name (optional, for name-validation skip)
+
+    Finds the saved ``<slug>_<user>.pdf`` in ``LINKDAPI_PROFILE_OUTPUT_DIR``,
+    reads it, stores it in the ``process.cv`` column (same as
+    ``/process/upload_cv``), then triggers background CV parsing via
+    ``analyze_cv_background``.  Returns the parsed CV data dict on success.
+    """
+    body = request.get_json(silent=True) or {}
+    linkedin_url = (body.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "linkdapi_profile")
+    pdf_filename = f"{safe_profile_username}_{safe_active_username}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "GP profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi upload-pdf] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if pdf_filename not in existing:
+        return jsonify({
+            "error": "GP profile PDF not found. Click the GP button first to generate the PDF."
+        }), 404
+
+    # Use OS-sourced entry to build the read path (breaks taint chain)
+    matched_pdf = next(f for f in existing if f == pdf_filename)
+    pdf_path = os.path.join(out_dir, matched_pdf)
+
+    try:
+        with open(pdf_path, "rb") as fh:
+            pdf_bytes = fh.read()
+    except Exception as exc:
+        logger.exception("[linkdapi upload-pdf] failed to read PDF: %s", exc)
+        return jsonify({"error": "Failed to read GP profile PDF"}), 500
+
+    # Store PDF in process table (same logic as process_upload_cv)
+    try:
+        import psycopg2
+        pg_host     = os.getenv("PGHOST", "localhost")
+        pg_port     = int(os.getenv("PGPORT", "5432"))
+        pg_user     = os.getenv("PGUSER", "postgres")
+        pg_password = os.getenv("PGPASSWORD", "")
+        pg_db       = os.getenv("PGDATABASE", "candidate_db")
+        conn = psycopg2.connect(
+            host=pg_host, port=pg_port, user=pg_user,
+            password=pg_password, dbname=pg_db
+        )
+        cur = conn.cursor()
+        binary_cv = psycopg2.Binary(pdf_bytes)
+
+        # Try by exact URL first, then normalised partial match
+        from webbridge_cv import _normalize_linkedin_to_path  # type: ignore
+        normalized = _normalize_linkedin_to_path(linkedin_url)
+        cur.execute(
+            "UPDATE process SET cv = %s WHERE linkedinurl = %s",
+            (binary_cv, linkedin_url)
+        )
+        if cur.rowcount == 0 and normalized:
+            cur.execute(
+                "UPDATE process SET cv = %s WHERE LOWER(linkedinurl) LIKE %s",
+                (binary_cv, f"%{normalized}%")
+            )
+        conn.commit()
+        # Fire background parse if module is available
+        try:
+            from webbridge_cv import analyze_cv_background  # type: ignore
+            import threading as _threading
+            _threading.Thread(
+                target=analyze_cv_background, args=(linkedin_url, pdf_bytes)
+            ).start()
+        except ImportError:
+            pass
+        cur.close()
+        conn.close()
+    except Exception as exc:
+        logger.exception("[linkdapi upload-pdf] DB write failed: %s", exc)
+        return jsonify({"error": "Failed to store GP profile PDF in database"}), 500
+
+    return jsonify({
+        "status": "uploaded",
+        "pdf_filename": pdf_filename,
+    })
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
     otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""

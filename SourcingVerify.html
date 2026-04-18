@@ -4125,8 +4125,8 @@ function buildRow(row) {
 
             // ── GP Assess mode: when linkdapi is enabled and this is NOT a
             //    provider-sourced row, show "Assess" instead of "Upload CV".
-            //    The Assess button reads the GP profile JSON from the server
-            //    output directory and triggers performCombinedAssessment.
+            //    The Assess button finds the saved PDF in the profiles directory,
+            //    uploads it to the DB, parses the CV, then runs assessment.
             const _isGpRow = window.__LINKDAPI_ENABLED &&
                              !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()];
 
@@ -4135,7 +4135,7 @@ function buildRow(row) {
                 assessBtn.textContent = 'Assess';
                 assessBtn.className = 'view-btn';
                 assessBtn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; font-weight:500; background:white; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; transition:all 0.2s;';
-                assessBtn.title = 'Assess profile using GP data';
+                assessBtn.title = 'Assess profile using saved GP PDF';
                 assessBtn.onmouseover = function() { this.style.background = '#eff3f8'; };
                 assessBtn.onmouseout  = function() { this.style.background = 'white'; };
 
@@ -4143,25 +4143,48 @@ function buildRow(row) {
                     e.stopPropagation();
                     if (assessBtn.disabled) return;
                     assessBtn.disabled = true;
-                    assessBtn.textContent = 'Reading GP…';
                     assessBtn.classList.add('btn-spinning');
 
                     try {
-                        // 1. Read saved GP profile JSON from the server output dir
-                        const gpResp = await fetch(
-                            `/api/linkdapi/read-profile?linkedin_url=${encodeURIComponent(value)}`,
-                            { credentials: 'same-origin' }
-                        );
-                        if (!gpResp.ok) {
-                            const errData = await gpResp.json().catch(() => ({}));
-                            throw new Error(errData.error || `HTTP ${gpResp.status}`);
+                        // Step 1: Upload saved GP PDF from profiles directory to DB
+                        assessBtn.textContent = 'Uploading PDF…';
+                        const nameCell = tr.querySelector('td[data-field="name"]');
+                        const candName = nameCell ? (nameCell.textContent || '').trim() : '';
+                        const uploadResp = await fetch('/api/linkdapi/upload-profile-pdf', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ linkedin_url: value, name: candName }),
+                            credentials: 'same-origin'
+                        });
+                        if (!uploadResp.ok) {
+                            const errData = await uploadResp.json().catch(() => ({}));
+                            throw new Error(errData.error || `Upload failed HTTP ${uploadResp.status}`);
                         }
-                        const gpData = await gpResp.json();
-                        const profilePayload = gpData.profile || {};
 
-                        // 2. Run assessment via performCombinedAssessment
+                        // Step 2: Parse the uploaded CV
+                        assessBtn.textContent = 'Parsing CV…';
+                        const parseResp = await fetch(API_PARSE_CV_AND_UPDATE, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ linkedinurl: value }),
+                            credentials: 'same-origin'
+                        });
+                        const analyzeData = await parseResp.json().catch(() => ({}));
+                        if (!parseResp.ok) {
+                            throw new Error(analyzeData.error || `Parse failed HTTP ${parseResp.status}`);
+                        }
+
+                        // Update cells from parse result
+                        const newCompany = analyzeData.company || analyzeData.organisation || '';
+                        const newJob = analyzeData.job_title || analyzeData.jobtitle || '';
+                        const newCountry = analyzeData.country || analyzeData.location || '';
+                        if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
+                        if (newJob)     { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
+                        if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
+
+                        // Step 3: Run assessment via performCombinedAssessment
                         assessBtn.textContent = 'Processing…';
-                        const assessOk = await performCombinedAssessment(tr, value, profilePayload, true);
+                        const assessOk = await performCombinedAssessment(tr, value, analyzeData, true);
 
                         if (assessOk === false) {
                             // Assessment was blocked — restore Assess button state.
