@@ -6755,6 +6755,110 @@ def linkdapi_get_profile_pdf():
     return resp
 
 
+@app.get("/api/linkdapi/list-profile-pdfs")
+@_require_session
+def linkdapi_list_profile_pdfs():
+    """List all saved GP profile PDFs belonging to the current session user.
+
+    Returns ``{"files": ["slug_user.pdf", ...]}`` — only files whose name ends
+    with ``_<session_username>.pdf`` are included, so each user sees only their
+    own generated PDFs.
+    """
+    active_username = getattr(request, "_session_user", "") or ""
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    safe_active = _safe_slug(active_username, "unknown")
+    user_suffix = f"_{safe_active}.pdf"
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    try:
+        all_entries = os.listdir(out_dir)
+    except FileNotFoundError:
+        return jsonify({"files": []}), 200
+    except OSError as exc:
+        logger.exception("[linkdapi list-pdfs] cannot list profiles dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    user_pdfs = [f for f in all_entries if f.endswith(user_suffix)]
+    return jsonify({"files": user_pdfs}), 200
+
+
+@app.get("/api/linkdapi/get-pdf-by-filename")
+@_require_session
+def linkdapi_get_pdf_by_filename():
+    """Serve a saved GP profile PDF by its filename.
+
+    Only PDFs that end with ``_<session_username>.pdf`` may be retrieved —
+    this enforces per-user access control (a user cannot fetch another user's
+    PDFs by guessing a filename).
+
+    Query parameters:
+      filename – the PDF filename (e.g. ``jdoe_admin.pdf``); must belong to
+                 the current session user.
+
+    Returns the PDF as ``application/pdf`` with header ``X-PDF-Filename``.
+    """
+    from flask import Response as _FlaskResponse
+
+    filename = (request.args.get("filename") or "").strip()
+    if not filename:
+        return jsonify({"error": "filename is required"}), 400
+
+    # Reject any path-traversal or separator characters
+    if any(c in filename for c in ('/', '\\', '\0')):
+        return jsonify({"error": "Invalid filename"}), 400
+    if not filename.lower().endswith('.pdf'):
+        return jsonify({"error": "Only PDF files are supported"}), 400
+
+    active_username = getattr(request, "_session_user", "") or ""
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    safe_active = _safe_slug(active_username, "unknown")
+    expected_suffix = f"_{safe_active}.pdf"
+
+    # Access control: filename must end with _<session_user>.pdf
+    if not filename.endswith(expected_suffix):
+        return jsonify({"error": "Access denied"}), 403
+
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    try:
+        existing = set(os.listdir(out_dir))
+    except FileNotFoundError:
+        return jsonify({"error": "Profiles directory does not exist"}), 404
+    except OSError as exc:
+        logger.exception("[linkdapi get-pdf-by-filename] cannot list dir: %s", exc)
+        return jsonify({"error": "Cannot read profiles directory"}), 500
+
+    if filename not in existing:
+        return jsonify({"error": "PDF file not found"}), 404
+
+    # Use OS-sourced entry to break taint chain from user input
+    matched = next((f for f in existing if f == filename), None)
+    if not matched:
+        return jsonify({"error": "PDF file not found"}), 404
+
+    pdf_path = os.path.join(out_dir, matched)
+    try:
+        with open(pdf_path, "rb") as fh:
+            pdf_bytes = fh.read()
+    except Exception as exc:
+        logger.exception("[linkdapi get-pdf-by-filename] failed to read PDF: %s", exc)
+        return jsonify({"error": "Failed to read PDF"}), 500
+
+    resp = _FlaskResponse(pdf_bytes, mimetype="application/pdf")
+    resp.headers["Content-Disposition"] = f"inline; filename=\"{matched}\""
+    resp.headers["X-PDF-Filename"] = matched
+    return resp
+
+
 @app.route("/api/linkdapi/upload-profile-pdf", methods=["POST"])
 @_require_session
 def linkdapi_upload_profile_pdf():
