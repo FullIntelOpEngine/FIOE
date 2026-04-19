@@ -5955,11 +5955,10 @@ function renderTable(){
       profileImg.alt = name;
       profileImg.style.cssText = 'width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
       profileImg.onerror = function() {
-        this.style.display = 'none';
         const placeholder = document.createElement('div');
         placeholder.style.cssText = 'width:150px; height:150px; border-radius:50%; background:#f8f8f8; display:inline-flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:700; font-size:56px; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
         placeholder.textContent = name.charAt(0).toUpperCase();
-        this.parentNode.appendChild(placeholder);
+        this.replaceWith(placeholder);
       };
       profilePicContainer.appendChild(profileImg);
     } else {
