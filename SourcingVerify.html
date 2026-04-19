@@ -448,7 +448,7 @@ html, body {
       <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
       <button id="bulkAssessmentBtn" style="background:linear-gradient(180deg,var(--cool-blue,#4c82b8),var(--azure-dragon,#073679)); border:1px solid var(--azure-dragon,#073679); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
       <!-- Bulk Ingest Button: only shown when linkdapi is enabled AND any GP row lacks a PDF in the profiles directory. -->
-      <button id="bulkIngestBtn" style="display:none; background:linear-gradient(180deg,#1a7a45,#0d4a2a); border:1px solid #0d4a2a; color:#ffffff; margin-right:8px;" title="Bulk-ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
+      <button id="bulkIngestBtn" style="display:none; background:linear-gradient(180deg,#1a7a45,#0d4a2a); border:1px solid #0d4a2a; color:#ffffff; margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
       
       <!-- Hidden file input for directory upload -->
@@ -7908,6 +7908,19 @@ function _profileSlugFromUrl(linkedinUrl) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: check whether a PDF for the given profile slug exists in a Set of
+// lower-cased filenames returned by list-profile-pdfs.
+// The naming convention is "<profile_slug>_<session_user>.pdf", so we check
+// whether any filename starts with "<slug>_".
+// ---------------------------------------------------------------------------
+function _hasPdfInSet(existingSet, slug) {
+    if (!slug) return false;
+    const prefix = slug.toLowerCase() + '_';
+    for (const f of existingSet) { if (f.startsWith(prefix)) return true; }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Update Bulk button visibility based on linkdapi state and GP PDF coverage.
 //   • linkdapi disabled OR no GP rows → show Bulk Assessment, hide Bulk Ingest
 //   • linkdapi enabled AND any GP row lacks a PDF → show Bulk Ingest, hide Bulk Assessment
@@ -7932,12 +7945,7 @@ async function _updateBulkActionButton() {
         const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
         const ld = lr.ok ? await lr.json() : { files: [] };
         const existing = new Set((ld.files || []).map(f => f.toLowerCase()));
-        const hasMissing = gpRows.some(r => {
-            const slug = _profileSlugFromUrl(r.linkedinurl);
-            if (!slug) return false;
-            for (const f of existing) { if (f.startsWith(slug.toLowerCase() + '_')) return false; }
-            return true;
-        });
+        const hasMissing = gpRows.some(r => !_hasPdfInSet(existing, _profileSlugFromUrl(r.linkedinurl)));
         if (hasMissing) {
             bulkIngestBtn.style.display = '';
             bulkAssessmentBtn.style.display = 'none';
@@ -8251,12 +8259,7 @@ if (bulkIngestBtn) {
         } catch (_) {}
 
         // Filter to rows whose expected PDF is absent from the profiles directory
-        const toIngest = gpRows.filter(r => {
-            const slug = _profileSlugFromUrl(r.linkedinurl);
-            if (!slug) return false;
-            for (const f of existingPdfs) { if (f.startsWith(slug.toLowerCase() + '_')) return false; }
-            return true;
-        });
+        const toIngest = gpRows.filter(r => !_hasPdfInSet(existingPdfs, _profileSlugFromUrl(r.linkedinurl)));
 
         if (toIngest.length === 0) {
             alert('All GP profiles already have PDFs.\n\nSwitching to Bulk Assessment mode.');
@@ -8274,10 +8277,10 @@ if (bulkIngestBtn) {
         bulkIngestBtn.disabled = true;
         setSearchResultButtonsEnabled(false);
         let done = 0, failed = 0;
-        for (const row of toIngest) {
-            bulkIngestBtn.textContent = `Ingesting ${done + failed + 1}/${toIngest.length}\u2026`;
+        for (let i = 0; i < toIngest.length; i++) {
+            bulkIngestBtn.textContent = `Ingesting ${i + 1}/${toIngest.length}\u2026`;
             try {
-                const ok = await _downloadLinkdapiProfile(row.linkedinurl, null);
+                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null);
                 if (ok) done++; else failed++;
             } catch (_) { failed++; }
         }
