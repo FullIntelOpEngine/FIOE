@@ -445,8 +445,8 @@ html, body {
       <!-- Refresh Button - Moved to former checkbox position -->
       <button id="reloadBtn" title="Reset assessment state and refetch data">Refresh</button>
 
-      <!-- Combined Bulk Assessment Button (Upload + Assessment) -->
-      <button id="bulkAssessmentBtn" style="background:linear-gradient(180deg,var(--cool-blue,#4c82b8),var(--azure-dragon,#073679)); border:1px solid var(--azure-dragon,#073679); color:#ffffff; margin-right:8px;" title="Verify the directory settings before initiating bulk PDF upload and assessment.">Bulk Assessment</button>
+      <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
+      <button id="bulkAssessmentBtn" style="background:linear-gradient(180deg,var(--cool-blue,#4c82b8),var(--azure-dragon,#073679)); border:1px solid var(--azure-dragon,#073679); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
       
       <!-- Hidden file input for directory upload -->
@@ -2764,6 +2764,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
             }
             if (gpData && typeof gpData.enabled === 'boolean') {
               window.__LINKDAPI_ENABLED = gpData.enabled;
+              // Bulk Assessment button is always visible; no need to show/hide here
             }
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
@@ -5952,11 +5953,10 @@ function renderTable(){
       profileImg.alt = name;
       profileImg.style.cssText = 'width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
       profileImg.onerror = function() {
-        this.style.display = 'none';
         const placeholder = document.createElement('div');
         placeholder.style.cssText = 'width:150px; height:150px; border-radius:50%; background:#f8f8f8; display:inline-flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:700; font-size:56px; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
         placeholder.textContent = name.charAt(0).toUpperCase();
-        this.parentNode.appendChild(placeholder);
+        this.replaceWith(placeholder);
       };
       profilePicContainer.appendChild(profileImg);
     } else {
@@ -7901,6 +7901,90 @@ if (bulkAssessmentBtn && bulkDirInput) {
         } catch(_) {}
     })();
 
+    // ── Shared pipeline: upload FormData to upload_multiple_cvs, verify, then assess ──
+    async function _runBulkUploadAndAssess(formData, fileCount) {
+        const TABLE_RENDER_DELAY_MS = 1000; // Delay to allow table rendering to complete before starting assessment
+        const bulkUploadProgressContainer = document.getElementById('bulkUploadProgressContainer');
+        const bulkUploadProgressBar = document.getElementById('bulkUploadProgressBar');
+        const bulkUploadProgressPercent = document.getElementById('bulkUploadProgressPercent');
+        const bulkUploadProgressText = document.getElementById('bulkUploadProgressText');
+
+        bulkUploadProgressContainer.style.display = 'block';
+        bulkUploadProgressBar.style.width = '0%';
+        bulkUploadProgressPercent.textContent = '0%';
+        bulkUploadProgressText.textContent = 'Starting upload...';
+
+        setStatus(`Uploading ${fileCount} files...`, "info");
+        setSearchResultButtonsEnabled(false);
+        bulkAssessmentBtn.disabled = true;
+
+        try {
+            bulkUploadProgressBar.style.width = '20%';
+            bulkUploadProgressPercent.textContent = '20%';
+            bulkUploadProgressText.textContent = 'Uploading files...';
+
+            console.log(`[Bulk Assessment] Phase 1: Sending to ${API_UPLOAD_MULTIPLE}`);
+            const res = await fetch(API_UPLOAD_MULTIPLE, {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            });
+            const data = await res.json();
+            console.log('[Bulk Assessment] Upload Response:', data);
+
+            bulkUploadProgressBar.style.width = '40%';
+            bulkUploadProgressPercent.textContent = '40%';
+            bulkUploadProgressText.textContent = 'Processing files...';
+
+            if (res.ok) {
+                setStatus(`Bulk Upload Complete: Matched ${data.uploaded_count} CVs. Verifying data...`, "info");
+
+                let msg = `Successfully matched and uploaded ${data.uploaded_count} CVs.`;
+                if (data.errors && data.errors.length > 0) {
+                    msg += `\n\nErrors encountered: ${data.errors.length} files had issues. Check browser console for details.`;
+                    console.warn("Bulk upload errors:", data.errors);
+                }
+
+                if (data.uploaded_profiles && Array.isArray(data.uploaded_profiles)) {
+                    setStatus(`Verifying ${data.uploaded_profiles.length} profiles in database...`, "info");
+
+                    bulkUploadProgressBar.style.width = '60%';
+                    bulkUploadProgressPercent.textContent = '60%';
+                    bulkUploadProgressText.textContent = 'Verifying data...';
+
+                    await verifyBulkUploadedProfiles(data.uploaded_profiles);
+                }
+
+                bulkUploadProgressBar.style.width = '80%';
+                bulkUploadProgressPercent.textContent = '80%';
+                bulkUploadProgressText.textContent = 'Upload complete! Starting assessment...';
+
+                switchTab('tab-search');
+                renderTable();
+
+                await new Promise(resolve => setTimeout(resolve, TABLE_RENDER_DELAY_MS));
+
+                bulkUploadProgressContainer.style.display = 'none';
+
+                console.log('[Bulk Assessment] Phase 2: Starting bulk assessment');
+                await runBulkAssessmentFromSearch();
+
+            } else {
+                bulkUploadProgressContainer.style.display = 'none';
+                setStatus(`Upload failed: ${data.error || 'Unknown error'}`, "error");
+                alert(`Error: ${data.error}`);
+                setSearchResultButtonsEnabled(true);
+                bulkAssessmentBtn.disabled = false;
+            }
+        } catch (e) {
+            bulkUploadProgressContainer.style.display = 'none';
+            setStatus(`Upload request failed: ${e.message}`, "error");
+            console.error(e);
+            setSearchResultButtonsEnabled(true);
+            bulkAssessmentBtn.disabled = false;
+        }
+    }
+
     // Show the "how many profiles" info modal unless the user opted out
     function _showBulkAssessInfoModal() {
         return new Promise(resolve => {
@@ -7941,15 +8025,87 @@ if (bulkAssessmentBtn && bulkDirInput) {
         });
     }
 
-    // 1. Click button -> Show info modal, then trigger hidden file input
+    // 1. Click button -> when linkdapi is active, fetch PDFs from server profiles directory;
+    //    otherwise fall back to the directory file picker.
     bulkAssessmentBtn.addEventListener('click', async () => {
         const proceed = await _showBulkAssessInfoModal();
         if (!proceed) return;
-        bulkDirInput.value = ''; // Reset selection
-        bulkDirInput.click();
+
+        if (window.__LINKDAPI_ENABLED) {
+            // GP mode: list saved PDFs from the server profiles directory and run the
+            // same upload+verify+assess pipeline (replicates the manual flow of clicking
+            // Bulk Assessment → navigating to the profiles folder → clicking Upload).
+            try {
+                const listResp = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+                if (!listResp.ok) {
+                    // Guard against non-JSON error bodies (HTML login redirects, 500 pages, etc.)
+                    const ct = listResp.headers.get('content-type') || '';
+                    const errText = ct.includes('application/json')
+                        ? ((await listResp.json().catch(() => ({}))).error || `HTTP ${listResp.status}`)
+                        : `HTTP ${listResp.status}`;
+                    throw new Error('Failed to list profile PDFs: ' + errText);
+                }
+                const listData = await listResp.json();
+                const pdfFiles = listData.files || [];
+
+                if (pdfFiles.length === 0) {
+                    alert('No GP profile PDFs found in the profiles directory.\n\nUse the Ingest button to generate PDF profiles first, then run Bulk Assessment.');
+                    return;
+                }
+
+                // ── Client-side rate-limit check ──
+                if (typeof RateLimitEnforcer !== 'undefined') {
+                    const allowed = await RateLimitEnforcer.check('upload_multiple_cvs');
+                    if (!allowed) return;
+                }
+
+                const confirmUpload = confirm(`Found ${pdfFiles.length} GP profile PDF(s) in the profiles directory.\n\nThis will upload and assess all matched candidates. Continue?`);
+                if (!confirmUpload) return;
+
+                // Fetch each PDF from the server and add it to FormData
+                const formData = new FormData();
+                const uid = window.__SV_ACTIVE_USERID || '';
+                if (uid) formData.append('userid', uid);
+
+                let fetchedCount = 0;
+                for (const filename of pdfFiles) {
+                    try {
+                        const pdfResp = await fetch(
+                            '/api/linkdapi/get-pdf-by-filename?filename=' + encodeURIComponent(filename),
+                            { credentials: 'same-origin' }
+                        );
+                        if (!pdfResp.ok) {
+                            console.warn(`[Bulk Assessment GP] Skipping ${filename}: HTTP ${pdfResp.status}`);
+                            continue;
+                        }
+                        const pdfBlob = await pdfResp.blob();
+                        formData.append('files', pdfBlob, filename);
+                        fetchedCount++;
+                    } catch (fetchErr) {
+                        console.warn(`[Bulk Assessment GP] Failed to fetch ${filename}:`, fetchErr);
+                    }
+                }
+
+                if (fetchedCount === 0) {
+                    alert('Failed to retrieve any PDF profiles from the server. Please try again.');
+                    return;
+                }
+
+                console.log(`[Bulk Assessment GP] Fetched ${fetchedCount}/${pdfFiles.length} PDFs from profiles directory`);
+                await _runBulkUploadAndAssess(formData, fetchedCount);
+
+            } catch (err) {
+                console.error('[Bulk Assessment GP] Failed:', err);
+                alert('Bulk Assessment (GP) failed: ' + (err.message || err));
+            }
+        } else {
+            // Standard mode: open directory file picker
+            bulkDirInput.value = '';
+            bulkDirInput.click();
+        }
     });
 
-    // 2. Handle file selection - Combined Bulk Upload + Assessment workflow
+    // 2. Handle file selection (standard/non-GP mode) - Combined Bulk Upload + Assessment workflow
     bulkDirInput.addEventListener('change', async () => {
         const files = Array.from(bulkDirInput.files);
         
@@ -7990,114 +8146,19 @@ if (bulkAssessmentBtn && bulkDirInput) {
         const confirmUpload = confirm(`Found ${validFiles.length} valid CV files.\n\nThis will upload files and automatically run AI assessment on all candidates. Continue?`);
         if (!confirmUpload) return;
 
-        // Timing constant for table rendering
-        const TABLE_RENDER_DELAY_MS = 1000; // Delay to allow table rendering to complete before starting assessment
-
-        const bulkUploadProgressContainer = document.getElementById('bulkUploadProgressContainer');
-        const bulkUploadProgressBar = document.getElementById('bulkUploadProgressBar');
-        const bulkUploadProgressPercent = document.getElementById('bulkUploadProgressPercent');
-        const bulkUploadProgressText = document.getElementById('bulkUploadProgressText');
-        
-        bulkUploadProgressContainer.style.display = 'block';
-        bulkUploadProgressBar.style.width = '0%';
-        bulkUploadProgressPercent.textContent = '0%';
-        bulkUploadProgressText.textContent = 'Starting upload...';
-
-        setStatus(`Uploading ${validFiles.length} files...`, "info");
-        
-        // Disable all buttons during bulk upload and assessment
-        setSearchResultButtonsEnabled(false);
-        bulkAssessmentBtn.disabled = true;
-        
         console.log(`[Bulk Assessment] Uploading ${validFiles.length} CV files`);
         validFiles.forEach((file, idx) => {
             console.log(`[Bulk Assessment] File ${idx + 1}: ${file.name}, size: ${file.size}, type: ${file.type}`);
         });
 
-        // Prepare FormData
         const formData = new FormData();
         validFiles.forEach(file => {
-            formData.append('files', file); // 'files' is the key expected by backend
+            formData.append('files', file);
         });
-
-        // Add user info if needed
         const uid = window.__SV_ACTIVE_USERID || '';
         if (uid) formData.append('userid', uid);
 
-        try {
-            bulkUploadProgressBar.style.width = '20%';
-            bulkUploadProgressPercent.textContent = '20%';
-            bulkUploadProgressText.textContent = 'Uploading files...';
-            
-            // PHASE 1: Bulk Upload
-            console.log(`[Bulk Assessment] Phase 1: Sending to ${API_UPLOAD_MULTIPLE}`);
-            const res = await fetch(API_UPLOAD_MULTIPLE, {
-                method: 'POST',
-                body: formData,
-                credentials: 'same-origin'
-            });
-            const data = await res.json();
-            console.log('[Bulk Assessment] Upload Response:', data);
-
-            bulkUploadProgressBar.style.width = '40%';
-            bulkUploadProgressPercent.textContent = '40%';
-            bulkUploadProgressText.textContent = 'Processing files...';
-
-            if (res.ok) {
-                setStatus(`Bulk Upload Complete: Matched ${data.uploaded_count} CVs. Verifying data...`, "info");
-                
-                let msg = `Successfully matched and uploaded ${data.uploaded_count} CVs.`;
-                if (data.errors && data.errors.length > 0) {
-                    msg += `\n\nErrors encountered: ${data.errors.length} files had issues. Check browser console for details.`;
-                    console.warn("Bulk upload errors:", data.errors);
-                }
-                
-                // Verify all required fields are populated in Postgres before proceeding
-                if (data.uploaded_profiles && Array.isArray(data.uploaded_profiles)) {
-                    setStatus(`Verifying ${data.uploaded_profiles.length} profiles in database...`, "info");
-                    
-                    bulkUploadProgressBar.style.width = '60%';
-                    bulkUploadProgressPercent.textContent = '60%';
-                    bulkUploadProgressText.textContent = 'Verifying data...';
-                    
-                    // Poll to verify all fields are populated
-                    await verifyBulkUploadedProfiles(data.uploaded_profiles);
-                }
-                
-                bulkUploadProgressBar.style.width = '80%';
-                bulkUploadProgressPercent.textContent = '80%';
-                bulkUploadProgressText.textContent = 'Upload complete! Starting assessment...';
-                
-                // Redirect to Search Result tab and refresh
-                switchTab('tab-search');
-                renderTable();
-                
-                // Wait a moment for the table to render
-                await new Promise(resolve => setTimeout(resolve, TABLE_RENDER_DELAY_MS));
-                
-                // Hide upload progress bar
-                bulkUploadProgressContainer.style.display = 'none';
-                
-                // PHASE 2: Run Bulk Assessment
-                console.log('[Bulk Assessment] Phase 2: Starting bulk assessment');
-                await runBulkAssessmentFromSearch();
-                
-            } else {
-                bulkUploadProgressContainer.style.display = 'none';
-                setStatus(`Upload failed: ${data.error || 'Unknown error'}`, "error");
-                alert(`Error: ${data.error}`);
-                // Re-enable buttons on upload failure (assessment not triggered)
-                setSearchResultButtonsEnabled(true);
-                bulkAssessmentBtn.disabled = false;
-            }
-        } catch (e) {
-            bulkUploadProgressContainer.style.display = 'none';
-            setStatus(`Upload request failed: ${e.message}`, "error");
-            console.error(e);
-            // Re-enable buttons on error (assessment not triggered)
-            setSearchResultButtonsEnabled(true);
-            bulkAssessmentBtn.disabled = false;
-        }
+        await _runBulkUploadAndAssess(formData, validFiles.length);
     });
 }
 
