@@ -6218,6 +6218,41 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         from xml.sax.saxutils import escape as _xmlesc
         return _xmlesc(_s(t))
 
+    def _spwrap(t, max_chars=100):
+        """Return XML-safe text with hard line breaks every ``max_chars`` chars.
+
+        Words are preserved wherever possible; a word that exceeds ``max_chars``
+        by itself is hard-split at the character boundary.  Lines are joined
+        with Platypus ``<br/>`` tags so the paragraph renderer respects each
+        visual line.
+        """
+        from xml.sax.saxutils import escape as _xmlesc
+        raw = _s(t)
+        words = raw.split(' ')
+        lines = []
+        current = ''
+        for word in words:
+            if not word:
+                continue
+            if len(word) > max_chars:
+                # Hard-split an overlong token into max_chars chunks
+                for ch in range(0, len(word), max_chars):
+                    chunk = word[ch:ch + max_chars]
+                    if current:
+                        lines.append(current)
+                        current = ''
+                    lines.append(chunk)
+                continue
+            candidate = (current + ' ' + word).lstrip() if current else word
+            if len(candidate) > max_chars:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        return '<br/>'.join(_xmlesc(line) for line in lines)
+
     # ── Try reportlab.platypus (primary path) ──────────────────────────────
     try:
         from reportlab.platypus import (
@@ -6397,7 +6432,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             story.append(Spacer(1, 8))
 
         # ── Professional Summary ───────────────────────────────────────────
-        summary = _sp(data.get("summary") or "")
+        summary = _spwrap(data.get("summary") or "")
         if summary:
             _section("Professional Summary")
             story.append(Paragraph(summary, body_style))
@@ -6413,7 +6448,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 title   = _sp(exp.get("title") or "")
                 company = _sp(exp.get("company") or "")
                 dates   = _sp(exp.get("dates") or "")
-                desc    = _sp(exp.get("description") or "")
+                desc    = _spwrap(exp.get("description") or "")
                 if not any([title, company, dates, desc]):
                     continue
                 if title:
