@@ -7906,7 +7906,7 @@ if (bulkAssessmentBtn && bulkDirInput) {
 
     // ── Shared pipeline: upload FormData to upload_multiple_cvs, verify, then assess ──
     async function _runBulkUploadAndAssess(formData, fileCount) {
-        const TABLE_RENDER_DELAY_MS = 1000;
+        const TABLE_RENDER_DELAY_MS = 1000; // Delay to allow table rendering to complete before starting assessment
         const bulkUploadProgressContainer = document.getElementById('bulkUploadProgressContainer');
         const bulkUploadProgressBar = document.getElementById('bulkUploadProgressBar');
         const bulkUploadProgressPercent = document.getElementById('bulkUploadProgressPercent');
