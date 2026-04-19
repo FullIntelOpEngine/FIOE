@@ -6025,6 +6025,9 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
             "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
             "- Omit keys whose values are empty or unknown\n"
+            "- IMPORTANT: Every text value must be pre-wrapped so that each line contains at most 100 characters "
+            "(letters, spaces, and punctuation). Break at word boundaries and separate lines with '\\n'. "
+            "This applies to summary, all experience descriptions, and any other multi-word text field.\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
@@ -7175,6 +7178,7 @@ def process_update_tenure():
         return jsonify({"ok": False, "error": "tenure update failed"}), 500
 
 
+@app.post("/api/user-service-config/activate")
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
     otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""
