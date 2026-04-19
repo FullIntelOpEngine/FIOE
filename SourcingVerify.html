@@ -446,9 +446,9 @@ html, body {
       <button id="reloadBtn" title="Reset assessment state and refetch data">Refresh</button>
 
       <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
-      <button id="bulkAssessmentBtn" style="background:linear-gradient(180deg,var(--cool-blue,#4c82b8),var(--azure-dragon,#073679)); border:1px solid var(--azure-dragon,#073679); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
+      <button id="bulkAssessmentBtn" style="background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
       <!-- Bulk Ingest Button: only shown when linkdapi is enabled AND any GP row lacks a PDF in the profiles directory. -->
-      <button id="bulkIngestBtn" style="display:none; background:linear-gradient(180deg,#1a7a45,#0d4a2a); border:1px solid #0d4a2a; color:#ffffff; margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
+      <button id="bulkIngestBtn" style="display:none; background:var(--desired-dawn,#d8d8d8); border:1px solid #b8b8b8; color:var(--azure-dragon,#073679); margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
       
       <!-- Hidden file input for directory upload -->
@@ -8289,11 +8289,16 @@ if (bulkIngestBtn) {
         bulkIngestBtn.disabled = false;
         setSearchResultButtonsEnabled(true);
 
-        const msg = failed > 0
-            ? `Bulk Ingest complete: ${done} succeeded, ${failed} failed. Check the console for details.`
-            : `Bulk Ingest complete: ${done} profile(s) ingested successfully.`;
-        alert(msg);
-        await _updateBulkActionButton();
+        if (failed > 0) {
+            alert(`Bulk Ingest complete: ${done} succeeded, ${failed} failed. Check the console for details.`);
+            await _updateBulkActionButton();
+        } else {
+            // All ingests succeeded — automatically kick off Bulk Assessment
+            await _updateBulkActionButton();
+            if (bulkAssessmentBtn && !bulkAssessmentBtn.disabled) {
+                bulkAssessmentBtn.click();
+            }
+        }
     });
 }
 
