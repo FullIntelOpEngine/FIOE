@@ -446,7 +446,9 @@ html, body {
       <button id="reloadBtn" title="Reset assessment state and refetch data">Refresh</button>
 
       <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
-      <button id="bulkAssessmentBtn" style="background:linear-gradient(180deg,var(--cool-blue,#4c82b8),var(--azure-dragon,#073679)); border:1px solid var(--azure-dragon,#073679); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
+      <button id="bulkAssessmentBtn" style="background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
+      <!-- Bulk Ingest Button: only shown when linkdapi is enabled AND any GP row lacks a PDF in the profiles directory. -->
+      <button id="bulkIngestBtn" style="display:none; background:var(--desired-dawn,#d8d8d8); border:1px solid #b8b8b8; color:var(--azure-dragon,#073679); margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
       
       <!-- Hidden file input for directory upload -->
@@ -2764,7 +2766,8 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
             }
             if (gpData && typeof gpData.enabled === 'boolean') {
               window.__LINKDAPI_ENABLED = gpData.enabled;
-              // Bulk Assessment button is always visible; no need to show/hide here
+              // Refresh bulk button visibility based on new linkdapi state
+              if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
             }
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
@@ -2863,6 +2866,7 @@ const statusEl    = document.getElementById('status');
 const reloadBtn   = document.getElementById('reloadBtn');
 const marketBtn   = document.getElementById('marketAnalysisBtn');
 const bulkAssessmentBtn = document.getElementById('bulkAssessmentBtn');
+const bulkIngestBtn    = document.getElementById('bulkIngestBtn');
 const bulkDirInput = document.getElementById('bulkDirInput');
 
 let rowsData = [];
@@ -5526,6 +5530,7 @@ async function loadRows(page=1){
 function renderTable(){
   tableBody.innerHTML='';
   rowsData.forEach(r=> tableBody.appendChild(buildRow(r)));
+  if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
 }
 
 /* --- AFFECTED: Namecard UI injection modified for Tab Layout --- */
@@ -7889,6 +7894,72 @@ async function verifyBulkUploadedProfiles(linkedinurls) {
     return false;
 }
 
+
+// ---------------------------------------------------------------------------
+// Helper: derive the PDF filename slug from a LinkedIn URL.
+// Mirrors the server-side _safe_slug logic in webbridge_routes.py.
+// e.g. "https://linkedin.com/in/john-doe" → "john-doe"
+// ---------------------------------------------------------------------------
+function _profileSlugFromUrl(linkedinUrl) {
+    const m = (linkedinUrl || '').match(/\/in\/([A-Za-z0-9_-]+)/);
+    if (!m) return '';
+    const raw = m[1];
+    return raw.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'linkdapi_profile';
+}
+
+// ---------------------------------------------------------------------------
+// Helper: check whether a PDF for the given profile slug exists in a Set of
+// lower-cased filenames returned by list-profile-pdfs.
+// The naming convention is "<profile_slug>_<session_user>.pdf", so we check
+// whether any filename starts with "<slug>_".
+// ---------------------------------------------------------------------------
+function _hasPdfInSet(existingSet, slug) {
+    if (!slug) return false;
+    const prefix = slug.toLowerCase() + '_';
+    for (const f of existingSet) { if (f.startsWith(prefix)) return true; }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// Update Bulk button visibility based on linkdapi state and GP PDF coverage.
+//   • linkdapi disabled OR no GP rows → show Bulk Assessment, hide Bulk Ingest
+//   • linkdapi enabled AND any GP row lacks a PDF → show Bulk Ingest, hide Bulk Assessment
+//   • linkdapi enabled AND all GP rows have PDFs → show Bulk Assessment, hide Bulk Ingest
+// ---------------------------------------------------------------------------
+async function _updateBulkActionButton() {
+    if (!bulkIngestBtn || !bulkAssessmentBtn) return;
+    if (!window.__LINKDAPI_ENABLED) {
+        bulkAssessmentBtn.style.display = '';
+        bulkIngestBtn.style.display = 'none';
+        return;
+    }
+    const gpRows = (typeof rowsData !== 'undefined' ? rowsData : []).filter(
+        r => !_PROVIDER_BUTTON_CONFIG[(r.source || '').toLowerCase()]
+    );
+    if (gpRows.length === 0) {
+        bulkAssessmentBtn.style.display = '';
+        bulkIngestBtn.style.display = 'none';
+        return;
+    }
+    try {
+        const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+        const ld = lr.ok ? await lr.json() : { files: [] };
+        const existing = new Set((ld.files || []).map(f => f.toLowerCase()));
+        const hasMissing = gpRows.some(r => !_hasPdfInSet(existing, _profileSlugFromUrl(r.linkedinurl)));
+        if (hasMissing) {
+            bulkIngestBtn.style.display = '';
+            bulkAssessmentBtn.style.display = 'none';
+        } else {
+            bulkAssessmentBtn.style.display = '';
+            bulkIngestBtn.style.display = 'none';
+        }
+    } catch (_) {
+        // On error, fall back to showing Bulk Assessment
+        bulkAssessmentBtn.style.display = '';
+        bulkIngestBtn.style.display = 'none';
+    }
+}
+
 if (bulkAssessmentBtn && bulkDirInput) {
     // Fetch the per-window profile limit from rate_limits.json once
     let _bulkMaxProfiles = 100; // default matches rate_limits.json upload_multiple_cvs.requests
@@ -8162,7 +8233,76 @@ if (bulkAssessmentBtn && bulkDirInput) {
     });
 }
 
-/* Affected: ensure the manual Snipper launch also sends a tiny JSON body removed */
+// ---------------------------------------------------------------------------
+// Bulk Ingest button: ingests all GP rows that are missing PDFs.
+// Calls _downloadLinkdapiProfile (get-profile + profile-to-pdf) for each
+// unmatched row, skipping those that already have a PDF in the profiles dir.
+// ---------------------------------------------------------------------------
+if (bulkIngestBtn) {
+    bulkIngestBtn.addEventListener('click', async () => {
+        if (!window.__LINKDAPI_ENABLED) return;
+
+        const gpRows = (typeof rowsData !== 'undefined' ? rowsData : []).filter(
+            r => !_PROVIDER_BUTTON_CONFIG[(r.source || '').toLowerCase()]
+        );
+        if (gpRows.length === 0) {
+            alert('No GP rows found in the current table.');
+            return;
+        }
+
+        // Fetch existing PDFs to avoid re-ingesting profiles that already have a PDF
+        let existingPdfs = new Set();
+        try {
+            const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+            const ld = lr.ok ? await lr.json() : { files: [] };
+            existingPdfs = new Set((ld.files || []).map(f => f.toLowerCase()));
+        } catch (_) {}
+
+        // Filter to rows whose expected PDF is absent from the profiles directory
+        const toIngest = gpRows.filter(r => !_hasPdfInSet(existingPdfs, _profileSlugFromUrl(r.linkedinurl)));
+
+        if (toIngest.length === 0) {
+            alert('All GP profiles already have PDFs.\n\nSwitching to Bulk Assessment mode.');
+            await _updateBulkActionButton();
+            return;
+        }
+
+        const confirmed = confirm(
+            `Found ${toIngest.length} GP profile(s) without PDFs.\n\n` +
+            `This will fetch their LinkedIn profiles and generate FIOE-branded PDFs for each. ` +
+            `Profiles that already have a PDF will be skipped. Continue?`
+        );
+        if (!confirmed) return;
+
+        bulkIngestBtn.disabled = true;
+        setSearchResultButtonsEnabled(false);
+        let done = 0, failed = 0;
+        for (let i = 0; i < toIngest.length; i++) {
+            bulkIngestBtn.textContent = `Ingesting ${i + 1}/${toIngest.length}\u2026`;
+            try {
+                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null);
+                if (ok) done++; else failed++;
+            } catch (_) { failed++; }
+        }
+
+        bulkIngestBtn.textContent = 'Bulk Ingest';
+        bulkIngestBtn.disabled = false;
+        setSearchResultButtonsEnabled(true);
+
+        if (failed > 0) {
+            alert(`Bulk Ingest complete: ${done} succeeded, ${failed} failed. Check the console for details.`);
+            await _updateBulkActionButton();
+        } else {
+            // All ingests succeeded — automatically kick off Bulk Assessment
+            await _updateBulkActionButton();
+            if (bulkAssessmentBtn && !bulkAssessmentBtn.disabled) {
+                bulkAssessmentBtn.click();
+            }
+        }
+    });
+}
+
+
 
 /* ── Candidate search bar with autocomplete ─────────────────────────────── */
 (function () {
