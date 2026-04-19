@@ -8040,8 +8040,15 @@ if (bulkAssessmentBtn && bulkDirInput) {
             // Bulk Assessment → navigating to the profiles folder → clicking Upload).
             try {
                 const listResp = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+                if (!listResp.ok) {
+                    // Guard against non-JSON error bodies (HTML login redirects, 500 pages, etc.)
+                    const ct = listResp.headers.get('content-type') || '';
+                    const errText = ct.includes('application/json')
+                        ? ((await listResp.json().catch(() => ({}))).error || `HTTP ${listResp.status}`)
+                        : `HTTP ${listResp.status}`;
+                    throw new Error('Failed to list profile PDFs: ' + errText);
+                }
                 const listData = await listResp.json();
-                if (!listResp.ok) throw new Error(listData.error || 'Failed to list profile PDFs');
                 const pdfFiles = listData.files || [];
 
                 if (pdfFiles.length === 0) {
