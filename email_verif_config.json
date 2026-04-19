@@ -12,15 +12,15 @@
     "enabled": "disabled"
   },
   "contactout": {
-    "api_key": "zozjIvgpFcy2LF21ycl0lKcF",
-    "enabled": "enabled"
+    "api_key": "",
+    "enabled": "disabled"
   },
   "apollo": {
-    "api_key": "sED6SceFjPQ5jbANFmwNoA",
-    "enabled": "enabled"
+    "api_key": "",
+    "enabled": "disabled"
   },
   "rocketreach": {
-    "api_key": "1e1a803k0abb91a3397cfabb8a18c510cec51f57",
-    "enabled": "enabled"
+    "api_key": "",
+    "enabled": "disabled"
   }
 }
