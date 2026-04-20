@@ -5680,41 +5680,34 @@ def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60
 
     Calls GET https://api.scrapingdog.com/profile?api_key=...&id=...&type=profile&premium=true
     """
-    import http.client as _hc
-    import ssl as _ssl
-    from urllib.parse import urlencode
-
-    params = urlencode({
+    url = f"https://{_SCRAPINGDOG_API_BASE}/profile"
+    params = {
         "api_key": api_key,
         "id": linkedin_id,
         "type": "profile",
         "premium": "true",
         "webhook": "false",
         "fresh": "false",
-    })
-    path = f"/profile?{params}"
+    }
 
     last_exc = None
     for attempt in range(1, _SCRAPINGDOG_MAX_RETRIES + 1):
-        conn = None
         try:
-            ctx = _ssl.create_default_context()
-            conn = _hc.HTTPSConnection(_SCRAPINGDOG_API_BASE, timeout=timeout,
-                                       context=ctx)
-            conn.request("GET", path, headers={"Accept": "application/json"})
-            resp = conn.getresponse()
-            body = resp.read().decode("utf-8", errors="replace")
-            return body, resp.status
+            resp = requests.get(url, params=params, timeout=timeout,
+                                headers={"Accept": "application/json"})
+            body = resp.text
+            logger.info("[scrapingdog] attempt %d/%d → HTTP %d (%d bytes)",
+                        attempt, _SCRAPINGDOG_MAX_RETRIES, resp.status_code,
+                        len(body))
+            return body, resp.status_code
+        except requests.exceptions.Timeout as exc:
+            last_exc = exc
+            logger.warning("[scrapingdog] fetch attempt %d/%d timed out: %s",
+                           attempt, _SCRAPINGDOG_MAX_RETRIES, exc)
         except Exception as exc:
             last_exc = exc
             logger.warning("[scrapingdog] fetch attempt %d/%d failed: %s",
                            attempt, _SCRAPINGDOG_MAX_RETRIES, exc)
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
     logger.error("[scrapingdog] all %d attempts failed; last error: %s",
                  _SCRAPINGDOG_MAX_RETRIES, last_exc)
@@ -7227,17 +7220,31 @@ def scrapingdog_get_profile():
             "status": "processing",
         }), 202
     if status_code >= 400:
-        logger.warning("[scrapingdog] upstream HTTP %d", status_code)
-        return jsonify({"error": f"Scrapingdog returned an error (HTTP {status_code})"}), status_code
+        logger.warning("[scrapingdog] upstream HTTP %d; body snippet: %.200s",
+                       status_code, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": f"Scrapingdog returned an error (HTTP {status_code})"}), 502
     if status_code == 0:
         return jsonify({"error": "Failed to reach Scrapingdog service"}), 502
 
     try:
         profile_data = json.loads(body_str)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError) as je:
+        logger.warning("[scrapingdog] invalid JSON: %s; body snippet: %.200s",
+                       je, body_str[:200] if body_str else "(empty)")
         return jsonify({"error": "Invalid JSON from Scrapingdog"}), 502
 
+    # Scrapingdog may wrap the profile in a list; extract the first element.
+    if isinstance(profile_data, list):
+        if profile_data and isinstance(profile_data[0], dict):
+            profile_data = profile_data[0]
+        else:
+            logger.warning("[scrapingdog] empty list response")
+            return jsonify({"error": "No profile data returned (empty list)"}), 502
+
     if not profile_data or not isinstance(profile_data, dict):
+        logger.warning("[scrapingdog] unexpected response type %s; snippet: %.200s",
+                       type(profile_data).__name__,
+                       body_str[:200] if body_str else "(empty)")
         return jsonify({"error": "No profile data returned"}), 502
 
     def _safe_slug(value: str, fallback: str) -> str:

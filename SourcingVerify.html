@@ -3757,12 +3757,13 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       );
       if (resp.status === 202) {
         alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
-        return;
+        return false;
       }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
+        console.error('[scrapingdog] HTTP', resp.status, errData);
         alert(`Scrapingdog profile fetch failed: ${errData.error || resp.statusText}`);
-        return;
+        return false;
       }
       const data = await resp.json();
       allDone = true;
@@ -4305,7 +4306,14 @@ function buildRow(row) {
                         // manage any button UI itself; the Ingest button is managed here instead.
                         ingestBtn.textContent = 'Getting profile…';
                         const gpOk = await _downloadLinkdapiProfile(value, null);
-                        if (!gpOk) throw new Error('GP profile fetch failed. Check the console for details.');
+                        if (!gpOk) {
+                            // _downloadLinkdapiProfile already showed an alert
+                            ingestBtn.textContent = 'Ingest';
+                            ingestBtn.disabled = false;
+                            ingestBtn.classList.remove('btn-spinning');
+                            setSearchResultButtonsEnabled(true);
+                            return;
+                        }
 
                         // ── 4-step Assess pipeline ──
                         const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest');
