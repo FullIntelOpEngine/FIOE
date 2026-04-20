@@ -2753,6 +2753,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
+        window.__VAYNE_ENABLED = false;
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
@@ -2768,6 +2769,14 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               window.__LINKDAPI_ENABLED = gpData.enabled;
               // Refresh bulk button visibility based on new linkdapi state
               if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
+            }
+            if (gpData && typeof gpData.vayne_enabled === 'boolean') {
+              window.__VAYNE_ENABLED = gpData.vayne_enabled;
+              // Vayne assumes the same GP role as linkdapi; treat as equivalent
+              if (window.__VAYNE_ENABLED) {
+                window.__LINKDAPI_ENABLED = true;
+                if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
+              }
             }
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
@@ -3741,40 +3750,73 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
   try {
-    // Step 1: Fetch and save JSON profile to F:\Recruiting Tools\Autosourcing\output\profiles
-    const resp = await fetch(
-      `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
-    );
-    if (!resp.ok) {
-      const errData = await resp.json().catch(() => ({}));
-      alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
-      return;
-    }
-    const data = await resp.json();
-    const savedFilename = String(data?.saved_filename || '');
-    if (!savedFilename) {
-      alert('Unexpected server response: missing file information. Please contact support.');
-      return;
-    }
-
-    // Step 2: Immediately generate and save FIOE-branded PDF server-side
-    if (btnEl) { btnEl.textContent = 'PDF…'; }
-    const pdfResp = await fetch(
-      `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
-      { credentials: 'same-origin' }
-    );
-    const pdfData = await pdfResp.json().catch(() => ({}));
-    if (!pdfResp.ok) {
-      alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
-      return;
-    }
-
-    allDone = true;
-    const pdfFile = pdfData.saved_pdf_filename || '';
-    if (typeof setStatus === 'function') {
-      setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+    if (window.__VAYNE_ENABLED) {
+      // ── Vayne path: fetch profile via Vayne batch scraping API ──────────
+      const batchId = window.__VAYNE_BATCH_ID || prompt('Enter Vayne batch scraping ID:');
+      if (!batchId) {
+        alert('Vayne batch ID is required.');
+        return;
+      }
+      window.__VAYNE_BATCH_ID = batchId; // cache for subsequent calls
+      const resp = await fetch(
+        `/api/vayne/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}&batch_id=${encodeURIComponent(batchId)}`
+      );
+      if (resp.status === 202) {
+        const partial = await resp.json().catch(() => ({}));
+        alert(`Batch still processing (${partial.processed_urls || 0}/${partial.total_urls || '?'} URLs done). Try again shortly.`);
+        return;
+      }
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        alert(`Vayne profile fetch failed: ${errData.error || resp.statusText}`);
+        return;
+      }
+      const data = await resp.json();
+      allDone = true;
+      const pdfFile = data.saved_pdf_filename || '';
+      const savedFilename = data.saved_filename || '';
+      if (typeof setStatus === 'function') {
+        setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+      } else {
+        console.log(`[GP/Vayne] Profile and PDF saved: ${pdfFile}`);
+      }
     } else {
-      console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
+      // ── Linkdapi path (original) ────────────────────────────────────────
+      // Step 1: Fetch and save JSON profile
+      const resp = await fetch(
+        `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+      );
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
+        return;
+      }
+      const data = await resp.json();
+      const savedFilename = String(data?.saved_filename || '');
+      if (!savedFilename) {
+        alert('Unexpected server response: missing file information. Please contact support.');
+        return;
+      }
+
+      // Step 2: Immediately generate and save FIOE-branded PDF server-side
+      if (btnEl) { btnEl.textContent = 'PDF…'; }
+      const pdfResp = await fetch(
+        `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
+        { credentials: 'same-origin' }
+      );
+      const pdfData = await pdfResp.json().catch(() => ({}));
+      if (!pdfResp.ok) {
+        alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
+        return;
+      }
+
+      allDone = true;
+      const pdfFile = pdfData.saved_pdf_filename || '';
+      if (typeof setStatus === 'function') {
+        setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+      } else {
+        console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
+      }
     }
 
     // Disable the GP button once the profile + PDF have been saved
