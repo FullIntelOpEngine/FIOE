@@ -1267,6 +1267,7 @@ def admin_get_get_profiles_config():
             "vayne": {
                 "api_key_set": bool(vayne.get("api_key")),
                 "enabled": vayne.get("enabled", "disabled"),
+                "batch_id": vayne.get("batch_id", ""),
             },
         }
     }), 200
@@ -1284,9 +1285,10 @@ def api_linkdapi_status():
         return jsonify({
             "enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key")),
             "vayne_enabled": vn.get("enabled") == "enabled" and bool(vn.get("api_key")),
+            "vayne_batch_id": vn.get("batch_id", ""),
         }), 200
     except Exception:
-        return jsonify({"enabled": False, "vayne_enabled": False}), 200
+        return jsonify({"enabled": False, "vayne_enabled": False, "vayne_batch_id": ""}), 200
 
 @app.post("/admin/get-profiles-config")
 @_rate(_make_flask_limit("admin_endpoints"))
@@ -1332,6 +1334,8 @@ def admin_save_get_profiles_config():
             return jsonify({"error": "Invalid config for vayne"}), 400
         if entry.get("api_key") is not None and entry["api_key"] != "":
             current["vayne"]["api_key"] = str(entry["api_key"])
+        if entry.get("batch_id") is not None:
+            current["vayne"]["batch_id"] = str(entry["batch_id"])
         if entry.get("enabled") is not None:
             if entry["enabled"] not in ("enabled", "disabled"):
                 return jsonify({"error": "Invalid enabled value for vayne"}), 400

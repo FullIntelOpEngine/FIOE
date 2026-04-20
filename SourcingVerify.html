@@ -2772,6 +2772,8 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
             }
             if (gpData && typeof gpData.vayne_enabled === 'boolean') {
               window.__VAYNE_ENABLED = gpData.vayne_enabled;
+              // Seed batch ID from admin config so GP button doesn't need to prompt
+              if (gpData.vayne_batch_id) window.__VAYNE_BATCH_ID = gpData.vayne_batch_id;
               // Vayne assumes the same GP role as linkdapi; treat as equivalent
               if (window.__VAYNE_ENABLED) {
                 window.__LINKDAPI_ENABLED = true;
