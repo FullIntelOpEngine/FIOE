@@ -1201,7 +1201,7 @@ let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled'
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, linkedin: { api_key_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
-let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' } };
+let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' }, scrapingdog: { api_key_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -3789,7 +3789,7 @@ function renderApiKeysCard() {
   getProfilesPanel.className = 'apikey-sub-panel';
   const getProfilesPanelDesc = document.createElement('p');
   getProfilesPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  getProfilesPanelDesc.textContent = 'Configure the linkdapi key for full LinkedIn profile retrieval. When enabled, a "GP" button appears in SourcingVerify.html for results from Google CSE, Serper, or DataforSEO — clicking it downloads the complete LinkedIn profile via linkdapi.';
+  getProfilesPanelDesc.textContent = 'Configure Linkdapi or Scrapingdog for full LinkedIn profile retrieval. Only one can be active at a time — enabling one deactivates the other and deletes the other\'s API key. When enabled, a "GP" button appears in SourcingVerify.html for search results.';
   getProfilesPanel.appendChild(getProfilesPanelDesc);
   card.appendChild(getProfilesPanel);
 
@@ -4739,107 +4739,155 @@ function renderApiKeysCard() {
     contactGenPanel.appendChild(sec);
   })();
 
-  // ── linkdapi (Get Profiles) service section ────────────────────────────────
-  (function renderLinkdapiSection() {
-    const ldCfg = (_getProfilesConfig && _getProfilesConfig.linkdapi) || { api_key_set: false, enabled: 'disabled' };
+  // ── Get Profiles service section ──────────────────────────────────────────────
+  (function renderGetProfilesSection() {
+    const gp = _getProfilesConfig || {};
+    const ldCfg = gp.linkdapi     || { api_key_set: false, enabled: 'disabled' };
+    const sdCfg = gp.scrapingdog  || { api_key_set: false, enabled: 'disabled' };
 
-    const sec = document.createElement('div');
-    sec.className = 'apikey-service';
+    // Determine which provider is currently active
+    let _activeGpProvider = ldCfg.enabled === 'enabled' ? 'linkdapi'
+                          : sdCfg.enabled === 'enabled' ? 'scrapingdog'
+                          : 'linkdapi';
 
-    const h3 = document.createElement('h3');
-    h3.textContent = 'linkdapi';
-    sec.appendChild(h3);
+    // ── Active Provider toggle (2 pills) ─────────────────────────────────────
+    const gpToggleSec = document.createElement('div');
+    gpToggleSec.className = 'apikey-service';
+    gpToggleSec.id = 'gp-provider-toggle-section';
 
-    const subDesc = document.createElement('p');
-    subDesc.style.cssText = 'color:var(--muted);font-size:12px;margin:4px 0 12px';
-    subDesc.textContent = 'Full LinkedIn profile retrieval via linkdapi (linkdapi.com). Used by the "GP" button in SourcingVerify.html for CSE/Serper/DataforSEO search results.';
-    sec.appendChild(subDesc);
+    const gpToggleHeading = document.createElement('div');
+    gpToggleHeading.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap';
 
-    const row = document.createElement('div');
-    row.className = 'apikey-row';
+    const gpToggleLabelEl = document.createElement('label');
+    gpToggleLabelEl.textContent = 'Active Provider';
+    gpToggleLabelEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;flex:0 0 auto';
 
-    // API Key input
-    const keyField = document.createElement('div');
-    keyField.className = 'apikey-field';
-    const keyLabel = document.createElement('label');
-    keyLabel.htmlFor = 'apikey-linkdapi';
-    keyLabel.textContent = 'API Key';
-    const keyInput = document.createElement('input');
-    keyInput.type = 'password';
-    keyInput.id = 'apikey-linkdapi';
-    keyInput.className = 'apikey-input';
-    keyInput.placeholder = ldCfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : 'Enter linkdapi API key…';
-    keyInput.autocomplete = 'off';
-    keyField.appendChild(keyLabel);
-    keyField.appendChild(keyInput);
-    if (ldCfg.api_key_set) {
-      const badge = document.createElement('div');
-      badge.className = 'apikey-set-badge';
-      badge.textContent = '✅ API key saved';
-      keyField.appendChild(badge);
+    const gpToggleWrap = document.createElement('div');
+    gpToggleWrap.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden';
+
+    const btnLinkdapi    = document.createElement('button');
+    const btnScrapingdog = document.createElement('button');
+    [btnLinkdapi, btnScrapingdog].forEach((b, i) => {
+      b.type = 'button';
+      b.style.cssText = 'flex:1;padding:8px 16px;font-size:13px;border:none;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap'
+                      + (i > 0 ? ';border-left:1px solid var(--border)' : '');
+    });
+    btnLinkdapi.id    = 'gp-btn-linkdapi';    btnLinkdapi.textContent    = '🔗 Linkdapi';
+    btnScrapingdog.id = 'gp-btn-scrapingdog'; btnScrapingdog.textContent = '🐕 Scrapingdog';
+
+    function _applyGpToggleStyle() {
+      [['linkdapi', btnLinkdapi], ['scrapingdog', btnScrapingdog]].forEach(([id, btn]) => {
+        const active = _activeGpProvider === id;
+        btn.style.background = active ? 'var(--primary, #1976d2)' : '#fff';
+        btn.style.color      = active ? '#fff' : 'var(--text, #222)';
+        btn.style.fontWeight = active ? '600' : '400';
+      });
+      const ldSec = document.getElementById('gp-linkdapi-section');
+      const sdSec = document.getElementById('gp-scrapingdog-section');
+      if (ldSec) ldSec.style.opacity = _activeGpProvider === 'linkdapi'    ? '1' : '0.55';
+      if (sdSec) sdSec.style.opacity = _activeGpProvider === 'scrapingdog' ? '1' : '0.55';
     }
-    row.appendChild(keyField);
 
-    // Enable/Disable dropdown
-    const enableField = document.createElement('div');
-    enableField.className = 'apikey-field';
-    enableField.style.maxWidth = '180px';
-    const enableLabel = document.createElement('label');
-    enableLabel.htmlFor = 'apikey-linkdapi-enable';
-    enableLabel.textContent = 'Status';
-    const enableSelect = document.createElement('select');
-    enableSelect.id = 'apikey-linkdapi-enable';
-    enableSelect.className = 'apikey-input';
-    enableSelect.innerHTML = '<option value="enabled">✅ Enabled</option><option value="disabled">⛔ Disabled</option>';
-    enableSelect.value = ldCfg.enabled || 'disabled';
-    enableField.appendChild(enableLabel);
-    enableField.appendChild(enableSelect);
-    row.appendChild(enableField);
+    btnLinkdapi.addEventListener(   'click', () => { _activeGpProvider = 'linkdapi';    _applyGpToggleStyle(); });
+    btnScrapingdog.addEventListener('click', () => { _activeGpProvider = 'scrapingdog'; _applyGpToggleStyle(); });
+
+    gpToggleWrap.appendChild(btnLinkdapi);
+    gpToggleWrap.appendChild(btnScrapingdog);
+    gpToggleHeading.appendChild(gpToggleLabelEl);
+    gpToggleHeading.appendChild(gpToggleWrap);
+    gpToggleSec.appendChild(gpToggleHeading);
 
     // Save button
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'apikey-save-btn';
-    saveBtn.textContent = '💾 Save';
-    saveBtn.addEventListener('click', async () => {
-      const apiKey  = keyInput.value.trim();
-      const enabled = apiKey ? 'enabled' : enableSelect.value;
-      if (apiKey) enableSelect.value = 'enabled';
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving…';
+    const gpSaveRow = document.createElement('div');
+    gpSaveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px';
+    const gpSaveBtn = document.createElement('button');
+    gpSaveBtn.className = 'btn btn-primary apikey-save-btn';
+    gpSaveBtn.textContent = '💾 Save';
+    gpSaveBtn.addEventListener('click', async () => {
+      const ldKey = (document.getElementById('apikey-gp-linkdapi')?.value     || '').trim();
+      const sdKey = (document.getElementById('apikey-gp-scrapingdog')?.value  || '').trim();
+      const isLinkdapi = _activeGpProvider === 'linkdapi';
+      const payload = {
+        linkdapi:    { enabled: isLinkdapi ? 'enabled' : 'disabled' },
+        scrapingdog: { enabled: isLinkdapi ? 'disabled' : 'enabled' },
+      };
+      if (ldKey) payload.linkdapi.api_key    = ldKey;
+      if (sdKey) payload.scrapingdog.api_key = sdKey;
+      gpSaveBtn.disabled = true; gpSaveBtn.textContent = 'Saving…';
       try {
-        const payload = { linkdapi: { enabled } };
-        if (apiKey) payload.linkdapi.api_key = apiKey;
         const r = await fetch(`${API}/admin/get-profiles-config`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: csrfHeaders(),
+          method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
           body: JSON.stringify(payload),
         });
-        if (!r.ok) throw new Error((await r.json()).error || 'Save failed');
-        const keyStillSet = enabled === 'disabled' ? false : !!(apiKey || ldCfg.api_key_set);
-        _getProfilesConfig.linkdapi = { api_key_set: keyStillSet, enabled };
-        keyInput.value = '';
-        keyInput.placeholder = keyStillSet ? '••••••••••••••••• (set — enter new value to update)' : 'Enter linkdapi API key…';
-        const existingBadge = keyField.querySelector('.apikey-set-badge');
-        if (keyStillSet && !existingBadge) {
-          const badge = document.createElement('div');
-          badge.className = 'apikey-set-badge';
-          badge.textContent = '✅ API key saved';
-          keyField.appendChild(badge);
+        const data = await r.json();
+        if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
+        // Update local state
+        const ldKeyStillSet = isLinkdapi  ? !!(ldKey || ldCfg.api_key_set) : false;
+        const sdKeyStillSet = !isLinkdapi ? !!(sdKey || sdCfg.api_key_set) : false;
+        _getProfilesConfig.linkdapi    = { api_key_set: ldKeyStillSet, enabled: isLinkdapi  ? 'enabled' : 'disabled' };
+        _getProfilesConfig.scrapingdog = { api_key_set: sdKeyStillSet, enabled: !isLinkdapi ? 'enabled' : 'disabled' };
+        // Clear input fields for new keys
+        if (ldKey) { const el = document.getElementById('apikey-gp-linkdapi');    if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
+        if (sdKey) { const el = document.getElementById('apikey-gp-scrapingdog'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
+        // Remove key-set badge from the now-disabled provider
+        if (isLinkdapi) {
+          const el = document.getElementById('apikey-gp-scrapingdog'); if (el) el.placeholder = 'Enter Scrapingdog API key…';
+          document.querySelector('#gp-scrapingdog-section .apikey-set-badge')?.remove();
+        } else {
+          const el = document.getElementById('apikey-gp-linkdapi'); if (el) el.placeholder = 'Enter Linkdapi API key…';
+          document.querySelector('#gp-linkdapi-section .apikey-set-badge')?.remove();
         }
-        if (!keyStillSet && existingBadge) existingBadge.remove();
-        toast('linkdapi settings saved', 'success');
+        _notifyConfigChanged('get-profiles');
+        toast(`${isLinkdapi ? 'Linkdapi' : 'Scrapingdog'} is now the active Get Profiles provider`, 'success');
       } catch (err) {
         toast(err.message, 'error');
       } finally {
-        saveBtn.disabled = false;
-        saveBtn.textContent = '💾 Save';
+        gpSaveBtn.disabled = false; gpSaveBtn.textContent = '💾 Save';
       }
     });
-    row.appendChild(saveBtn);
+    gpSaveRow.appendChild(gpSaveBtn);
+    gpToggleSec.appendChild(gpSaveRow);
+    getProfilesPanel.appendChild(gpToggleSec);
 
-    sec.appendChild(row);
-    getProfilesPanel.appendChild(sec);
+    // ── Helper: build a provider credentials section ──────────────────────────
+    function _buildGpProviderSection(providerKey, title, cfg, extraFields) {
+      const sec = document.createElement('div');
+      sec.className = 'apikey-service';
+      sec.id = `gp-${providerKey}-section`;
+      const h3 = document.createElement('h3'); h3.textContent = title; sec.appendChild(h3);
+
+      const row = document.createElement('div'); row.className = 'apikey-row';
+
+      // API Key field
+      const keyField = document.createElement('div'); keyField.className = 'apikey-field';
+      const keyLabel = document.createElement('label');
+      keyLabel.htmlFor = `apikey-gp-${providerKey}`; keyLabel.textContent = 'API Key';
+      const keyInput = document.createElement('input');
+      keyInput.type = 'password'; keyInput.id = `apikey-gp-${providerKey}`; keyInput.className = 'apikey-input';
+      keyInput.placeholder = cfg.api_key_set ? '••••••••••••••••• (set — enter new value to update)' : `Enter ${title} API key…`;
+      keyInput.autocomplete = 'off';
+      keyField.appendChild(keyLabel); keyField.appendChild(keyInput);
+      if (cfg.api_key_set) {
+        const badge = document.createElement('div'); badge.className = 'apikey-set-badge'; badge.textContent = '✅ API key saved';
+        keyField.appendChild(badge);
+      }
+      row.appendChild(keyField);
+
+      // Extra fields callback
+      if (typeof extraFields === 'function') extraFields(row);
+
+      sec.appendChild(row);
+      return sec;
+    }
+
+    // Linkdapi section
+    getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg));
+
+    // Scrapingdog section (no extra fields — API key only)
+    getProfilesPanel.appendChild(_buildGpProviderSection('scrapingdog', 'Scrapingdog', sdCfg));
+
+    // Apply initial toggle style after sections are in DOM
+    setTimeout(() => { _applyGpToggleStyle(); }, 0);
   })();
 
   return card;

@@ -5670,6 +5670,54 @@ _LINKDAPI_HOST = "linkdapi.com"
 _LINKDAPI_HEADER = "X-linkdapi-apikey"
 _LINKDAPI_MAX_RETRIES = 3
 
+# ── Scrapingdog API constants ─────────────────────────────────────────────────
+_SCRAPINGDOG_API_BASE = "api.scrapingdog.com"
+_SCRAPINGDOG_MAX_RETRIES = 3
+
+
+def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60):
+    """Fetch a LinkedIn profile from Scrapingdog and return ``(body_str, http_status)``.
+
+    Calls GET https://api.scrapingdog.com/profile?api_key=...&id=...&type=profile&premium=true
+
+    ``linkedin_id`` should be the full canonical LinkedIn URL
+    (e.g. ``https://www.linkedin.com/in/username``).  Passing only the
+    username slug may cause Scrapingdog to return HTTP 400 for some regional
+    profiles (cn., jp., …).
+    """
+    url = f"https://{_SCRAPINGDOG_API_BASE}/profile"
+    params = {
+        "api_key": api_key,
+        "id": linkedin_id,
+        "type": "profile",
+        "premium": "true",
+        "webhook": "false",
+        "fresh": "false",
+    }
+
+    last_exc = None
+    for attempt in range(1, _SCRAPINGDOG_MAX_RETRIES + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=timeout,
+                                headers={"Accept": "application/json"})
+            body = resp.text
+            logger.info("[scrapingdog] attempt %d/%d → HTTP %d (%d bytes)",
+                        attempt, _SCRAPINGDOG_MAX_RETRIES, resp.status_code,
+                        len(body))
+            return body, resp.status_code
+        except requests.exceptions.Timeout as exc:
+            last_exc = exc
+            logger.warning("[scrapingdog] fetch attempt %d/%d timed out: %s",
+                           attempt, _SCRAPINGDOG_MAX_RETRIES, exc)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("[scrapingdog] fetch attempt %d/%d failed: %s",
+                           attempt, _SCRAPINGDOG_MAX_RETRIES, exc)
+
+    logger.error("[scrapingdog] all %d attempts failed; last error: %s",
+                 _SCRAPINGDOG_MAX_RETRIES, last_exc)
+    return "", 0
+
 
 def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     """Fetch a profile from linkdapi.com and return ``(body_str, http_status)``.
@@ -6025,6 +6073,9 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
             "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
             "- Omit keys whose values are empty or unknown\n"
+            "- IMPORTANT: Every text value must be pre-wrapped so that each line contains at most 100 characters "
+            "(letters, spaces, and punctuation). Break at word boundaries and separate lines with '\\n'. "
+            "This applies to summary, all experience descriptions, and any other multi-word text field.\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
@@ -6160,9 +6211,10 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         #    Also strip DEL (U+007F) and the C1 control range (U+0080-U+009F)
         #    which includes NEL (U+0085) — some Platypus parsers misinterpret
         #    NEL as a newline and raise an XML error mid-paragraph.
-        #    Normalise CR/LF/TAB to a plain space so text flows as a single line.
+        #    Normalise CR/TAB to a plain space; preserve LF (\n) so Gemini
+        #    pre-wrapped line breaks survive into _spwrap() for PDF rendering.
         s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]', '', s)
-        s = _re.sub(r'[\r\n\t]', ' ', s)
+        s = _re.sub(r'[\r\t]', ' ', s)  # preserve \n for Gemini line break formatting
         # 2. NFKC normalisation
         s = _ud.normalize('NFKC', s)
         # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
@@ -6221,37 +6273,48 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     def _spwrap(t, max_chars=100):
         """Return XML-safe text with hard line breaks every ``max_chars`` chars.
 
-        Words are preserved wherever possible; a word that exceeds ``max_chars``
-        by itself is hard-split at the character boundary.  Lines are joined
-        with Platypus ``<br/>`` tags so the paragraph renderer respects each
-        visual line.
+        Honors existing ``\\n`` line breaks (e.g. from Gemini pre-wrapping)
+        and additionally enforces the ``max_chars`` limit on any line that
+        still exceeds it.  Words are preserved wherever possible; a word that
+        exceeds ``max_chars`` by itself is hard-split at the character boundary.
+        Lines are joined with Platypus ``<br/>`` tags so the paragraph renderer
+        respects each visual line.
         """
         from xml.sax.saxutils import escape as _xmlesc
         raw = _s(t)
-        words = raw.split(' ')
-        lines = []
-        current = ''
-        for word in words:
-            if not word:
+        # Split on existing newlines first (Gemini pre-wrapping), then
+        # enforce max_chars within each segment.
+        segments = raw.split('\n')
+        final_lines = []
+        for segment in segments:
+            segment = segment.strip()
+            if not segment:
                 continue
-            if len(word) > max_chars:
-                # Hard-split an overlong token into max_chars chunks
-                for ch in range(0, len(word), max_chars):
-                    chunk = word[ch:ch + max_chars]
+            if len(segment) <= max_chars:
+                final_lines.append(segment)
+                continue
+            # Re-wrap this segment at word boundaries
+            words = segment.split(' ')
+            current = ''
+            for word in words:
+                if not word:
+                    continue
+                if len(word) > max_chars:
                     if current:
-                        lines.append(current)
+                        final_lines.append(current)
                         current = ''
-                    lines.append(chunk)
-                continue
-            candidate = (current + ' ' + word).lstrip() if current else word
-            if len(candidate) > max_chars:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return '<br/>'.join(_xmlesc(line) for line in lines)
+                    for ch in range(0, len(word), max_chars):
+                        final_lines.append(word[ch:ch + max_chars])
+                    continue
+                candidate = (current + ' ' + word).lstrip() if current else word
+                if len(candidate) > max_chars:
+                    final_lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                final_lines.append(current)
+        return '<br/>'.join(_xmlesc(line) for line in final_lines)
 
     # ── Try reportlab.platypus (primary path) ──────────────────────────────
     try:
@@ -7118,6 +7181,145 @@ def linkdapi_upload_profile_pdf():
     })
 
 
+# ── Scrapingdog API endpoints ────────────────────────────────────────────────
+
+@app.get("/api/scrapingdog/get-profile")
+@_require_session
+def scrapingdog_get_profile():
+    """Fetch a LinkedIn profile via Scrapingdog for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Calls the Scrapingdog API to retrieve the profile, saves the JSON,
+    converts to PDF via Gemini, and saves the PDF.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., de., …)
+    # Scrapingdog's id parameter requires the full canonical LinkedIn URL.
+    normalized_linkedin_url = f"https://www.linkedin.com/in/{username}"
+
+    gp_cfg = _load_get_profiles_config()
+    sd = gp_cfg.get("scrapingdog", {})
+    if sd.get("enabled") != "enabled":
+        return jsonify({"error": "scrapingdog is not enabled"}), 503
+    api_key = (sd.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "Scrapingdog API key is not configured"}), 503
+
+    logger.info("[scrapingdog] fetching profile for %s (normalized: %s)", linkedin_url, normalized_linkedin_url)
+    body_str, status_code = _scrapingdog_fetch_profile(normalized_linkedin_url, api_key)
+
+    if status_code == 401:
+        return jsonify({"error": "Scrapingdog authentication failed (HTTP 401). Check your API key."}), 401
+    if status_code == 403:
+        return jsonify({"error": "Scrapingdog returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+    if status_code == 404:
+        return jsonify({"error": "Profile not found (HTTP 404)"}), 404
+    if status_code == 202:
+        return jsonify({
+            "error": "Job accepted. Results will be available in 2-3 minutes.",
+            "status": "processing",
+        }), 202
+    if status_code >= 400:
+        logger.warning("[scrapingdog] upstream HTTP %d; body snippet: %.200s",
+                       status_code, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": f"Scrapingdog returned an error (HTTP {status_code})"}), 502
+    if status_code == 0:
+        return jsonify({"error": "Failed to reach Scrapingdog service"}), 502
+
+    try:
+        profile_data = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError) as je:
+        logger.warning("[scrapingdog] invalid JSON: %s; body snippet: %.200s",
+                       je, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "Invalid JSON from Scrapingdog"}), 502
+
+    # Scrapingdog may wrap the profile in a list; extract the first element.
+    if isinstance(profile_data, list):
+        if profile_data and isinstance(profile_data[0], dict):
+            profile_data = profile_data[0]
+        elif not profile_data:
+            logger.warning("[scrapingdog] empty list response")
+            return jsonify({"error": "No profile data returned (empty list)"}), 502
+        else:
+            logger.warning("[scrapingdog] list response but first element is %s, not dict",
+                           type(profile_data[0]).__name__)
+            return jsonify({"error": "No profile data returned (unexpected format)"}), 502
+
+    if not profile_data or not isinstance(profile_data, dict):
+        logger.warning("[scrapingdog] unexpected response type %s; snippet: %.200s",
+                       type(profile_data).__name__,
+                       body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "No profile data returned"}), 502
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "sd_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    # Reject filenames containing path separators (defence-in-depth)
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_path = os.path.join(out_dir, out_filename)
+
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[scrapingdog] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    # Step 2: Convert to PDF using the same pipeline as linkdapi
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[scrapingdog PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
+    # pdf_filename derives from out_filename which was already validated above
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[scrapingdog PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[scrapingdog PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_pdf_filename": pdf_filename,
+        "saved_for_user": safe_active_username,
+    })
+
+
 @app.route("/process/update", methods=["POST"])
 @_require_session
 def process_update_tenure():
@@ -7175,6 +7377,7 @@ def process_update_tenure():
         return jsonify({"ok": False, "error": "tenure update failed"}), 500
 
 
+@app.post("/api/user-service-config/activate")
 def user_svc_config_activate():
     """Store per-user service config. Encrypts when PORTING_SECRET is set,
     otherwise writes plaintext JSON (matching server.js writeUserServiceConfig)."""
