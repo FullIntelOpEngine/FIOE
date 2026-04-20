@@ -2,5 +2,9 @@
   "linkdapi": {
     "api_key": "",
     "enabled": "disabled"
+  },
+  "vayne": {
+    "api_key": "",
+    "enabled": "disabled"
   }
 }

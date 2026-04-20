@@ -6210,7 +6210,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         #    Normalise CR/TAB to a plain space; preserve LF (\n) so Gemini
         #    pre-wrapped line breaks survive into _spwrap() for PDF rendering.
         s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]', '', s)
-        s = _re.sub(r'[\r\t]', ' ', s)  # preserve \n for Gemini line-break formatting
+        s = _re.sub(r'[\r\t]', ' ', s)  # preserve \n for Gemini line break formatting
         # 2. NFKC normalisation
         s = _ud.normalize('NFKC', s)
         # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
@@ -7274,7 +7274,12 @@ def vayne_get_profile():
     safe_profile_username = _safe_slug(username, "vayne_profile")
     out_filename = f"{safe_profile_username}_{safe_active_username}.json"
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
-    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+
+    # Reject filenames containing path separators (defence-in-depth)
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_path = os.path.join(out_dir, out_filename)
 
     try:
         real_out_dir = os.path.realpath(out_dir)
@@ -7300,6 +7305,7 @@ def vayne_get_profile():
         return jsonify({"error": "PDF generation failed"}), 500
 
     pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
+    # pdf_filename derives from out_filename which was already validated above
     pdf_path = os.path.join(out_dir, pdf_filename)
     try:
         with open(pdf_path, "wb") as fh:
