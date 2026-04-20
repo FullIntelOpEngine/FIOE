@@ -5670,6 +5670,50 @@ _LINKDAPI_HOST = "linkdapi.com"
 _LINKDAPI_HEADER = "X-linkdapi-apikey"
 _LINKDAPI_MAX_RETRIES = 3
 
+# ── Vayne API constants ───────────────────────────────────────────────────────
+_VAYNE_API_BASE = "api.vayne.app"
+_VAYNE_MAX_RETRIES = 3
+
+
+def _vayne_fetch_batch(batch_id: str, api_key: str, page: int = 1,
+                       per_page: int = 100, timeout: int = 60):
+    """Fetch batch scraping results from Vayne and return ``(body_str, http_status)``.
+
+    Calls GET https://api.vayne.app/api/v1/batch-scrapings/{id}?page=&per_page=
+    with ``X-API-Key: <api_key>`` header.
+    """
+    import http.client as _hc
+    import ssl as _ssl
+
+    path = f"/api/v1/batch-scrapings/{batch_id}?page={page}&per_page={per_page}"
+    headers = {"X-API-Key": api_key, "Accept": "application/json"}
+
+    last_exc = None
+    for attempt in range(1, _VAYNE_MAX_RETRIES + 1):
+        conn = None
+        try:
+            ctx = _ssl.create_default_context()
+            conn = _hc.HTTPSConnection(_VAYNE_API_BASE, timeout=timeout,
+                                       context=ctx)
+            conn.request("GET", path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            return body, resp.status
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("[vayne] fetch attempt %d/%d failed: %s",
+                           attempt, _VAYNE_MAX_RETRIES, exc)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    logger.error("[vayne] all %d attempts failed; last error: %s",
+                 _VAYNE_MAX_RETRIES, last_exc)
+    return "", 0
+
 
 def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     """Fetch a profile from linkdapi.com and return ``(body_str, http_status)``.
@@ -7130,6 +7174,146 @@ def linkdapi_upload_profile_pdf():
         "status": "uploaded",
         "pdf_filename": pdf_filename,
         **parse_result,
+    })
+
+
+# ── Vayne API endpoints ──────────────────────────────────────────────────────
+
+@app.get("/api/vayne/get-profile")
+@_require_session
+def vayne_get_profile():
+    """Fetch a LinkedIn profile via Vayne batch scraping for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+      batch_id     – the Vayne batch scraping ID (required)
+
+    Calls the Vayne API to retrieve batch results, finds the matching profile,
+    saves the JSON, converts to PDF via Gemini, and saves the PDF.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    batch_id = (request.args.get("batch_id") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+    if not batch_id:
+        return jsonify({"error": "batch_id is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    gp_cfg = _load_get_profiles_config()
+    vayne = gp_cfg.get("vayne", {})
+    if vayne.get("enabled") != "enabled":
+        return jsonify({"error": "vayne is not enabled"}), 503
+    api_key = (vayne.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "Vayne API key is not configured"}), 503
+
+    body_str, status_code = _vayne_fetch_batch(batch_id, api_key)
+
+    if status_code == 401:
+        return jsonify({"error": "Vayne authentication failed (HTTP 401). Check your API key."}), 401
+    if status_code == 403:
+        return jsonify({"error": "Vayne returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+    if status_code == 404:
+        return jsonify({"error": f"Batch scraping not found (HTTP 404)"}), 404
+    if status_code == 202:
+        # Batch still processing
+        try:
+            partial = json.loads(body_str)
+        except (json.JSONDecodeError, ValueError):
+            partial = {}
+        return jsonify({
+            "error": "Batch scraping still processing",
+            "status": "processing",
+            "processed_urls": partial.get("processed_urls", 0),
+            "total_urls": partial.get("total_urls", 0),
+        }), 202
+    if status_code >= 400:
+        logger.warning("[vayne] upstream HTTP %d", status_code)
+        return jsonify({"error": f"Vayne returned an error (HTTP {status_code})"}), status_code
+    if status_code == 0:
+        return jsonify({"error": "Failed to reach Vayne service"}), 502
+
+    try:
+        batch_data = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError):
+        return jsonify({"error": "Invalid JSON from Vayne"}), 502
+
+    # Find the matching profile in results
+    results = batch_data.get("results") or []
+    matched_result = None
+    for r in results:
+        r_url = (r.get("linkedin_url") or "").strip().rstrip("/")
+        if r_url and linkedin_url.rstrip("/").lower() == r_url.lower():
+            matched_result = r
+            break
+
+    if not matched_result:
+        return jsonify({"error": "Profile not found in batch results"}), 404
+    if matched_result.get("status") != "success":
+        err_msg = matched_result.get("error_message") or "Profile fetch failed"
+        return jsonify({"error": f"Profile scraping failed: {err_msg}"}), 502
+    profile_data = matched_result.get("data")
+    if not profile_data or not isinstance(profile_data, dict):
+        return jsonify({"error": "No profile data returned for this URL"}), 502
+
+    # Map Vayne data format to the format expected by _linkdapi_json_to_pdf_bytes
+    # Vayne uses: firstName, lastName, headline, about, experience[{position, companyName, ...}], education[{schoolName, degree, period}]
+    # The existing _linkdapi_json_to_pdf_bytes handles both formats via fallback extraction
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "vayne_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+    out_path = os.path.abspath(os.path.join(out_dir, out_filename))
+
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[vayne] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    # Step 2: Convert to PDF using the same pipeline as linkdapi
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[vayne PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[vayne PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[vayne PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_pdf_filename": pdf_filename,
+        "saved_for_user": safe_active_username,
     })
 
 

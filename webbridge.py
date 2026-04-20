@@ -312,10 +312,15 @@ def _load_get_profiles_config() -> dict:
     """Return parsed get_profiles_config.json; returns defaults on error."""
     try:
         with open(_GET_PROFILES_CONFIG_PATH, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            cfg = json.load(fh)
+        # Ensure vayne key exists (migration from older configs)
+        if "vayne" not in cfg:
+            cfg["vayne"] = {"api_key": "", "enabled": "disabled"}
+        return cfg
     except Exception:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
+            "vayne": {"api_key": "", "enabled": "disabled"},
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -1252,11 +1257,16 @@ def admin_get_get_profiles_config():
     """Return Get Profiles service configuration (API keys masked)."""
     config = _load_get_profiles_config()
     linkdapi = config.get("linkdapi", {})
+    vayne = config.get("vayne", {})
     return jsonify({
         "config": {
             "linkdapi": {
                 "api_key_set": bool(linkdapi.get("api_key")),
                 "enabled": linkdapi.get("enabled", "disabled"),
+            },
+            "vayne": {
+                "api_key_set": bool(vayne.get("api_key")),
+                "enabled": vayne.get("enabled", "disabled"),
             },
         }
     }), 200
@@ -1266,26 +1276,41 @@ def admin_get_get_profiles_config():
 @_rate(_make_flask_limit("api"))
 @_require_session
 def api_linkdapi_status():
-    """Return whether linkdapi is enabled — user-accessible (no admin required)."""
+    """Return whether linkdapi or vayne is enabled — user-accessible (no admin required)."""
     try:
         config = _load_get_profiles_config()
         ld = config.get("linkdapi", {})
-        return jsonify({"enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key"))}), 200
+        vn = config.get("vayne", {})
+        return jsonify({
+            "enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key")),
+            "vayne_enabled": vn.get("enabled") == "enabled" and bool(vn.get("api_key")),
+        }), 200
     except Exception:
-        return jsonify({"enabled": False}), 200
+        return jsonify({"enabled": False, "vayne_enabled": False}), 200
 
 @app.post("/admin/get-profiles-config")
 @_rate(_make_flask_limit("admin_endpoints"))
 @_csrf_required
 @_require_admin
 def admin_save_get_profiles_config():
-    """Save Get Profiles service configuration."""
+    """Save Get Profiles service configuration.
+
+    Get Profile supports single activation: enabling linkdapi deactivates vayne
+    (and vice versa).  When a service is deactivated its API key is deleted.
+    """
     body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict):
         return jsonify({"error": "JSON object required"}), 400
     current = _load_get_profiles_config()
     if "linkdapi" not in current:
         current["linkdapi"] = {"api_key": "", "enabled": "disabled"}
+    if "vayne" not in current:
+        current["vayne"] = {"api_key": "", "enabled": "disabled"}
+
+    # Track which service is being activated so we can enforce single-activation
+    activating_linkdapi = False
+    activating_vayne = False
+
     if "linkdapi" in body:
         entry = body["linkdapi"]
         if not isinstance(entry, dict):
@@ -1298,6 +1323,32 @@ def admin_save_get_profiles_config():
             current["linkdapi"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
                 current["linkdapi"]["api_key"] = ""
+            elif entry["enabled"] == "enabled":
+                activating_linkdapi = True
+
+    if "vayne" in body:
+        entry = body["vayne"]
+        if not isinstance(entry, dict):
+            return jsonify({"error": "Invalid config for vayne"}), 400
+        if entry.get("api_key") is not None and entry["api_key"] != "":
+            current["vayne"]["api_key"] = str(entry["api_key"])
+        if entry.get("enabled") is not None:
+            if entry["enabled"] not in ("enabled", "disabled"):
+                return jsonify({"error": "Invalid enabled value for vayne"}), 400
+            current["vayne"]["enabled"] = entry["enabled"]
+            if entry["enabled"] == "disabled":
+                current["vayne"]["api_key"] = ""
+            elif entry["enabled"] == "enabled":
+                activating_vayne = True
+
+    # Single-activation switching: activating one deactivates the other
+    if activating_linkdapi:
+        current["vayne"]["enabled"] = "disabled"
+        current["vayne"]["api_key"] = ""
+    elif activating_vayne:
+        current["linkdapi"]["enabled"] = "disabled"
+        current["linkdapi"]["api_key"] = ""
+
     try:
         _save_get_profiles_config(current)
         return jsonify({"ok": True}), 200
