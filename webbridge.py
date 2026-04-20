@@ -313,14 +313,15 @@ def _load_get_profiles_config() -> dict:
     try:
         with open(_GET_PROFILES_CONFIG_PATH, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-        # Ensure scrapingdog key exists (migration from older configs)
+        # Migrate legacy "vayne" key to scrapingdog
+        if "vayne" in cfg:
+            if "scrapingdog" not in cfg:
+                cfg["scrapingdog"] = cfg.pop("vayne")
+            else:
+                del cfg["vayne"]
+        # Ensure scrapingdog key exists
         if "scrapingdog" not in cfg:
             cfg["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
-        # Migrate legacy "vayne" key to scrapingdog
-        if "vayne" in cfg and "scrapingdog" not in cfg:
-            cfg["scrapingdog"] = cfg.pop("vayne")
-        elif "vayne" in cfg:
-            del cfg["vayne"]
         return cfg
     except Exception:
         return {

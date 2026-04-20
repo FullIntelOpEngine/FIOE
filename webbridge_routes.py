@@ -7213,7 +7213,7 @@ def scrapingdog_get_profile():
     if not api_key:
         return jsonify({"error": "Scrapingdog API key is not configured"}), 503
 
-    body_str, status_code = _scrapingdog_fetch_profile(linkedin_url, api_key)
+    body_str, status_code = _scrapingdog_fetch_profile(username, api_key)
 
     if status_code == 401:
         return jsonify({"error": "Scrapingdog authentication failed (HTTP 401). Check your API key."}), 401
