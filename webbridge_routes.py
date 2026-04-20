@@ -7237,9 +7237,13 @@ def scrapingdog_get_profile():
     if isinstance(profile_data, list):
         if profile_data and isinstance(profile_data[0], dict):
             profile_data = profile_data[0]
-        else:
+        elif not profile_data:
             logger.warning("[scrapingdog] empty list response")
             return jsonify({"error": "No profile data returned (empty list)"}), 502
+        else:
+            logger.warning("[scrapingdog] list response but first element is %s, not dict",
+                           type(profile_data[0]).__name__)
+            return jsonify({"error": "No profile data returned (unexpected format)"}), 502
 
     if not profile_data or not isinstance(profile_data, dict):
         logger.warning("[scrapingdog] unexpected response type %s; snippet: %.200s",
