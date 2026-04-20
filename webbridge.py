@@ -313,14 +313,19 @@ def _load_get_profiles_config() -> dict:
     try:
         with open(_GET_PROFILES_CONFIG_PATH, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-        # Ensure vayne key exists (migration from older configs)
-        if "vayne" not in cfg:
-            cfg["vayne"] = {"api_key": "", "enabled": "disabled"}
+        # Ensure scrapingdog key exists (migration from older configs)
+        if "scrapingdog" not in cfg:
+            cfg["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
+        # Migrate legacy "vayne" key to scrapingdog
+        if "vayne" in cfg and "scrapingdog" not in cfg:
+            cfg["scrapingdog"] = cfg.pop("vayne")
+        elif "vayne" in cfg:
+            del cfg["vayne"]
         return cfg
     except Exception:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
-            "vayne": {"api_key": "", "enabled": "disabled"},
+            "scrapingdog": {"api_key": "", "enabled": "disabled"},
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -1257,17 +1262,16 @@ def admin_get_get_profiles_config():
     """Return Get Profiles service configuration (API keys masked)."""
     config = _load_get_profiles_config()
     linkdapi = config.get("linkdapi", {})
-    vayne = config.get("vayne", {})
+    scrapingdog = config.get("scrapingdog", {})
     return jsonify({
         "config": {
             "linkdapi": {
                 "api_key_set": bool(linkdapi.get("api_key")),
                 "enabled": linkdapi.get("enabled", "disabled"),
             },
-            "vayne": {
-                "api_key_set": bool(vayne.get("api_key")),
-                "enabled": vayne.get("enabled", "disabled"),
-                "batch_id": vayne.get("batch_id", ""),
+            "scrapingdog": {
+                "api_key_set": bool(scrapingdog.get("api_key")),
+                "enabled": scrapingdog.get("enabled", "disabled"),
             },
         }
     }), 200
@@ -1277,18 +1281,17 @@ def admin_get_get_profiles_config():
 @_rate(_make_flask_limit("api"))
 @_require_session
 def api_linkdapi_status():
-    """Return whether linkdapi or vayne is enabled — user-accessible (no admin required)."""
+    """Return whether linkdapi or scrapingdog is enabled — user-accessible (no admin required)."""
     try:
         config = _load_get_profiles_config()
         ld = config.get("linkdapi", {})
-        vn = config.get("vayne", {})
+        sd = config.get("scrapingdog", {})
         return jsonify({
             "enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key")),
-            "vayne_enabled": vn.get("enabled") == "enabled" and bool(vn.get("api_key")),
-            "vayne_batch_id": vn.get("batch_id", ""),
+            "scrapingdog_enabled": sd.get("enabled") == "enabled" and bool(sd.get("api_key")),
         }), 200
     except Exception:
-        return jsonify({"enabled": False, "vayne_enabled": False, "vayne_batch_id": ""}), 200
+        return jsonify({"enabled": False, "scrapingdog_enabled": False}), 200
 
 @app.post("/admin/get-profiles-config")
 @_rate(_make_flask_limit("admin_endpoints"))
@@ -1297,7 +1300,7 @@ def api_linkdapi_status():
 def admin_save_get_profiles_config():
     """Save Get Profiles service configuration.
 
-    Get Profile supports single activation: enabling linkdapi deactivates vayne
+    Get Profile supports single activation: enabling linkdapi deactivates scrapingdog
     (and vice versa).  When a service is deactivated its API key is deleted.
     """
     body = request.get_json(force=True, silent=True)
@@ -1306,12 +1309,12 @@ def admin_save_get_profiles_config():
     current = _load_get_profiles_config()
     if "linkdapi" not in current:
         current["linkdapi"] = {"api_key": "", "enabled": "disabled"}
-    if "vayne" not in current:
-        current["vayne"] = {"api_key": "", "enabled": "disabled"}
+    if "scrapingdog" not in current:
+        current["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
 
     # Track which service is being activated so we can enforce single-activation
     activating_linkdapi = False
-    activating_vayne = False
+    activating_scrapingdog = False
 
     if "linkdapi" in body:
         entry = body["linkdapi"]
@@ -1328,28 +1331,26 @@ def admin_save_get_profiles_config():
             elif entry["enabled"] == "enabled":
                 activating_linkdapi = True
 
-    if "vayne" in body:
-        entry = body["vayne"]
+    if "scrapingdog" in body:
+        entry = body["scrapingdog"]
         if not isinstance(entry, dict):
-            return jsonify({"error": "Invalid config for vayne"}), 400
+            return jsonify({"error": "Invalid config for scrapingdog"}), 400
         if entry.get("api_key") is not None and entry["api_key"] != "":
-            current["vayne"]["api_key"] = str(entry["api_key"])
-        if entry.get("batch_id") is not None:
-            current["vayne"]["batch_id"] = str(entry["batch_id"])
+            current["scrapingdog"]["api_key"] = str(entry["api_key"])
         if entry.get("enabled") is not None:
             if entry["enabled"] not in ("enabled", "disabled"):
-                return jsonify({"error": "Invalid enabled value for vayne"}), 400
-            current["vayne"]["enabled"] = entry["enabled"]
+                return jsonify({"error": "Invalid enabled value for scrapingdog"}), 400
+            current["scrapingdog"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
-                current["vayne"]["api_key"] = ""
+                current["scrapingdog"]["api_key"] = ""
             elif entry["enabled"] == "enabled":
-                activating_vayne = True
+                activating_scrapingdog = True
 
     # Single-activation switching: activating one deactivates the other
     if activating_linkdapi:
-        current["vayne"]["enabled"] = "disabled"
-        current["vayne"]["api_key"] = ""
-    elif activating_vayne:
+        current["scrapingdog"]["enabled"] = "disabled"
+        current["scrapingdog"]["api_key"] = ""
+    elif activating_scrapingdog:
         current["linkdapi"]["enabled"] = "disabled"
         current["linkdapi"]["api_key"] = ""
 

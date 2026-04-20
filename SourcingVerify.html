@@ -2753,7 +2753,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
-        window.__VAYNE_ENABLED = false;
+        window.__SCRAPINGDOG_ENABLED = false;
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
@@ -2770,12 +2770,10 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               // Refresh bulk button visibility based on new linkdapi state
               if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
             }
-            if (gpData && typeof gpData.vayne_enabled === 'boolean') {
-              window.__VAYNE_ENABLED = gpData.vayne_enabled;
-              // Seed batch ID from admin config so GP button doesn't need to prompt
-              if (gpData.vayne_batch_id) window.__VAYNE_BATCH_ID = gpData.vayne_batch_id;
-              // Vayne assumes the same GP role as linkdapi; treat as equivalent
-              if (window.__VAYNE_ENABLED) {
+            if (gpData && typeof gpData.scrapingdog_enabled === 'boolean') {
+              window.__SCRAPINGDOG_ENABLED = gpData.scrapingdog_enabled;
+              // Scrapingdog assumes the same GP role as linkdapi; treat as equivalent
+              if (window.__SCRAPINGDOG_ENABLED) {
                 window.__LINKDAPI_ENABLED = true;
                 if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
               }
@@ -3752,25 +3750,18 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
   try {
-    if (window.__VAYNE_ENABLED) {
-      // ── Vayne path: fetch profile via Vayne batch scraping API ──────────
-      const batchId = window.__VAYNE_BATCH_ID || prompt('Enter Vayne batch scraping ID:');
-      if (!batchId) {
-        alert('Vayne batch ID is required.');
-        return;
-      }
-      window.__VAYNE_BATCH_ID = batchId; // cache for subsequent calls
+    if (window.__SCRAPINGDOG_ENABLED) {
+      // ── Scrapingdog path: fetch profile via Scrapingdog API ──────────
       const resp = await fetch(
-        `/api/vayne/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}&batch_id=${encodeURIComponent(batchId)}`
+        `/api/scrapingdog/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
       );
       if (resp.status === 202) {
-        const partial = await resp.json().catch(() => ({}));
-        alert(`Batch still processing (${partial.processed_urls || 0}/${partial.total_urls || '?'} URLs done). Try again shortly.`);
+        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
         return;
       }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        alert(`Vayne profile fetch failed: ${errData.error || resp.statusText}`);
+        alert(`Scrapingdog profile fetch failed: ${errData.error || resp.statusText}`);
         return;
       }
       const data = await resp.json();
@@ -3780,7 +3771,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
       } else {
-        console.log(`[GP/Vayne] Profile and PDF saved: ${pdfFile}`);
+        console.log(`[GP/Scrapingdog] Profile and PDF saved: ${pdfFile}`);
       }
     } else {
       // ── Linkdapi path (original) ────────────────────────────────────────
