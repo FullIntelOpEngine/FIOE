@@ -5679,6 +5679,11 @@ def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60
     """Fetch a LinkedIn profile from Scrapingdog and return ``(body_str, http_status)``.
 
     Calls GET https://api.scrapingdog.com/profile?api_key=...&id=...&type=profile&premium=true
+
+    ``linkedin_id`` should be the full canonical LinkedIn URL
+    (e.g. ``https://www.linkedin.com/in/username``).  Passing only the
+    username slug may cause Scrapingdog to return HTTP 400 for some regional
+    profiles (cn., jp., …).
     """
     url = f"https://{_SCRAPINGDOG_API_BASE}/profile"
     params = {
@@ -7198,6 +7203,10 @@ def scrapingdog_get_profile():
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
+    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., de., …)
+    # Scrapingdog's id parameter requires the full canonical LinkedIn URL.
+    normalized_linkedin_url = f"https://www.linkedin.com/in/{username}"
+
     gp_cfg = _load_get_profiles_config()
     sd = gp_cfg.get("scrapingdog", {})
     if sd.get("enabled") != "enabled":
@@ -7206,7 +7215,8 @@ def scrapingdog_get_profile():
     if not api_key:
         return jsonify({"error": "Scrapingdog API key is not configured"}), 503
 
-    body_str, status_code = _scrapingdog_fetch_profile(username, api_key)
+    logger.info("[scrapingdog] fetching profile for %s (normalized: %s)", linkedin_url, normalized_linkedin_url)
+    body_str, status_code = _scrapingdog_fetch_profile(normalized_linkedin_url, api_key)
 
     if status_code == 401:
         return jsonify({"error": "Scrapingdog authentication failed (HTTP 401). Check your API key."}), 401
