@@ -3789,7 +3789,7 @@ function renderApiKeysCard() {
   getProfilesPanel.className = 'apikey-sub-panel';
   const getProfilesPanelDesc = document.createElement('p');
   getProfilesPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  getProfilesPanelDesc.textContent = 'Configure linkdapi or Vayne for full LinkedIn profile retrieval. Only one can be active at a time — enabling one deactivates the other and deletes its API key. When enabled, a "GP" button appears in SourcingVerify.html for search results.';
+  getProfilesPanelDesc.textContent = 'Configure linkdapi or Vayne for full LinkedIn profile retrieval. Only one can be active at a time — enabling one deactivates the other and deletes the other\'s API key. When enabled, a "GP" button appears in SourcingVerify.html for search results.';
   getProfilesPanel.appendChild(getProfilesPanelDesc);
   card.appendChild(getProfilesPanel);
 
