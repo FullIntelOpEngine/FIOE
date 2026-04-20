@@ -6163,9 +6163,10 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         #    Also strip DEL (U+007F) and the C1 control range (U+0080-U+009F)
         #    which includes NEL (U+0085) — some Platypus parsers misinterpret
         #    NEL as a newline and raise an XML error mid-paragraph.
-        #    Normalise CR/LF/TAB to a plain space so text flows as a single line.
+        #    Normalise CR/TAB to a plain space; preserve LF (\n) so Gemini
+        #    pre-wrapped line breaks survive into _spwrap() for PDF rendering.
         s = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x80-\x9f]', '', s)
-        s = _re.sub(r'[\r\n\t]', ' ', s)
+        s = _re.sub(r'[\r\t]', ' ', s)  # preserve \n for Gemini line-break formatting
         # 2. NFKC normalisation
         s = _ud.normalize('NFKC', s)
         # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
@@ -6224,37 +6225,48 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     def _spwrap(t, max_chars=100):
         """Return XML-safe text with hard line breaks every ``max_chars`` chars.
 
-        Words are preserved wherever possible; a word that exceeds ``max_chars``
-        by itself is hard-split at the character boundary.  Lines are joined
-        with Platypus ``<br/>`` tags so the paragraph renderer respects each
-        visual line.
+        Honors existing ``\\n`` line breaks (e.g. from Gemini pre-wrapping)
+        and additionally enforces the ``max_chars`` limit on any line that
+        still exceeds it.  Words are preserved wherever possible; a word that
+        exceeds ``max_chars`` by itself is hard-split at the character boundary.
+        Lines are joined with Platypus ``<br/>`` tags so the paragraph renderer
+        respects each visual line.
         """
         from xml.sax.saxutils import escape as _xmlesc
         raw = _s(t)
-        words = raw.split(' ')
-        lines = []
-        current = ''
-        for word in words:
-            if not word:
+        # Split on existing newlines first (Gemini pre-wrapping), then
+        # enforce max_chars within each segment.
+        segments = raw.split('\n')
+        final_lines = []
+        for segment in segments:
+            segment = segment.strip()
+            if not segment:
                 continue
-            if len(word) > max_chars:
-                # Hard-split an overlong token into max_chars chunks
-                for ch in range(0, len(word), max_chars):
-                    chunk = word[ch:ch + max_chars]
+            if len(segment) <= max_chars:
+                final_lines.append(segment)
+                continue
+            # Re-wrap this segment at word boundaries
+            words = segment.split(' ')
+            current = ''
+            for word in words:
+                if not word:
+                    continue
+                if len(word) > max_chars:
                     if current:
-                        lines.append(current)
+                        final_lines.append(current)
                         current = ''
-                    lines.append(chunk)
-                continue
-            candidate = (current + ' ' + word).lstrip() if current else word
-            if len(candidate) > max_chars:
-                lines.append(current)
-                current = word
-            else:
-                current = candidate
-        if current:
-            lines.append(current)
-        return '<br/>'.join(_xmlesc(line) for line in lines)
+                    for ch in range(0, len(word), max_chars):
+                        final_lines.append(word[ch:ch + max_chars])
+                    continue
+                candidate = (current + ' ' + word).lstrip() if current else word
+                if len(candidate) > max_chars:
+                    final_lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                final_lines.append(current)
+        return '<br/>'.join(_xmlesc(line) for line in final_lines)
 
     # ── Try reportlab.platypus (primary path) ──────────────────────────────
     try:
