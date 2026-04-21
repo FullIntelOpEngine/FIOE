@@ -3766,6 +3766,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
+  let successSvc = '';  // tracks which service actually succeeded
   // Build ordered service chain based on enabled providers.
   // Priority: Linkdapi (primary) → BrightData (backup) → Scrapingdog (final fallback).
   const _svcChain = [];
@@ -3852,6 +3853,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
       const result = await _tryService(svc);
       if (result.ok) {
         allDone = true;
+        successSvc = svc;
         break;
       }
       if (result.pending) {
@@ -3892,7 +3894,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
     // Restore the GP button only if the operation did NOT complete successfully
     if (!allDone && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
   }
-  return allDone;
+  return allDone ? successSvc : false;
 }
 
 // ---------------------------------------------------------------------------
@@ -4285,9 +4287,12 @@ function buildRow(row) {
                 assessBtn.onmouseout  = function() { this.style.background = 'white'; };
 
                 // shared 4-step assess pipeline (used by both Assess and Ingest buttons)
-                async function _runAssessPipeline(btn, label) {
+                // svcOverride: when provided (returned by _downloadLinkdapiProfile) uses that
+                // service to fetch the PDF instead of the primary configured service, ensuring
+                // the same provider that saved the PDF is used to retrieve it.
+                async function _runAssessPipeline(btn, label, svcOverride) {
                     btn.textContent = 'Fetching PDF…';
-                    const _gpGetSvc = _activeGpService();
+                    const _gpGetSvc = svcOverride || _activeGpService();
                     const pdfResp = await fetch(
                         '/api/' + _gpGetSvc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
                         { credentials: 'same-origin' }
@@ -4368,8 +4373,11 @@ function buildRow(row) {
                         // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
                         // manage any button UI itself; the Ingest button is managed here instead.
                         ingestBtn.textContent = 'Getting profile…';
-                        const gpOk = await _downloadLinkdapiProfile(value, null, row.name || '');
-                        if (!gpOk) {
+                        // gpSvc is the service name string that succeeded (e.g. 'brightdata'),
+                        // or false if all providers failed. Using it as svcOverride ensures
+                        // _runAssessPipeline fetches the PDF from the same service that saved it.
+                        const gpSvc = await _downloadLinkdapiProfile(value, null, row.name || '');
+                        if (!gpSvc) {
                             // _downloadLinkdapiProfile already showed an alert
                             ingestBtn.textContent = 'Ingest';
                             ingestBtn.disabled = false;
@@ -4379,7 +4387,8 @@ function buildRow(row) {
                         }
 
                         // ── 4-step Assess pipeline ──
-                        const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest');
+                        // Pass gpSvc so the pipeline fetches the PDF via the provider that saved it.
+                        const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest', gpSvc);
                         if (assessOk === false) {
                             ingestBtn.textContent = 'Ingest';
                             ingestBtn.disabled = false;
