@@ -5684,7 +5684,7 @@ _BRIGHTDATA_POLL_TIMEOUT  = 300  # maximum seconds to wait for snapshot to be re
 
 
 def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str,
-                               customer_id: str = "", poll_interval: int = _BRIGHTDATA_POLL_INTERVAL,
+                               poll_interval: int = _BRIGHTDATA_POLL_INTERVAL,
                                poll_timeout: int = _BRIGHTDATA_POLL_TIMEOUT):
     """Fetch a LinkedIn profile via BrightData LinkedIn Web Scraper API.
 
@@ -5700,9 +5700,6 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
     collector_id : str
         BrightData collector / dataset ID configured in admin settings.
         Retrieved dynamically from the scraper configuration, not hardcoded.
-    customer_id : str
-        Optional BrightData customer ID; when provided the Authorization token
-        becomes ``<customer_id>:<api_key>`` as required by some account types.
     poll_interval : int
         Seconds to wait between snapshot status polls.
     poll_timeout : int
@@ -5715,7 +5712,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
     """
     import time as _time  # noqa: PLC0415
 
-    auth_token = f"{customer_id}:{api_key}" if customer_id else api_key
+    auth_token = api_key
     headers = {
         "Authorization": f"Bearer {auth_token}",
         "Content-Type": "application/json",
@@ -7494,10 +7491,9 @@ def brightdata_get_profile():
     collector_id = (bd.get("collector_id") or "").strip()
     if not collector_id:
         return jsonify({"error": "BrightData collector ID is not configured"}), 503
-    customer_id = (bd.get("customer_id") or "").strip()
 
     logger.info("[brightdata] fetching profile for %s (collector_id=%s)", canonical_url, collector_id)
-    body_str, status_code = _brightdata_fetch_profile(canonical_url, api_key, collector_id, customer_id)
+    body_str, status_code = _brightdata_fetch_profile(canonical_url, api_key, collector_id)
 
     if status_code == 401:
         return jsonify({"error": "BrightData authentication failed (HTTP 401). Check your API key."}), 401

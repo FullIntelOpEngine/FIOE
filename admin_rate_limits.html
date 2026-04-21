@@ -1201,7 +1201,7 @@ let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled'
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, linkedin: { api_key_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
-let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' }, scrapingdog: { api_key_set: false, enabled: 'disabled' }, brightdata: { api_key_set: false, zone_set: false, customer_id_set: false, collector_id_set: false, enabled: 'disabled' } };
+let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' }, scrapingdog: { api_key_set: false, enabled: 'disabled' }, brightdata: { api_key_set: false, zone_set: false, collector_id_set: false, enabled: 'disabled' } };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -4744,7 +4744,7 @@ function renderApiKeysCard() {
     const gp = _getProfilesConfig || {};
     const ldCfg = gp.linkdapi     || { api_key_set: false, enabled: 'disabled' };
     const sdCfg = gp.scrapingdog  || { api_key_set: false, enabled: 'disabled' };
-    const bdCfg = gp.brightdata   || { api_key_set: false, zone_set: false, customer_id_set: false, collector_id_set: false, enabled: 'disabled' };
+    const bdCfg = gp.brightdata   || { api_key_set: false, zone_set: false, collector_id_set: false, enabled: 'disabled' };
 
     // ── Helper: build a provider credentials section ──────────────────────────
     // Each provider has its own enable/disable dropdown and Save button.
@@ -4810,12 +4810,10 @@ function renderApiKeysCard() {
         const enabled = enableSel.value;
         const payload = { [providerKey]: { enabled } };
         if (newKey) payload[providerKey].api_key = newKey;
-        // For BrightData also pick up Zone, Customer ID, and Collector ID
+        // For BrightData also pick up Zone and Collector ID
         if (providerKey === 'brightdata') {
           const zoneVal = (document.getElementById('zone-gp-brightdata')?.value || '').trim();
           if (zoneVal) payload.brightdata.zone = zoneVal;
-          const custIdVal = (document.getElementById('customer-id-gp-brightdata')?.value || '').trim();
-          if (custIdVal) payload.brightdata.customer_id = custIdVal;
           const collIdVal = (document.getElementById('collector-id-gp-brightdata')?.value || '').trim();
           if (collIdVal) payload.brightdata.collector_id = collIdVal;
         }
@@ -4833,15 +4831,12 @@ function renderApiKeysCard() {
           if (providerKey === 'scrapingdog') _getProfilesConfig.scrapingdog = { api_key_set: keyStillSet, enabled };
           if (providerKey === 'brightdata') {
             const zoneVal = (document.getElementById('zone-gp-brightdata')?.value || '').trim();
-            const custIdVal = (document.getElementById('customer-id-gp-brightdata')?.value || '').trim();
             const collIdVal = (document.getElementById('collector-id-gp-brightdata')?.value || '').trim();
-            // Zone, Customer ID, and Collector ID are not purged on disable — only the API key is.
+            // Zone and Collector ID are not purged on disable — only the API key is.
             const zoneStillSet = !!(zoneVal || bdCfg.zone_set);
-            const custIdStillSet = !!(custIdVal || bdCfg.customer_id_set);
             const collIdStillSet = !!(collIdVal || bdCfg.collector_id_set);
-            _getProfilesConfig.brightdata = { api_key_set: keyStillSet, zone_set: zoneStillSet, customer_id_set: custIdStillSet, collector_id_set: collIdStillSet, enabled };
+            _getProfilesConfig.brightdata = { api_key_set: keyStillSet, zone_set: zoneStillSet, collector_id_set: collIdStillSet, enabled };
             if (zoneVal) { const el = document.getElementById('zone-gp-brightdata'); if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
-            if (custIdVal) { const el = document.getElementById('customer-id-gp-brightdata'); if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
             if (collIdVal) { const el = document.getElementById('collector-id-gp-brightdata'); if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
           }
           if (newKey) { keyInput.value = ''; keyInput.placeholder = '••••••••••••••••• (set — enter new value to update)'; }
@@ -4866,7 +4861,7 @@ function renderApiKeysCard() {
     // Linkdapi — Primary
     getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg, '1st · Primary'));
 
-    // BrightData — Secondary (API key + Zone + Customer ID + Collector ID fields)
+    // BrightData — Secondary (API key + Zone + Collector ID fields)
     getProfilesPanel.appendChild(_buildGpProviderSection('brightdata', 'BrightData', bdCfg, '2nd · Backup', (row) => {
       // Zone field
       const zoneField = document.createElement('div'); zoneField.className = 'apikey-field';
@@ -4882,21 +4877,6 @@ function renderApiKeysCard() {
         zoneField.appendChild(badge);
       }
       row.appendChild(zoneField);
-
-      // Customer ID field
-      const custField = document.createElement('div'); custField.className = 'apikey-field';
-      const custLabel = document.createElement('label');
-      custLabel.htmlFor = 'customer-id-gp-brightdata'; custLabel.textContent = 'Customer ID';
-      const custInput = document.createElement('input');
-      custInput.type = 'text'; custInput.id = 'customer-id-gp-brightdata'; custInput.className = 'apikey-input';
-      custInput.placeholder = bdCfg.customer_id_set ? '(set — enter new value to update)' : 'Enter BrightData customer ID…';
-      custInput.autocomplete = 'off';
-      custField.appendChild(custLabel); custField.appendChild(custInput);
-      if (bdCfg.customer_id_set) {
-        const badge = document.createElement('div'); badge.className = 'apikey-set-badge'; badge.textContent = '✅ Customer ID saved';
-        custField.appendChild(badge);
-      }
-      row.appendChild(custField);
 
       // Collector ID field
       const collField = document.createElement('div'); collField.className = 'apikey-field';

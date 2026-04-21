@@ -324,12 +324,10 @@ def _load_get_profiles_config() -> dict:
             cfg["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
         # Ensure brightdata key exists
         if "brightdata" not in cfg:
-            cfg["brightdata"] = {"api_key": "", "zone": "", "customer_id": "", "collector_id": "", "enabled": "disabled"}
+            cfg["brightdata"] = {"api_key": "", "zone": "", "collector_id": "", "enabled": "disabled"}
         else:
             if "zone" not in cfg["brightdata"]:
                 cfg["brightdata"]["zone"] = ""
-            if "customer_id" not in cfg["brightdata"]:
-                cfg["brightdata"]["customer_id"] = ""
             if "collector_id" not in cfg["brightdata"]:
                 cfg["brightdata"]["collector_id"] = ""
         return cfg
@@ -337,7 +335,7 @@ def _load_get_profiles_config() -> dict:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
             "scrapingdog": {"api_key": "", "enabled": "disabled"},
-            "brightdata": {"api_key": "", "zone": "", "customer_id": "", "collector_id": "", "enabled": "disabled"},
+            "brightdata": {"api_key": "", "zone": "", "collector_id": "", "enabled": "disabled"},
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -1289,7 +1287,6 @@ def admin_get_get_profiles_config():
             "brightdata": {
                 "api_key_set": bool(brightdata.get("api_key")),
                 "zone_set": bool(brightdata.get("zone")),
-                "customer_id_set": bool(brightdata.get("customer_id")),
                 "collector_id_set": bool(brightdata.get("collector_id")),
                 "enabled": brightdata.get("enabled", "disabled"),
             },
@@ -1335,12 +1332,10 @@ def admin_save_get_profiles_config():
     if "scrapingdog" not in current:
         current["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
     if "brightdata" not in current:
-        current["brightdata"] = {"api_key": "", "zone": "", "customer_id": "", "collector_id": "", "enabled": "disabled"}
+        current["brightdata"] = {"api_key": "", "zone": "", "collector_id": "", "enabled": "disabled"}
     else:
         if "zone" not in current["brightdata"]:
             current["brightdata"]["zone"] = ""
-        if "customer_id" not in current["brightdata"]:
-            current["brightdata"]["customer_id"] = ""
         if "collector_id" not in current["brightdata"]:
             current["brightdata"]["collector_id"] = ""
 
@@ -1378,8 +1373,6 @@ def admin_save_get_profiles_config():
             current["brightdata"]["api_key"] = str(entry["api_key"])
         if entry.get("zone") is not None and entry["zone"] != "":
             current["brightdata"]["zone"] = str(entry["zone"])
-        if entry.get("customer_id") is not None and entry["customer_id"] != "":
-            current["brightdata"]["customer_id"] = str(entry["customer_id"])
         if entry.get("collector_id") is not None and entry["collector_id"] != "":
             current["brightdata"]["collector_id"] = str(entry["collector_id"])
         if entry.get("enabled") is not None:
