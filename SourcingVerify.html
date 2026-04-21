@@ -4326,6 +4326,125 @@ function buildRow(row) {
                     return await performCombinedAssessment(tr, value, {}, true, true);
                 }
 
+                // Switches btn to "Download" — PDF was generated but CV upload/assess failed with
+                // "Assessment pending". Lets the user save the PDF, then transitions to Upload CV.
+                function _gpBtnToDownload(btn, svc) {
+                    btn.textContent = 'Download';
+                    btn.disabled = false;
+                    btn.classList.remove('btn-spinning');
+                    btn.style.cssText = _gpBtnCss + ' background:#e8f0fe; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); display:block;';
+                    btn.title = 'Download generated PDF (No CV uploaded — Assessment pending)';
+                    btn.onmouseover = function() { this.style.background = '#d0e2fb'; };
+                    btn.onmouseout  = function() { this.style.background = '#e8f0fe'; };
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (btn.disabled) return;
+                        btn.disabled = true;
+                        btn.textContent = 'Downloading…';
+                        try {
+                            const pdfResp = await fetch(
+                                '/api/' + svc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                                { credentials: 'same-origin' }
+                            );
+                            if (!pdfResp.ok) throw new Error('PDF download failed');
+                            const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
+                            const pdfBytes = await pdfResp.arrayBuffer();
+                            const dlBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+                            const dlUrl = URL.createObjectURL(dlBlob);
+                            const a = document.createElement('a');
+                            a.href = dlUrl;
+                            a.download = pdfFilename;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(dlUrl);
+                            // After download: switch to Upload CV so user can manually re-upload
+                            _gpBtnToUploadCv(btn);
+                        } catch (dlErr) {
+                            console.error('[GP Download] failed:', dlErr);
+                            btn.textContent = 'Download';
+                            btn.disabled = false;
+                            alert('Download failed: ' + (dlErr.message || dlErr));
+                        }
+                    };
+                }
+
+                // Switches btn to "Upload CV" mode after the user has downloaded the PDF.
+                // Creates a hidden file input and wires up upload → parse → assess flow.
+                function _gpBtnToUploadCv(btn) {
+                    btn.textContent = 'Upload CV';
+                    btn.disabled = false;
+                    btn.style.cssText = _gpBtnCss + ' background:white; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); display:block;';
+                    btn.title = 'Upload CV for assessment';
+                    btn.onmouseover = function() { this.style.background = '#eff3f8'; };
+                    btn.onmouseout  = function() { this.style.background = 'white'; };
+                    // Remove any stale file inputs left from previous calls to this function.
+                    btn.parentElement.querySelectorAll('input[type="file"][data-gp-upload]').forEach(el => el.remove());
+                    const fi = document.createElement('input');
+                    fi.type = 'file';
+                    fi.accept = 'application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+                    fi.style.display = 'none';
+                    fi.dataset.gpUpload = '1';
+                    btn.parentElement.appendChild(fi);
+                    btn.onclick = (e) => { e.stopPropagation(); fi.click(); };
+                    fi.onchange = async () => {
+                        if (!fi.files.length) return;
+                        const file = fi.files[0];
+                        if (file.type !== 'application/pdf' && !file.name.match(/\.(doc|docx)$/i)) {
+                            alert('Please upload a PDF or DOC file.');
+                            fi.value = '';
+                            return;
+                        }
+                        btn.textContent = '...';
+                        btn.disabled = true;
+                        btn.classList.add('btn-spinning');
+                        const fd = new FormData();
+                        fd.append('cv', file);
+                        fd.append('linkedinurl', value);
+                        const nameCell = tr.querySelector('td[data-field="name"]');
+                        const candName = nameCell ? nameCell.textContent.trim() : '';
+                        if (candName) fd.append('name', cleanNameForUpload(candName));
+                        const uid = window.__SV_ACTIVE_USERID || '';
+                        if (uid) fd.append('userid', uid);
+                        setSearchResultButtonsEnabled(false);
+                        try {
+                            const res = await fetch(API_UPLOAD_CV, {
+                                method: 'POST', body: fd, credentials: 'same-origin'
+                            });
+                            if (!res.ok) {
+                                const errData = await res.json().catch(() => ({}));
+                                throw new Error(errData.error || 'Upload failed');
+                            }
+                            btn.textContent = 'Analyzing…';
+                            const analyzeRes = await fetch(API_PARSE_CV_AND_UPDATE, {
+                                method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ linkedinurl: value })
+                            });
+                            const analyzeData = await analyzeRes.json().catch(() => ({}));
+                            btn.textContent = 'Processing…';
+                            const assessOk = await performCombinedAssessment(tr, value, analyzeData, true, true);
+                            if (assessOk === false) {
+                                btn.textContent = 'Upload CV';
+                                btn.disabled = false;
+                                btn.classList.remove('btn-spinning');
+                            } else {
+                                updateUploadButtonToView(value);
+                                persistCompletedDetailRow(value);
+                                setTimeout(() => { const r = document.getElementById('reloadBtn'); if (r) r.click(); }, 1000);
+                            }
+                        } catch (upErr) {
+                            console.error('[GP Upload CV] failed:', upErr);
+                            btn.textContent = 'Upload CV';
+                            btn.disabled = false;
+                            btn.classList.remove('btn-spinning');
+                            alert('Upload failed: ' + (upErr.message || upErr));
+                        } finally {
+                            setSearchResultButtonsEnabled(true);
+                            fi.value = '';
+                        }
+                    };
+                }
+
                 assessBtn.onclick = async (e) => {
                     e.stopPropagation();
                     if (assessBtn.disabled) return;
@@ -4346,10 +4465,16 @@ function buildRow(row) {
                         }
                     } catch (err) {
                         console.error('[GP Assess] failed:', err);
-                        assessBtn.textContent = 'Assess';
-                        assessBtn.disabled = false;
-                        assessBtn.classList.remove('btn-spinning');
-                        alert('GP Assess failed: ' + (err.message || err));
+                        if (err.message && err.message.includes('Assessment pending')) {
+                            // PDF was generated but CV not yet accessible for assessment;
+                            // offer Download so the user can retrieve the PDF directly.
+                            _gpBtnToDownload(assessBtn, _activeGpService());
+                        } else {
+                            assessBtn.textContent = 'Assess';
+                            assessBtn.disabled = false;
+                            assessBtn.classList.remove('btn-spinning');
+                            alert('GP Assess failed: ' + (err.message || err));
+                        }
                     } finally {
                         setSearchResultButtonsEnabled(true);
                     }
@@ -4370,6 +4495,9 @@ function buildRow(row) {
                     ingestBtn.disabled = true;
                     ingestBtn.classList.add('btn-spinning');
                     setSearchResultButtonsEnabled(false);
+                    // Tracks the last GP service that successfully generated a PDF so the
+                    // Download button (shown on "Assessment pending") uses the correct provider.
+                    let _gpSvcForDl = null;
                     try {
                         // ── GP duties: fetch JSON profile + generate FIOE-branded PDF ──
                         // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
@@ -4387,6 +4515,7 @@ function buildRow(row) {
                             setSearchResultButtonsEnabled(true);
                             return;
                         }
+                        _gpSvcForDl = gpSvc;
 
                         // ── 4-step Assess pipeline with per-service fallback ──
                         // If get-profile-pdf fails for gpSvc, retry the full download+assess
@@ -4428,6 +4557,7 @@ function buildRow(row) {
                                     throw pdfErr;
                                 }
                                 gpSvc = fallbackSvc;
+                                _gpSvcForDl = gpSvc;
                             }
                         }
 
@@ -4442,10 +4572,16 @@ function buildRow(row) {
                         }
                     } catch (err) {
                         console.error('[GP Ingest] failed:', err);
-                        ingestBtn.textContent = 'Ingest';
-                        ingestBtn.disabled = false;
-                        ingestBtn.classList.remove('btn-spinning');
-                        alert('GP Ingest failed: ' + (err.message || err));
+                        if (err.message && err.message.includes('Assessment pending') && _gpSvcForDl) {
+                            // PDF was generated but CV not yet accessible for assessment;
+                            // offer Download so the user can retrieve the PDF directly.
+                            _gpBtnToDownload(ingestBtn, _gpSvcForDl);
+                        } else {
+                            ingestBtn.textContent = 'Ingest';
+                            ingestBtn.disabled = false;
+                            ingestBtn.classList.remove('btn-spinning');
+                            alert('GP Ingest failed: ' + (err.message || err));
+                        }
                     } finally {
                         setSearchResultButtonsEnabled(true);
                     }
