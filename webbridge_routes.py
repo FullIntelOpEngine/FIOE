@@ -5675,6 +5675,62 @@ _SCRAPINGDOG_API_BASE = "api.scrapingdog.com"
 _SCRAPINGDOG_MAX_RETRIES = 3
 
 
+# ── BrightData API constants ───────────────────────────────────────────────────
+_BRIGHTDATA_API_BASE = "api.brightdata.com"
+_BRIGHTDATA_REQUEST_URL = f"https://{_BRIGHTDATA_API_BASE}/request"
+
+
+def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeout: int = 60):
+    """Fetch a LinkedIn profile via BrightData SERP API.
+
+    Calls POST https://api.brightdata.com/request with zone, url, and format
+    parameters as required by the BrightData SERP API specification.
+
+    Parameters
+    ----------
+    linkedin_url : str
+        Full canonical LinkedIn profile URL (e.g. https://www.linkedin.com/in/username).
+    api_key : str
+        BrightData Bearer API key (from account settings).
+    zone : str
+        BrightData zone identifier (managed at https://brightdata.com/cp/zones).
+    timeout : int
+        Request timeout in seconds.  60 s is used because the SERP API is a
+        single synchronous call — no polling loop is involved.
+
+    Returns ``(body_str, http_status)`` where:
+      - success: body_str is a JSON string (list or dict), status 200
+      - auth error: status 401 / 403
+      - other error: status >= 400 or 0 for network failure
+    """
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "zone": zone,
+        "url": linkedin_url,
+        "format": "json",
+    }
+    try:
+        resp = requests.post(
+            _BRIGHTDATA_REQUEST_URL,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+        logger.info("[brightdata] POST /request → HTTP %d (%d bytes)", resp.status_code, len(resp.text))
+        if resp.status_code >= 400:
+            logger.warning("[brightdata] HTTP %d; body: %.200s", resp.status_code, resp.text[:200])
+        return resp.text, resp.status_code
+    except requests.exceptions.Timeout:
+        logger.warning("[brightdata] request timed out")
+        return "", 0
+    except Exception as exc:
+        logger.error("[brightdata] request failed: %s", exc)
+        return "", 0
+
+
 def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60):
     """Fetch a LinkedIn profile from Scrapingdog and return ``(body_str, http_status)``.
 
@@ -5972,7 +6028,7 @@ def linkdapi_read_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -6665,7 +6721,7 @@ def linkdapi_profile_to_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -6755,7 +6811,7 @@ def linkdapi_check_profile_pdf():
     if not linkedin_url:
         return jsonify({"exists": False, "filename": ""}), 200
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"exists": False, "filename": ""}), 200
     username = _m.group(1)
@@ -6801,7 +6857,7 @@ def linkdapi_get_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -6976,7 +7032,7 @@ def linkdapi_upload_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -7320,7 +7376,230 @@ def scrapingdog_get_profile():
     })
 
 
-@app.route("/process/update", methods=["POST"])
+# ── BrightData API endpoints ──────────────────────────────────────────────────
+
+@app.get("/api/brightdata/get-profile")
+@_require_session
+def brightdata_get_profile():
+    """Fetch a LinkedIn profile via BrightData for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Triggers a BrightData dataset collection job, polls for the result, saves
+    the profile JSON, converts to PDF via Gemini, and saves the PDF.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    # Candidate name forwarded from the frontend (used to build the SERP search query)
+    candidate_name = request.args.get("name", "").strip()
+
+    # Build a Google SERP URL so BrightData's SERP zone can locate the profile.
+    # Include the candidate name (if available) to improve result precision, and
+    # constrain the search to the specific profile path.
+    import urllib.parse as _urlparse  # noqa: PLC0415
+    if candidate_name:
+        search_query = f'"{candidate_name}" site:linkedin.com/in/{username}'
+    else:
+        search_query = f'site:linkedin.com/in/{username}'
+    serp_url = f"https://www.google.com/search?q={_urlparse.quote(search_query)}"
+
+    gp_cfg = _load_get_profiles_config()
+    bd = gp_cfg.get("brightdata", {})
+    if bd.get("enabled") != "enabled":
+        return jsonify({"error": "BrightData is not enabled"}), 503
+    api_key = (bd.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "BrightData API key is not configured"}), 503
+    zone = (bd.get("zone") or "").strip()
+    if not zone:
+        return jsonify({"error": "BrightData zone is not configured"}), 503
+
+    logger.info("[brightdata] fetching profile for %s via SERP URL: %s", linkedin_url, serp_url)
+    body_str, status_code = _brightdata_fetch_profile(serp_url, api_key, zone)
+
+    if status_code == 401:
+        return jsonify({"error": "BrightData authentication failed (HTTP 401). Check your API key."}), 401
+    if status_code == 403:
+        return jsonify({"error": "BrightData returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+    if status_code >= 400:
+        logger.warning("[brightdata] upstream HTTP %d; body snippet: %.200s",
+                       status_code, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": f"BrightData returned an error (HTTP {status_code})"}), 502
+    if status_code == 0:
+        return jsonify({"error": "Failed to reach BrightData service"}), 502
+
+    try:
+        raw_data = json.loads(body_str)
+    except ValueError as je:
+        logger.warning("[brightdata] invalid JSON: %s; body snippet: %.200s",
+                       je, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "Invalid JSON from BrightData"}), 502
+
+    # BrightData returns a JSON array; extract the first profile object
+    if isinstance(raw_data, list):
+        if raw_data and isinstance(raw_data[0], dict):
+            profile_data = raw_data[0]
+        elif not raw_data:
+            logger.warning("[brightdata] empty list response")
+            return jsonify({"error": "No profile data returned (empty list)"}), 502
+        else:
+            logger.warning("[brightdata] list response but first element is %s, not dict",
+                           type(raw_data[0]).__name__)
+            return jsonify({"error": "No profile data returned (unexpected format)"}), 502
+    elif isinstance(raw_data, dict):
+        profile_data = raw_data
+    else:
+        logger.warning("[brightdata] unexpected response type %s; snippet: %.200s",
+                       type(raw_data).__name__, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "No profile data returned"}), 502
+
+    if not profile_data:
+        return jsonify({"error": "No profile data returned"}), 502
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "bd_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    # Reject filenames containing path separators (defence-in-depth)
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_path = os.path.join(out_dir, out_filename)
+
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(real_out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[brightdata] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    # Convert to PDF using the same pipeline as linkdapi / scrapingdog
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[brightdata PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        real_pdf_path = os.path.realpath(pdf_path)
+        if os.path.commonpath([real_out_dir, real_pdf_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+    try:
+        with open(real_pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[brightdata PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[brightdata PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_pdf_filename": pdf_filename,
+        "saved_for_user": safe_active_username,
+    })
+
+
+# ── Service-agnostic profile-PDF check / retrieve endpoints ──────────────────
+# Scrapingdog and BrightData save their PDFs to the same LINKDAPI_PROFILE_OUTPUT_DIR
+# using the same filename convention as Linkdapi.  These thin aliases let the
+# frontend call the endpoint that matches the active service rather than always
+# routing through the Linkdapi namespace.
+
+@app.get("/api/scrapingdog/list-profile-pdfs")
+@_require_session
+def scrapingdog_list_profile_pdfs():
+    """List saved GP profile PDFs for the current session user (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_list_profile_pdfs()
+
+
+@app.get("/api/brightdata/list-profile-pdfs")
+@_require_session
+def brightdata_list_profile_pdfs():
+    """List saved GP profile PDFs for the current session user (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_list_profile_pdfs()
+
+
+@app.get("/api/scrapingdog/check-profile-pdf")
+@_require_session
+def scrapingdog_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_check_profile_pdf()
+
+
+@app.get("/api/brightdata/check-profile-pdf")
+@_require_session
+def brightdata_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_check_profile_pdf()
+
+
+@app.get("/api/scrapingdog/get-profile-pdf")
+@_require_session
+def scrapingdog_get_profile_pdf():
+    """Return the saved GP profile PDF bytes (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_get_profile_pdf()
+
+
+@app.get("/api/brightdata/get-profile-pdf")
+@_require_session
+def brightdata_get_profile_pdf():
+    """Return the saved GP profile PDF bytes (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_get_profile_pdf()
+
+
 @_require_session
 def process_update_tenure():
     """Best-effort endpoint to update the tenure field in the process table.

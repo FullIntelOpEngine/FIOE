@@ -2753,7 +2753,10 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
+        window.__GP_LINKDAPI_ENABLED = false;
         window.__SCRAPINGDOG_ENABLED = false;
+        window.__BRIGHTDATA_ENABLED = false;
+        window.__GP_STATUS_LOADED = false;
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
@@ -2765,19 +2768,21 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               var lp = (svcData.providers.llm || '').toLowerCase();
               window.__HAS_CUSTOM_LLM = (lp === 'openai' || lp === 'anthropic');
             }
-            if (gpData && typeof gpData.enabled === 'boolean') {
-              window.__LINKDAPI_ENABLED = gpData.enabled;
-              // Refresh bulk button visibility based on new linkdapi state
-              if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
+            if (gpData) {
+              // Set all provider flags before any _updateBulkActionButton call
+              // to avoid the race condition where list-profile-pdfs is called
+              // against the wrong service because flags aren't fully populated yet.
+              window.__GP_LINKDAPI_ENABLED = !!(gpData.enabled);
+              window.__SCRAPINGDOG_ENABLED = !!(gpData.scrapingdog_enabled);
+              window.__BRIGHTDATA_ENABLED  = !!(gpData.brightdata_enabled);
+              // __LINKDAPI_ENABLED = true when ANY GP service is available (used as
+              // the combined "GP features unlocked" gate across the page).
+              window.__LINKDAPI_ENABLED = window.__GP_LINKDAPI_ENABLED
+                                        || window.__SCRAPINGDOG_ENABLED
+                                        || window.__BRIGHTDATA_ENABLED;
             }
-            if (gpData && typeof gpData.scrapingdog_enabled === 'boolean') {
-              window.__SCRAPINGDOG_ENABLED = gpData.scrapingdog_enabled;
-              // Scrapingdog assumes the same GP role as linkdapi; treat as equivalent
-              if (window.__SCRAPINGDOG_ENABLED) {
-                window.__LINKDAPI_ENABLED = true;
-                if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
-              }
-            }
+            window.__GP_STATUS_LOADED = true;
+            if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
             if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' &&
@@ -3742,57 +3747,91 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 }
 
 // ---------------------------------------------------------------------------
+// Returns the identifier of the currently active GP profile service.
+// Used to route profile-PDF check / retrieve requests to the correct backend
+// endpoint (all three services write to the same shared profiles directory).
+// ---------------------------------------------------------------------------
+function _activeGpService() {
+  if (window.__GP_LINKDAPI_ENABLED)  return 'linkdapi';
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
+  return 'linkdapi';
+}
+
+// ---------------------------------------------------------------------------
 // linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
 // Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
-async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
+async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name, skipSvcs) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
-  try {
-    if (window.__SCRAPINGDOG_ENABLED) {
-      // ── Scrapingdog path: fetch profile via Scrapingdog API ──────────
-      const resp = await fetch(
-        `/api/scrapingdog/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
-      );
-      if (resp.status === 202) {
-        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
-        return false;
-      }
+  let successSvc = '';  // tracks which service actually succeeded
+  // Build ordered service chain based on enabled providers.
+  // Priority: Linkdapi (primary) → BrightData (backup) → Scrapingdog (final fallback).
+  // skipSvcs: optional array of service names already tried — excluded from this run.
+  const _skip = new Set(skipSvcs || []);
+  const _svcChain = [];
+  if (window.__GP_LINKDAPI_ENABLED && !_skip.has('linkdapi')) _svcChain.push('linkdapi');
+  if (window.__BRIGHTDATA_ENABLED  && !_skip.has('brightdata'))  _svcChain.push('brightdata');
+  if (window.__SCRAPINGDOG_ENABLED && !_skip.has('scrapingdog')) _svcChain.push('scrapingdog');
+
+  let pdfFile = '';
+
+  // Helper: attempt profile fetch via a single service.
+  // Returns { ok: true } on success, { ok: false, pending: true } for 202, or
+  // { ok: false } on hard failure (caller should try next service).
+  async function _tryService(svc) {
+    if (svc === 'brightdata') {
+      let bdUrl = `/api/brightdata/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`;
+      if (name) bdUrl += `&name=${encodeURIComponent(name)}`;
+      const resp = await fetch(bdUrl);
+      if (resp.status === 202) { return { ok: false, pending: true }; }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        console.error('[scrapingdog] HTTP', resp.status, errData);
-        alert(`Scrapingdog profile fetch failed: ${errData.error || resp.statusText}`);
-        return false;
+        console.warn('[GP/brightdata] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
       }
       const data = await resp.json();
-      allDone = true;
-      const pdfFile = data.saved_pdf_filename || '';
+      pdfFile = data.saved_pdf_filename || '';
       const savedFilename = data.saved_filename || '';
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
-      } else {
-        console.log(`[GP/Scrapingdog] Profile and PDF saved: ${pdfFile}`);
       }
+      return { ok: true };
+    } else if (svc === 'scrapingdog') {
+      const resp = await fetch(
+        `/api/scrapingdog/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+      );
+      if (resp.status === 202) { return { ok: false, pending: true }; }
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        console.warn('[GP/scrapingdog] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
+      }
+      const data = await resp.json();
+      pdfFile = data.saved_pdf_filename || '';
+      const savedFilename = data.saved_filename || '';
+      if (typeof setStatus === 'function') {
+        setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+      }
+      return { ok: true };
     } else {
-      // ── Linkdapi path (original) ────────────────────────────────────────
-      // Step 1: Fetch and save JSON profile
+      // linkdapi — two-step: fetch JSON then generate PDF
       const resp = await fetch(
         `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
       );
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
-        return;
+        console.warn('[GP/linkdapi] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
       }
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       const savedFilename = String(data?.saved_filename || '');
       if (!savedFilename) {
-        alert('Unexpected server response: missing file information. Please contact support.');
-        return;
+        console.warn('[GP/linkdapi] Missing saved_filename in response');
+        return { ok: false };
       }
-
-      // Step 2: Immediately generate and save FIOE-branded PDF server-side
       if (btnEl) { btnEl.textContent = 'PDF…'; }
       const pdfResp = await fetch(
         `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
@@ -3800,17 +3839,43 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       );
       const pdfData = await pdfResp.json().catch(() => ({}));
       if (!pdfResp.ok) {
-        alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
-        return;
+        console.warn('[GP/linkdapi] PDF generation HTTP', pdfResp.status, pdfData.error || pdfResp.statusText);
+        return { ok: false };
       }
-
-      allDone = true;
-      const pdfFile = pdfData.saved_pdf_filename || '';
+      pdfFile = pdfData.saved_pdf_filename || '';
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
-      } else {
-        console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
       }
+      return { ok: true };
+    }
+  }
+
+  try {
+    for (const svc of _svcChain) {
+      const result = await _tryService(svc);
+      if (result.ok) {
+        allDone = true;
+        successSvc = svc;
+        break;
+      }
+      if (result.pending) {
+        // 202 Accepted — job is queued; no point trying another service
+        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
+        return false;
+      }
+      // Hard failure — try next service in chain
+      if (_svcChain.indexOf(svc) < _svcChain.length - 1) {
+        console.warn(`[GP] ${svc} failed, falling back to next provider…`);
+      }
+    }
+
+    if (!allDone && _svcChain.length === 0) {
+      alert('No Get Profile API is configured. Please enable at least one provider in Settings.');
+      return false;
+    }
+    if (!allDone) {
+      alert('All configured Get Profile APIs failed. Please upload a CV manually to proceed.');
+      return false;
     }
 
     // Disable the GP button once the profile + PDF have been saved
@@ -3825,26 +3890,27 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
       btnEl.style.color = '#aaa';
     }
   } catch (err) {
-    console.error('[linkdapi] get-profile error:', err);
-    alert(`linkdapi profile fetch error: ${err.message || err}`);
+    console.error('[GP] get-profile error:', err);
+    alert(`GP profile fetch error: ${err.message || err}`);
   } finally {
     // Restore the GP button only if the operation did NOT complete successfully
     if (!allDone && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
   }
-  return allDone;
+  return allDone ? successSvc : false;
 }
 
 // ---------------------------------------------------------------------------
 // Download the saved GP profile PDF for a LinkedIn URL.
-// Tries GET /api/linkdapi/get-profile-pdf; if the PDF exists the browser
-// downloads it as a file attachment.  Returns true on success, false if the
-// PDF is not found (so callers can fall back gracefully).
+// Tries GET /api/<active-gp-service>/get-profile-pdf; if the PDF exists the
+// browser downloads it as a file attachment.  Returns true on success, false
+// if the PDF is not found (so callers can fall back gracefully).
 // ---------------------------------------------------------------------------
 async function _downloadGpProfilePdf(linkedinUrl) {
   if (!linkedinUrl) return false;
   try {
+    const svc = _activeGpService();
     const resp = await fetch(
-      '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
+      '/api/' + svc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
       { credentials: 'same-origin' }
     );
     if (!resp.ok) return false;
@@ -4223,15 +4289,19 @@ function buildRow(row) {
                 assessBtn.onmouseout  = function() { this.style.background = 'white'; };
 
                 // shared 4-step assess pipeline (used by both Assess and Ingest buttons)
-                async function _runAssessPipeline(btn, label) {
+                // svcOverride: when provided (returned by _downloadLinkdapiProfile) uses that
+                // service to fetch the PDF instead of the primary configured service, ensuring
+                // the same provider that saved the PDF is used to retrieve it.
+                async function _runAssessPipeline(btn, label, svcOverride) {
                     btn.textContent = 'Fetching PDF…';
+                    const _gpGetSvc = svcOverride || _activeGpService();
                     const pdfResp = await fetch(
-                        '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                        '/api/' + _gpGetSvc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
                         { credentials: 'same-origin' }
                     );
                     if (!pdfResp.ok) {
                         const errData = await pdfResp.json().catch(() => ({}));
-                        throw new Error(errData.error || `PDF fetch failed HTTP ${pdfResp.status}`);
+                        throw new Error(`PDF fetch failed: ${errData.error || pdfResp.statusText} (HTTP ${pdfResp.status})`);
                     }
                     const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
                     const pdfBytes   = await pdfResp.arrayBuffer();
@@ -4256,6 +4326,125 @@ function buildRow(row) {
                     return await performCombinedAssessment(tr, value, {}, true, true);
                 }
 
+                // Switches btn to "Download" — PDF was generated but CV upload/assess failed with
+                // "Assessment pending". Lets the user save the PDF, then transitions to Upload CV.
+                function _gpBtnToDownload(btn, svc) {
+                    btn.textContent = 'Download';
+                    btn.disabled = false;
+                    btn.classList.remove('btn-spinning');
+                    btn.style.cssText = _gpBtnCss + ' background:#e8f0fe; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); display:block;';
+                    btn.title = 'Download generated PDF (No CV uploaded — Assessment pending)';
+                    btn.onmouseover = function() { this.style.background = '#d0e2fb'; };
+                    btn.onmouseout  = function() { this.style.background = '#e8f0fe'; };
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        if (btn.disabled) return;
+                        btn.disabled = true;
+                        btn.textContent = 'Downloading…';
+                        try {
+                            const pdfResp = await fetch(
+                                '/api/' + svc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                                { credentials: 'same-origin' }
+                            );
+                            if (!pdfResp.ok) throw new Error('PDF download failed');
+                            const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
+                            const pdfBytes = await pdfResp.arrayBuffer();
+                            const dlBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+                            const dlUrl = URL.createObjectURL(dlBlob);
+                            const a = document.createElement('a');
+                            a.href = dlUrl;
+                            a.download = pdfFilename;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(dlUrl);
+                            // After download: switch to Upload CV so user can manually re-upload
+                            _gpBtnToUploadCv(btn);
+                        } catch (dlErr) {
+                            console.error('[GP Download] failed:', dlErr);
+                            btn.textContent = 'Download';
+                            btn.disabled = false;
+                            alert('Download failed: ' + (dlErr.message || dlErr));
+                        }
+                    };
+                }
+
+                // Switches btn to "Upload CV" mode after the user has downloaded the PDF.
+                // Creates a hidden file input and wires up upload → parse → assess flow.
+                function _gpBtnToUploadCv(btn) {
+                    btn.textContent = 'Upload CV';
+                    btn.disabled = false;
+                    btn.style.cssText = _gpBtnCss + ' background:white; color:var(--azure-dragon,#073679); border:1px solid var(--azure-dragon,#073679); display:block;';
+                    btn.title = 'Upload CV for assessment';
+                    btn.onmouseover = function() { this.style.background = '#eff3f8'; };
+                    btn.onmouseout  = function() { this.style.background = 'white'; };
+                    // Remove any stale file inputs left from previous calls to this function.
+                    btn.parentElement.querySelectorAll('input[type="file"][data-gp-upload]').forEach(el => el.remove());
+                    const fi = document.createElement('input');
+                    fi.type = 'file';
+                    fi.accept = 'application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+                    fi.style.display = 'none';
+                    fi.dataset.gpUpload = '1';
+                    btn.parentElement.appendChild(fi);
+                    btn.onclick = (e) => { e.stopPropagation(); fi.click(); };
+                    fi.onchange = async () => {
+                        if (!fi.files.length) return;
+                        const file = fi.files[0];
+                        if (file.type !== 'application/pdf' && !file.name.match(/\.(doc|docx)$/i)) {
+                            alert('Please upload a PDF or DOC file.');
+                            fi.value = '';
+                            return;
+                        }
+                        btn.textContent = '...';
+                        btn.disabled = true;
+                        btn.classList.add('btn-spinning');
+                        const fd = new FormData();
+                        fd.append('cv', file);
+                        fd.append('linkedinurl', value);
+                        const nameCell = tr.querySelector('td[data-field="name"]');
+                        const candName = nameCell ? nameCell.textContent.trim() : '';
+                        if (candName) fd.append('name', cleanNameForUpload(candName));
+                        const uid = window.__SV_ACTIVE_USERID || '';
+                        if (uid) fd.append('userid', uid);
+                        setSearchResultButtonsEnabled(false);
+                        try {
+                            const res = await fetch(API_UPLOAD_CV, {
+                                method: 'POST', body: fd, credentials: 'same-origin'
+                            });
+                            if (!res.ok) {
+                                const errData = await res.json().catch(() => ({}));
+                                throw new Error(errData.error || 'Upload failed');
+                            }
+                            btn.textContent = 'Analyzing…';
+                            const analyzeRes = await fetch(API_PARSE_CV_AND_UPDATE, {
+                                method: 'POST', headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ linkedinurl: value })
+                            });
+                            const analyzeData = await analyzeRes.json().catch(() => ({}));
+                            btn.textContent = 'Processing…';
+                            const assessOk = await performCombinedAssessment(tr, value, analyzeData, true, true);
+                            if (assessOk === false) {
+                                btn.textContent = 'Upload CV';
+                                btn.disabled = false;
+                                btn.classList.remove('btn-spinning');
+                            } else {
+                                updateUploadButtonToView(value);
+                                persistCompletedDetailRow(value);
+                                setTimeout(() => { const r = document.getElementById('reloadBtn'); if (r) r.click(); }, 1000);
+                            }
+                        } catch (upErr) {
+                            console.error('[GP Upload CV] failed:', upErr);
+                            btn.textContent = 'Upload CV';
+                            btn.disabled = false;
+                            btn.classList.remove('btn-spinning');
+                            alert('Upload failed: ' + (upErr.message || upErr));
+                        } finally {
+                            setSearchResultButtonsEnabled(true);
+                            fi.value = '';
+                        }
+                    };
+                }
+
                 assessBtn.onclick = async (e) => {
                     e.stopPropagation();
                     if (assessBtn.disabled) return;
@@ -4276,10 +4465,16 @@ function buildRow(row) {
                         }
                     } catch (err) {
                         console.error('[GP Assess] failed:', err);
-                        assessBtn.textContent = 'Assess';
-                        assessBtn.disabled = false;
-                        assessBtn.classList.remove('btn-spinning');
-                        alert('GP Assess failed: ' + (err.message || err));
+                        if (err.message && err.message.includes('Assessment pending')) {
+                            // PDF was generated but CV not yet accessible for assessment;
+                            // offer Download so the user can retrieve the PDF directly.
+                            _gpBtnToDownload(assessBtn, _activeGpService());
+                        } else {
+                            assessBtn.textContent = 'Assess';
+                            assessBtn.disabled = false;
+                            assessBtn.classList.remove('btn-spinning');
+                            alert('GP Assess failed: ' + (err.message || err));
+                        }
                     } finally {
                         setSearchResultButtonsEnabled(true);
                     }
@@ -4300,13 +4495,19 @@ function buildRow(row) {
                     ingestBtn.disabled = true;
                     ingestBtn.classList.add('btn-spinning');
                     setSearchResultButtonsEnabled(false);
+                    // Tracks the last GP service that successfully generated a PDF so the
+                    // Download button (shown on "Assessment pending") uses the correct provider.
+                    let _gpSvcForDl = null;
                     try {
                         // ── GP duties: fetch JSON profile + generate FIOE-branded PDF ──
                         // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
                         // manage any button UI itself; the Ingest button is managed here instead.
                         ingestBtn.textContent = 'Getting profile…';
-                        const gpOk = await _downloadLinkdapiProfile(value, null);
-                        if (!gpOk) {
+                        // gpSvc is the service name string that succeeded (e.g. 'brightdata'),
+                        // or false if all providers failed. Using it as svcOverride ensures
+                        // _runAssessPipeline fetches the PDF from the same service that saved it.
+                        let gpSvc = await _downloadLinkdapiProfile(value, null, row.name || '');
+                        if (!gpSvc) {
                             // _downloadLinkdapiProfile already showed an alert
                             ingestBtn.textContent = 'Ingest';
                             ingestBtn.disabled = false;
@@ -4314,9 +4515,52 @@ function buildRow(row) {
                             setSearchResultButtonsEnabled(true);
                             return;
                         }
+                        _gpSvcForDl = gpSvc;
 
-                        // ── 4-step Assess pipeline ──
-                        const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest');
+                        // ── 4-step Assess pipeline with per-service fallback ──
+                        // If get-profile-pdf fails for gpSvc, retry the full download+assess
+                        // cycle with the next enabled provider(s) in the chain.
+                        // "tried" accumulates every service already attempted so we never
+                        // re-fetch from the same provider. Capped at total provider count
+                        // to guarantee termination even if error detection logic fails.
+                        //
+                        // Pre-populate with ALL providers that were already attempted during
+                        // the initial _downloadLinkdapiProfile call: in priority order every
+                        // provider before gpSvc was tried and failed, and gpSvc itself succeeded
+                        // (but its get-profile-pdf later failed). Skipping them in the retry
+                        // means _downloadLinkdapiProfile will jump straight to Scrapingdog
+                        // instead of wastefully re-running failed providers.
+                        const _gpPriorityOrder = ['linkdapi', 'brightdata', 'scrapingdog'];
+                        const tried = new Set();
+                        for (const _s of _gpPriorityOrder) {
+                            tried.add(_s);
+                            if (_s === gpSvc) break;
+                        }
+                        const _maxSvcs = _gpPriorityOrder.length;
+                        let assessOk = false;
+                        let _retries = 0;
+                        while (_retries++ < _maxSvcs) {
+                            tried.add(gpSvc);
+                            try {
+                                assessOk = await _runAssessPipeline(ingestBtn, 'Ingest', gpSvc);
+                                break; // success (or performCombinedAssessment returned false)
+                            } catch (pdfErr) {
+                                // Only retry when the PDF fetch itself failed — propagate other errors
+                                if (!pdfErr.message || !pdfErr.message.includes('PDF fetch failed')) {
+                                    throw pdfErr;
+                                }
+                                console.warn('[GP Ingest] PDF fetch failed for', gpSvc, '— trying next provider…');
+                                ingestBtn.textContent = 'Getting profile…';
+                                const fallbackSvc = await _downloadLinkdapiProfile(value, null, row.name || '', [...tried]);
+                                if (!fallbackSvc) {
+                                    // No more providers left; surface the original PDF error
+                                    throw pdfErr;
+                                }
+                                gpSvc = fallbackSvc;
+                                _gpSvcForDl = gpSvc;
+                            }
+                        }
+
                         if (assessOk === false) {
                             ingestBtn.textContent = 'Ingest';
                             ingestBtn.disabled = false;
@@ -4328,10 +4572,16 @@ function buildRow(row) {
                         }
                     } catch (err) {
                         console.error('[GP Ingest] failed:', err);
-                        ingestBtn.textContent = 'Ingest';
-                        ingestBtn.disabled = false;
-                        ingestBtn.classList.remove('btn-spinning');
-                        alert('GP Ingest failed: ' + (err.message || err));
+                        if (err.message && err.message.includes('Assessment pending') && _gpSvcForDl) {
+                            // PDF was generated but CV not yet accessible for assessment;
+                            // offer Download so the user can retrieve the PDF directly.
+                            _gpBtnToDownload(ingestBtn, _gpSvcForDl);
+                        } else {
+                            ingestBtn.textContent = 'Ingest';
+                            ingestBtn.disabled = false;
+                            ingestBtn.classList.remove('btn-spinning');
+                            alert('GP Ingest failed: ' + (err.message || err));
+                        }
                     } finally {
                         setSearchResultButtonsEnabled(true);
                     }
@@ -4341,7 +4591,9 @@ function buildRow(row) {
                 td.appendChild(ingestBtn);
 
                 // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
-                fetch('/api/linkdapi/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
+                // Route to the endpoint that matches the active GP service.
+                const _gpCheckSvc = _activeGpService();
+                fetch('/api/' + _gpCheckSvc + '/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
                             assessBtn.style.display = 'block';
@@ -5373,6 +5625,12 @@ async function performCombinedAssessment(tr, anchor, analyzeData, isLevel2Reques
 
     } catch(e) {
         console.error("Combined Assessment failed", e);
+        // Re-throw "Assessment pending" so the caller (ingestBtn / assessBtn) can
+        // detect it and switch the button to "Download".  All other errors are
+        // handled locally (UI reset + log) and not propagated.
+        if (e && e.message && e.message.includes('Assessment pending')) {
+            throw e;
+        }
         if(container) container.innerHTML = '<span class="error">Assessment failed.</span>';
         if(detailsContainer) detailsContainer.innerHTML = '<span class="error">Assessment failed.</span>';
         if(btn) {
@@ -7971,6 +8229,10 @@ function _hasPdfInSet(existingSet, slug) {
 // ---------------------------------------------------------------------------
 async function _updateBulkActionButton() {
     if (!bulkIngestBtn || !bulkAssessmentBtn) return;
+    // Don't attempt list-profile-pdfs until the GP status fetch has resolved;
+    // without this guard the call fires before __BRIGHTDATA_ENABLED / __GP_LINKDAPI_ENABLED
+    // are set, causing the wrong service endpoint to be used.
+    if (!window.__GP_STATUS_LOADED) return;
     if (!window.__LINKDAPI_ENABLED) {
         bulkAssessmentBtn.style.display = '';
         bulkIngestBtn.style.display = 'none';
@@ -7985,7 +8247,7 @@ async function _updateBulkActionButton() {
         return;
     }
     try {
-        const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+        const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
         const ld = lr.ok ? await lr.json() : { files: [] };
         const existing = new Set((ld.files || []).map(f => f.toLowerCase()));
         const hasMissing = gpRows.some(r => !_hasPdfInSet(existing, _profileSlugFromUrl(r.linkedinurl)));
@@ -8150,7 +8412,7 @@ if (bulkAssessmentBtn && bulkDirInput) {
             // same upload+verify+assess pipeline (replicates the manual flow of clicking
             // Bulk Assessment → navigating to the profiles folder → clicking Upload).
             try {
-                const listResp = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+                const listResp = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
                 if (!listResp.ok) {
                     // Guard against non-JSON error bodies (HTML login redirects, 500 pages, etc.)
                     const ct = listResp.headers.get('content-type') || '';
@@ -8296,7 +8558,7 @@ if (bulkIngestBtn) {
         // Fetch existing PDFs to avoid re-ingesting profiles that already have a PDF
         let existingPdfs = new Set();
         try {
-            const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+            const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
             const ld = lr.ok ? await lr.json() : { files: [] };
             existingPdfs = new Set((ld.files || []).map(f => f.toLowerCase()));
         } catch (_) {}
@@ -8323,7 +8585,7 @@ if (bulkIngestBtn) {
         for (let i = 0; i < toIngest.length; i++) {
             bulkIngestBtn.textContent = `Ingesting ${i + 1}/${toIngest.length}\u2026`;
             try {
-                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null);
+                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null, toIngest[i].name || '');
                 if (ok) done++; else failed++;
             } catch (_) { failed++; }
         }

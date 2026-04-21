@@ -5,6 +5,11 @@
   },
   "scrapingdog": {
     "api_key": "",
-    "enabled": "enabled"
+    "enabled": "disabled"
+  },
+  "brightdata": {
+    "api_key": "",
+    "zone": "serp_api1",
+    "enabled": "disabled"
   }
 }
