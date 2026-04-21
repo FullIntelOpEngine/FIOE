@@ -8035,7 +8035,7 @@ async function _updateBulkActionButton() {
         return;
     }
     try {
-        const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+        const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
         const ld = lr.ok ? await lr.json() : { files: [] };
         const existing = new Set((ld.files || []).map(f => f.toLowerCase()));
         const hasMissing = gpRows.some(r => !_hasPdfInSet(existing, _profileSlugFromUrl(r.linkedinurl)));
@@ -8200,7 +8200,7 @@ if (bulkAssessmentBtn && bulkDirInput) {
             // same upload+verify+assess pipeline (replicates the manual flow of clicking
             // Bulk Assessment → navigating to the profiles folder → clicking Upload).
             try {
-                const listResp = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+                const listResp = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
                 if (!listResp.ok) {
                     // Guard against non-JSON error bodies (HTML login redirects, 500 pages, etc.)
                     const ct = listResp.headers.get('content-type') || '';
@@ -8346,7 +8346,7 @@ if (bulkIngestBtn) {
         // Fetch existing PDFs to avoid re-ingesting profiles that already have a PDF
         let existingPdfs = new Set();
         try {
-            const lr = await fetch('/api/linkdapi/list-profile-pdfs', { credentials: 'same-origin' });
+            const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
             const ld = lr.ok ? await lr.json() : { files: [] };
             existingPdfs = new Set((ld.files || []).map(f => f.toLowerCase()));
         } catch (_) {}

@@ -7534,6 +7534,28 @@ def brightdata_get_profile():
 # frontend call the endpoint that matches the active service rather than always
 # routing through the Linkdapi namespace.
 
+@app.get("/api/scrapingdog/list-profile-pdfs")
+@_require_session
+def scrapingdog_list_profile_pdfs():
+    """List saved GP profile PDFs for the current session user (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_list_profile_pdfs()
+
+
+@app.get("/api/brightdata/list-profile-pdfs")
+@_require_session
+def brightdata_list_profile_pdfs():
+    """List saved GP profile PDFs for the current session user (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_list_profile_pdfs()
+
+
 @app.get("/api/scrapingdog/check-profile-pdf")
 @_require_session
 def scrapingdog_check_profile_pdf():
