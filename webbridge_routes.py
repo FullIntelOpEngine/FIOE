@@ -5725,7 +5725,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, timeout: int = 30
             return resp.text, resp.status_code
         try:
             trigger_data = resp.json()
-        except (ValueError, Exception):
+        except Exception:
             logger.warning("[brightdata] trigger response is not JSON: %.200s", resp.text[:200])
             return resp.text, 502
         snapshot_id = trigger_data.get("snapshot_id")
@@ -5771,7 +5771,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, timeout: int = 30
                         if status == "ready" or not status:
                             # Might be a single-object response
                             return body, 200
-                except (ValueError, Exception):
+                except Exception:
                     pass
                 # Unknown format — continue polling
                 continue
@@ -7479,7 +7479,7 @@ def brightdata_get_profile():
         return jsonify({"error": "BrightData returned HTTP 403 — quota may be exceeded or key restricted"}), 403
     if status_code == 202:
         return jsonify({
-            "error": "Job accepted. Results will be available in 2-3 minutes. Try again shortly.",
+            "message": "Job accepted. Results will be available in 2-3 minutes. Try again shortly.",
             "status": "processing",
         }), 202
     if status_code >= 400:
@@ -7491,7 +7491,7 @@ def brightdata_get_profile():
 
     try:
         raw_data = json.loads(body_str)
-    except (json.JSONDecodeError, ValueError) as je:
+    except ValueError as je:
         logger.warning("[brightdata] invalid JSON: %s; body snippet: %.200s",
                        je, body_str[:200] if body_str else "(empty)")
         return jsonify({"error": "Invalid JSON from BrightData"}), 502
@@ -7544,7 +7544,7 @@ def brightdata_get_profile():
 
     try:
         os.makedirs(out_dir, exist_ok=True)
-        with open(out_path, "w", encoding="utf-8") as fh:
+        with open(real_out_path, "w", encoding="utf-8") as fh:
             json.dump(profile_data, fh, ensure_ascii=False, indent=2)
     except Exception as exc:
         logger.exception("[brightdata] failed to save profile JSON: %s", exc)
@@ -7558,10 +7558,15 @@ def brightdata_get_profile():
         return jsonify({"error": "PDF generation failed"}), 500
 
     pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
-    # pdf_filename derives from out_filename which was already validated above
     pdf_path = os.path.join(out_dir, pdf_filename)
     try:
-        with open(pdf_path, "wb") as fh:
+        real_pdf_path = os.path.realpath(pdf_path)
+        if os.path.commonpath([real_out_dir, real_pdf_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+    try:
+        with open(real_pdf_path, "wb") as fh:
             fh.write(pdf_bytes)
         logger.info("[brightdata PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
     except Exception as exc:
