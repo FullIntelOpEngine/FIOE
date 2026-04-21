@@ -4403,7 +4403,10 @@ function buildRow(row) {
                         // instead of wastefully re-running failed providers.
                         const _gpPriorityOrder = ['linkdapi', 'brightdata', 'scrapingdog'];
                         const tried = new Set();
-                        for (const _s of _gpPriorityOrder) { tried.add(_s); if (_s === gpSvc) break; }
+                        for (const _s of _gpPriorityOrder) {
+                            tried.add(_s);
+                            if (_s === gpSvc) break;
+                        }
                         const _maxSvcs = _gpPriorityOrder.length;
                         let assessOk = false;
                         let _retries = 0;
