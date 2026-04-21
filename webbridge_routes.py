@@ -5748,9 +5748,9 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
 
     try:
         trigger_data = trigger_resp.json()
-    except ValueError as je:
+    except ValueError as parse_err:
         logger.warning("[brightdata] trigger response is not valid JSON: %s; body: %.200s",
-                       je, trigger_resp.text[:200])
+                       parse_err, trigger_resp.text[:200])
         return "", 502
 
     snapshot_id = trigger_data.get("snapshot_id") or trigger_data.get("id")
@@ -5764,8 +5764,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
     # ── Step 2: poll snapshot until ready ─────────────────────────────────
     poll_url = f"{_BRIGHTDATA_SNAPSHOT_URL}/{snapshot_id}"
     deadline = _time.monotonic() + poll_timeout
-    while _time.monotonic() < deadline:
-        _time.sleep(poll_interval)
+    while True:
         try:
             snap_resp = requests.get(
                 poll_url,
@@ -5779,34 +5778,35 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
                 return snap_resp.text, snap_resp.status_code
         except requests.exceptions.Timeout:
             logger.warning("[brightdata] snapshot poll timed out; retrying")
-            continue
         except Exception as exc:
             logger.error("[brightdata] snapshot poll failed: %s", exc)
             return "", 0
+        else:
+            try:
+                snap_data = snap_resp.json()
+            except ValueError:
+                logger.warning("[brightdata] snapshot response is not valid JSON; retrying")
+            else:
+                status = snap_data.get("status", "")
+                if status == "ready":
+                    # Data may be in a "data" key or at the top level as a list
+                    data_payload = snap_data.get("data", snap_data)
+                    return (
+                        data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
+                        200,
+                    )
+                if status == "failed":
+                    logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s", snapshot_id)
+                    return snap_resp.text, 502
+                if status not in ("running", "pending", ""):
+                    logger.warning("[brightdata] unexpected snapshot status=%r; body: %.200s",
+                                   status, snap_resp.text[:200])
+                    return snap_resp.text, 502
+                logger.debug("[brightdata] snapshot status=%r — waiting", status)
 
-        try:
-            snap_data = snap_resp.json()
-        except ValueError:
-            logger.warning("[brightdata] snapshot response is not valid JSON; retrying")
-            continue
-
-        status = snap_data.get("status", "")
-        if status in ("running", "pending", ""):
-            logger.debug("[brightdata] snapshot status=%r — waiting", status)
-            continue
-        if status == "failed":
-            logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s", snapshot_id)
-            return snap_resp.text, 502
-        if status == "ready":
-            # Data may be in a "data" key or at the top level as a list
-            data_payload = snap_data.get("data", snap_data)
-            return (
-                data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
-                200,
-            )
-        logger.warning("[brightdata] unexpected snapshot status=%r; body: %.200s",
-                       status, snap_resp.text[:200])
-        return snap_resp.text, 502
+        if _time.monotonic() >= deadline:
+            break
+        _time.sleep(poll_interval)
 
     logger.warning("[brightdata] snapshot polling timed out after %ds for snapshot_id=%s",
                    poll_timeout, snapshot_id)
