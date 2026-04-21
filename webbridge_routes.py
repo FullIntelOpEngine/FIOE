@@ -5719,13 +5719,11 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
     }
 
     # ── Step 1: trigger collection ─────────────────────────────────────────
-    trigger_payload = {
-        "collector_id": collector_id,
-        "queue": [{"url": linkedin_url}],
-    }
+    trigger_payload = [{"url": linkedin_url}]
     try:
         trigger_resp = requests.post(
             _BRIGHTDATA_TRIGGER_URL,
+            params={"dataset_id": collector_id},
             json=trigger_payload,
             headers=headers,
             timeout=30,
