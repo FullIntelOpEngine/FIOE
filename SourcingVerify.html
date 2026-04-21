@@ -3751,6 +3751,17 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 }
 
 // ---------------------------------------------------------------------------
+// Returns the identifier of the currently active GP profile service.
+// Used to route profile-PDF check / retrieve requests to the correct backend
+// endpoint (all three services write to the same shared profiles directory).
+// ---------------------------------------------------------------------------
+function _activeGpService() {
+  if (window.__BRIGHTDATA_ENABLED)  return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED) return 'scrapingdog';
+  return 'linkdapi';
+}
+
+// ---------------------------------------------------------------------------
 // linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
 // Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
@@ -3878,7 +3889,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
 async function _downloadGpProfilePdf(linkedinUrl) {
   if (!linkedinUrl) return false;
   try {
-    const svc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
+    const svc = _activeGpService();
     const resp = await fetch(
       '/api/' + svc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
       { credentials: 'same-origin' }
@@ -4261,7 +4272,7 @@ function buildRow(row) {
                 // shared 4-step assess pipeline (used by both Assess and Ingest buttons)
                 async function _runAssessPipeline(btn, label) {
                     btn.textContent = 'Fetching PDF…';
-                    const _gpGetSvc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
+                    const _gpGetSvc = _activeGpService();
                     const pdfResp = await fetch(
                         '/api/' + _gpGetSvc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
                         { credentials: 'same-origin' }
@@ -4379,7 +4390,7 @@ function buildRow(row) {
 
                 // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
                 // Route to the endpoint that matches the active GP service.
-                const _gpCheckSvc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
+                const _gpCheckSvc = _activeGpService();
                 fetch('/api/' + _gpCheckSvc + '/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
