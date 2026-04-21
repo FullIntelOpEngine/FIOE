@@ -5695,7 +5695,8 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeou
     zone : str
         BrightData zone identifier (managed at https://brightdata.com/cp/zones).
     timeout : int
-        Request timeout in seconds.
+        Request timeout in seconds.  60 s is used because the SERP API is a
+        single synchronous call — no polling loop is involved.
 
     Returns ``(body_str, http_status)`` where:
       - success: body_str is a JSON string (list or dict), status 200

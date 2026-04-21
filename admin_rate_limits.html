@@ -4840,6 +4840,7 @@ function renderApiKeysCard() {
         const ldKeyStillSet = isLinkdapi    ? !!(ldKey || ldCfg.api_key_set) : false;
         const sdKeyStillSet = isScrapingdog ? !!(sdKey || sdCfg.api_key_set) : false;
         const bdKeyStillSet = isBrightData  ? !!(bdKey || bdCfg.api_key_set) : false;
+        // Zone is not cleared on deactivation (only api_key is), so zone_set persists regardless of active provider
         const bdZoneStillSet = !!(bdZone || bdCfg.zone_set);
         _getProfilesConfig.linkdapi    = { api_key_set: ldKeyStillSet, enabled: isLinkdapi    ? 'enabled' : 'disabled' };
         _getProfilesConfig.scrapingdog = { api_key_set: sdKeyStillSet, enabled: isScrapingdog ? 'enabled' : 'disabled' };
