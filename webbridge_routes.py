@@ -7528,6 +7528,56 @@ def brightdata_get_profile():
     })
 
 
+# ── Service-agnostic profile-PDF check / retrieve endpoints ──────────────────
+# Scrapingdog and BrightData save their PDFs to the same LINKDAPI_PROFILE_OUTPUT_DIR
+# using the same filename convention as Linkdapi.  These thin aliases let the
+# frontend call the endpoint that matches the active service rather than always
+# routing through the Linkdapi namespace.
+
+@app.get("/api/scrapingdog/check-profile-pdf")
+@_require_session
+def scrapingdog_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_check_profile_pdf()
+
+
+@app.get("/api/brightdata/check-profile-pdf")
+@_require_session
+def brightdata_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_check_profile_pdf()
+
+
+@app.get("/api/scrapingdog/get-profile-pdf")
+@_require_session
+def scrapingdog_get_profile_pdf():
+    """Return the saved GP profile PDF bytes (Scrapingdog variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_get_profile_pdf()
+
+
+@app.get("/api/brightdata/get-profile-pdf")
+@_require_session
+def brightdata_get_profile_pdf():
+    """Return the saved GP profile PDF bytes (BrightData variant).
+
+    Delegates to the shared implementation used by all GP profile services
+    since they all write to the same profiles directory.
+    """
+    return linkdapi_get_profile_pdf()
+
+
 @_require_session
 def process_update_tenure():
     """Best-effort endpoint to update the tenure field in the process table.

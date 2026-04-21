@@ -3871,15 +3871,16 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
 
 // ---------------------------------------------------------------------------
 // Download the saved GP profile PDF for a LinkedIn URL.
-// Tries GET /api/linkdapi/get-profile-pdf; if the PDF exists the browser
-// downloads it as a file attachment.  Returns true on success, false if the
-// PDF is not found (so callers can fall back gracefully).
+// Tries GET /api/<active-gp-service>/get-profile-pdf; if the PDF exists the
+// browser downloads it as a file attachment.  Returns true on success, false
+// if the PDF is not found (so callers can fall back gracefully).
 // ---------------------------------------------------------------------------
 async function _downloadGpProfilePdf(linkedinUrl) {
   if (!linkedinUrl) return false;
   try {
+    const svc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
     const resp = await fetch(
-      '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
+      '/api/' + svc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(linkedinUrl),
       { credentials: 'same-origin' }
     );
     if (!resp.ok) return false;
@@ -4260,8 +4261,9 @@ function buildRow(row) {
                 // shared 4-step assess pipeline (used by both Assess and Ingest buttons)
                 async function _runAssessPipeline(btn, label) {
                     btn.textContent = 'Fetching PDF…';
+                    const _gpGetSvc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
                     const pdfResp = await fetch(
-                        '/api/linkdapi/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
+                        '/api/' + _gpGetSvc + '/get-profile-pdf?linkedin_url=' + encodeURIComponent(value),
                         { credentials: 'same-origin' }
                     );
                     if (!pdfResp.ok) {
@@ -4376,7 +4378,9 @@ function buildRow(row) {
                 td.appendChild(ingestBtn);
 
                 // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
-                fetch('/api/linkdapi/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
+                // Route to the endpoint that matches the active GP service.
+                const _gpCheckSvc = window.__BRIGHTDATA_ENABLED ? 'brightdata' : window.__SCRAPINGDOG_ENABLED ? 'scrapingdog' : 'linkdapi';
+                fetch('/api/' + _gpCheckSvc + '/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
                             assessBtn.style.display = 'block';
