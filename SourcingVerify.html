@@ -3814,8 +3814,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
       }
       return { ok: true };
     } else {
-      // linkdapi
-      if (btnEl) { btnEl.textContent = 'PDF…'; }
+      // linkdapi — two-step: fetch JSON then generate PDF
       const resp = await fetch(
         `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
       );
@@ -3830,6 +3829,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
         console.warn('[GP/linkdapi] Missing saved_filename in response');
         return { ok: false };
       }
+      if (btnEl) { btnEl.textContent = 'PDF…'; }
       const pdfResp = await fetch(
         `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
         { credentials: 'same-origin' }

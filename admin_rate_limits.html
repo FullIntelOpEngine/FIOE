@@ -4829,7 +4829,8 @@ function renderApiKeysCard() {
           if (providerKey === 'scrapingdog') _getProfilesConfig.scrapingdog = { api_key_set: keyStillSet, enabled };
           if (providerKey === 'brightdata') {
             const zoneVal = (document.getElementById('zone-gp-brightdata')?.value || '').trim();
-            const zoneStillSet = enabled === 'disabled' ? false : !!(zoneVal || bdCfg.zone_set);
+            // Zone is not purged on disable — only the API key is. Preserve zone_set status.
+            const zoneStillSet = !!(zoneVal || bdCfg.zone_set);
             _getProfilesConfig.brightdata = { api_key_set: keyStillSet, zone_set: zoneStillSet, enabled };
             if (zoneVal) { const el = document.getElementById('zone-gp-brightdata'); if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
           }
