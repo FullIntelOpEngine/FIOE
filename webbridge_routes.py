@@ -5767,37 +5767,49 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
                 timeout=30,
             )
             logger.info("[brightdata] GET snapshot/%s → HTTP %d", snapshot_id, snap_resp.status_code)
-            if snap_resp.status_code >= 400:
-                logger.warning("[brightdata] snapshot HTTP %d; body: %.200s",
-                               snap_resp.status_code, snap_resp.text[:200])
-                return snap_resp.text, snap_resp.status_code
         except requests.exceptions.Timeout:
             logger.warning("[brightdata] snapshot poll timed out; retrying")
+            if _time.monotonic() >= deadline:
+                break
+            _time.sleep(poll_interval)
+            continue
         except Exception as exc:
             logger.error("[brightdata] snapshot poll failed: %s", exc)
             return "", 0
-        else:
+
+        if snap_resp.status_code == 200:
+            # HTTP 200 means the snapshot is ready — data is in the response body.
+            # BrightData may return the profile data as a JSON array directly, or
+            # wrapped in a dict (e.g. {"status": "ready", "data": [...]}).
             try:
                 snap_data = snap_resp.json()
             except ValueError:
-                logger.warning("[brightdata] snapshot response is not valid JSON; retrying")
-            else:
-                status = snap_data.get("status", "")
-                if status == "ready":
-                    # Data may be in a "data" key or at the top level as a list
-                    data_payload = snap_data.get("data", snap_data)
-                    return (
-                        data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
-                        200,
-                    )
-                if status == "failed":
-                    logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s", snapshot_id)
+                logger.warning("[brightdata] snapshot HTTP 200 but response is not valid JSON; "
+                               "body: %.200s", snap_resp.text[:200])
+                return "", 502
+            if isinstance(snap_data, list):
+                return json.dumps(snap_data), 200
+            if isinstance(snap_data, dict):
+                if snap_data.get("status") == "failed":
+                    logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s",
+                                   snapshot_id)
                     return snap_resp.text, 502
-                if status not in ("running", "pending", ""):
-                    logger.warning("[brightdata] unexpected snapshot status=%r; body: %.200s",
-                                   status, snap_resp.text[:200])
-                    return snap_resp.text, 502
-                logger.debug("[brightdata] snapshot status=%r — waiting", status)
+                data_payload = snap_data.get("data", snap_data)
+                return (
+                    data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
+                    200,
+                )
+            logger.warning("[brightdata] snapshot HTTP 200 but unexpected response type %s; "
+                           "body: %.200s", type(snap_data).__name__, snap_resp.text[:200])
+            return snap_resp.text, 502
+
+        if snap_resp.status_code >= 400:
+            logger.warning("[brightdata] snapshot HTTP %d; body: %.200s",
+                           snap_resp.status_code, snap_resp.text[:200])
+            return snap_resp.text, snap_resp.status_code
+
+        # HTTP 202 (or other 2xx) — snapshot still being collected; keep polling.
+        logger.debug("[brightdata] snapshot HTTP %d — still running", snap_resp.status_code)
 
         if _time.monotonic() >= deadline:
             break
