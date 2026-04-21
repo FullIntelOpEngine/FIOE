@@ -324,13 +324,15 @@ def _load_get_profiles_config() -> dict:
             cfg["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
         # Ensure brightdata key exists
         if "brightdata" not in cfg:
-            cfg["brightdata"] = {"api_key": "", "enabled": "disabled"}
+            cfg["brightdata"] = {"api_key": "", "zone": "", "enabled": "disabled"}
+        elif "zone" not in cfg["brightdata"]:
+            cfg["brightdata"]["zone"] = ""
         return cfg
     except Exception:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
             "scrapingdog": {"api_key": "", "enabled": "disabled"},
-            "brightdata": {"api_key": "", "enabled": "disabled"},
+            "brightdata": {"api_key": "", "zone": "", "enabled": "disabled"},
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -1281,6 +1283,7 @@ def admin_get_get_profiles_config():
             },
             "brightdata": {
                 "api_key_set": bool(brightdata.get("api_key")),
+                "zone_set": bool(brightdata.get("zone")),
                 "enabled": brightdata.get("enabled", "disabled"),
             },
         }
@@ -1325,7 +1328,9 @@ def admin_save_get_profiles_config():
     if "scrapingdog" not in current:
         current["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
     if "brightdata" not in current:
-        current["brightdata"] = {"api_key": "", "enabled": "disabled"}
+        current["brightdata"] = {"api_key": "", "zone": "", "enabled": "disabled"}
+    elif "zone" not in current["brightdata"]:
+        current["brightdata"]["zone"] = ""
 
     # Track which service is being activated so we can enforce single-activation
     activating_linkdapi = False
@@ -1368,6 +1373,8 @@ def admin_save_get_profiles_config():
             return jsonify({"error": "Invalid config for brightdata"}), 400
         if entry.get("api_key") is not None and entry["api_key"] != "":
             current["brightdata"]["api_key"] = str(entry["api_key"])
+        if entry.get("zone") is not None and entry["zone"] != "":
+            current["brightdata"]["zone"] = str(entry["zone"])
         if entry.get("enabled") is not None:
             if entry["enabled"] not in ("enabled", "disabled"):
                 return jsonify({"error": "Invalid enabled value for brightdata"}), 400
