@@ -5677,14 +5677,19 @@ _SCRAPINGDOG_MAX_RETRIES = 3
 
 # ── BrightData API constants ───────────────────────────────────────────────────
 _BRIGHTDATA_API_BASE = "api.brightdata.com"
-_BRIGHTDATA_REQUEST_URL = f"https://{_BRIGHTDATA_API_BASE}/request"
+_BRIGHTDATA_TRIGGER_URL = f"https://{_BRIGHTDATA_API_BASE}/datasets/v3/trigger"
+_BRIGHTDATA_SNAPSHOT_URL = f"https://{_BRIGHTDATA_API_BASE}/datasets/v3/snapshot"
+_BRIGHTDATA_POLL_INTERVAL = 5    # seconds between snapshot status polls
+_BRIGHTDATA_POLL_TIMEOUT  = 300  # maximum seconds to wait for snapshot to be ready
 
 
-def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeout: int = 60):
-    """Fetch a LinkedIn profile via BrightData SERP API.
+def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str,
+                               customer_id: str = "", poll_interval: int = _BRIGHTDATA_POLL_INTERVAL,
+                               poll_timeout: int = _BRIGHTDATA_POLL_TIMEOUT):
+    """Fetch a LinkedIn profile via BrightData LinkedIn Web Scraper API.
 
-    Calls POST https://api.brightdata.com/request with zone, url, and format
-    parameters as required by the BrightData SERP API specification.
+    Triggers a collection job via POST /datasets/v3/trigger and polls
+    GET /datasets/v3/snapshot/{snapshot_id} until the snapshot is ready.
 
     Parameters
     ----------
@@ -5692,43 +5697,120 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeou
         Full canonical LinkedIn profile URL (e.g. https://www.linkedin.com/in/username).
     api_key : str
         BrightData Bearer API key (from account settings).
-    zone : str
-        BrightData zone identifier (managed at https://brightdata.com/cp/zones).
-    timeout : int
-        Request timeout in seconds.  60 s is used because the SERP API is a
-        single synchronous call — no polling loop is involved.
+    collector_id : str
+        BrightData collector / dataset ID configured in admin settings.
+        Retrieved dynamically from the scraper configuration, not hardcoded.
+    customer_id : str
+        Optional BrightData customer ID; when provided the Authorization token
+        becomes ``<customer_id>:<api_key>`` as required by some account types.
+    poll_interval : int
+        Seconds to wait between snapshot status polls.
+    poll_timeout : int
+        Maximum seconds to wait for the snapshot to become ready.
 
     Returns ``(body_str, http_status)`` where:
       - success: body_str is a JSON string (list or dict), status 200
       - auth error: status 401 / 403
-      - other error: status >= 400 or 0 for network failure
+      - other error: status >= 400 or 0 for network / timeout failure
     """
+    import time as _time  # noqa: PLC0415
+
+    auth_token = f"{customer_id}:{api_key}" if customer_id else api_key
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {auth_token}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "zone": zone,
-        "url": linkedin_url,
-        "format": "json",
+
+    # ── Step 1: trigger collection ─────────────────────────────────────────
+    trigger_payload = {
+        "collector_id": collector_id,
+        "queue": [{"url": linkedin_url}],
     }
     try:
-        resp = requests.post(
-            _BRIGHTDATA_REQUEST_URL,
-            json=payload,
+        trigger_resp = requests.post(
+            _BRIGHTDATA_TRIGGER_URL,
+            json=trigger_payload,
             headers=headers,
-            timeout=timeout,
+            timeout=30,
         )
-        logger.info("[brightdata] POST /request → HTTP %d (%d bytes)", resp.status_code, len(resp.text))
-        if resp.status_code >= 400:
-            logger.warning("[brightdata] HTTP %d; body: %.200s", resp.status_code, resp.text[:200])
-        return resp.text, resp.status_code
+        logger.info("[brightdata] POST /datasets/v3/trigger → HTTP %d (%d bytes)",
+                    trigger_resp.status_code, len(trigger_resp.text))
+        if trigger_resp.status_code >= 400:
+            logger.warning("[brightdata] trigger HTTP %d; body: %.200s",
+                           trigger_resp.status_code, trigger_resp.text[:200])
+            return trigger_resp.text, trigger_resp.status_code
     except requests.exceptions.Timeout:
-        logger.warning("[brightdata] request timed out")
+        logger.warning("[brightdata] trigger request timed out")
         return "", 0
     except Exception as exc:
-        logger.error("[brightdata] request failed: %s", exc)
+        logger.error("[brightdata] trigger request failed: %s", exc)
         return "", 0
+
+    try:
+        trigger_data = trigger_resp.json()
+    except ValueError as je:
+        logger.warning("[brightdata] trigger response is not valid JSON: %s; body: %.200s",
+                       je, trigger_resp.text[:200])
+        return "", 502
+
+    snapshot_id = trigger_data.get("snapshot_id") or trigger_data.get("id")
+    if not snapshot_id:
+        logger.warning("[brightdata] no snapshot_id in trigger response: %.200s",
+                       trigger_resp.text[:200])
+        return "", 502
+
+    logger.info("[brightdata] snapshot_id=%s — polling for result", snapshot_id)
+
+    # ── Step 2: poll snapshot until ready ─────────────────────────────────
+    poll_url = f"{_BRIGHTDATA_SNAPSHOT_URL}/{snapshot_id}"
+    deadline = _time.monotonic() + poll_timeout
+    while _time.monotonic() < deadline:
+        _time.sleep(poll_interval)
+        try:
+            snap_resp = requests.get(
+                poll_url,
+                headers={"Authorization": f"Bearer {auth_token}"},
+                timeout=30,
+            )
+            logger.info("[brightdata] GET snapshot/%s → HTTP %d", snapshot_id, snap_resp.status_code)
+            if snap_resp.status_code >= 400:
+                logger.warning("[brightdata] snapshot HTTP %d; body: %.200s",
+                               snap_resp.status_code, snap_resp.text[:200])
+                return snap_resp.text, snap_resp.status_code
+        except requests.exceptions.Timeout:
+            logger.warning("[brightdata] snapshot poll timed out; retrying")
+            continue
+        except Exception as exc:
+            logger.error("[brightdata] snapshot poll failed: %s", exc)
+            return "", 0
+
+        try:
+            snap_data = snap_resp.json()
+        except ValueError:
+            logger.warning("[brightdata] snapshot response is not valid JSON; retrying")
+            continue
+
+        status = snap_data.get("status", "")
+        if status in ("running", "pending", ""):
+            logger.debug("[brightdata] snapshot status=%r — waiting", status)
+            continue
+        if status == "failed":
+            logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s", snapshot_id)
+            return snap_resp.text, 502
+        if status == "ready":
+            # Data may be in a "data" key or at the top level as a list
+            data_payload = snap_data.get("data", snap_data)
+            return (
+                data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
+                200,
+            )
+        logger.warning("[brightdata] unexpected snapshot status=%r; body: %.200s",
+                       status, snap_resp.text[:200])
+        return snap_resp.text, 502
+
+    logger.warning("[brightdata] snapshot polling timed out after %ds for snapshot_id=%s",
+                   poll_timeout, snapshot_id)
+    return "", 0
 
 
 def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60):
@@ -7381,13 +7463,14 @@ def scrapingdog_get_profile():
 @app.get("/api/brightdata/get-profile")
 @_require_session
 def brightdata_get_profile():
-    """Fetch a LinkedIn profile via BrightData for a given LinkedIn URL.
+    """Fetch a LinkedIn profile via BrightData LinkedIn Web Scraper API.
 
     Query parameters:
       linkedin_url – the LinkedIn profile URL (required)
 
-    Triggers a BrightData dataset collection job, polls for the result, saves
-    the profile JSON, converts to PDF via Gemini, and saves the PDF.
+    Triggers a BrightData dataset collection job using the collector_id from
+    the scraper configuration, polls for the snapshot result, saves the profile
+    JSON, converts to PDF via Gemini, and saves the PDF.
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
     if not linkedin_url:
@@ -7398,18 +7481,8 @@ def brightdata_get_profile():
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    # Candidate name forwarded from the frontend (used to build the SERP search query)
-    candidate_name = request.args.get("name", "").strip()
-
-    # Build a Google SERP URL so BrightData's SERP zone can locate the profile.
-    # Include the candidate name (if available) to improve result precision, and
-    # constrain the search to the specific profile path.
-    import urllib.parse as _urlparse  # noqa: PLC0415
-    if candidate_name:
-        search_query = f'"{candidate_name}" site:linkedin.com/in/{username}'
-    else:
-        search_query = f'site:linkedin.com/in/{username}'
-    serp_url = f"https://www.google.com/search?q={_urlparse.quote(search_query)}"
+    # Normalise to www.linkedin.com canonical form
+    canonical_url = f"https://www.linkedin.com/in/{username}"
 
     gp_cfg = _load_get_profiles_config()
     bd = gp_cfg.get("brightdata", {})
@@ -7418,12 +7491,13 @@ def brightdata_get_profile():
     api_key = (bd.get("api_key") or "").strip()
     if not api_key:
         return jsonify({"error": "BrightData API key is not configured"}), 503
-    zone = (bd.get("zone") or "").strip()
-    if not zone:
-        return jsonify({"error": "BrightData zone is not configured"}), 503
+    collector_id = (bd.get("collector_id") or "").strip()
+    if not collector_id:
+        return jsonify({"error": "BrightData collector ID is not configured"}), 503
+    customer_id = (bd.get("customer_id") or "").strip()
 
-    logger.info("[brightdata] fetching profile for %s via SERP URL: %s", linkedin_url, serp_url)
-    body_str, status_code = _brightdata_fetch_profile(serp_url, api_key, zone)
+    logger.info("[brightdata] fetching profile for %s (collector_id=%s)", canonical_url, collector_id)
+    body_str, status_code = _brightdata_fetch_profile(canonical_url, api_key, collector_id, customer_id)
 
     if status_code == 401:
         return jsonify({"error": "BrightData authentication failed (HTTP 401). Check your API key."}), 401

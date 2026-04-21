@@ -10,6 +10,8 @@
   "brightdata": {
     "api_key": "",
     "zone": "",
+    "customer_id": "",
+    "collector_id": "",
     "enabled": "disabled"
   }
 }
