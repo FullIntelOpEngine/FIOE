@@ -4392,10 +4392,13 @@ function buildRow(row) {
                         // If get-profile-pdf fails for gpSvc, retry the full download+assess
                         // cycle with the next enabled provider(s) in the chain.
                         // "tried" accumulates every service already attempted so we never
-                        // re-fetch from the same provider.
+                        // re-fetch from the same provider. Capped at total provider count
+                        // to guarantee termination even if error detection logic fails.
                         const tried = new Set();
+                        const _maxSvcs = ['linkdapi', 'brightdata', 'scrapingdog'].length;
                         let assessOk = false;
-                        while (true) {
+                        let _retries = 0;
+                        while (_retries++ < _maxSvcs) {
                             tried.add(gpSvc);
                             try {
                                 assessOk = await _runAssessPipeline(ingestBtn, 'Ingest', gpSvc);
