@@ -3754,16 +3754,18 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 // linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
 // Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
-async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
+async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
   try {
     if (window.__BRIGHTDATA_ENABLED) {
-      // ── BrightData path: fetch profile via BrightData API ────────────
-      const resp = await fetch(
-        `/api/brightdata/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
-      );
+      // ── BrightData path: fetch profile via BrightData SERP API ──────
+      // Pass the candidate name so the backend can construct the correct
+      // Google SERP query: "Candidate Name" site:linkedin.com/in/username
+      let bdUrl = `/api/brightdata/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`;
+      if (name) bdUrl += `&name=${encodeURIComponent(name)}`;
+      const resp = await fetch(bdUrl);
       if (resp.status === 202) {
         alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
         return false;
@@ -4338,7 +4340,7 @@ function buildRow(row) {
                         // Pass null as btnEl so _downloadLinkdapiProfile does not attempt to
                         // manage any button UI itself; the Ingest button is managed here instead.
                         ingestBtn.textContent = 'Getting profile…';
-                        const gpOk = await _downloadLinkdapiProfile(value, null);
+                        const gpOk = await _downloadLinkdapiProfile(value, null, row.name || '');
                         if (!gpOk) {
                             // _downloadLinkdapiProfile already showed an alert
                             ingestBtn.textContent = 'Ingest';
@@ -8356,7 +8358,7 @@ if (bulkIngestBtn) {
         for (let i = 0; i < toIngest.length; i++) {
             bulkIngestBtn.textContent = `Ingesting ${i + 1}/${toIngest.length}\u2026`;
             try {
-                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null);
+                const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null, toIngest[i].name || '');
                 if (ok) done++; else failed++;
             } catch (_) { failed++; }
         }

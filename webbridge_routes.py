@@ -7398,8 +7398,18 @@ def brightdata_get_profile():
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., de., …)
-    normalized_linkedin_url = f"https://www.linkedin.com/in/{username}"
+    # Candidate name forwarded from the frontend (used to build the SERP search query)
+    candidate_name = (request.args.get("name") or "").strip()
+
+    # Build a Google SERP URL so BrightData's SERP zone can locate the profile.
+    # Include the candidate name (if available) to improve result precision, and
+    # constrain the search to the specific profile path.
+    import urllib.parse as _urlparse
+    if candidate_name:
+        search_query = f'"{candidate_name}" site:linkedin.com/in/{username}'
+    else:
+        search_query = f'site:linkedin.com/in/{username}'
+    serp_url = f"https://www.google.com/search?q={_urlparse.quote(search_query)}"
 
     gp_cfg = _load_get_profiles_config()
     bd = gp_cfg.get("brightdata", {})
@@ -7412,8 +7422,8 @@ def brightdata_get_profile():
     if not zone:
         return jsonify({"error": "BrightData zone is not configured"}), 503
 
-    logger.info("[brightdata] fetching profile for %s (normalized: %s)", linkedin_url, normalized_linkedin_url)
-    body_str, status_code = _brightdata_fetch_profile(normalized_linkedin_url, api_key, zone)
+    logger.info("[brightdata] fetching profile for %s via SERP URL: %s", linkedin_url, serp_url)
+    body_str, status_code = _brightdata_fetch_profile(serp_url, api_key, zone)
 
     if status_code == 401:
         return jsonify({"error": "BrightData authentication failed (HTTP 401). Check your API key."}), 401
