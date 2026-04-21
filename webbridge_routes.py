@@ -5778,9 +5778,11 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
             return "", 0
 
         if snap_resp.status_code == 200:
-            # HTTP 200 means the snapshot is ready — data is in the response body.
-            # BrightData may return the profile data as a JSON array directly, or
-            # wrapped in a dict (e.g. {"status": "ready", "data": [...]}).
+            # HTTP 200 from BrightData means the snapshot is ready.  The response
+            # body is either the profile data as a JSON array (most common), or a
+            # dict wrapper such as {"status": "ready", "data": [...]}.
+            # We trust the HTTP 200 status code as the authoritative signal that
+            # data collection is complete, rather than an inner "status" field.
             try:
                 snap_data = snap_resp.json()
             except ValueError:
@@ -5788,12 +5790,18 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
                                "body: %.200s", snap_resp.text[:200])
                 return "", 502
             if isinstance(snap_data, list):
+                # Direct array of profile records — data is ready.
                 return json.dumps(snap_data), 200
             if isinstance(snap_data, dict):
-                if snap_data.get("status") == "failed":
+                status = snap_data.get("status", "")
+                if status == "failed":
                     logger.warning("[brightdata] snapshot status=failed for snapshot_id=%s",
                                    snapshot_id)
                     return snap_resp.text, 502
+                # "data" key present → data is ready in wrapper format.
+                # status absent or "ready" → data is ready (may be inline).
+                # status "running"/"pending" with no "data" key → rare intermediate
+                # state; treat HTTP 200 as authoritative and return what we have.
                 data_payload = snap_data.get("data", snap_data)
                 return (
                     data_payload if isinstance(data_payload, str) else json.dumps(data_payload),
@@ -5808,7 +5816,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, collector_id: str
                            snap_resp.status_code, snap_resp.text[:200])
             return snap_resp.text, snap_resp.status_code
 
-        # HTTP 202 (or other 2xx) — snapshot still being collected; keep polling.
+        # HTTP 202 (or other non-200 2xx) — still collecting; keep polling.
         logger.debug("[brightdata] snapshot HTTP %d — still running", snap_resp.status_code)
 
         if _time.monotonic() >= deadline:
