@@ -9,6 +9,7 @@
   },
   "brightdata": {
     "api_key": "",
+    "zone": "",
     "enabled": "disabled"
   }
 }

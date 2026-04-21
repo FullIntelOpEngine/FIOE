@@ -1303,7 +1303,7 @@ def api_linkdapi_status():
         return jsonify({
             "enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key")),
             "scrapingdog_enabled": sd.get("enabled") == "enabled" and bool(sd.get("api_key")),
-            "brightdata_enabled": bd.get("enabled") == "enabled" and bool(bd.get("api_key")),
+            "brightdata_enabled": bd.get("enabled") == "enabled" and bool(bd.get("api_key")) and bool(bd.get("zone")),
         }), 200
     except Exception:
         return jsonify({"enabled": False, "scrapingdog_enabled": False, "brightdata_enabled": False}), 200
