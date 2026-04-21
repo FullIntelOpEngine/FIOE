@@ -1315,9 +1315,9 @@ def api_linkdapi_status():
 def admin_save_get_profiles_config():
     """Save Get Profiles service configuration.
 
-    Get Profile supports single activation: enabling one of linkdapi, scrapingdog,
-    or brightdata deactivates the other two.  When a service is deactivated its
-    API key is deleted.
+    Multiple providers may be active simultaneously.  Priority during ingestion
+    is: Linkdapi (primary) → BrightData (secondary) → Scrapingdog (fallback).
+    When a service is deactivated its API key is deleted.
     """
     body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict):
@@ -1332,11 +1332,6 @@ def admin_save_get_profiles_config():
     elif "zone" not in current["brightdata"]:
         current["brightdata"]["zone"] = ""
 
-    # Track which service is being activated so we can enforce single-activation
-    activating_linkdapi = False
-    activating_scrapingdog = False
-    activating_brightdata = False
-
     if "linkdapi" in body:
         entry = body["linkdapi"]
         if not isinstance(entry, dict):
@@ -1349,8 +1344,6 @@ def admin_save_get_profiles_config():
             current["linkdapi"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
                 current["linkdapi"]["api_key"] = ""
-            elif entry["enabled"] == "enabled":
-                activating_linkdapi = True
 
     if "scrapingdog" in body:
         entry = body["scrapingdog"]
@@ -1364,8 +1357,6 @@ def admin_save_get_profiles_config():
             current["scrapingdog"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
                 current["scrapingdog"]["api_key"] = ""
-            elif entry["enabled"] == "enabled":
-                activating_scrapingdog = True
 
     if "brightdata" in body:
         entry = body["brightdata"]
@@ -1381,25 +1372,6 @@ def admin_save_get_profiles_config():
             current["brightdata"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
                 current["brightdata"]["api_key"] = ""
-            elif entry["enabled"] == "enabled":
-                activating_brightdata = True
-
-    # Single-activation switching: activating one deactivates the other two
-    if activating_linkdapi:
-        current["scrapingdog"]["enabled"] = "disabled"
-        current["scrapingdog"]["api_key"] = ""
-        current["brightdata"]["enabled"] = "disabled"
-        current["brightdata"]["api_key"] = ""
-    elif activating_scrapingdog:
-        current["linkdapi"]["enabled"] = "disabled"
-        current["linkdapi"]["api_key"] = ""
-        current["brightdata"]["enabled"] = "disabled"
-        current["brightdata"]["api_key"] = ""
-    elif activating_brightdata:
-        current["linkdapi"]["enabled"] = "disabled"
-        current["linkdapi"]["api_key"] = ""
-        current["scrapingdog"]["enabled"] = "disabled"
-        current["scrapingdog"]["api_key"] = ""
 
     try:
         _save_get_profiles_config(current)

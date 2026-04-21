@@ -2753,8 +2753,10 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
+        window.__GP_LINKDAPI_ENABLED = false;
         window.__SCRAPINGDOG_ENABLED = false;
         window.__BRIGHTDATA_ENABLED = false;
+        window.__GP_STATUS_LOADED = false;
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
@@ -2766,27 +2768,21 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               var lp = (svcData.providers.llm || '').toLowerCase();
               window.__HAS_CUSTOM_LLM = (lp === 'openai' || lp === 'anthropic');
             }
-            if (gpData && typeof gpData.enabled === 'boolean') {
-              window.__LINKDAPI_ENABLED = gpData.enabled;
-              // Refresh bulk button visibility based on new linkdapi state
-              if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
+            if (gpData) {
+              // Set all provider flags before any _updateBulkActionButton call
+              // to avoid the race condition where list-profile-pdfs is called
+              // against the wrong service because flags aren't fully populated yet.
+              window.__GP_LINKDAPI_ENABLED = !!(gpData.enabled);
+              window.__SCRAPINGDOG_ENABLED = !!(gpData.scrapingdog_enabled);
+              window.__BRIGHTDATA_ENABLED  = !!(gpData.brightdata_enabled);
+              // __LINKDAPI_ENABLED = true when ANY GP service is available (used as
+              // the combined "GP features unlocked" gate across the page).
+              window.__LINKDAPI_ENABLED = window.__GP_LINKDAPI_ENABLED
+                                        || window.__SCRAPINGDOG_ENABLED
+                                        || window.__BRIGHTDATA_ENABLED;
             }
-            if (gpData && typeof gpData.scrapingdog_enabled === 'boolean') {
-              window.__SCRAPINGDOG_ENABLED = gpData.scrapingdog_enabled;
-              // Scrapingdog assumes the same GP role as linkdapi; treat as equivalent
-              if (window.__SCRAPINGDOG_ENABLED) {
-                window.__LINKDAPI_ENABLED = true;
-                if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
-              }
-            }
-            if (gpData && typeof gpData.brightdata_enabled === 'boolean') {
-              window.__BRIGHTDATA_ENABLED = gpData.brightdata_enabled;
-              // BrightData assumes the same GP role as linkdapi; treat as equivalent
-              if (window.__BRIGHTDATA_ENABLED) {
-                window.__LINKDAPI_ENABLED = true;
-                if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
-              }
-            }
+            window.__GP_STATUS_LOADED = true;
+            if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
             // If __LINKDAPI_ENABLED just became true and rows are already rendered, re-render
             // to show GP buttons (races: config fetch resolves after renderTable ran).
             if (window.__LINKDAPI_ENABLED && typeof renderTable === 'function' &&
@@ -3756,8 +3752,9 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 // endpoint (all three services write to the same shared profiles directory).
 // ---------------------------------------------------------------------------
 function _activeGpService() {
-  if (window.__BRIGHTDATA_ENABLED)  return 'brightdata';
-  if (window.__SCRAPINGDOG_ENABLED) return 'scrapingdog';
+  if (window.__GP_LINKDAPI_ENABLED)  return 'linkdapi';
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
   return 'linkdapi';
 }
 
@@ -3769,94 +3766,112 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
-  try {
-    if (window.__BRIGHTDATA_ENABLED) {
-      // ── BrightData path: fetch profile via BrightData SERP API ──────
-      // Pass the candidate name so the backend can construct the correct
-      // Google SERP query: "Candidate Name" site:linkedin.com/in/username
+  // Build ordered service chain based on enabled providers.
+  // Priority: Linkdapi (primary) → BrightData (backup) → Scrapingdog (final fallback).
+  const _svcChain = [];
+  if (window.__GP_LINKDAPI_ENABLED) _svcChain.push('linkdapi');
+  if (window.__BRIGHTDATA_ENABLED)  _svcChain.push('brightdata');
+  if (window.__SCRAPINGDOG_ENABLED) _svcChain.push('scrapingdog');
+
+  let pdfFile = '';
+
+  // Helper: attempt profile fetch via a single service.
+  // Returns { ok: true } on success, { ok: false, pending: true } for 202, or
+  // { ok: false } on hard failure (caller should try next service).
+  async function _tryService(svc) {
+    if (svc === 'brightdata') {
       let bdUrl = `/api/brightdata/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`;
       if (name) bdUrl += `&name=${encodeURIComponent(name)}`;
       const resp = await fetch(bdUrl);
-      if (resp.status === 202) {
-        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
-        return false;
-      }
+      if (resp.status === 202) { return { ok: false, pending: true }; }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        console.error('[brightdata] HTTP', resp.status, errData);
-        alert(`BrightData profile fetch failed: ${errData.error || resp.statusText}`);
-        return false;
+        console.warn('[GP/brightdata] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
       }
       const data = await resp.json();
-      allDone = true;
-      const pdfFile = data.saved_pdf_filename || '';
+      pdfFile = data.saved_pdf_filename || '';
       const savedFilename = data.saved_filename || '';
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
-      } else {
-        console.log(`[GP/BrightData] Profile and PDF saved: ${pdfFile}`);
       }
-    } else if (window.__SCRAPINGDOG_ENABLED) {
-      // ── Scrapingdog path: fetch profile via Scrapingdog API ──────────
+      return { ok: true };
+    } else if (svc === 'scrapingdog') {
       const resp = await fetch(
         `/api/scrapingdog/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
       );
-      if (resp.status === 202) {
-        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
-        return false;
-      }
+      if (resp.status === 202) { return { ok: false, pending: true }; }
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        console.error('[scrapingdog] HTTP', resp.status, errData);
-        alert(`Scrapingdog profile fetch failed: ${errData.error || resp.statusText}`);
-        return false;
+        console.warn('[GP/scrapingdog] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
       }
       const data = await resp.json();
-      allDone = true;
-      const pdfFile = data.saved_pdf_filename || '';
+      pdfFile = data.saved_pdf_filename || '';
       const savedFilename = data.saved_filename || '';
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
-      } else {
-        console.log(`[GP/Scrapingdog] Profile and PDF saved: ${pdfFile}`);
       }
+      return { ok: true };
     } else {
-      // ── Linkdapi path (original) ────────────────────────────────────────
-      // Step 1: Fetch and save JSON profile
+      // linkdapi
+      if (btnEl) { btnEl.textContent = 'PDF…'; }
       const resp = await fetch(
         `/api/linkdapi/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
       );
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
-        alert(`linkdapi profile fetch failed: ${errData.error || resp.statusText}`);
-        return;
+        console.warn('[GP/linkdapi] HTTP', resp.status, errData.error || resp.statusText);
+        return { ok: false };
       }
       const data = await resp.json();
       const savedFilename = String(data?.saved_filename || '');
       if (!savedFilename) {
-        alert('Unexpected server response: missing file information. Please contact support.');
-        return;
+        console.warn('[GP/linkdapi] Missing saved_filename in response');
+        return { ok: false };
       }
-
-      // Step 2: Immediately generate and save FIOE-branded PDF server-side
-      if (btnEl) { btnEl.textContent = 'PDF…'; }
       const pdfResp = await fetch(
         `/api/linkdapi/profile-to-pdf?linkedin_url=${encodeURIComponent(linkedinUrl)}`,
         { credentials: 'same-origin' }
       );
       const pdfData = await pdfResp.json().catch(() => ({}));
       if (!pdfResp.ok) {
-        alert(`PDF generation failed: ${pdfData.error || pdfResp.statusText}`);
-        return;
+        console.warn('[GP/linkdapi] PDF generation HTTP', pdfResp.status, pdfData.error || pdfResp.statusText);
+        return { ok: false };
       }
-
-      allDone = true;
-      const pdfFile = pdfData.saved_pdf_filename || '';
+      pdfFile = pdfData.saved_pdf_filename || '';
       if (typeof setStatus === 'function') {
         setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
-      } else {
-        console.log(`[GP] Profile and PDF saved: ${pdfFile}`);
       }
+      return { ok: true };
+    }
+  }
+
+  try {
+    for (const svc of _svcChain) {
+      const result = await _tryService(svc);
+      if (result.ok) {
+        allDone = true;
+        break;
+      }
+      if (result.pending) {
+        // 202 Accepted — job is queued; no point trying another service
+        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
+        return false;
+      }
+      // Hard failure — try next service in chain
+      if (_svcChain.indexOf(svc) < _svcChain.length - 1) {
+        console.warn(`[GP] ${svc} failed, falling back to next provider…`);
+      }
+    }
+
+    if (!allDone && _svcChain.length === 0) {
+      alert('No Get Profile API is configured. Please enable at least one provider in Settings.');
+      return false;
+    }
+    if (!allDone) {
+      alert('All configured Get Profile APIs failed. Please upload a CV manually to proceed.');
+      return false;
     }
 
     // Disable the GP button once the profile + PDF have been saved
@@ -3871,8 +3886,8 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
       btnEl.style.color = '#aaa';
     }
   } catch (err) {
-    console.error('[linkdapi] get-profile error:', err);
-    alert(`linkdapi profile fetch error: ${err.message || err}`);
+    console.error('[GP] get-profile error:', err);
+    alert(`GP profile fetch error: ${err.message || err}`);
   } finally {
     // Restore the GP button only if the operation did NOT complete successfully
     if (!allDone && btnEl) { btnEl.textContent = 'GP'; btnEl.disabled = false; }
@@ -8021,6 +8036,10 @@ function _hasPdfInSet(existingSet, slug) {
 // ---------------------------------------------------------------------------
 async function _updateBulkActionButton() {
     if (!bulkIngestBtn || !bulkAssessmentBtn) return;
+    // Don't attempt list-profile-pdfs until the GP status fetch has resolved;
+    // without this guard the call fires before __BRIGHTDATA_ENABLED / __GP_LINKDAPI_ENABLED
+    // are set, causing the wrong service endpoint to be used.
+    if (!window.__GP_STATUS_LOADED) return;
     if (!window.__LINKDAPI_ENABLED) {
         bulkAssessmentBtn.style.display = '';
         bulkIngestBtn.style.display = 'none';

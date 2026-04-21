@@ -3789,7 +3789,7 @@ function renderApiKeysCard() {
   getProfilesPanel.className = 'apikey-sub-panel';
   const getProfilesPanelDesc = document.createElement('p');
   getProfilesPanelDesc.style.cssText = 'color:var(--muted);font-size:13px;margin-top:0;margin-bottom:20px';
-  getProfilesPanelDesc.textContent = 'Configure Linkdapi, Scrapingdog, or BrightData for full LinkedIn profile retrieval. Only one can be active at a time — enabling one deactivates the others and deletes their API keys. When enabled, a "GP" button appears in SourcingVerify.html for search results.';
+  getProfilesPanelDesc.textContent = 'Configure Linkdapi, BrightData, and/or Scrapingdog for full LinkedIn profile retrieval. Multiple providers can be active simultaneously. Priority order during ingestion: Linkdapi (primary) → BrightData (backup) → Scrapingdog (final fallback). When disabled, a provider\'s API key is purged. At least one enabled provider makes the "Ingest" button appear in SourcingVerify.html.';
   getProfilesPanel.appendChild(getProfilesPanelDesc);
   card.appendChild(getProfilesPanel);
 
@@ -4746,133 +4746,23 @@ function renderApiKeysCard() {
     const sdCfg = gp.scrapingdog  || { api_key_set: false, enabled: 'disabled' };
     const bdCfg = gp.brightdata   || { api_key_set: false, zone_set: false, enabled: 'disabled' };
 
-    // Determine which provider is currently active
-    let _activeGpProvider = ldCfg.enabled === 'enabled' ? 'linkdapi'
-                          : sdCfg.enabled === 'enabled' ? 'scrapingdog'
-                          : bdCfg.enabled === 'enabled' ? 'brightdata'
-                          : 'linkdapi';
-
-    // ── Active Provider toggle (3 pills) ─────────────────────────────────────
-    const gpToggleSec = document.createElement('div');
-    gpToggleSec.className = 'apikey-service';
-    gpToggleSec.id = 'gp-provider-toggle-section';
-
-    const gpToggleHeading = document.createElement('div');
-    gpToggleHeading.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:12px;flex-wrap:wrap';
-
-    const gpToggleLabelEl = document.createElement('label');
-    gpToggleLabelEl.textContent = 'Active Provider';
-    gpToggleLabelEl.style.cssText = 'font-size:12px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;flex:0 0 auto';
-
-    const gpToggleWrap = document.createElement('div');
-    gpToggleWrap.style.cssText = 'display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden';
-
-    const btnLinkdapi    = document.createElement('button');
-    const btnScrapingdog = document.createElement('button');
-    const btnBrightData  = document.createElement('button');
-    [btnLinkdapi, btnScrapingdog, btnBrightData].forEach((b, i) => {
-      b.type = 'button';
-      b.style.cssText = 'flex:1;padding:8px 16px;font-size:13px;border:none;cursor:pointer;transition:background .15s,color .15s;white-space:nowrap'
-                      + (i > 0 ? ';border-left:1px solid var(--border)' : '');
-    });
-    btnLinkdapi.id    = 'gp-btn-linkdapi';    btnLinkdapi.textContent    = '🔗 Linkdapi';
-    btnScrapingdog.id = 'gp-btn-scrapingdog'; btnScrapingdog.textContent = '🐕 Scrapingdog';
-    btnBrightData.id  = 'gp-btn-brightdata';  btnBrightData.textContent  = '💡 BrightData';
-
-    function _applyGpToggleStyle() {
-      [['linkdapi', btnLinkdapi], ['scrapingdog', btnScrapingdog], ['brightdata', btnBrightData]].forEach(([id, btn]) => {
-        const active = _activeGpProvider === id;
-        btn.style.background = active ? 'var(--primary, #1976d2)' : '#fff';
-        btn.style.color      = active ? '#fff' : 'var(--text, #222)';
-        btn.style.fontWeight = active ? '600' : '400';
-      });
-      const ldSec = document.getElementById('gp-linkdapi-section');
-      const sdSec = document.getElementById('gp-scrapingdog-section');
-      const bdSec = document.getElementById('gp-brightdata-section');
-      if (ldSec) ldSec.style.opacity = _activeGpProvider === 'linkdapi'    ? '1' : '0.55';
-      if (sdSec) sdSec.style.opacity = _activeGpProvider === 'scrapingdog' ? '1' : '0.55';
-      if (bdSec) bdSec.style.opacity = _activeGpProvider === 'brightdata'  ? '1' : '0.55';
-    }
-
-    btnLinkdapi.addEventListener(   'click', () => { _activeGpProvider = 'linkdapi';    _applyGpToggleStyle(); });
-    btnScrapingdog.addEventListener('click', () => { _activeGpProvider = 'scrapingdog'; _applyGpToggleStyle(); });
-    btnBrightData.addEventListener( 'click', () => { _activeGpProvider = 'brightdata';  _applyGpToggleStyle(); });
-
-    gpToggleWrap.appendChild(btnLinkdapi);
-    gpToggleWrap.appendChild(btnScrapingdog);
-    gpToggleWrap.appendChild(btnBrightData);
-    gpToggleHeading.appendChild(gpToggleLabelEl);
-    gpToggleHeading.appendChild(gpToggleWrap);
-    gpToggleSec.appendChild(gpToggleHeading);
-
-    // Save button
-    const gpSaveRow = document.createElement('div');
-    gpSaveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px';
-    const gpSaveBtn = document.createElement('button');
-    gpSaveBtn.className = 'btn btn-primary apikey-save-btn';
-    gpSaveBtn.textContent = '💾 Save';
-    gpSaveBtn.addEventListener('click', async () => {
-      const ldKey = (document.getElementById('apikey-gp-linkdapi')?.value     || '').trim();
-      const sdKey = (document.getElementById('apikey-gp-scrapingdog')?.value  || '').trim();
-      const bdKey = (document.getElementById('apikey-gp-brightdata')?.value   || '').trim();
-      const bdZone = (document.getElementById('zone-gp-brightdata')?.value    || '').trim();
-      const isLinkdapi    = _activeGpProvider === 'linkdapi';
-      const isScrapingdog = _activeGpProvider === 'scrapingdog';
-      const isBrightData  = _activeGpProvider === 'brightdata';
-      const payload = {
-        linkdapi:    { enabled: isLinkdapi    ? 'enabled' : 'disabled' },
-        scrapingdog: { enabled: isScrapingdog ? 'enabled' : 'disabled' },
-        brightdata:  { enabled: isBrightData  ? 'enabled' : 'disabled' },
-      };
-      if (ldKey) payload.linkdapi.api_key    = ldKey;
-      if (sdKey) payload.scrapingdog.api_key = sdKey;
-      if (bdKey) payload.brightdata.api_key  = bdKey;
-      if (bdZone) payload.brightdata.zone    = bdZone;
-      gpSaveBtn.disabled = true; gpSaveBtn.textContent = 'Saving…';
-      try {
-        const r = await fetch(`${API}/admin/get-profiles-config`, {
-          method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
-          body: JSON.stringify(payload),
-        });
-        const data = await r.json();
-        if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        // Update local state — the active provider keeps its key; others lose theirs
-        const ldKeyStillSet = isLinkdapi    ? !!(ldKey || ldCfg.api_key_set) : false;
-        const sdKeyStillSet = isScrapingdog ? !!(sdKey || sdCfg.api_key_set) : false;
-        const bdKeyStillSet = isBrightData  ? !!(bdKey || bdCfg.api_key_set) : false;
-        // Zone is not cleared on deactivation (only api_key is), so zone_set persists regardless of active provider
-        const bdZoneStillSet = !!(bdZone || bdCfg.zone_set);
-        _getProfilesConfig.linkdapi    = { api_key_set: ldKeyStillSet, enabled: isLinkdapi    ? 'enabled' : 'disabled' };
-        _getProfilesConfig.scrapingdog = { api_key_set: sdKeyStillSet, enabled: isScrapingdog ? 'enabled' : 'disabled' };
-        _getProfilesConfig.brightdata  = { api_key_set: bdKeyStillSet, zone_set: bdZoneStillSet, enabled: isBrightData  ? 'enabled' : 'disabled' };
-        // Clear input fields for newly-entered keys/zone
-        if (ldKey) { const el = document.getElementById('apikey-gp-linkdapi');    if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
-        if (sdKey) { const el = document.getElementById('apikey-gp-scrapingdog'); if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
-        if (bdKey) { const el = document.getElementById('apikey-gp-brightdata');  if (el) { el.value = ''; el.placeholder = '••••••••••••••••• (set — enter new value to update)'; } }
-        if (bdZone) { const el = document.getElementById('zone-gp-brightdata');   if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
-        // Remove key-set badges from the now-disabled providers
-        if (!isLinkdapi)    { const el = document.getElementById('apikey-gp-linkdapi');    if (el) el.placeholder = 'Enter Linkdapi API key…';    document.querySelector('#gp-linkdapi-section .apikey-set-badge')?.remove(); }
-        if (!isScrapingdog) { const el = document.getElementById('apikey-gp-scrapingdog'); if (el) el.placeholder = 'Enter Scrapingdog API key…'; document.querySelector('#gp-scrapingdog-section .apikey-set-badge')?.remove(); }
-        if (!isBrightData)  { const el = document.getElementById('apikey-gp-brightdata');  if (el) el.placeholder = 'Enter BrightData API key…';  document.querySelector('#gp-brightdata-section .apikey-set-badge')?.remove(); }
-        _notifyConfigChanged('get-profiles');
-        const providerName = isLinkdapi ? 'Linkdapi' : isScrapingdog ? 'Scrapingdog' : 'BrightData';
-        toast(`${providerName} is now the active Get Profiles provider`, 'success');
-      } catch (err) {
-        toast(err.message, 'error');
-      } finally {
-        gpSaveBtn.disabled = false; gpSaveBtn.textContent = '💾 Save';
-      }
-    });
-    gpSaveRow.appendChild(gpSaveBtn);
-    gpToggleSec.appendChild(gpSaveRow);
-    getProfilesPanel.appendChild(gpToggleSec);
-
     // ── Helper: build a provider credentials section ──────────────────────────
-    function _buildGpProviderSection(providerKey, title, cfg, extraFields) {
+    // Each provider has its own enable/disable dropdown and Save button.
+    // Priority order: Linkdapi (1st) → BrightData (2nd) → Scrapingdog (3rd).
+    function _buildGpProviderSection(providerKey, title, cfg, priorityLabel, extraFields) {
       const sec = document.createElement('div');
       sec.className = 'apikey-service';
       sec.id = `gp-${providerKey}-section`;
-      const h3 = document.createElement('h3'); h3.textContent = title; sec.appendChild(h3);
+
+      const h3Wrap = document.createElement('div');
+      h3Wrap.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:4px';
+      const h3 = document.createElement('h3'); h3.textContent = title; h3.style.margin = '0';
+      const priorityBadge = document.createElement('span');
+      priorityBadge.textContent = priorityLabel;
+      priorityBadge.style.cssText = 'font-size:11px;font-weight:500;color:var(--muted);background:var(--surface2,#f0f4f8);border:1px solid var(--border);border-radius:4px;padding:2px 7px;white-space:nowrap';
+      h3Wrap.appendChild(h3);
+      h3Wrap.appendChild(priorityBadge);
+      sec.appendChild(h3Wrap);
 
       const row = document.createElement('div'); row.className = 'apikey-row';
 
@@ -4891,21 +4781,82 @@ function renderApiKeysCard() {
       }
       row.appendChild(keyField);
 
-      // Extra fields callback
+      // Extra fields callback (e.g. Zone for BrightData)
       if (typeof extraFields === 'function') extraFields(row);
+
+      // Status dropdown
+      const enableField = document.createElement('div');
+      enableField.className = 'apikey-field';
+      enableField.style.maxWidth = '180px';
+      const enableLabel = document.createElement('label');
+      enableLabel.htmlFor = `apikey-gp-enable-${providerKey}`; enableLabel.textContent = 'Status';
+      const enableSel = document.createElement('select');
+      enableSel.id = `apikey-gp-enable-${providerKey}`;
+      enableSel.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;background:#fff;';
+      [['enabled', '✅ Enabled'], ['disabled', '⛔ Disabled']].forEach(([val, txt]) => {
+        const opt = document.createElement('option'); opt.value = val; opt.textContent = txt;
+        if (cfg.enabled === val) opt.selected = true;
+        enableSel.appendChild(opt);
+      });
+      enableField.appendChild(enableLabel); enableField.appendChild(enableSel);
+      row.appendChild(enableField);
+
+      // Save button
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary apikey-save-btn';
+      saveBtn.textContent = '💾 Save';
+      saveBtn.addEventListener('click', async () => {
+        const newKey  = keyInput.value.trim();
+        const enabled = enableSel.value;
+        const payload = { [providerKey]: { enabled } };
+        if (newKey) payload[providerKey].api_key = newKey;
+        // For BrightData also pick up Zone
+        if (providerKey === 'brightdata') {
+          const zoneVal = (document.getElementById('zone-gp-brightdata')?.value || '').trim();
+          if (zoneVal) payload.brightdata.zone = zoneVal;
+        }
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+        try {
+          const r = await fetch(`${API}/admin/get-profiles-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          const data = await r.json();
+          if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
+          // Update local state
+          const keyStillSet = enabled === 'disabled' ? false : !!(newKey || cfg.api_key_set);
+          if (providerKey === 'linkdapi')    _getProfilesConfig.linkdapi    = { api_key_set: keyStillSet, enabled };
+          if (providerKey === 'scrapingdog') _getProfilesConfig.scrapingdog = { api_key_set: keyStillSet, enabled };
+          if (providerKey === 'brightdata') {
+            const zoneVal = (document.getElementById('zone-gp-brightdata')?.value || '').trim();
+            const zoneStillSet = enabled === 'disabled' ? false : !!(zoneVal || bdCfg.zone_set);
+            _getProfilesConfig.brightdata = { api_key_set: keyStillSet, zone_set: zoneStillSet, enabled };
+            if (zoneVal) { const el = document.getElementById('zone-gp-brightdata'); if (el) { el.value = ''; el.placeholder = '(set — enter new value to update)'; } }
+          }
+          if (newKey) { keyInput.value = ''; keyInput.placeholder = '••••••••••••••••• (set — enter new value to update)'; }
+          if (enabled === 'disabled') {
+            keyInput.placeholder = `Enter ${title} API key…`;
+            sec.querySelector('.apikey-set-badge')?.remove();
+          }
+          _notifyConfigChanged('get-profiles');
+          toast(`${title} ${enabled === 'enabled' ? 'enabled' : 'disabled'}`, 'success');
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
+        }
+      });
+      row.appendChild(saveBtn);
 
       sec.appendChild(row);
       return sec;
     }
 
-    // Linkdapi section
-    getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg));
+    // Linkdapi — Primary
+    getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg, '1st · Primary'));
 
-    // Scrapingdog section (no extra fields — API key only)
-    getProfilesPanel.appendChild(_buildGpProviderSection('scrapingdog', 'Scrapingdog', sdCfg));
-
-    // BrightData section — API key + Zone fields
-    getProfilesPanel.appendChild(_buildGpProviderSection('brightdata', 'BrightData', bdCfg, (row) => {
+    // BrightData — Secondary (API key + Zone fields)
+    getProfilesPanel.appendChild(_buildGpProviderSection('brightdata', 'BrightData', bdCfg, '2nd · Backup', (row) => {
       const zoneField = document.createElement('div'); zoneField.className = 'apikey-field';
       const zoneLabel = document.createElement('label');
       zoneLabel.htmlFor = 'zone-gp-brightdata'; zoneLabel.textContent = 'Zone';
@@ -4921,8 +4872,8 @@ function renderApiKeysCard() {
       row.appendChild(zoneField);
     }));
 
-    // Apply initial toggle style after sections are in DOM
-    setTimeout(() => { _applyGpToggleStyle(); }, 0);
+    // Scrapingdog — Final Fallback
+    getProfilesPanel.appendChild(_buildGpProviderSection('scrapingdog', 'Scrapingdog', sdCfg, '3rd · Final Fallback'));
   })();
 
   return card;
