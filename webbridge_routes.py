@@ -7399,12 +7399,12 @@ def brightdata_get_profile():
     username = _m.group(1)
 
     # Candidate name forwarded from the frontend (used to build the SERP search query)
-    candidate_name = (request.args.get("name") or "").strip()
+    candidate_name = request.args.get("name", "").strip()
 
     # Build a Google SERP URL so BrightData's SERP zone can locate the profile.
     # Include the candidate name (if available) to improve result precision, and
     # constrain the search to the specific profile path.
-    import urllib.parse as _urlparse
+    import urllib.parse as _urlparse  # noqa: PLC0415
     if candidate_name:
         search_query = f'"{candidate_name}" site:linkedin.com/in/{username}'
     else:
