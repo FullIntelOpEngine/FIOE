@@ -3826,7 +3826,7 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name, skipSvcs) {
         console.warn('[GP/linkdapi] HTTP', resp.status, errData.error || resp.statusText);
         return { ok: false };
       }
-      const data = await resp.json();
+      const data = await resp.json().catch(() => ({}));
       const savedFilename = String(data?.saved_filename || '');
       if (!savedFilename) {
         console.warn('[GP/linkdapi] Missing saved_filename in response');
@@ -4394,8 +4394,17 @@ function buildRow(row) {
                         // "tried" accumulates every service already attempted so we never
                         // re-fetch from the same provider. Capped at total provider count
                         // to guarantee termination even if error detection logic fails.
+                        //
+                        // Pre-populate with ALL providers that were already attempted during
+                        // the initial _downloadLinkdapiProfile call: in priority order every
+                        // provider before gpSvc was tried and failed, and gpSvc itself succeeded
+                        // (but its get-profile-pdf later failed). Skipping them in the retry
+                        // means _downloadLinkdapiProfile will jump straight to Scrapingdog
+                        // instead of wastefully re-running failed providers.
+                        const _gpPriorityOrder = ['linkdapi', 'brightdata', 'scrapingdog'];
                         const tried = new Set();
-                        const _maxSvcs = ['linkdapi', 'brightdata', 'scrapingdog'].length;
+                        for (const _s of _gpPriorityOrder) { tried.add(_s); if (_s === gpSvc) break; }
+                        const _maxSvcs = _gpPriorityOrder.length;
                         let assessOk = false;
                         let _retries = 0;
                         while (_retries++ < _maxSvcs) {
