@@ -322,11 +322,15 @@ def _load_get_profiles_config() -> dict:
         # Ensure scrapingdog key exists
         if "scrapingdog" not in cfg:
             cfg["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
+        # Ensure brightdata key exists
+        if "brightdata" not in cfg:
+            cfg["brightdata"] = {"api_key": "", "enabled": "disabled"}
         return cfg
     except Exception:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
             "scrapingdog": {"api_key": "", "enabled": "disabled"},
+            "brightdata": {"api_key": "", "enabled": "disabled"},
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -1264,6 +1268,7 @@ def admin_get_get_profiles_config():
     config = _load_get_profiles_config()
     linkdapi = config.get("linkdapi", {})
     scrapingdog = config.get("scrapingdog", {})
+    brightdata = config.get("brightdata", {})
     return jsonify({
         "config": {
             "linkdapi": {
@@ -1274,6 +1279,10 @@ def admin_get_get_profiles_config():
                 "api_key_set": bool(scrapingdog.get("api_key")),
                 "enabled": scrapingdog.get("enabled", "disabled"),
             },
+            "brightdata": {
+                "api_key_set": bool(brightdata.get("api_key")),
+                "enabled": brightdata.get("enabled", "disabled"),
+            },
         }
     }), 200
 
@@ -1282,17 +1291,19 @@ def admin_get_get_profiles_config():
 @_rate(_make_flask_limit("api"))
 @_require_session
 def api_linkdapi_status():
-    """Return whether linkdapi or scrapingdog is enabled — user-accessible (no admin required)."""
+    """Return whether linkdapi, scrapingdog, or brightdata is enabled — user-accessible (no admin required)."""
     try:
         config = _load_get_profiles_config()
         ld = config.get("linkdapi", {})
         sd = config.get("scrapingdog", {})
+        bd = config.get("brightdata", {})
         return jsonify({
             "enabled": ld.get("enabled") == "enabled" and bool(ld.get("api_key")),
             "scrapingdog_enabled": sd.get("enabled") == "enabled" and bool(sd.get("api_key")),
+            "brightdata_enabled": bd.get("enabled") == "enabled" and bool(bd.get("api_key")),
         }), 200
     except Exception:
-        return jsonify({"enabled": False, "scrapingdog_enabled": False}), 200
+        return jsonify({"enabled": False, "scrapingdog_enabled": False, "brightdata_enabled": False}), 200
 
 @app.post("/admin/get-profiles-config")
 @_rate(_make_flask_limit("admin_endpoints"))
@@ -1301,8 +1312,9 @@ def api_linkdapi_status():
 def admin_save_get_profiles_config():
     """Save Get Profiles service configuration.
 
-    Get Profile supports single activation: enabling linkdapi deactivates scrapingdog
-    (and vice versa).  When a service is deactivated its API key is deleted.
+    Get Profile supports single activation: enabling one of linkdapi, scrapingdog,
+    or brightdata deactivates the other two.  When a service is deactivated its
+    API key is deleted.
     """
     body = request.get_json(force=True, silent=True)
     if not isinstance(body, dict):
@@ -1312,10 +1324,13 @@ def admin_save_get_profiles_config():
         current["linkdapi"] = {"api_key": "", "enabled": "disabled"}
     if "scrapingdog" not in current:
         current["scrapingdog"] = {"api_key": "", "enabled": "disabled"}
+    if "brightdata" not in current:
+        current["brightdata"] = {"api_key": "", "enabled": "disabled"}
 
     # Track which service is being activated so we can enforce single-activation
     activating_linkdapi = False
     activating_scrapingdog = False
+    activating_brightdata = False
 
     if "linkdapi" in body:
         entry = body["linkdapi"]
@@ -1347,13 +1362,37 @@ def admin_save_get_profiles_config():
             elif entry["enabled"] == "enabled":
                 activating_scrapingdog = True
 
-    # Single-activation switching: activating one deactivates the other
+    if "brightdata" in body:
+        entry = body["brightdata"]
+        if not isinstance(entry, dict):
+            return jsonify({"error": "Invalid config for brightdata"}), 400
+        if entry.get("api_key") is not None and entry["api_key"] != "":
+            current["brightdata"]["api_key"] = str(entry["api_key"])
+        if entry.get("enabled") is not None:
+            if entry["enabled"] not in ("enabled", "disabled"):
+                return jsonify({"error": "Invalid enabled value for brightdata"}), 400
+            current["brightdata"]["enabled"] = entry["enabled"]
+            if entry["enabled"] == "disabled":
+                current["brightdata"]["api_key"] = ""
+            elif entry["enabled"] == "enabled":
+                activating_brightdata = True
+
+    # Single-activation switching: activating one deactivates the other two
     if activating_linkdapi:
         current["scrapingdog"]["enabled"] = "disabled"
         current["scrapingdog"]["api_key"] = ""
+        current["brightdata"]["enabled"] = "disabled"
+        current["brightdata"]["api_key"] = ""
     elif activating_scrapingdog:
         current["linkdapi"]["enabled"] = "disabled"
         current["linkdapi"]["api_key"] = ""
+        current["brightdata"]["enabled"] = "disabled"
+        current["brightdata"]["api_key"] = ""
+    elif activating_brightdata:
+        current["linkdapi"]["enabled"] = "disabled"
+        current["linkdapi"]["api_key"] = ""
+        current["scrapingdog"]["enabled"] = "disabled"
+        current["scrapingdog"]["api_key"] = ""
 
     try:
         _save_get_profiles_config(current)

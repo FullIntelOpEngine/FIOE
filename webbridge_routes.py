@@ -5675,6 +5675,123 @@ _SCRAPINGDOG_API_BASE = "api.scrapingdog.com"
 _SCRAPINGDOG_MAX_RETRIES = 3
 
 
+# ── BrightData API constants ───────────────────────────────────────────────────
+_BRIGHTDATA_API_BASE = "api.brightdata.com"
+# LinkedIn People Profiles dataset
+_BRIGHTDATA_DATASET_ID = "gd_l1viktl72bvl7bjuj0"
+_BRIGHTDATA_POLL_INTERVAL = 5   # seconds between status polls
+_BRIGHTDATA_POLL_TIMEOUT = 120  # max seconds to wait before returning 202
+
+
+def _brightdata_fetch_profile(linkedin_url: str, api_key: str, timeout: int = 30):
+    """Trigger a BrightData LinkedIn profile scrape and poll for the result.
+
+    Calls POST https://api.brightdata.com/datasets/v3/trigger to queue the job,
+    then polls GET https://api.brightdata.com/datasets/v3/snapshot/{id} until
+    data is ready or the timeout expires.
+
+    Returns ``(body_str, http_status)`` where:
+      - success: body_str is a JSON string (list or dict), status 200
+      - still processing: body_str is ``'{"status":"running"}'``, status 202
+      - auth error: status 401 / 403
+      - other error: status >= 400 or 0 for network failure
+    """
+    trigger_url = f"https://{_BRIGHTDATA_API_BASE}/datasets/v3/trigger"
+    trigger_params = {
+        "dataset_id": _BRIGHTDATA_DATASET_ID,
+        "include_errors": "true",
+        "type": "discover_new",
+        "discover_by": "url",
+    }
+    auth_headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    # Step 1: Trigger the job
+    try:
+        resp = requests.post(
+            trigger_url,
+            params=trigger_params,
+            json=[{"url": linkedin_url}],
+            headers=auth_headers,
+            timeout=timeout,
+        )
+        logger.info("[brightdata] trigger → HTTP %d (%d bytes)", resp.status_code, len(resp.text))
+        if resp.status_code in (401, 403):
+            return resp.text, resp.status_code
+        if resp.status_code >= 400:
+            logger.warning("[brightdata] trigger HTTP %d; body: %.200s", resp.status_code, resp.text[:200])
+            return resp.text, resp.status_code
+        try:
+            trigger_data = resp.json()
+        except (ValueError, Exception):
+            logger.warning("[brightdata] trigger response is not JSON: %.200s", resp.text[:200])
+            return resp.text, 502
+        snapshot_id = trigger_data.get("snapshot_id")
+        if not snapshot_id:
+            logger.warning("[brightdata] no snapshot_id in trigger response: %.200s", resp.text[:200])
+            return resp.text, 502
+    except requests.exceptions.Timeout:
+        logger.warning("[brightdata] trigger request timed out")
+        return "", 0
+    except Exception as exc:
+        logger.error("[brightdata] trigger failed: %s", exc)
+        return "", 0
+
+    # Step 2: Poll for results
+    poll_url = f"https://{_BRIGHTDATA_API_BASE}/datasets/v3/snapshot/{snapshot_id}"
+    poll_headers = {"Authorization": f"Bearer {api_key}"}
+    deadline = time.time() + _BRIGHTDATA_POLL_TIMEOUT
+
+    while time.time() < deadline:
+        time.sleep(_BRIGHTDATA_POLL_INTERVAL)
+        try:
+            poll_resp = requests.get(
+                poll_url,
+                params={"format": "json"},
+                headers=poll_headers,
+                timeout=timeout,
+            )
+            logger.info("[brightdata] poll %s → HTTP %d (%d bytes)",
+                        snapshot_id, poll_resp.status_code, len(poll_resp.text))
+            if poll_resp.status_code in (401, 403):
+                return poll_resp.text, poll_resp.status_code
+            if poll_resp.status_code == 200:
+                body = poll_resp.text
+                try:
+                    data = json.loads(body)
+                    if isinstance(data, list) and len(data) > 0:
+                        # Ready — return the full JSON string
+                        return body, 200
+                    elif isinstance(data, dict):
+                        status = data.get("status", "")
+                        if status in ("running", "pending", "collecting"):
+                            continue
+                        if status == "ready" or not status:
+                            # Might be a single-object response
+                            return body, 200
+                except (ValueError, Exception):
+                    pass
+                # Unknown format — continue polling
+                continue
+            elif poll_resp.status_code == 202:
+                # Still processing
+                continue
+            elif poll_resp.status_code >= 400:
+                return poll_resp.text, poll_resp.status_code
+        except requests.exceptions.Timeout:
+            logger.warning("[brightdata] poll timed out for snapshot %s", snapshot_id)
+            continue
+        except Exception as exc:
+            logger.warning("[brightdata] poll failed for snapshot %s: %s", snapshot_id, exc)
+            continue
+
+    # Polling timed out — return 202 so caller can retry
+    logger.info("[brightdata] poll timeout for snapshot %s — returning 202", snapshot_id)
+    return '{"status":"running"}', 202
+
+
 def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60):
     """Fetch a LinkedIn profile from Scrapingdog and return ``(body_str, http_status)``.
 
@@ -7320,7 +7437,145 @@ def scrapingdog_get_profile():
     })
 
 
-@app.route("/process/update", methods=["POST"])
+# ── BrightData API endpoints ──────────────────────────────────────────────────
+
+@app.get("/api/brightdata/get-profile")
+@_require_session
+def brightdata_get_profile():
+    """Fetch a LinkedIn profile via BrightData for a given LinkedIn URL.
+
+    Query parameters:
+      linkedin_url – the LinkedIn profile URL (required)
+
+    Triggers a BrightData dataset collection job, polls for the result, saves
+    the profile JSON, converts to PDF via Gemini, and saves the PDF.
+    """
+    linkedin_url = (request.args.get("linkedin_url") or "").strip()
+    if not linkedin_url:
+        return jsonify({"error": "linkedin_url is required"}), 400
+
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    if not _m:
+        return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
+    username = _m.group(1)
+
+    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., de., …)
+    normalized_linkedin_url = f"https://www.linkedin.com/in/{username}"
+
+    gp_cfg = _load_get_profiles_config()
+    bd = gp_cfg.get("brightdata", {})
+    if bd.get("enabled") != "enabled":
+        return jsonify({"error": "BrightData is not enabled"}), 503
+    api_key = (bd.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"error": "BrightData API key is not configured"}), 503
+
+    logger.info("[brightdata] fetching profile for %s (normalized: %s)", linkedin_url, normalized_linkedin_url)
+    body_str, status_code = _brightdata_fetch_profile(normalized_linkedin_url, api_key)
+
+    if status_code == 401:
+        return jsonify({"error": "BrightData authentication failed (HTTP 401). Check your API key."}), 401
+    if status_code == 403:
+        return jsonify({"error": "BrightData returned HTTP 403 — quota may be exceeded or key restricted"}), 403
+    if status_code == 202:
+        return jsonify({
+            "error": "Job accepted. Results will be available in 2-3 minutes. Try again shortly.",
+            "status": "processing",
+        }), 202
+    if status_code >= 400:
+        logger.warning("[brightdata] upstream HTTP %d; body snippet: %.200s",
+                       status_code, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": f"BrightData returned an error (HTTP {status_code})"}), 502
+    if status_code == 0:
+        return jsonify({"error": "Failed to reach BrightData service"}), 502
+
+    try:
+        raw_data = json.loads(body_str)
+    except (json.JSONDecodeError, ValueError) as je:
+        logger.warning("[brightdata] invalid JSON: %s; body snippet: %.200s",
+                       je, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "Invalid JSON from BrightData"}), 502
+
+    # BrightData returns a JSON array; extract the first profile object
+    if isinstance(raw_data, list):
+        if raw_data and isinstance(raw_data[0], dict):
+            profile_data = raw_data[0]
+        elif not raw_data:
+            logger.warning("[brightdata] empty list response")
+            return jsonify({"error": "No profile data returned (empty list)"}), 502
+        else:
+            logger.warning("[brightdata] list response but first element is %s, not dict",
+                           type(raw_data[0]).__name__)
+            return jsonify({"error": "No profile data returned (unexpected format)"}), 502
+    elif isinstance(raw_data, dict):
+        profile_data = raw_data
+    else:
+        logger.warning("[brightdata] unexpected response type %s; snippet: %.200s",
+                       type(raw_data).__name__, body_str[:200] if body_str else "(empty)")
+        return jsonify({"error": "No profile data returned"}), 502
+
+    if not profile_data:
+        return jsonify({"error": "No profile data returned"}), 502
+
+    def _safe_slug(value: str, fallback: str) -> str:
+        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
+        slug = re.sub(r'_+', '_', slug).strip('_')
+        return slug or fallback
+
+    active_username = getattr(request, "_session_user", "") or ""
+    safe_active_username = _safe_slug(active_username, "unknown")
+    safe_profile_username = _safe_slug(username, "bd_profile")
+    out_filename = f"{safe_profile_username}_{safe_active_username}.json"
+    out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
+
+    # Reject filenames containing path separators (defence-in-depth)
+    if os.sep in out_filename or (os.altsep and os.altsep in out_filename):
+        return jsonify({"error": "Invalid filename"}), 400
+
+    out_path = os.path.join(out_dir, out_filename)
+
+    try:
+        real_out_dir = os.path.realpath(out_dir)
+        real_out_path = os.path.realpath(out_path)
+        if os.path.commonpath([real_out_dir, real_out_path]) != real_out_dir:
+            return jsonify({"error": "Invalid output path"}), 400
+    except ValueError:
+        return jsonify({"error": "Invalid output path"}), 400
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            json.dump(profile_data, fh, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        logger.exception("[brightdata] failed to save profile JSON: %s", exc)
+        return jsonify({"error": "Failed to save profile JSON output file"}), 500
+
+    # Convert to PDF using the same pipeline as linkdapi / scrapingdog
+    try:
+        pdf_bytes = _linkdapi_json_to_pdf_bytes(profile_data)
+    except Exception as exc:
+        logger.exception("[brightdata PDF] PDF generation failed: %s", exc)
+        return jsonify({"error": "PDF generation failed"}), 500
+
+    pdf_filename = out_filename[:-5] + ".pdf" if out_filename.endswith(".json") else out_filename + ".pdf"
+    # pdf_filename derives from out_filename which was already validated above
+    pdf_path = os.path.join(out_dir, pdf_filename)
+    try:
+        with open(pdf_path, "wb") as fh:
+            fh.write(pdf_bytes)
+        logger.info("[brightdata PDF] saved %s (%d bytes)", pdf_filename, len(pdf_bytes))
+    except Exception as exc:
+        logger.exception("[brightdata PDF] failed to save PDF: %s", exc)
+        return jsonify({"error": "Failed to save PDF to profiles directory"}), 500
+
+    return jsonify({
+        "profile": profile_data,
+        "saved_filename": out_filename,
+        "saved_pdf_filename": pdf_filename,
+        "saved_for_user": safe_active_username,
+    })
+
+
 @_require_session
 def process_update_tenure():
     """Best-effort endpoint to update the tenure field in the process table.

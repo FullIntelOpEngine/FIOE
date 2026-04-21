@@ -2754,6 +2754,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
         window.__SCRAPINGDOG_ENABLED = false;
+        window.__BRIGHTDATA_ENABLED = false;
         // Fetch per-user service config to check custom LLM activation, and admin get-profiles config
         Promise.all([
           fetch('/api/user-service-config/status', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(function(r){ return r.ok ? r.json() : null; }).catch(function(){ return null; }),
@@ -2774,6 +2775,14 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
               window.__SCRAPINGDOG_ENABLED = gpData.scrapingdog_enabled;
               // Scrapingdog assumes the same GP role as linkdapi; treat as equivalent
               if (window.__SCRAPINGDOG_ENABLED) {
+                window.__LINKDAPI_ENABLED = true;
+                if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
+              }
+            }
+            if (gpData && typeof gpData.brightdata_enabled === 'boolean') {
+              window.__BRIGHTDATA_ENABLED = gpData.brightdata_enabled;
+              // BrightData assumes the same GP role as linkdapi; treat as equivalent
+              if (window.__BRIGHTDATA_ENABLED) {
                 window.__LINKDAPI_ENABLED = true;
                 if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
               }
@@ -3750,7 +3759,31 @@ async function _downloadLinkdapiProfile(linkedinUrl, btnEl) {
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
   try {
-    if (window.__SCRAPINGDOG_ENABLED) {
+    if (window.__BRIGHTDATA_ENABLED) {
+      // ── BrightData path: fetch profile via BrightData API ────────────
+      const resp = await fetch(
+        `/api/brightdata/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`
+      );
+      if (resp.status === 202) {
+        alert('Job accepted. Results will be available in 2-3 minutes. Try again shortly.');
+        return false;
+      }
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        console.error('[brightdata] HTTP', resp.status, errData);
+        alert(`BrightData profile fetch failed: ${errData.error || resp.statusText}`);
+        return false;
+      }
+      const data = await resp.json();
+      allDone = true;
+      const pdfFile = data.saved_pdf_filename || '';
+      const savedFilename = data.saved_filename || '';
+      if (typeof setStatus === 'function') {
+        setStatus(`GP profile and PDF saved to profiles directory: ${pdfFile || savedFilename}`, 'success');
+      } else {
+        console.log(`[GP/BrightData] Profile and PDF saved: ${pdfFile}`);
+      }
+    } else if (window.__SCRAPINGDOG_ENABLED) {
       // ── Scrapingdog path: fetch profile via Scrapingdog API ──────────
       const resp = await fetch(
         `/api/scrapingdog/get-profile?linkedin_url=${encodeURIComponent(linkedinUrl)}`

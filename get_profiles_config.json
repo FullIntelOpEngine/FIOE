@@ -6,5 +6,9 @@
   "scrapingdog": {
     "api_key": "",
     "enabled": "disabled"
+  },
+  "brightdata": {
+    "api_key": "",
+    "enabled": "disabled"
   }
 }
