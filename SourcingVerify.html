@@ -3762,17 +3762,19 @@ function _activeGpService() {
 // linkdapi full profile helper (for CSE/Serper/DataforSEO rows)
 // Saves server-side JSON output to the configured profiles folder.
 // ---------------------------------------------------------------------------
-async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name) {
+async function _downloadLinkdapiProfile(linkedinUrl, btnEl, name, skipSvcs) {
   if (!linkedinUrl) return;
   if (btnEl) { btnEl.textContent = '…'; btnEl.disabled = true; }
   let allDone = false;
   let successSvc = '';  // tracks which service actually succeeded
   // Build ordered service chain based on enabled providers.
   // Priority: Linkdapi (primary) → BrightData (backup) → Scrapingdog (final fallback).
+  // skipSvcs: optional array of service names already tried — excluded from this run.
+  const _skip = new Set(skipSvcs || []);
   const _svcChain = [];
-  if (window.__GP_LINKDAPI_ENABLED) _svcChain.push('linkdapi');
-  if (window.__BRIGHTDATA_ENABLED)  _svcChain.push('brightdata');
-  if (window.__SCRAPINGDOG_ENABLED) _svcChain.push('scrapingdog');
+  if (window.__GP_LINKDAPI_ENABLED && !_skip.has('linkdapi')) _svcChain.push('linkdapi');
+  if (window.__BRIGHTDATA_ENABLED  && !_skip.has('brightdata'))  _svcChain.push('brightdata');
+  if (window.__SCRAPINGDOG_ENABLED && !_skip.has('scrapingdog')) _svcChain.push('scrapingdog');
 
   let pdfFile = '';
 
@@ -4299,7 +4301,7 @@ function buildRow(row) {
                     );
                     if (!pdfResp.ok) {
                         const errData = await pdfResp.json().catch(() => ({}));
-                        throw new Error(errData.error || `PDF fetch failed HTTP ${pdfResp.status}`);
+                        throw new Error(`PDF fetch failed: ${errData.error || pdfResp.statusText} (HTTP ${pdfResp.status})`);
                     }
                     const pdfFilename = pdfResp.headers.get('X-PDF-Filename') || 'profile.pdf';
                     const pdfBytes   = await pdfResp.arrayBuffer();
@@ -4376,7 +4378,7 @@ function buildRow(row) {
                         // gpSvc is the service name string that succeeded (e.g. 'brightdata'),
                         // or false if all providers failed. Using it as svcOverride ensures
                         // _runAssessPipeline fetches the PDF from the same service that saved it.
-                        const gpSvc = await _downloadLinkdapiProfile(value, null, row.name || '');
+                        let gpSvc = await _downloadLinkdapiProfile(value, null, row.name || '');
                         if (!gpSvc) {
                             // _downloadLinkdapiProfile already showed an alert
                             ingestBtn.textContent = 'Ingest';
@@ -4386,9 +4388,34 @@ function buildRow(row) {
                             return;
                         }
 
-                        // ── 4-step Assess pipeline ──
-                        // Pass gpSvc so the pipeline fetches the PDF via the provider that saved it.
-                        const assessOk = await _runAssessPipeline(ingestBtn, 'Ingest', gpSvc);
+                        // ── 4-step Assess pipeline with per-service fallback ──
+                        // If get-profile-pdf fails for gpSvc, retry the full download+assess
+                        // cycle with the next enabled provider(s) in the chain.
+                        // "tried" accumulates every service already attempted so we never
+                        // re-fetch from the same provider.
+                        const tried = new Set();
+                        let assessOk = false;
+                        while (true) {
+                            tried.add(gpSvc);
+                            try {
+                                assessOk = await _runAssessPipeline(ingestBtn, 'Ingest', gpSvc);
+                                break; // success (or performCombinedAssessment returned false)
+                            } catch (pdfErr) {
+                                // Only retry when the PDF fetch itself failed — propagate other errors
+                                if (!pdfErr.message || !pdfErr.message.includes('PDF fetch failed')) {
+                                    throw pdfErr;
+                                }
+                                console.warn('[GP Ingest] PDF fetch failed for', gpSvc, '— trying next provider…');
+                                ingestBtn.textContent = 'Getting profile…';
+                                const fallbackSvc = await _downloadLinkdapiProfile(value, null, row.name || '', [...tried]);
+                                if (!fallbackSvc) {
+                                    // No more providers left; surface the original PDF error
+                                    throw pdfErr;
+                                }
+                                gpSvc = fallbackSvc;
+                            }
+                        }
+
                         if (assessOk === false) {
                             ingestBtn.textContent = 'Ingest';
                             ingestBtn.disabled = false;

@@ -6028,7 +6028,7 @@ def linkdapi_read_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -6721,7 +6721,7 @@ def linkdapi_profile_to_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -6811,7 +6811,7 @@ def linkdapi_check_profile_pdf():
     if not linkedin_url:
         return jsonify({"exists": False, "filename": ""}), 200
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"exists": False, "filename": ""}), 200
     username = _m.group(1)
@@ -6857,7 +6857,7 @@ def linkdapi_get_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -7032,7 +7032,7 @@ def linkdapi_upload_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_-]+)", linkedin_url)
+    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
