@@ -1369,8 +1369,43 @@ def admin_get_get_profiles_config():
 @_rate(_make_flask_limit("api"))
 @_require_session
 def api_linkdapi_status():
-    """Return whether linkdapi, scrapingdog, or brightdata is enabled — user-accessible (no admin required)."""
+    """Return whether linkdapi, scrapingdog, or brightdata is enabled — user-accessible (no admin required).
+
+    Per-user GP config (set via VIP admin or the user's own api_porting page) takes
+    priority over the global platform config.  If the user has a specific provider
+    assigned, only that provider is reported as enabled so the frontend routes the
+    request to the correct endpoint.
+    """
     try:
+        # Check per-user GP config first (VIP admin assignment or user self-service)
+        _req_user = getattr(request, '_session_user', None) or (request.cookies.get('username') or '').strip()
+        _user_gp = _load_user_gp_cfg(_req_user)
+        _user_provider = (_user_gp.get('provider') or '').strip()
+
+        if _user_provider == 'linkdapi':
+            _key = (_user_gp.get('GP_LINKDAPI_API_KEY') or '').strip()
+            return jsonify({
+                "enabled": bool(_key),
+                "scrapingdog_enabled": False,
+                "brightdata_enabled": False,
+            }), 200
+        if _user_provider == 'scrapingdog':
+            _key = (_user_gp.get('GP_SCRAPINGDOG_API_KEY') or '').strip()
+            return jsonify({
+                "enabled": False,
+                "scrapingdog_enabled": bool(_key),
+                "brightdata_enabled": False,
+            }), 200
+        if _user_provider == 'brightdata':
+            _key  = (_user_gp.get('GP_BRIGHTDATA_API_KEY') or '').strip()
+            _zone = (_user_gp.get('GP_BRIGHTDATA_ZONE') or '').strip()
+            return jsonify({
+                "enabled": False,
+                "scrapingdog_enabled": False,
+                "brightdata_enabled": bool(_key) and bool(_zone),
+            }), 200
+
+        # Fall back to global platform config
         config = _load_get_profiles_config()
         ld = config.get("linkdapi", {})
         sd = config.get("scrapingdog", {})
@@ -6910,6 +6945,7 @@ from webbridge_routes import (
     _gemini_suggestions, _heuristic_job_suggestions,
     _read_search_criteria,
     unified_llm_call_text,
+    _load_user_gp_cfg,
 )
 
 if __name__ == '__main__':

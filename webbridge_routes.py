@@ -5013,6 +5013,49 @@ def _svc_config_json_path(username: str) -> str:
     return os.path.join(svc_dir, _porting_safe_name(username) + '.json')
 
 
+def _load_user_gp_cfg(req_username: str) -> dict:
+    """Return the get_profile section from *req_username*'s per-user service config, or {}.
+
+    Returns {} when the user has no config, cannot be loaded, or has
+    ``get_profile.provider == 'platform'`` (meaning "use global platform config").
+    Used by the GP endpoints to allow VIP / user-defined keys to override the
+    global platform API keys.
+    """
+    if not req_username:
+        return {}
+    safe = _porting_safe_name(req_username)
+    svc_dir   = os.path.realpath(os.path.join(_PORTING_INPUT_DIR, 'user-services'))
+    enc_path  = _svc_config_path(safe)
+    json_path = _svc_config_json_path(safe)
+    # Confinement: ensure resolved paths stay within the expected directory.
+    if (not os.path.realpath(enc_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(enc_path) != svc_dir):
+        return {}
+    if (not os.path.realpath(json_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(json_path) != svc_dir):
+        return {}
+    u_cfg = None
+    if os.path.isfile(enc_path):
+        try:
+            with open(enc_path, 'rb') as _fh:
+                u_cfg = json.loads(_svc_config_decrypt(_fh.read()).decode('utf-8'))
+        except Exception:
+            pass
+    if u_cfg is None and os.path.isfile(json_path):
+        try:
+            with open(json_path, 'r', encoding='utf-8') as _fh:
+                u_cfg = json.load(_fh)
+        except Exception:
+            pass
+    if not isinstance(u_cfg, dict):
+        return {}
+    gp = u_cfg.get('get_profile') or {}
+    provider = (gp.get('provider') or 'platform').strip()
+    if provider == 'platform':
+        return {}
+    return gp
+
+
 def _svc_config_encrypt(data: bytes) -> bytes:
     """AES-256-GCM encrypt in Node.js-compatible format: IV(16) + tag(16) + ciphertext."""
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -5948,13 +5991,24 @@ def linkdapi_get_profile():
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    gp_cfg = _load_get_profiles_config()
-    linkdapi = gp_cfg.get("linkdapi", {})
-    if linkdapi.get("enabled") != "enabled":
-        return jsonify({"error": "linkdapi is not enabled"}), 503
-    api_key = (linkdapi.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
+    # Per-user GP key (from VIP admin assignment or user's own api_porting config) takes
+    # priority over the global platform key.  User-defined keys always win because both
+    # admin VIP writes and user self-service writes target the same per-user config file,
+    # and the user's own save (from api_porting.html) overwrites any admin-set value.
+    _req_user = getattr(request, '_session_user', None) or (request.cookies.get('username') or '').strip()
+    _user_gp = _load_user_gp_cfg(_req_user)
+    if _user_gp.get('provider') == 'linkdapi':
+        api_key = (_user_gp.get('GP_LINKDAPI_API_KEY') or '').strip()
+        if not api_key:
+            return jsonify({"error": "Linkdapi API key is not configured for your account"}), 503
+    else:
+        gp_cfg = _load_get_profiles_config()
+        linkdapi = gp_cfg.get("linkdapi", {})
+        if linkdapi.get("enabled") != "enabled":
+            return jsonify({"error": "linkdapi is not enabled"}), 503
+        api_key = (linkdapi.get("api_key") or "").strip()
+        if not api_key:
+            return jsonify({"error": "LINKDAPI_API_KEY is not configured"}), 503
 
     body_str, status_code = _linkdapi_fetch(username, api_key)
 
@@ -7295,13 +7349,21 @@ def scrapingdog_get_profile():
     # Scrapingdog's id parameter requires the full canonical LinkedIn URL.
     normalized_linkedin_url = f"https://www.linkedin.com/in/{username}"
 
-    gp_cfg = _load_get_profiles_config()
-    sd = gp_cfg.get("scrapingdog", {})
-    if sd.get("enabled") != "enabled":
-        return jsonify({"error": "scrapingdog is not enabled"}), 503
-    api_key = (sd.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "Scrapingdog API key is not configured"}), 503
+    # Per-user GP key (VIP admin assignment or user's own api_porting config) takes priority.
+    _req_user = getattr(request, '_session_user', None) or (request.cookies.get('username') or '').strip()
+    _user_gp = _load_user_gp_cfg(_req_user)
+    if _user_gp.get('provider') == 'scrapingdog':
+        api_key = (_user_gp.get('GP_SCRAPINGDOG_API_KEY') or '').strip()
+        if not api_key:
+            return jsonify({"error": "ScrapingDog API key is not configured for your account"}), 503
+    else:
+        gp_cfg = _load_get_profiles_config()
+        sd = gp_cfg.get("scrapingdog", {})
+        if sd.get("enabled") != "enabled":
+            return jsonify({"error": "scrapingdog is not enabled"}), 503
+        api_key = (sd.get("api_key") or "").strip()
+        if not api_key:
+            return jsonify({"error": "Scrapingdog API key is not configured"}), 503
 
     logger.info("[scrapingdog] fetching profile for %s (normalized: %s)", linkedin_url, normalized_linkedin_url)
     body_str, status_code = _scrapingdog_fetch_profile(normalized_linkedin_url, api_key)
@@ -7444,16 +7506,27 @@ def brightdata_get_profile():
         search_query = f'site:linkedin.com/in/{username}'
     serp_url = f"https://www.google.com/search?q={_urlparse.quote(search_query)}"
 
-    gp_cfg = _load_get_profiles_config()
-    bd = gp_cfg.get("brightdata", {})
-    if bd.get("enabled") != "enabled":
-        return jsonify({"error": "BrightData is not enabled"}), 503
-    api_key = (bd.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"error": "BrightData API key is not configured"}), 503
-    zone = (bd.get("zone") or "").strip()
-    if not zone:
-        return jsonify({"error": "BrightData zone is not configured"}), 503
+    # Per-user GP key (VIP admin assignment or user's own api_porting config) takes priority.
+    _req_user = getattr(request, '_session_user', None) or (request.cookies.get('username') or '').strip()
+    _user_gp = _load_user_gp_cfg(_req_user)
+    if _user_gp.get('provider') == 'brightdata':
+        api_key = (_user_gp.get('GP_BRIGHTDATA_API_KEY') or '').strip()
+        zone    = (_user_gp.get('GP_BRIGHTDATA_ZONE') or '').strip()
+        if not api_key:
+            return jsonify({"error": "BrightData API key is not configured for your account"}), 503
+        if not zone:
+            return jsonify({"error": "BrightData zone is not configured for your account"}), 503
+    else:
+        gp_cfg = _load_get_profiles_config()
+        bd = gp_cfg.get("brightdata", {})
+        if bd.get("enabled") != "enabled":
+            return jsonify({"error": "BrightData is not enabled"}), 503
+        api_key = (bd.get("api_key") or "").strip()
+        if not api_key:
+            return jsonify({"error": "BrightData API key is not configured"}), 503
+        zone = (bd.get("zone") or "").strip()
+        if not zone:
+            return jsonify({"error": "BrightData zone is not configured"}), 503
 
     logger.info("[brightdata] fetching profile for %s via SERP URL: %s", linkedin_url, serp_url)
     body_str, status_code = _brightdata_fetch_profile(serp_url, api_key, zone)
