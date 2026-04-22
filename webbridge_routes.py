@@ -5139,313 +5139,321 @@ def user_svc_config_validate():
     if err:
         return err
     try:
-        import urllib.request as _ureq2
-        import urllib.parse as _uparse2
-        import base64
-
         body = request.get_json(silent=True) or {}
-        search = body.get('search') or {}
-        llm = body.get('llm') or {}
-        email_verif = body.get('email_verif') or {}
-        contact_gen = body.get('contact_gen') or {}
-
-        def _probe_get(url, headers=None, timeout=8):
-            req = _ureq2.Request(url, headers=headers or {})
-            try:
-                with _ureq2.urlopen(req, timeout=timeout) as resp:
-                    return resp.status, resp.read().decode('utf-8', errors='replace')
-            except Exception as exc2:
-                if hasattr(exc2, 'code'):
-                    try:
-                        return exc2.code, exc2.read().decode('utf-8', errors='replace')
-                    except Exception:
-                        return exc2.code, ''
-                return None, str(exc2)
-
-        def _probe_post(url, data, headers=None, timeout=8):
-            req = _ureq2.Request(url, data=data, headers=headers or {}, method='POST')
-            try:
-                with _ureq2.urlopen(req, timeout=timeout) as resp:
-                    return resp.status, resp.read().decode('utf-8', errors='replace')
-            except Exception as exc2:
-                if hasattr(exc2, 'code'):
-                    try:
-                        return exc2.code, exc2.read().decode('utf-8', errors='replace')
-                    except Exception:
-                        return exc2.code, ''
-                return None, str(exc2)
-
-        results = []
-
-        # ── Search Engine ──────────────────────────────────────────────────────
-        sp = (search.get('provider') or '').strip()
-        if sp == 'google_cse' or not sp:
-            results.append({'label': 'Search Engine', 'status': 'ok',
-                            'detail': 'Using platform Google CSE — no custom key required.'})
-        elif sp == 'serper':
-            key = (search.get('SERPER_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'Serper.dev', 'status': 'error',
-                                'detail': 'SERPER_API_KEY is required.'})
-            else:
-                payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
-                status, _ = _probe_post('https://google.serper.dev/search', payload,
-                                        headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
-                if status == 200:
-                    results.append({'label': 'Serper.dev', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status in (401, 403):
-                    results.append({'label': 'Serper.dev', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check your SERPER_API_KEY.'})
-                else:
-                    results.append({'label': 'Serper.dev', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
-                                    if status else 'Could not reach Serper API.'})
-        elif sp == 'dataforseo':
-            login = (search.get('DATAFORSEO_LOGIN') or '').strip()
-            pwd   = (search.get('DATAFORSEO_PASSWORD') or '').strip()
-            if not login or not pwd:
-                results.append({'label': 'DataforSEO', 'status': 'error',
-                                'detail': 'DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD are both required.'})
-            else:
-                auth = base64.b64encode(f'{login}:{pwd}'.encode('utf-8')).decode('ascii')
-                status, _ = _probe_get(
-                    'https://api.dataforseo.com/v3/appendix/user_data',
-                    headers={'Authorization': f'Basic {auth}'}
-                )
-                if status == 200:
-                    results.append({'label': 'DataforSEO', 'status': 'ok', 'detail': 'Credentials are valid.'})
-                elif status in (401, 403):
-                    results.append({'label': 'DataforSEO', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check login/password.'})
-                else:
-                    results.append({'label': 'DataforSEO', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach DataforSEO API.'})
-        elif sp == 'linkedin':
-            key = (search.get('LINKEDIN_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'LinkedIn', 'status': 'error',
-                                'detail': 'LINKEDIN_API_KEY is required.'})
-            else:
-                payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
-                status, _ = _probe_post('https://api.linkedapi.io/v1/search', payload,
-                                        headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
-                if status == 200:
-                    results.append({'label': 'LinkedIn', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status in (401, 403):
-                    results.append({'label': 'LinkedIn', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}). Check your LINKEDIN_API_KEY.'})
-                else:
-                    results.append({'label': 'LinkedIn', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
-                                    if status else 'Could not reach LinkedIn API.'})
-
-        # ── LLM ───────────────────────────────────────────────────────────────
-        lp = (llm.get('provider') or '').strip()
-        if lp == 'gemini' or not lp:
-            results.append({'label': 'LLM', 'status': 'ok',
-                            'detail': 'Using platform Gemini — no custom key required.'})
-        elif lp == 'openai':
-            key = (llm.get('OPENAI_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'OpenAI', 'status': 'error', 'detail': 'OPENAI_API_KEY is required.'})
-            else:
-                status, _ = _probe_get('https://api.openai.com/v1/models',
-                                       headers={'Authorization': f'Bearer {key}'})
-                if status == 200:
-                    results.append({'label': 'OpenAI', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status == 401:
-                    results.append({'label': 'OpenAI', 'status': 'error',
-                                    'detail': 'Authentication failed. Check your OPENAI_API_KEY.'})
-                else:
-                    results.append({'label': 'OpenAI', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach OpenAI API.'})
-        elif lp == 'anthropic':
-            key = (llm.get('ANTHROPIC_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'Anthropic', 'status': 'error', 'detail': 'ANTHROPIC_API_KEY is required.'})
-            else:
-                payload = json.dumps({
-                    'model': 'claude-3-haiku-20240307', 'max_tokens': 1,
-                    'messages': [{'role': 'user', 'content': 'hi'}]
-                }).encode('utf-8')
-                status, _ = _probe_post('https://api.anthropic.com/v1/messages', payload, headers={
-                    'x-api-key': key, 'anthropic-version': '2023-06-01',
-                    'Content-Type': 'application/json',
-                })
-                if status == 401:
-                    results.append({'label': 'Anthropic', 'status': 'error',
-                                    'detail': 'Authentication failed. Check your ANTHROPIC_API_KEY.'})
-                elif status:
-                    results.append({'label': 'Anthropic', 'status': 'ok',
-                                    'detail': f'API key accepted (HTTP {status}).'})
-                else:
-                    results.append({'label': 'Anthropic', 'status': 'warn',
-                                    'detail': 'Could not reach Anthropic API.'})
-
-        # ── Email Verification ────────────────────────────────────────────────
-        ep = (email_verif.get('provider') or '').strip()
-        if ep == 'default' or not ep:
-            results.append({'label': 'Email Verification', 'status': 'ok',
-                            'detail': 'Using platform default verification — no custom key required.'})
-        elif ep == 'neverbounce':
-            key = (email_verif.get('NEVERBOUNCE_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'NeverBounce', 'status': 'error',
-                                'detail': 'NEVERBOUNCE_API_KEY is required.'})
-            else:
-                status, _ = _probe_get(
-                    f'https://api.neverbounce.com/v4/account/info?key={_uparse2.quote(key, safe="")}')
-                if status == 200:
-                    results.append({'label': 'NeverBounce', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status in (401, 403):
-                    results.append({'label': 'NeverBounce', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}).'})
-                else:
-                    results.append({'label': 'NeverBounce', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach NeverBounce API.'})
-        elif ep == 'zerobounce':
-            key = (email_verif.get('ZEROBOUNCE_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'ZeroBounce', 'status': 'error',
-                                'detail': 'ZEROBOUNCE_API_KEY is required.'})
-            else:
-                status, body_text = _probe_get(
-                    f'https://api.zerobounce.net/v2/getcredits?api_key={_uparse2.quote(key, safe="")}')
-                if status == 200:
-                    try:
-                        credits = json.loads(body_text).get('Credits')
-                    except Exception:
-                        credits = None
-                    try:
-                        credits_num = int(credits) if credits is not None else None
-                    except (TypeError, ValueError):
-                        credits_num = None
-                    if credits_num is not None and credits_num > 0:
-                        results.append({'label': 'ZeroBounce', 'status': 'ok',
-                                        'detail': f'API key valid. Credits remaining: {credits_num}.'})
-                    elif credits_num == 0:
-                        results.append({'label': 'ZeroBounce', 'status': 'warn',
-                                        'detail': 'API key valid but account has 0 credits.'})
-                    else:
-                        results.append({'label': 'ZeroBounce', 'status': 'ok', 'detail': 'API key accepted.'})
-                elif status in (400, 401):
-                    results.append({'label': 'ZeroBounce', 'status': 'error',
-                                    'detail': f'Authentication failed (HTTP {status}).'})
-                else:
-                    results.append({'label': 'ZeroBounce', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach ZeroBounce API.'})
-        elif ep == 'bouncer':
-            key = (email_verif.get('BOUNCER_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'Bouncer', 'status': 'error',
-                                'detail': 'BOUNCER_API_KEY is required.'})
-            else:
-                # Use the verify endpoint for validation — the /account endpoint returns
-                # 403 on some Bouncer plans even with a valid key.  A test verification
-                # call returns 401 only when the key itself is invalid; any other code
-                # (200 = success, 402 = no credits, 429 = rate-limited) means the key works.
-                # timeout=5 in the query string is the Bouncer per-request MX lookup limit.
-                status, _ = _probe_get(
-                    'https://api.usebouncer.com/v1.1/email/verify?email=test%40usebouncer.com&timeout=5',
-                    headers={'x-api-key': key})
-                if status == 401:
-                    results.append({'label': 'Bouncer', 'status': 'error',
-                                    'detail': 'Authentication failed — invalid API key (HTTP 401).'})
-                elif status == 402:
-                    results.append({'label': 'Bouncer', 'status': 'warn',
-                                    'detail': 'API key is valid but the account has no credits (HTTP 402).'})
-                elif status == 429:
-                    results.append({'label': 'Bouncer', 'status': 'warn',
-                                    'detail': 'API key is valid but the request was rate-limited (HTTP 429).'})
-                elif status == 200:
-                    results.append({'label': 'Bouncer', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status is not None:
-                    # Any non-401 HTTP response means the key was accepted by Bouncer.
-                    results.append({'label': 'Bouncer', 'status': 'ok',
-                                    'detail': f'API key accepted (HTTP {status}).'})
-                else:
-                    results.append({'label': 'Bouncer', 'status': 'warn',
-                                    'detail': 'Could not reach Bouncer API — please try again.'})
-
-        # ── Contact Generation ────────────────────────────────────────────────
-        cp = (contact_gen.get('provider') or '').strip()
-        if cp == 'gemini' or not cp:
-            results.append({'label': 'Contact Generation', 'status': 'ok',
-                            'detail': 'Using platform Gemini — no custom key required.'})
-        elif cp == 'contactout':
-            key = (contact_gen.get('CONTACTOUT_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'ContactOut', 'status': 'error',
-                                'detail': 'CONTACTOUT_API_KEY is required.'})
-            else:
-                status, _ = _probe_get(
-                    'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
-                    headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'token': key})
-                if status == 401:
-                    results.append({'label': 'ContactOut', 'status': 'error',
-                                    'detail': 'Authentication failed (HTTP 401). Check your CONTACTOUT_API_KEY.'})
-                elif status == 403:
-                    # 403 from ContactOut means account suspended or quota exceeded, NOT invalid key
-                    results.append({'label': 'ContactOut', 'status': 'warn',
-                                    'detail': 'ContactOut returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
-                elif status in (200, 404, 422):
-                    results.append({'label': 'ContactOut', 'status': 'ok', 'detail': 'API key accepted.'})
-                else:
-                    results.append({'label': 'ContactOut', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your account or try again.'
-                                    if status else 'Could not reach ContactOut API.'})
-        elif cp == 'apollo':
-            key = (contact_gen.get('APOLLO_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'Apollo', 'status': 'error',
-                                'detail': 'APOLLO_API_KEY is required.'})
-            else:
-                status, _ = _probe_get('https://api.apollo.io/v1/auth/health',
-                                       headers={'x-api-key': key, 'Content-Type': 'application/json'})
-                if status == 200:
-                    results.append({'label': 'Apollo', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status == 401:
-                    results.append({'label': 'Apollo', 'status': 'error',
-                                    'detail': 'Authentication failed (HTTP 401). Check your APOLLO_API_KEY.'})
-                elif status == 403:
-                    results.append({'label': 'Apollo', 'status': 'warn',
-                                    'detail': 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.'})
-                elif status is not None and status >= 500:
-                    results.append({'label': 'Apollo', 'status': 'warn',
-                                    'detail': f'Apollo API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
-                else:
-                    results.append({'label': 'Apollo', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
-                                    if status else 'Could not reach Apollo API.'})
-        elif cp == 'rocketreach':
-            key = (contact_gen.get('ROCKETREACH_API_KEY') or '').strip()
-            if not key:
-                results.append({'label': 'RocketReach', 'status': 'error',
-                                'detail': 'ROCKETREACH_API_KEY is required.'})
-            else:
-                status, _ = _probe_get('https://api.rocketreach.co/api/v2/checkStatus',
-                                       headers={'Api-Key': key})
-                if status == 200:
-                    results.append({'label': 'RocketReach', 'status': 'ok', 'detail': 'API key is valid.'})
-                elif status == 401:
-                    results.append({'label': 'RocketReach', 'status': 'error',
-                                    'detail': 'Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.'})
-                elif status == 403:
-                    results.append({'label': 'RocketReach', 'status': 'warn',
-                                    'detail': 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
-                elif status is not None and status >= 500:
-                    results.append({'label': 'RocketReach', 'status': 'warn',
-                                    'detail': f'RocketReach API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
-                else:
-                    results.append({'label': 'RocketReach', 'status': 'warn',
-                                    'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
-                                    if status else 'Could not reach RocketReach API.'})
-
+        results = _run_svc_config_validation(body)
         has_error = any(r['status'] == 'error' for r in results)
         return jsonify({'ok': not has_error, 'results': results})
-    except Exception as exc:
+    except Exception:
         logger.exception("[user-service-config/validate]")
         return jsonify({"error": "Validation failed"}), 500
+
+
+def _run_svc_config_validation(body: dict) -> list:
+    """Run API-key validation for all service sections in *body*.
+    Returns a list of result dicts: {label, status, detail}.
+    Does NOT store anything and has no Flask request context dependency."""
+    import urllib.request as _ureq2
+    import urllib.parse as _uparse2
+    import base64
+
+    search = body.get('search') or {}
+    llm = body.get('llm') or {}
+    email_verif = body.get('email_verif') or {}
+    contact_gen = body.get('contact_gen') or {}
+
+    def _probe_get(url, headers=None, timeout=8):
+        req = _ureq2.Request(url, headers=headers or {})
+        try:
+            with _ureq2.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode('utf-8', errors='replace')
+        except Exception as exc2:
+            if hasattr(exc2, 'code'):
+                try:
+                    return exc2.code, exc2.read().decode('utf-8', errors='replace')
+                except Exception:
+                    return exc2.code, ''
+            return None, str(exc2)
+
+    def _probe_post(url, data, headers=None, timeout=8):
+        req = _ureq2.Request(url, data=data, headers=headers or {}, method='POST')
+        try:
+            with _ureq2.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode('utf-8', errors='replace')
+        except Exception as exc2:
+            if hasattr(exc2, 'code'):
+                try:
+                    return exc2.code, exc2.read().decode('utf-8', errors='replace')
+                except Exception:
+                    return exc2.code, ''
+            return None, str(exc2)
+
+    results = []
+
+    # ── Search Engine ──────────────────────────────────────────────────────
+    sp = (search.get('provider') or '').strip()
+    if sp == 'google_cse' or not sp:
+        results.append({'label': 'Search Engine', 'status': 'ok',
+                        'detail': 'Using platform Google CSE — no custom key required.'})
+    elif sp == 'serper':
+        key = (search.get('SERPER_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'Serper.dev', 'status': 'error',
+                            'detail': 'SERPER_API_KEY is required.'})
+        else:
+            payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
+            status, _ = _probe_post('https://google.serper.dev/search', payload,
+                                    headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
+            if status == 200:
+                results.append({'label': 'Serper.dev', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status in (401, 403):
+                results.append({'label': 'Serper.dev', 'status': 'error',
+                                'detail': f'Authentication failed (HTTP {status}). Check your SERPER_API_KEY.'})
+            else:
+                results.append({'label': 'Serper.dev', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
+                                if status else 'Could not reach Serper API.'})
+    elif sp == 'dataforseo':
+        login = (search.get('DATAFORSEO_LOGIN') or '').strip()
+        pwd   = (search.get('DATAFORSEO_PASSWORD') or '').strip()
+        if not login or not pwd:
+            results.append({'label': 'DataforSEO', 'status': 'error',
+                            'detail': 'DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD are both required.'})
+        else:
+            auth = base64.b64encode(f'{login}:{pwd}'.encode('utf-8')).decode('ascii')
+            status, _ = _probe_get(
+                'https://api.dataforseo.com/v3/appendix/user_data',
+                headers={'Authorization': f'Basic {auth}'}
+            )
+            if status == 200:
+                results.append({'label': 'DataforSEO', 'status': 'ok', 'detail': 'Credentials are valid.'})
+            elif status in (401, 403):
+                results.append({'label': 'DataforSEO', 'status': 'error',
+                                'detail': f'Authentication failed (HTTP {status}). Check login/password.'})
+            else:
+                results.append({'label': 'DataforSEO', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach DataforSEO API.'})
+    elif sp == 'linkedin':
+        key = (search.get('LINKEDIN_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'LinkedIn', 'status': 'error',
+                            'detail': 'LINKEDIN_API_KEY is required.'})
+        else:
+            payload = json.dumps({'q': 'test', 'num': 1}).encode('utf-8')
+            status, _ = _probe_post('https://api.linkedapi.io/v1/search', payload,
+                                    headers={'X-API-KEY': key, 'Content-Type': 'application/json'})
+            if status == 200:
+                results.append({'label': 'LinkedIn', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status in (401, 403):
+                results.append({'label': 'LinkedIn', 'status': 'error',
+                                'detail': f'Authentication failed (HTTP {status}). Check your LINKEDIN_API_KEY.'})
+            else:
+                results.append({'label': 'LinkedIn', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status} — key may be valid but quota or plan issue possible.'
+                                if status else 'Could not reach LinkedIn API.'})
+
+    # ── LLM ───────────────────────────────────────────────────────────────
+    lp = (llm.get('provider') or '').strip()
+    if lp == 'gemini' or not lp:
+        results.append({'label': 'LLM', 'status': 'ok',
+                        'detail': 'Using platform Gemini — no custom key required.'})
+    elif lp == 'openai':
+        key = (llm.get('OPENAI_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'OpenAI', 'status': 'error', 'detail': 'OPENAI_API_KEY is required.'})
+        else:
+            status, _ = _probe_get('https://api.openai.com/v1/models',
+                                   headers={'Authorization': f'Bearer {key}'})
+            if status == 200:
+                results.append({'label': 'OpenAI', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status == 401:
+                results.append({'label': 'OpenAI', 'status': 'error',
+                                'detail': 'Authentication failed. Check your OPENAI_API_KEY.'})
+            else:
+                results.append({'label': 'OpenAI', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach OpenAI API.'})
+    elif lp == 'anthropic':
+        key = (llm.get('ANTHROPIC_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'Anthropic', 'status': 'error', 'detail': 'ANTHROPIC_API_KEY is required.'})
+        else:
+            payload = json.dumps({
+                'model': 'claude-3-haiku-20240307', 'max_tokens': 1,
+                'messages': [{'role': 'user', 'content': 'hi'}]
+            }).encode('utf-8')
+            status, _ = _probe_post('https://api.anthropic.com/v1/messages', payload, headers={
+                'x-api-key': key, 'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json',
+            })
+            if status == 401:
+                results.append({'label': 'Anthropic', 'status': 'error',
+                                'detail': 'Authentication failed. Check your ANTHROPIC_API_KEY.'})
+            elif status:
+                results.append({'label': 'Anthropic', 'status': 'ok',
+                                'detail': f'API key accepted (HTTP {status}).'})
+            else:
+                results.append({'label': 'Anthropic', 'status': 'warn',
+                                'detail': 'Could not reach Anthropic API.'})
+
+    # ── Email Verification ────────────────────────────────────────────────
+    ep = (email_verif.get('provider') or '').strip()
+    if ep == 'default' or not ep:
+        results.append({'label': 'Email Verification', 'status': 'ok',
+                        'detail': 'Using platform default verification — no custom key required.'})
+    elif ep == 'neverbounce':
+        key = (email_verif.get('NEVERBOUNCE_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'NeverBounce', 'status': 'error',
+                            'detail': 'NEVERBOUNCE_API_KEY is required.'})
+        else:
+            status, _ = _probe_get(
+                f'https://api.neverbounce.com/v4/account/info?key={_uparse2.quote(key, safe="")}')
+            if status == 200:
+                results.append({'label': 'NeverBounce', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status in (401, 403):
+                results.append({'label': 'NeverBounce', 'status': 'error',
+                                'detail': f'Authentication failed (HTTP {status}).'})
+            else:
+                results.append({'label': 'NeverBounce', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach NeverBounce API.'})
+    elif ep == 'zerobounce':
+        key = (email_verif.get('ZEROBOUNCE_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'ZeroBounce', 'status': 'error',
+                            'detail': 'ZEROBOUNCE_API_KEY is required.'})
+        else:
+            status, body_text = _probe_get(
+                f'https://api.zerobounce.net/v2/getcredits?api_key={_uparse2.quote(key, safe="")}')
+            if status == 200:
+                try:
+                    credits = json.loads(body_text).get('Credits')
+                except Exception:
+                    credits = None
+                try:
+                    credits_num = int(credits) if credits is not None else None
+                except (TypeError, ValueError):
+                    credits_num = None
+                if credits_num is not None and credits_num > 0:
+                    results.append({'label': 'ZeroBounce', 'status': 'ok',
+                                    'detail': f'API key valid. Credits remaining: {credits_num}.'})
+                elif credits_num == 0:
+                    results.append({'label': 'ZeroBounce', 'status': 'warn',
+                                    'detail': 'API key valid but account has 0 credits.'})
+                else:
+                    results.append({'label': 'ZeroBounce', 'status': 'ok', 'detail': 'API key accepted.'})
+            elif status in (400, 401):
+                results.append({'label': 'ZeroBounce', 'status': 'error',
+                                'detail': f'Authentication failed (HTTP {status}).'})
+            else:
+                results.append({'label': 'ZeroBounce', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach ZeroBounce API.'})
+    elif ep == 'bouncer':
+        key = (email_verif.get('BOUNCER_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'Bouncer', 'status': 'error',
+                            'detail': 'BOUNCER_API_KEY is required.'})
+        else:
+            # Use the verify endpoint for validation — the /account endpoint returns
+            # 403 on some Bouncer plans even with a valid key.  A test verification
+            # call returns 401 only when the key itself is invalid; any other code
+            # (200 = success, 402 = no credits, 429 = rate-limited) means the key works.
+            # timeout=5 in the query string is the Bouncer per-request MX lookup limit.
+            status, _ = _probe_get(
+                'https://api.usebouncer.com/v1.1/email/verify?email=test%40usebouncer.com&timeout=5',
+                headers={'x-api-key': key})
+            if status == 401:
+                results.append({'label': 'Bouncer', 'status': 'error',
+                                'detail': 'Authentication failed — invalid API key (HTTP 401).'})
+            elif status == 402:
+                results.append({'label': 'Bouncer', 'status': 'warn',
+                                'detail': 'API key is valid but the account has no credits (HTTP 402).'})
+            elif status == 429:
+                results.append({'label': 'Bouncer', 'status': 'warn',
+                                'detail': 'API key is valid but the request was rate-limited (HTTP 429).'})
+            elif status == 200:
+                results.append({'label': 'Bouncer', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status is not None:
+                # Any non-401 HTTP response means the key was accepted by Bouncer.
+                results.append({'label': 'Bouncer', 'status': 'ok',
+                                'detail': f'API key accepted (HTTP {status}).'})
+            else:
+                results.append({'label': 'Bouncer', 'status': 'warn',
+                                'detail': 'Could not reach Bouncer API — please try again.'})
+
+    # ── Contact Generation ────────────────────────────────────────────────
+    cp = (contact_gen.get('provider') or '').strip()
+    if cp == 'gemini' or not cp:
+        results.append({'label': 'Contact Generation', 'status': 'ok',
+                        'detail': 'Using platform Gemini — no custom key required.'})
+    elif cp == 'contactout':
+        key = (contact_gen.get('CONTACTOUT_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'ContactOut', 'status': 'error',
+                            'detail': 'CONTACTOUT_API_KEY is required.'})
+        else:
+            status, _ = _probe_get(
+                'https://api.contactout.com/v1/people/linkedin?profile=https://www.linkedin.com/in/test&email_type=none&include_phone=false',
+                headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'token': key})
+            if status == 401:
+                results.append({'label': 'ContactOut', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your CONTACTOUT_API_KEY.'})
+            elif status == 403:
+                # 403 from ContactOut means account suspended or quota exceeded, NOT invalid key
+                results.append({'label': 'ContactOut', 'status': 'warn',
+                                'detail': 'ContactOut returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
+            elif status in (200, 404, 422):
+                results.append({'label': 'ContactOut', 'status': 'ok', 'detail': 'API key accepted.'})
+            else:
+                results.append({'label': 'ContactOut', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status} — key may be valid but check your account or try again.'
+                                if status else 'Could not reach ContactOut API.'})
+    elif cp == 'apollo':
+        key = (contact_gen.get('APOLLO_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'Apollo', 'status': 'error',
+                            'detail': 'APOLLO_API_KEY is required.'})
+        else:
+            status, _ = _probe_get('https://api.apollo.io/v1/auth/health',
+                                   headers={'x-api-key': key, 'Content-Type': 'application/json'})
+            if status == 200:
+                results.append({'label': 'Apollo', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status == 401:
+                results.append({'label': 'Apollo', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your APOLLO_API_KEY.'})
+            elif status == 403:
+                results.append({'label': 'Apollo', 'status': 'warn',
+                                'detail': 'Apollo returned HTTP 403 — key may be valid but your account may lack access. Check your plan.'})
+            elif status is not None and status >= 500:
+                results.append({'label': 'Apollo', 'status': 'warn',
+                                'detail': f'Apollo API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
+            else:
+                results.append({'label': 'Apollo', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
+                                if status else 'Could not reach Apollo API.'})
+    elif cp == 'rocketreach':
+        key = (contact_gen.get('ROCKETREACH_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'RocketReach', 'status': 'error',
+                            'detail': 'ROCKETREACH_API_KEY is required.'})
+        else:
+            status, _ = _probe_get('https://api.rocketreach.co/api/v2/checkStatus',
+                                   headers={'Api-Key': key})
+            if status == 200:
+                results.append({'label': 'RocketReach', 'status': 'ok', 'detail': 'API key is valid.'})
+            elif status == 401:
+                results.append({'label': 'RocketReach', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your ROCKETREACH_API_KEY.'})
+            elif status == 403:
+                results.append({'label': 'RocketReach', 'status': 'warn',
+                                'detail': 'RocketReach returned HTTP 403 — key may be valid but your account may be suspended or quota exceeded.'})
+            elif status is not None and status >= 500:
+                results.append({'label': 'RocketReach', 'status': 'warn',
+                                'detail': f'RocketReach API returned HTTP {status} — server may be temporarily unavailable. Try again.'})
+            else:
+                results.append({'label': 'RocketReach', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status} — key may be valid but check your plan.'
+                                if status else 'Could not reach RocketReach API.'})
+
+    return results
 
 
 
@@ -7807,6 +7815,8 @@ def _vip_mask_keys(cfg: dict) -> dict:
         'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'NEVERBOUNCE_API_KEY',
         'ZEROBOUNCE_API_KEY', 'BOUNCER_API_KEY', 'CONTACTOUT_API_KEY',
         'APOLLO_API_KEY', 'ROCKETREACH_API_KEY',
+        # Get Profile provider keys
+        'GP_LINKDAPI_API_KEY', 'GP_BRIGHTDATA_API_KEY', 'GP_SCRAPINGDOG_API_KEY',
     }
     result = {}
     for section, val in cfg.items():
@@ -7840,6 +7850,7 @@ def admin_vip_get_user_svc_config():
             'llm':         stored.get('llm',         {}).get('provider', 'gemini'),
             'email_verif': stored.get('email_verif', {}).get('provider', 'default'),
             'contact_gen': stored.get('contact_gen', {}).get('provider', 'gemini'),
+            'get_profile': stored.get('get_profile', {}).get('provider', 'platform'),
         }
         return jsonify({"active": True, "providers": providers, "config": _vip_mask_keys(stored)})
     except Exception:
@@ -7862,10 +7873,11 @@ def admin_vip_set_user_svc_config():
             'llm':         body.get('llm')         or {},
             'email_verif': body.get('email_verif') or {},
             'contact_gen': body.get('contact_gen') or {},
+            'get_profile': body.get('get_profile') or {},
         }
         # Preserve existing key values for fields left blank (placeholder kept)
         stored = _vip_read_user_svc(target) or {}
-        for section in ('search', 'llm', 'email_verif', 'contact_gen'):
+        for section in ('search', 'llm', 'email_verif', 'contact_gen', 'get_profile'):
             existing = stored.get(section) or {}
             new_sec  = cfg[section]
             merged = dict(existing)
@@ -7948,7 +7960,7 @@ def admin_vip_set_al_svc_config():
         al_cfgs = cfg.get(_AL_SVC_KEY) or {}
         existing = al_cfgs.get(level) or {}
         new_cfg = {}
-        for section in ('search', 'llm', 'email_verif', 'contact_gen'):
+        for section in ('search', 'llm', 'email_verif', 'contact_gen', 'get_profile'):
             merged = dict(existing.get(section) or {})
             merged.update({k: v for k, v in (body.get(section) or {}).items() if v})
             new_cfg[section] = merged
@@ -7984,6 +7996,152 @@ def admin_vip_delete_al_svc_config():
     except Exception:
         logger.exception("[admin/vip/access-level-service-config DELETE]")
         return jsonify({"error": "Clear failed"}), 500
+
+
+@app.post("/admin/vip/validate-config")
+@_csrf_required
+@_require_admin
+def admin_vip_validate_config():
+    """Admin: validate provider keys in a VIP service config (does NOT store anything).
+    Delegates to the existing user-service-config/validate logic for the four standard
+    sections (search, llm, email_verif, contact_gen) and adds additional validation for
+    the get_profile section (Linkdapi / BrightData / ScrapingDog)."""
+    import urllib.request as _ureq3
+    import urllib.parse   as _uparse3
+
+    body = request.get_json(force=True, silent=True) or {}
+
+    # ── Probe helper (local to this endpoint) ─────────────────────────────────
+    def _probe(url, headers=None, timeout=8):
+        req = _ureq3.Request(url, headers=headers or {})
+        try:
+            with _ureq3.urlopen(req, timeout=timeout) as resp:
+                return resp.status, resp.read().decode('utf-8', errors='replace')
+        except Exception as exc:
+            if hasattr(exc, 'code'):
+                try:
+                    return exc.code, exc.read().decode('utf-8', errors='replace')
+                except Exception:
+                    return exc.code, ''
+            return None, str(exc)
+
+    results = []
+
+    # ── Standard sections (search / llm / email_verif / contact_gen) ──────────
+    std_sections = {k: body[k] for k in ('search', 'llm', 'email_verif', 'contact_gen') if k in body}
+    try:
+        for r in _run_svc_config_validation(std_sections):
+            results.append(r)
+    except Exception:
+        logger.warning("[admin/vip/validate-config] std validation failed", exc_info=True)
+
+    # ── Get Profile section ────────────────────────────────────────────────────
+    gp = body.get('get_profile') or {}
+    gp_provider = (gp.get('provider') or 'platform').strip()
+
+    if gp_provider in ('platform', ''):
+        results.append({'label': 'Get Profile', 'status': 'ok',
+                        'detail': 'Using platform default — no custom key required.'})
+    elif gp_provider == 'linkdapi':
+        key = (gp.get('GP_LINKDAPI_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'Linkdapi (Get Profile)', 'status': 'error',
+                            'detail': 'GP_LINKDAPI_API_KEY is required.'})
+        else:
+            # linkdapi.com/api/v1/profile/full?username=test — 401 = bad key
+            status, body_txt = _probe(
+                'https://linkdapi.com/api/v1/profile/full?username=test',
+                headers={'Authorization': f'Token {key}'})
+            if status == 401:
+                results.append({'label': 'Linkdapi', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your API key.'})
+            elif status in (200, 400, 404, 422):
+                results.append({'label': 'Linkdapi', 'status': 'ok',
+                                'detail': 'API key accepted.'})
+            elif status == 403:
+                results.append({'label': 'Linkdapi', 'status': 'warn',
+                                'detail': 'HTTP 403 — key may be valid but quota exceeded or account restricted.'})
+            else:
+                results.append({'label': 'Linkdapi', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach Linkdapi API.'})
+    elif gp_provider == 'brightdata':
+        key  = (gp.get('GP_BRIGHTDATA_API_KEY') or '').strip()
+        zone = (gp.get('GP_BRIGHTDATA_ZONE') or '').strip()
+        if not key:
+            results.append({'label': 'BrightData (Get Profile)', 'status': 'error',
+                            'detail': 'GP_BRIGHTDATA_API_KEY is required.'})
+        elif not zone:
+            results.append({'label': 'BrightData (Get Profile)', 'status': 'error',
+                            'detail': 'GP_BRIGHTDATA_ZONE is required.'})
+        else:
+            # BrightData: POST /request with minimal body — 401/403 = bad key/zone
+            import urllib.error as _uerr3
+            try:
+                import json as _json3
+                req_data = _json3.dumps({'zone': zone, 'url': 'https://www.google.com', 'format': 'json'}).encode()
+                req3 = _ureq3.Request(
+                    'https://api.brightdata.com/request',
+                    data=req_data,
+                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {key}'},
+                )
+                with _ureq3.urlopen(req3, timeout=8) as resp3:
+                    bd_status = resp3.status
+                    bd_body   = resp3.read().decode('utf-8', errors='replace')
+            except _uerr3.HTTPError as e3:
+                bd_status = e3.code
+                try:
+                    bd_body = e3.read().decode('utf-8', errors='replace')
+                except Exception:
+                    bd_body = ''
+            except Exception as e3:
+                bd_status = None
+                bd_body   = str(e3)
+            if bd_status == 401:
+                results.append({'label': 'BrightData', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your API key.'})
+            elif bd_status == 403:
+                results.append({'label': 'BrightData', 'status': 'error',
+                                'detail': 'Access denied (HTTP 403). Check your zone and API key.'})
+            elif bd_status in (200, 202):
+                results.append({'label': 'BrightData', 'status': 'ok',
+                                'detail': 'API key and zone accepted.'})
+            elif bd_status is not None:
+                results.append({'label': 'BrightData', 'status': 'warn',
+                                'detail': f'HTTP {bd_status} — key may be valid but check your zone/plan.'})
+            else:
+                results.append({'label': 'BrightData', 'status': 'warn',
+                                'detail': 'Could not reach BrightData API — please try again.'})
+    elif gp_provider == 'scrapingdog':
+        key = (gp.get('GP_SCRAPINGDOG_API_KEY') or '').strip()
+        if not key:
+            results.append({'label': 'ScrapingDog (Get Profile)', 'status': 'error',
+                            'detail': 'GP_SCRAPINGDOG_API_KEY is required.'})
+        else:
+            # ScrapingDog: GET /profile with a test username and api_key — 401 = bad key
+            test_url = (
+                f'https://api.scrapingdog.com/profile'
+                f'?api_key={_uparse3.quote(key, safe="")}'
+                f'&id=https://www.linkedin.com/in/test'
+                f'&type=profile&premium=false&webhook=false&fresh=false'
+            )
+            status, _ = _probe(test_url)
+            if status == 401:
+                results.append({'label': 'ScrapingDog', 'status': 'error',
+                                'detail': 'Authentication failed (HTTP 401). Check your API key.'})
+            elif status in (200, 400, 404, 422, 402):
+                results.append({'label': 'ScrapingDog', 'status': 'ok',
+                                'detail': 'API key accepted.'})
+            elif status == 429:
+                results.append({'label': 'ScrapingDog', 'status': 'warn',
+                                'detail': 'API key valid but rate-limited (HTTP 429).'})
+            else:
+                results.append({'label': 'ScrapingDog', 'status': 'warn',
+                                'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach ScrapingDog API.'})
+    else:
+        results.append({'label': 'Get Profile', 'status': 'warn',
+                        'detail': f'Unknown provider "{gp_provider}".'})
+
+    return jsonify({'results': results})
 
 
 @app.get("/load_search_criteria")

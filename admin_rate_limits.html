@@ -10722,6 +10722,19 @@ async function _runCommCalc() {
 // Mirrors the user-facing api_porting.html "Custom Mode" but admin sets keys
 // on behalf of any user or access level.
 
+function _renderVipValidStep(result) {
+  const icons = { ok: '✅', warn: '⚠️', error: '❌', checking: '⏳' };
+  const bgMap  = { ok: '#e6f9ed', warn: '#fffbea', error: '#fff0f0', checking: '#f5f5f5' };
+  const step = document.createElement('div');
+  step.style.cssText = `display:flex;align-items:flex-start;gap:8px;padding:8px 12px;border-radius:6px;background:${bgMap[result.status] || '#f5f5f5'};font-size:12px;`;
+  step.innerHTML =
+    `<span style="font-size:14px;line-height:1.5;">${icons[result.status] || '⏳'}</span>` +
+    `<span><strong>${escHtml(result.label || '')}</strong>` +
+    (result.detail ? ` — ${escHtml(result.detail)}` : '') +
+    '</span>';
+  return step;
+}
+
 function renderVipCard() {
   const wrap = document.createElement('div');
 
@@ -10813,6 +10826,25 @@ function renderVipCard() {
           rocketreach: [{ key: 'ROCKETREACH_API_KEY', label: 'ROCKETREACH_API_KEY', ph: 'API key…', pwd: true }],
         },
       },
+      {
+        key: 'get_profile', label: '🧑‍💼 Get Profile (LinkedIn)',
+        note: 'Assign a specific Get Profile provider and API key for this user / access level. User-defined keys set in their own API Porting page take precedence over this assignment.',
+        providers: [
+          { value: 'platform', label: 'Platform default' },
+          { value: 'linkdapi',    label: 'Linkdapi' },
+          { value: 'brightdata',  label: 'BrightData' },
+          { value: 'scrapingdog', label: 'ScrapingDog' },
+        ],
+        fields: {
+          linkdapi:    [{ key: 'GP_LINKDAPI_API_KEY',    label: 'Linkdapi API Key',    ph: 'API key…', pwd: true }],
+          brightdata:  [
+            { key: 'GP_BRIGHTDATA_API_KEY',    label: 'BrightData API Key',   ph: 'API key…',  pwd: true },
+            { key: 'GP_BRIGHTDATA_ZONE',       label: 'BrightData Zone',      ph: 'e.g. lum_zone_…' },
+            { key: 'GP_BRIGHTDATA_COLLECTOR',  label: 'BrightData Dataset ID', ph: 'e.g. gd_l1viktl72bvl7bjuj0' },
+          ],
+          scrapingdog: [{ key: 'GP_SCRAPINGDOG_API_KEY', label: 'ScrapingDog API Key', ph: 'API key…', pwd: true }],
+        },
+      },
     ];
 
     const stateMap = {};  // sectionKey → { providerEl, fieldEls: { providerValue: [inputEl, ...] } }
@@ -10825,6 +10857,14 @@ function renderVipCard() {
       secLabel.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:10px;';
       secLabel.textContent = sec.label;
       secEl.appendChild(secLabel);
+
+      // Optional descriptive note
+      if (sec.note) {
+        const secNote = document.createElement('p');
+        secNote.style.cssText = 'font-size:11px;color:var(--muted);margin:0 0 8px;line-height:1.4;';
+        secNote.textContent = sec.note;
+        secEl.appendChild(secNote);
+      }
 
       // Provider radio-like pills
       const pillRow = document.createElement('div');
@@ -11032,7 +11072,34 @@ function renderVipCard() {
         finally { clearUBtn.disabled = false; clearUBtn.textContent = '🗑 Clear Config'; }
       });
 
-      actRow.appendChild(saveUBtn); actRow.appendChild(clearUBtn);
+      const validateUBtn = document.createElement('button'); validateUBtn.className = 'btn btn-outline'; validateUBtn.textContent = '🔍 Validate';
+      validateUBtn.title = 'Test each provider key by calling the respective API';
+
+      // Validation results panel (hidden until Validate is clicked)
+      const uValidPanel = document.createElement('div');
+      uValidPanel.style.cssText = 'margin-top:12px;display:none;';
+      const uValidSteps = document.createElement('div');
+      uValidSteps.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+      uValidPanel.appendChild(uValidSteps);
+      userCfgArea.appendChild(uValidPanel);
+
+      validateUBtn.addEventListener('click', async () => {
+        const payload = _userProviderUi.getPayload();
+        validateUBtn.disabled = true; validateUBtn.textContent = '⏳ Validating…';
+        uValidPanel.style.display = ''; uValidSteps.innerHTML = '';
+        try {
+          const rv = await fetch(`${API}/admin/vip/validate-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          const dv = await rv.json();
+          if (!rv.ok) { uValidSteps.innerHTML = `<p style="color:var(--danger)">${escHtml(dv.error || 'Validation failed')}</p>`; return; }
+          (dv.results || []).forEach(res => { uValidSteps.appendChild(_renderVipValidStep(res)); });
+        } catch (err) { uValidSteps.innerHTML = `<p style="color:var(--danger)">Network error: ${escHtml(err.message)}</p>`; }
+        finally { validateUBtn.disabled = false; validateUBtn.textContent = '🔍 Validate'; }
+      });
+
+      actRow.appendChild(saveUBtn); actRow.appendChild(validateUBtn); actRow.appendChild(clearUBtn);
       userCfgArea.appendChild(actRow);
       userCfgArea.style.display = '';
     } catch (err) { toast(err.message, 'error'); }
@@ -11140,12 +11207,22 @@ function renderVipCard() {
       applyLvlBtn.addEventListener('click', async () => {
         const usersWithLevel = _users.filter(u => u.useraccess === lvl);
         if (!usersWithLevel.length) { toast(`No users have access level "${lvl}"`, 'error'); return; }
-        if (!confirm(`Push this config to all ${usersWithLevel.length} user(s) with level "${lvl}"? This will overwrite their existing configs.`)) return;
+        if (!confirm(`Push this config to all ${usersWithLevel.length} user(s) with level "${lvl}"?\n\nNote: Users who have already set their own API keys (via the API Porting page) will be skipped — their personal keys take precedence.`)) return;
         const payload = _levelProviderUi.getPayload();
         applyLvlBtn.disabled = true; applyLvlBtn.textContent = `Applying to ${usersWithLevel.length} user(s)…`;
-        let ok = 0; let fail = 0;
+        let ok = 0; let skipped = 0; let fail = 0;
         for (const u of usersWithLevel) {
           try {
+            // Check whether the user already has their own config (personal keys take precedence)
+            const statusR = await fetch(`${API}/admin/vip/user-service-config?username=${encodeURIComponent(u.username)}`, { credentials: 'same-origin' });
+            const statusD = await statusR.json();
+            // Skip users who already have a personal get_profile config set
+            if (statusD.active && statusD.config && statusD.config.get_profile &&
+                (statusD.config.get_profile.GP_LINKDAPI_API_KEY === '***' ||
+                 statusD.config.get_profile.GP_BRIGHTDATA_API_KEY === '***' ||
+                 statusD.config.get_profile.GP_SCRAPINGDOG_API_KEY === '***')) {
+              skipped++; continue;
+            }
             const r2 = await fetch(`${API}/admin/vip/user-service-config`, {
               method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
               body: JSON.stringify({ username: u.username, ...payload }),
@@ -11155,7 +11232,10 @@ function renderVipCard() {
             ok++;
           } catch (_) { fail++; }
         }
-        toast(`Applied to ${ok} user(s)${fail ? ` — ${fail} failed` : ''}`, fail ? 'error' : 'success');
+        const parts = [`Applied to ${ok} user(s)`];
+        if (skipped) parts.push(`${skipped} skipped (own keys)`);
+        if (fail)    parts.push(`${fail} failed`);
+        toast(parts.join(' — '), fail ? 'error' : 'success');
         applyLvlBtn.disabled = false; applyLvlBtn.textContent = '🚀 Apply to All Users';
       });
 
@@ -11176,7 +11256,34 @@ function renderVipCard() {
         finally { clearLvlBtn.disabled = false; clearLvlBtn.textContent = '🗑 Clear Config'; }
       });
 
-      actRow.appendChild(saveLvlBtn); actRow.appendChild(applyLvlBtn); actRow.appendChild(clearLvlBtn);
+      const validateLvlBtn = document.createElement('button'); validateLvlBtn.className = 'btn btn-outline'; validateLvlBtn.textContent = '🔍 Validate';
+      validateLvlBtn.title = 'Test each provider key by calling the respective API';
+
+      // Validation results panel for levels
+      const lvlValidPanel = document.createElement('div');
+      lvlValidPanel.style.cssText = 'margin-top:12px;display:none;';
+      const lvlValidSteps = document.createElement('div');
+      lvlValidSteps.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+      lvlValidPanel.appendChild(lvlValidSteps);
+      levelCfgArea.appendChild(lvlValidPanel);
+
+      validateLvlBtn.addEventListener('click', async () => {
+        const payload = _levelProviderUi.getPayload();
+        validateLvlBtn.disabled = true; validateLvlBtn.textContent = '⏳ Validating…';
+        lvlValidPanel.style.display = ''; lvlValidSteps.innerHTML = '';
+        try {
+          const rv = await fetch(`${API}/admin/vip/validate-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          const dv = await rv.json();
+          if (!rv.ok) { lvlValidSteps.innerHTML = `<p style="color:var(--danger)">${escHtml(dv.error || 'Validation failed')}</p>`; return; }
+          (dv.results || []).forEach(res => { lvlValidSteps.appendChild(_renderVipValidStep(res)); });
+        } catch (err) { lvlValidSteps.innerHTML = `<p style="color:var(--danger)">Network error: ${escHtml(err.message)}</p>`; }
+        finally { validateLvlBtn.disabled = false; validateLvlBtn.textContent = '🔍 Validate'; }
+      });
+
+      actRow.appendChild(saveLvlBtn); actRow.appendChild(validateLvlBtn); actRow.appendChild(applyLvlBtn); actRow.appendChild(clearLvlBtn);
       levelCfgArea.appendChild(actRow);
       levelCfgArea.style.display = '';
     } catch (err) { toast(err.message, 'error'); }
