@@ -7798,13 +7798,17 @@ def _vip_write_user_svc(username: str, cfg: dict) -> None:
             fh.write(raw.decode('utf-8'))
 
 
+# Regex that matches valid usernames accepted by _porting_safe_name (only alphanumerics + _-@.)
+_VIP_USERNAME_RE = _re.compile(r'^[a-zA-Z0-9_@.\-]{1,128}$')
+
+
 @app.get("/admin/vip/user-service-config")
 @_require_admin
 def admin_vip_get_user_svc_config():
     """Return the current service-config status for a target user (keys masked)."""
     target = (request.args.get("username") or "").strip()
-    if not target:
-        return jsonify({"error": "username is required"}), 400
+    if not target or not _VIP_USERNAME_RE.match(target):
+        return jsonify({"error": "username is required and must contain only letters, numbers, and _@.-"}), 400
     try:
         stored = _vip_read_user_svc(target)
         if stored is None:
@@ -7828,8 +7832,8 @@ def admin_vip_set_user_svc_config():
     """Admin: write service-config for a target user on their behalf."""
     body = request.get_json(force=True, silent=True) or {}
     target = (body.get("username") or "").strip()
-    if not target:
-        return jsonify({"error": "username is required"}), 400
+    if not target or not _VIP_USERNAME_RE.match(target):
+        return jsonify({"error": "username is required and must contain only letters, numbers, and _@.-"}), 400
     try:
         cfg = {
             'search':      body.get('search')      or {},
@@ -7861,8 +7865,8 @@ def admin_vip_delete_user_svc_config():
     """Admin: delete service-config for a target user."""
     body = request.get_json(force=True, silent=True) or {}
     target = (body.get("username") or "").strip()
-    if not target:
-        return jsonify({"error": "username is required"}), 400
+    if not target or not _VIP_USERNAME_RE.match(target):
+        return jsonify({"error": "username is required and must contain only letters, numbers, and _@.-"}), 400
     try:
         for fp in (_svc_config_path(target), _svc_config_json_path(target)):
             try:

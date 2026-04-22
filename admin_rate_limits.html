@@ -10870,7 +10870,7 @@ function renderVipCard() {
             // Pre-fill from initialCfg if present and not obfuscated
             const storedVal = initCfgSec[fd.key] || '';
             if (storedVal && !storedVal.startsWith('*')) finp.value = storedVal;
-            else if (storedVal && storedVal.startsWith('*')) finp.placeholder = '(saved — enter new value to update)';
+            else if (storedVal.startsWith('*')) finp.placeholder = '(saved — enter new value to update)';
             fRow.appendChild(flbl); fRow.appendChild(finp);
             fc.appendChild(fRow);
             if (!fieldInputs[provVal]) fieldInputs[provVal] = {};
@@ -10899,11 +10899,7 @@ function renderVipCard() {
       const result = {};
       SECTIONS.forEach(sec => {
         const sm = stateMap[sec.key];
-        const selProvider = sec.providers.find(p => {
-          const pill = sm.pillEls[p.value];
-          return pill && pill.style.background.includes('rgb') || pill.style.background.includes('#1976d2') || pill.style.background === 'var(--primary,#1976d2)';
-        }) || sec.providers[0];
-        // Determine selected provider by which pill has the primary background
+        // Determine the active provider by which pill has the primary background
         let activeProv = sec.providers[0].value;
         for (const p of sec.providers) {
           if (sm.pillEls[p.value].style.background === 'var(--primary,#1976d2)') { activeProv = p.value; break; }
