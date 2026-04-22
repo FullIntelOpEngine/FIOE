@@ -1355,6 +1355,7 @@ function renderPage(container) {
     { id: 'tab-tests',   label: 'Test Monitor',   icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v11m0 0H5m4 0h10m0 0V3m0 11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2m14 0v4a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-4"/></svg>' },
     { id: 'tab-salesrep', label: 'Sales Rep',     icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
     { id: 'tab-ml',      label: 'ML',             icon: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m9.9 9.9l2.1 2.1M4.9 19.1l2.1-2.1m9.9-9.9l2.1-2.1"/></svg>' },
+    { id: 'tab-vip',    label: '⭐ VIP',           icon: '' },
   ];
   tabDefs.forEach((t, i) => {
     const btn = document.createElement('button');
@@ -1372,6 +1373,12 @@ function renderPage(container) {
       if (t.id === 'tab-ml') {
         panel.innerHTML = '';
         panel.appendChild(renderMLCard());
+      }
+      // Re-render the VIP card each time the VIP tab is activated so the user
+      // list and access-level list are always fresh.
+      if (t.id === 'tab-vip') {
+        panel.innerHTML = '';
+        panel.appendChild(renderVipCard());
       }
     });
     tabBar.appendChild(btn);
@@ -1536,6 +1543,11 @@ function renderPage(container) {
         subPanel.appendChild(sysInner);
       }
 
+      // ── Talent Evaluation only: Get Profile retrieval rate limit ─────────────
+      if (sd.tabKey === 'talent') {
+        subPanel.appendChild(renderGpRateLimitCard());
+      }
+
     }
 
     rlPanel.appendChild(subPanel);
@@ -1660,6 +1672,13 @@ function renderPage(container) {
   mlPanel.className = 'tab-panel';
   mlPanel.appendChild(renderMLCard());
   container.appendChild(mlPanel);
+
+  // ── Tab: VIP ──────────────────────────────────────────────────────────────
+  const vipPanel = document.createElement('div');
+  vipPanel.id = 'tab-vip';
+  vipPanel.className = 'tab-panel';
+  vipPanel.appendChild(renderVipCard());
+  container.appendChild(vipPanel);
 }
 function renderDefaultsCardForTab(tabKey, tabTitle) {
   const card = document.createElement('div');
@@ -1725,6 +1744,62 @@ function renderDefaultsCardForTab(tabKey, tabTitle) {
     card.appendChild(makeFeatureTableRows(group));
   });
 
+  return card;
+}
+
+function renderGpRateLimitCard() {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.marginTop = '16px';
+  card.innerHTML = `<h2>Get Profile — Retrieval Rate Limit</h2>
+    <p style="color:var(--muted);font-size:12px;margin:0 0 14px;">
+      Maximum number of profile retrievals per minute across all active providers
+      (Linkdapi, BrightData, Scrapingdog). Set to <strong>0</strong> for unlimited.
+      Changes take effect immediately without a server restart.
+    </p>`;
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;';
+
+  const field = document.createElement('div');
+  field.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+  const lbl = document.createElement('label');
+  lbl.htmlFor = 'gp-rate-limit-input';
+  lbl.style.cssText = 'font-size:13px;font-weight:500;';
+  lbl.textContent = 'Max retrievals / minute';
+  const inp = document.createElement('input');
+  inp.type = 'number'; inp.id = 'gp-rate-limit-input';
+  inp.min = '0'; inp.step = '1';
+  inp.value = String(_getProfilesConfig.rate_limit_per_minute || 0);
+  inp.style.cssText = 'padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;width:160px;';
+  field.appendChild(lbl); field.appendChild(inp);
+  row.appendChild(field);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary';
+  saveBtn.textContent = '💾 Save';
+  saveBtn.addEventListener('click', async () => {
+    const val = parseInt(inp.value, 10);
+    if (isNaN(val) || val < 0) { toast('Enter a valid number (0 = unlimited)', 'error'); return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+      const r = await fetch(`${API}/admin/get-profiles-config`, {
+        method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+        body: JSON.stringify({ rate_limit_per_minute: val }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
+      _getProfilesConfig.rate_limit_per_minute = val;
+      _notifyConfigChanged('get-profiles');
+      toast('Get Profile rate limit saved', 'success');
+    } catch (err) {
+      toast(err.message, 'error');
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
+    }
+  });
+  row.appendChild(saveBtn);
+  card.appendChild(row);
   return card;
 }
 
@@ -4852,66 +4927,6 @@ function renderApiKeysCard() {
       sec.appendChild(row);
       return sec;
     }
-
-    // ── Rate limit block (applies to all providers) ───────────────────────────
-    (function renderGpRateLimitSection() {
-      const rlSec = document.createElement('div');
-      rlSec.className = 'apikey-service';
-      rlSec.id = 'gp-rate-limit-section';
-
-      const h3Wrap = document.createElement('div');
-      h3Wrap.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:4px';
-      const h3 = document.createElement('h3'); h3.textContent = 'Rate Limit'; h3.style.margin = '0';
-      const badge = document.createElement('span');
-      badge.textContent = 'All providers';
-      badge.style.cssText = 'font-size:11px;font-weight:500;color:var(--muted);background:var(--surface2,#f0f4f8);border:1px solid var(--border);border-radius:4px;padding:2px 7px;white-space:nowrap';
-      h3Wrap.appendChild(h3); h3Wrap.appendChild(badge);
-      rlSec.appendChild(h3Wrap);
-
-      const desc = document.createElement('p');
-      desc.style.cssText = 'color:var(--muted);font-size:13px;margin:0 0 12px';
-      desc.textContent = 'Maximum number of profile retrievals per minute across all active providers (Linkdapi, BrightData, Scrapingdog). Set to 0 for unlimited.';
-      rlSec.appendChild(desc);
-
-      const row = document.createElement('div'); row.className = 'apikey-row';
-
-      const field = document.createElement('div'); field.className = 'apikey-field'; field.style.maxWidth = '220px';
-      const lbl = document.createElement('label'); lbl.htmlFor = 'gp-rate-limit-input'; lbl.textContent = 'Max retrievals / minute';
-      const inp = document.createElement('input');
-      inp.type = 'number'; inp.id = 'gp-rate-limit-input'; inp.className = 'apikey-input';
-      inp.min = '0'; inp.step = '1';
-      inp.value = String(gp.rate_limit_per_minute || 0);
-      inp.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;';
-      field.appendChild(lbl); field.appendChild(inp);
-      row.appendChild(field);
-
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'btn btn-primary apikey-save-btn';
-      saveBtn.textContent = '💾 Save';
-      saveBtn.addEventListener('click', async () => {
-        const val = parseInt(inp.value, 10);
-        if (isNaN(val) || val < 0) { toast('Enter a valid number (0 = unlimited)', 'error'); return; }
-        saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
-        try {
-          const r = await fetch(`${API}/admin/get-profiles-config`, {
-            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
-            body: JSON.stringify({ rate_limit_per_minute: val }),
-          });
-          const data = await r.json();
-          if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
-          _getProfilesConfig.rate_limit_per_minute = val;
-          _notifyConfigChanged('get-profiles');
-          toast('Rate limit saved', 'success');
-        } catch (err) {
-          toast(err.message, 'error');
-        } finally {
-          saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
-        }
-      });
-      row.appendChild(saveBtn);
-      rlSec.appendChild(row);
-      getProfilesPanel.appendChild(rlSec);
-    })();
 
     // Linkdapi — Primary
     getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg, '1st · Primary'));
@@ -10700,6 +10715,483 @@ async function _runCommCalc() {
     }
   } catch (_) { /* network error — keep login form */ }
 })();
+</script>
+<script>
+// ── VIP Tab ─────────────────────────────────────────────────────────────────
+// Admin-controlled per-user / per-access-level service configuration.
+// Mirrors the user-facing api_porting.html "Custom Mode" but admin sets keys
+// on behalf of any user or access level.
+
+function renderVipCard() {
+  const wrap = document.createElement('div');
+
+  // ── Sub-tab bar ─────────────────────────────────────────────────────────
+  const subTabBar = document.createElement('div');
+  subTabBar.className = 'log-sub-tabs';
+  subTabBar.style.marginBottom = '16px';
+
+  const subDefs = [
+    { id: 'vip-sub-users',  label: '👤 Per User'          },
+    { id: 'vip-sub-levels', label: '🏷️ Per Access Level'  },
+  ];
+  subDefs.forEach((st, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'log-sub-tab' + (i === 0 ? ' active' : '');
+    btn.textContent = st.label;
+    btn.addEventListener('click', () => {
+      subTabBar.querySelectorAll('.log-sub-tab').forEach(b => b.classList.remove('active'));
+      wrap.querySelectorAll('.vip-sub-panel').forEach(p => { p.style.display = 'none'; });
+      btn.classList.add('active');
+      document.getElementById(st.id).style.display = '';
+    });
+    subTabBar.appendChild(btn);
+  });
+  wrap.appendChild(subTabBar);
+
+  // ── Shared provider-config builder ────────────────────────────────────
+  // Returns { el, getPayload } where el is the DOM node and getPayload() returns
+  // the structured provider config object.
+  function buildProviderConfigUi(initialCfg, idPrefix) {
+    const container = document.createElement('div');
+    container.style.cssText = 'display:flex;flex-direction:column;gap:18px;margin-top:12px;';
+
+    const SECTIONS = [
+      {
+        key: 'search', label: '🔍 Search Engine',
+        providers: [
+          { value: 'google_cse', label: 'Platform default (Google CSE)' },
+          { value: 'serper',     label: 'Serper.dev' },
+          { value: 'dataforseo', label: 'DataforSEO' },
+          { value: 'linkedin',   label: 'LinkedIn' },
+        ],
+        fields: {
+          serper:     [{ key: 'SERPER_API_KEY',       label: 'SERPER_API_KEY',       ph: 'API key…' }],
+          dataforseo: [
+            { key: 'DATAFORSEO_LOGIN',    label: 'DATAFORSEO_LOGIN',    ph: 'Login / username' },
+            { key: 'DATAFORSEO_PASSWORD', label: 'DATAFORSEO_PASSWORD', ph: 'Password',         pwd: true },
+          ],
+          linkedin:   [{ key: 'LINKEDIN_API_KEY',     label: 'LINKEDIN_API_KEY',     ph: 'API key…' }],
+        },
+      },
+      {
+        key: 'llm', label: '🤖 LLM Provider',
+        providers: [
+          { value: 'gemini',    label: 'Gemini (platform default)' },
+          { value: 'openai',    label: 'OpenAI' },
+          { value: 'anthropic', label: 'Anthropic' },
+        ],
+        fields: {
+          openai:    [{ key: 'OPENAI_API_KEY',    label: 'OPENAI_API_KEY',    ph: 'sk-…', pwd: true }],
+          anthropic: [{ key: 'ANTHROPIC_API_KEY', label: 'ANTHROPIC_API_KEY', ph: 'sk-ant-…', pwd: true }],
+        },
+      },
+      {
+        key: 'email_verif', label: '📧 Email Verification',
+        providers: [
+          { value: 'default',    label: 'Platform default (no key)' },
+          { value: 'neverbounce',label: 'NeverBounce' },
+          { value: 'zerobounce', label: 'ZeroBounce' },
+          { value: 'bouncer',    label: 'Bouncer' },
+        ],
+        fields: {
+          neverbounce: [{ key: 'NEVERBOUNCE_API_KEY',  label: 'NEVERBOUNCE_API_KEY',  ph: 'API key…', pwd: true }],
+          zerobounce:  [{ key: 'ZEROBOUNCE_API_KEY',   label: 'ZEROBOUNCE_API_KEY',   ph: 'API key…', pwd: true }],
+          bouncer:     [{ key: 'BOUNCER_API_KEY',       label: 'BOUNCER_API_KEY',       ph: 'API key…', pwd: true }],
+        },
+      },
+      {
+        key: 'contact_gen', label: '📇 Contact Generation',
+        providers: [
+          { value: 'gemini',      label: 'Gemini (platform default)' },
+          { value: 'contactout',  label: 'ContactOut' },
+          { value: 'apollo',      label: 'Apollo' },
+          { value: 'rocketreach', label: 'RocketReach' },
+        ],
+        fields: {
+          contactout:  [{ key: 'CONTACTOUT_API_KEY',  label: 'CONTACTOUT_API_KEY',  ph: 'API key…', pwd: true }],
+          apollo:      [{ key: 'APOLLO_API_KEY',      label: 'APOLLO_API_KEY',      ph: 'API key…', pwd: true }],
+          rocketreach: [{ key: 'ROCKETREACH_API_KEY', label: 'ROCKETREACH_API_KEY', ph: 'API key…', pwd: true }],
+        },
+      },
+    ];
+
+    const stateMap = {};  // sectionKey → { providerEl, fieldEls: { providerValue: [inputEl, ...] } }
+
+    SECTIONS.forEach(sec => {
+      const secEl = document.createElement('div');
+      secEl.style.cssText = 'padding:14px 16px;border:1px solid var(--border);border-radius:8px;background:var(--surface2,#f8fafc);';
+
+      const secLabel = document.createElement('div');
+      secLabel.style.cssText = 'font-weight:600;font-size:13px;margin-bottom:10px;';
+      secLabel.textContent = sec.label;
+      secEl.appendChild(secLabel);
+
+      // Provider radio-like pills
+      const pillRow = document.createElement('div');
+      pillRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;';
+
+      const initCfgSec = (initialCfg && initialCfg[sec.key]) || {};
+      const initProvider = initCfgSec.provider || sec.providers[0].value;
+
+      const pillEls = {};
+      sec.providers.forEach(prov => {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.textContent = prov.label;
+        pill.style.cssText = 'padding:4px 12px;border-radius:20px;border:1px solid var(--border);cursor:pointer;font-size:12px;transition:background .15s,color .15s;';
+        if (prov.value === initProvider) {
+          pill.style.background = 'var(--primary,#1976d2)'; pill.style.color = '#fff'; pill.style.borderColor = 'var(--primary,#1976d2)';
+        } else {
+          pill.style.background = '#fff'; pill.style.color = 'var(--text)';
+        }
+        pillEls[prov.value] = pill;
+        pillRow.appendChild(pill);
+      });
+      secEl.appendChild(pillRow);
+
+      // Field containers (one per provider that needs keys)
+      const fieldContainers = {};
+      const fieldInputs = {};
+      if (sec.fields) {
+        Object.entries(sec.fields).forEach(([provVal, fieldDefs]) => {
+          const fc = document.createElement('div');
+          fc.style.cssText = 'display:' + (provVal === initProvider ? 'flex' : 'none') + ';flex-direction:column;gap:8px;';
+          fieldDefs.forEach(fd => {
+            const fRow = document.createElement('div');
+            fRow.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
+            const flbl = document.createElement('label');
+            flbl.textContent = fd.label;
+            flbl.style.cssText = 'font-size:12px;color:var(--muted);';
+            const finp = document.createElement('input');
+            finp.type = fd.pwd ? 'password' : 'text';
+            finp.placeholder = fd.ph || '';
+            finp.autocomplete = 'off';
+            finp.style.cssText = 'padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;';
+            // Pre-fill from initialCfg if present and not obfuscated
+            const storedVal = initCfgSec[fd.key] || '';
+            if (storedVal && !storedVal.startsWith('*')) finp.value = storedVal;
+            else if (storedVal && storedVal.startsWith('*')) finp.placeholder = '(saved — enter new value to update)';
+            fRow.appendChild(flbl); fRow.appendChild(finp);
+            fc.appendChild(fRow);
+            if (!fieldInputs[provVal]) fieldInputs[provVal] = {};
+            fieldInputs[provVal][fd.key] = finp;
+          });
+          fieldContainers[provVal] = fc;
+          secEl.appendChild(fc);
+        });
+      }
+
+      // Wire pill clicks
+      sec.providers.forEach(prov => {
+        pillEls[prov.value].addEventListener('click', () => {
+          Object.values(pillEls).forEach(p => { p.style.background = '#fff'; p.style.color = 'var(--text)'; p.style.borderColor = 'var(--border)'; });
+          pillEls[prov.value].style.background = 'var(--primary,#1976d2)'; pillEls[prov.value].style.color = '#fff'; pillEls[prov.value].style.borderColor = 'var(--primary,#1976d2)';
+          Object.values(fieldContainers).forEach(fc => { fc.style.display = 'none'; });
+          if (fieldContainers[prov.value]) fieldContainers[prov.value].style.display = 'flex';
+        });
+      });
+
+      stateMap[sec.key] = { pillEls, fieldContainers, fieldInputs, providers: sec.providers, fields: sec.fields };
+      container.appendChild(secEl);
+    });
+
+    function getPayload() {
+      const result = {};
+      SECTIONS.forEach(sec => {
+        const sm = stateMap[sec.key];
+        const selProvider = sec.providers.find(p => {
+          const pill = sm.pillEls[p.value];
+          return pill && pill.style.background.includes('rgb') || pill.style.background.includes('#1976d2') || pill.style.background === 'var(--primary,#1976d2)';
+        }) || sec.providers[0];
+        // Determine selected provider by which pill has the primary background
+        let activeProv = sec.providers[0].value;
+        for (const p of sec.providers) {
+          if (sm.pillEls[p.value].style.background === 'var(--primary,#1976d2)') { activeProv = p.value; break; }
+        }
+        const cfg = { provider: activeProv };
+        if (sm.fieldInputs[activeProv]) {
+          Object.entries(sm.fieldInputs[activeProv]).forEach(([k, inp]) => {
+            if (inp.value.trim()) cfg[k] = inp.value.trim();
+          });
+        }
+        result[sec.key] = cfg;
+      });
+      return result;
+    }
+
+    return { el: container, getPayload };
+  }
+
+  // ── Sub-panel: Per User ──────────────────────────────────────────────────
+  const usersPanel = document.createElement('div');
+  usersPanel.id = 'vip-sub-users';
+  usersPanel.className = 'vip-sub-panel';
+
+  const usersCard = document.createElement('div');
+  usersCard.className = 'card';
+  usersCard.innerHTML = `
+    <h2>⭐ VIP — Assign API Keys Per User</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">
+      Set per-user provider API keys on behalf of any registered user. Keys are stored in
+      the same encrypted format used by the user-facing Porting page and override the
+      platform defaults for that user.
+    </p>`;
+
+  // User selector row
+  const userSelRow = document.createElement('div');
+  userSelRow.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;';
+
+  const userSelLbl = document.createElement('label');
+  userSelLbl.textContent = 'User:';
+  userSelLbl.style.fontWeight = '600';
+  const userSel = document.createElement('select');
+  userSel.style.cssText = 'padding:7px 10px;border:1px solid var(--border);border-radius:7px;font-size:13px;min-width:200px;';
+  const placeholderOpt = document.createElement('option');
+  placeholderOpt.value = ''; placeholderOpt.textContent = '— select a user —';
+  userSel.appendChild(placeholderOpt);
+  _users.forEach(u => {
+    const opt = document.createElement('option');
+    opt.value = u.username; opt.textContent = u.username + (u.useraccess ? ` [${u.useraccess}]` : '');
+    userSel.appendChild(opt);
+  });
+
+  const loadBtn = document.createElement('button');
+  loadBtn.className = 'btn btn-primary';
+  loadBtn.textContent = '📥 Load Config';
+
+  const statusBadge = document.createElement('span');
+  statusBadge.style.cssText = 'font-size:12px;padding:3px 10px;border-radius:12px;font-weight:600;display:none;';
+
+  userSelRow.appendChild(userSelLbl); userSelRow.appendChild(userSel);
+  userSelRow.appendChild(loadBtn); userSelRow.appendChild(statusBadge);
+  usersCard.appendChild(userSelRow);
+
+  // Provider config area (hidden until user is loaded)
+  const userCfgArea = document.createElement('div');
+  userCfgArea.style.display = 'none';
+  usersCard.appendChild(userCfgArea);
+
+  let _userProviderUi = null;
+
+  loadBtn.addEventListener('click', async () => {
+    const uname = userSel.value.trim();
+    if (!uname) { toast('Select a user first', 'error'); return; }
+    loadBtn.disabled = true; loadBtn.textContent = 'Loading…';
+    try {
+      const r = await fetch(`${API}/admin/vip/user-service-config?username=${encodeURIComponent(uname)}`, { credentials: 'same-origin' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Load failed');
+
+      statusBadge.style.display = '';
+      if (data.active) {
+        statusBadge.textContent = '✅ Config active';
+        statusBadge.style.background = '#e6f9ed'; statusBadge.style.color = '#217a3c'; statusBadge.style.border = '1px solid #b8e5c8';
+      } else {
+        statusBadge.textContent = '⚪ No config';
+        statusBadge.style.background = '#f5f5f5'; statusBadge.style.color = '#666'; statusBadge.style.border = '1px solid #ddd';
+      }
+
+      userCfgArea.innerHTML = '';
+      _userProviderUi = buildProviderConfigUi(data.config || {}, 'user-' + uname);
+      userCfgArea.appendChild(_userProviderUi.el);
+
+      // Action buttons
+      const actRow = document.createElement('div');
+      actRow.style.cssText = 'display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;';
+
+      const saveUBtn = document.createElement('button'); saveUBtn.className = 'btn btn-primary'; saveUBtn.textContent = '💾 Save for User';
+      const clearUBtn = document.createElement('button'); clearUBtn.className = 'btn'; clearUBtn.textContent = '🗑 Clear Config';
+      clearUBtn.style.cssText = 'background:var(--danger,#d9534f);color:#fff;border-color:var(--danger,#d9534f);';
+
+      saveUBtn.addEventListener('click', async () => {
+        const payload = _userProviderUi.getPayload();
+        saveUBtn.disabled = true; saveUBtn.textContent = 'Saving…';
+        try {
+          const r2 = await fetch(`${API}/admin/vip/user-service-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify({ username: uname, ...payload }),
+          });
+          const d2 = await r2.json();
+          if (!r2.ok || !d2.ok) throw new Error(d2.error || 'Save failed');
+          statusBadge.textContent = '✅ Config active'; statusBadge.style.background = '#e6f9ed'; statusBadge.style.color = '#217a3c'; statusBadge.style.border = '1px solid #b8e5c8';
+          toast(`Config saved for ${uname}`, 'success');
+        } catch (err) { toast(err.message, 'error'); }
+        finally { saveUBtn.disabled = false; saveUBtn.textContent = '💾 Save for User'; }
+      });
+
+      clearUBtn.addEventListener('click', async () => {
+        if (!confirm(`Clear all service config for "${uname}"?`)) return;
+        clearUBtn.disabled = true; clearUBtn.textContent = 'Clearing…';
+        try {
+          const r3 = await fetch(`${API}/admin/vip/user-service-config`, {
+            method: 'DELETE', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify({ username: uname }),
+          });
+          const d3 = await r3.json();
+          if (!r3.ok || !d3.ok) throw new Error(d3.error || 'Clear failed');
+          statusBadge.textContent = '⚪ No config'; statusBadge.style.background = '#f5f5f5'; statusBadge.style.color = '#666'; statusBadge.style.border = '1px solid #ddd';
+          userCfgArea.style.display = 'none'; _userProviderUi = null;
+          toast(`Config cleared for ${uname}`, 'success');
+        } catch (err) { toast(err.message, 'error'); }
+        finally { clearUBtn.disabled = false; clearUBtn.textContent = '🗑 Clear Config'; }
+      });
+
+      actRow.appendChild(saveUBtn); actRow.appendChild(clearUBtn);
+      userCfgArea.appendChild(actRow);
+      userCfgArea.style.display = '';
+    } catch (err) { toast(err.message, 'error'); }
+    finally { loadBtn.disabled = false; loadBtn.textContent = '📥 Load Config'; }
+  });
+
+  usersPanel.appendChild(usersCard);
+  wrap.appendChild(usersPanel);
+
+  // ── Sub-panel: Per Access Level ──────────────────────────────────────────
+  const levelsPanel = document.createElement('div');
+  levelsPanel.id = 'vip-sub-levels';
+  levelsPanel.className = 'vip-sub-panel';
+  levelsPanel.style.display = 'none';
+
+  const levelsCard = document.createElement('div');
+  levelsCard.className = 'card';
+  levelsCard.innerHTML = `
+    <h2>⭐ VIP — Assign API Keys Per Access Level</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">
+      Store a default provider configuration for each access level. Use
+      <strong>Apply to All Users</strong> to push this configuration to every user
+      currently assigned that level (overwrites existing user configs).
+    </p>`;
+
+  const levelSelRow = document.createElement('div');
+  levelSelRow.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;';
+
+  const levelSelLbl = document.createElement('label');
+  levelSelLbl.textContent = 'Access Level:';
+  levelSelLbl.style.fontWeight = '600';
+  const levelSel = document.createElement('select');
+  levelSel.style.cssText = 'padding:7px 10px;border:1px solid var(--border);border-radius:7px;font-size:13px;min-width:180px;';
+  const lvlPlaceholder = document.createElement('option');
+  lvlPlaceholder.value = ''; lvlPlaceholder.textContent = '— select a level —';
+  levelSel.appendChild(lvlPlaceholder);
+  Object.keys(_config.access_levels || {}).forEach(lvl => {
+    const opt = document.createElement('option');
+    opt.value = lvl; opt.textContent = lvl;
+    levelSel.appendChild(opt);
+  });
+
+  const loadLvlBtn = document.createElement('button');
+  loadLvlBtn.className = 'btn btn-primary';
+  loadLvlBtn.textContent = '📥 Load Config';
+
+  const lvlStatusBadge = document.createElement('span');
+  lvlStatusBadge.style.cssText = 'font-size:12px;padding:3px 10px;border-radius:12px;font-weight:600;display:none;';
+
+  levelSelRow.appendChild(levelSelLbl); levelSelRow.appendChild(levelSel);
+  levelSelRow.appendChild(loadLvlBtn); levelSelRow.appendChild(lvlStatusBadge);
+  levelsCard.appendChild(levelSelRow);
+
+  const levelCfgArea = document.createElement('div');
+  levelCfgArea.style.display = 'none';
+  levelsCard.appendChild(levelCfgArea);
+
+  let _levelProviderUi = null;
+
+  loadLvlBtn.addEventListener('click', async () => {
+    const lvl = levelSel.value.trim();
+    if (!lvl) { toast('Select an access level first', 'error'); return; }
+    loadLvlBtn.disabled = true; loadLvlBtn.textContent = 'Loading…';
+    try {
+      const r = await fetch(`${API}/admin/vip/access-level-service-config?level=${encodeURIComponent(lvl)}`, { credentials: 'same-origin' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || 'Load failed');
+
+      lvlStatusBadge.style.display = '';
+      if (data.active) {
+        lvlStatusBadge.textContent = '✅ Config saved';
+        lvlStatusBadge.style.background = '#e6f9ed'; lvlStatusBadge.style.color = '#217a3c'; lvlStatusBadge.style.border = '1px solid #b8e5c8';
+      } else {
+        lvlStatusBadge.textContent = '⚪ No config';
+        lvlStatusBadge.style.background = '#f5f5f5'; lvlStatusBadge.style.color = '#666'; lvlStatusBadge.style.border = '1px solid #ddd';
+      }
+
+      levelCfgArea.innerHTML = '';
+      _levelProviderUi = buildProviderConfigUi(data.config || {}, 'level-' + lvl);
+      levelCfgArea.appendChild(_levelProviderUi.el);
+
+      const actRow = document.createElement('div');
+      actRow.style.cssText = 'display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;';
+
+      const saveLvlBtn    = document.createElement('button'); saveLvlBtn.className = 'btn btn-primary'; saveLvlBtn.textContent = '💾 Save for Level';
+      const applyLvlBtn   = document.createElement('button'); applyLvlBtn.className = 'btn'; applyLvlBtn.textContent = '🚀 Apply to All Users'; applyLvlBtn.style.cssText = 'background:#6f42c1;color:#fff;border-color:#6f42c1;';
+      const clearLvlBtn   = document.createElement('button'); clearLvlBtn.className = 'btn'; clearLvlBtn.textContent = '🗑 Clear Config'; clearLvlBtn.style.cssText = 'background:var(--danger,#d9534f);color:#fff;border-color:var(--danger,#d9534f);';
+
+      saveLvlBtn.addEventListener('click', async () => {
+        const payload = _levelProviderUi.getPayload();
+        saveLvlBtn.disabled = true; saveLvlBtn.textContent = 'Saving…';
+        try {
+          const r2 = await fetch(`${API}/admin/vip/access-level-service-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify({ level: lvl, ...payload }),
+          });
+          const d2 = await r2.json();
+          if (!r2.ok || !d2.ok) throw new Error(d2.error || 'Save failed');
+          lvlStatusBadge.textContent = '✅ Config saved'; lvlStatusBadge.style.background = '#e6f9ed'; lvlStatusBadge.style.color = '#217a3c'; lvlStatusBadge.style.border = '1px solid #b8e5c8';
+          toast(`Config saved for level "${lvl}"`, 'success');
+        } catch (err) { toast(err.message, 'error'); }
+        finally { saveLvlBtn.disabled = false; saveLvlBtn.textContent = '💾 Save for Level'; }
+      });
+
+      applyLvlBtn.addEventListener('click', async () => {
+        const usersWithLevel = _users.filter(u => u.useraccess === lvl);
+        if (!usersWithLevel.length) { toast(`No users have access level "${lvl}"`, 'error'); return; }
+        if (!confirm(`Push this config to all ${usersWithLevel.length} user(s) with level "${lvl}"? This will overwrite their existing configs.`)) return;
+        const payload = _levelProviderUi.getPayload();
+        applyLvlBtn.disabled = true; applyLvlBtn.textContent = `Applying to ${usersWithLevel.length} user(s)…`;
+        let ok = 0; let fail = 0;
+        for (const u of usersWithLevel) {
+          try {
+            const r2 = await fetch(`${API}/admin/vip/user-service-config`, {
+              method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+              body: JSON.stringify({ username: u.username, ...payload }),
+            });
+            const d2 = await r2.json();
+            if (!r2.ok || !d2.ok) throw new Error(d2.error || '');
+            ok++;
+          } catch (_) { fail++; }
+        }
+        toast(`Applied to ${ok} user(s)${fail ? ` — ${fail} failed` : ''}`, fail ? 'error' : 'success');
+        applyLvlBtn.disabled = false; applyLvlBtn.textContent = '🚀 Apply to All Users';
+      });
+
+      clearLvlBtn.addEventListener('click', async () => {
+        if (!confirm(`Clear stored config for access level "${lvl}"?`)) return;
+        clearLvlBtn.disabled = true; clearLvlBtn.textContent = 'Clearing…';
+        try {
+          const r3 = await fetch(`${API}/admin/vip/access-level-service-config`, {
+            method: 'DELETE', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify({ level: lvl }),
+          });
+          const d3 = await r3.json();
+          if (!r3.ok || !d3.ok) throw new Error(d3.error || 'Clear failed');
+          lvlStatusBadge.textContent = '⚪ No config'; lvlStatusBadge.style.background = '#f5f5f5'; lvlStatusBadge.style.color = '#666'; lvlStatusBadge.style.border = '1px solid #ddd';
+          levelCfgArea.style.display = 'none'; _levelProviderUi = null;
+          toast(`Config cleared for level "${lvl}"`, 'success');
+        } catch (err) { toast(err.message, 'error'); }
+        finally { clearLvlBtn.disabled = false; clearLvlBtn.textContent = '🗑 Clear Config'; }
+      });
+
+      actRow.appendChild(saveLvlBtn); actRow.appendChild(applyLvlBtn); actRow.appendChild(clearLvlBtn);
+      levelCfgArea.appendChild(actRow);
+      levelCfgArea.style.display = '';
+    } catch (err) { toast(err.message, 'error'); }
+    finally { loadLvlBtn.disabled = false; loadLvlBtn.textContent = '📥 Load Config'; }
+  });
+
+  levelsPanel.appendChild(levelsCard);
+  wrap.appendChild(levelsPanel);
+
+  return wrap;
+}
 </script>
 <script src="ui/admin_ai_fix_snippet.js"></script>
 <script>

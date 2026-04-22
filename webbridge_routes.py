@@ -57,7 +57,7 @@ from webbridge import (
     _should_overwrite_existing, _ensure_rating_metadata_columns, _ensure_search_indexes,
     _persist_jskillset, _fetch_jskillset, _fetch_jskillset_from_process,
     _sync_login_jskillset_to_process, _sync_criteria_jskillset_to_process,
-    _increment_cse_query_count, _increment_gemini_query_count, _load_rate_limits,
+    _increment_cse_query_count, _increment_gemini_query_count, _load_rate_limits, _save_rate_limits,
     _make_flask_limit,
     _pg_connect, _ensure_admin_columns,
     dedupe,
@@ -7741,6 +7741,217 @@ def user_svc_config_deactivate():
     except Exception as exc:
         logger.exception("[user-service-config/deactivate]")
         return jsonify({"error": "Deactivation failed"}), 500
+
+
+# ── Admin VIP endpoints — manage user/access-level service configs ────────────
+
+def _vip_read_user_svc(username: str):
+    """Read and return the parsed service config dict for *username*, or None."""
+    stored = None
+    enc_path  = _svc_config_path(username)
+    json_path = _svc_config_json_path(username)
+    if os.path.isfile(enc_path):
+        try:
+            with open(enc_path, 'rb') as fh:
+                raw = fh.read()
+            stored = json.loads(_svc_config_decrypt(raw).decode('utf-8'))
+        except Exception:
+            logger.warning("[vip] .enc decrypt failed for %s", username, exc_info=True)
+    if stored is None and os.path.isfile(json_path):
+        try:
+            with open(json_path, 'r', encoding='utf-8') as fh:
+                stored = json.load(fh)
+        except Exception:
+            logger.warning("[vip] .json parse failed for %s", username, exc_info=True)
+    return stored
+
+
+def _vip_mask_keys(cfg: dict) -> dict:
+    """Return a copy of cfg with sensitive key values replaced by '***'."""
+    SENSITIVE = {
+        'SERPER_API_KEY', 'DATAFORSEO_PASSWORD', 'LINKEDIN_API_KEY',
+        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'NEVERBOUNCE_API_KEY',
+        'ZEROBOUNCE_API_KEY', 'BOUNCER_API_KEY', 'CONTACTOUT_API_KEY',
+        'APOLLO_API_KEY', 'ROCKETREACH_API_KEY',
+    }
+    result = {}
+    for section, val in cfg.items():
+        if isinstance(val, dict):
+            masked = {}
+            for k, v in val.items():
+                masked[k] = '***' if k in SENSITIVE and v else v
+            result[section] = masked
+        else:
+            result[section] = val
+    return result
+
+
+def _vip_write_user_svc(username: str, cfg: dict) -> None:
+    """Write *cfg* as the service config for *username* (encrypts when PORTING_SECRET set)."""
+    cfg['username'] = username
+    raw = json.dumps(cfg).encode('utf-8')
+    if os.getenv("PORTING_SECRET", "").strip():
+        with open(_svc_config_path(username), 'wb') as fh:
+            fh.write(_svc_config_encrypt(raw))
+    else:
+        with open(_svc_config_json_path(username), 'w', encoding='utf-8') as fh:
+            fh.write(raw.decode('utf-8'))
+
+
+@app.get("/admin/vip/user-service-config")
+@_require_admin
+def admin_vip_get_user_svc_config():
+    """Return the current service-config status for a target user (keys masked)."""
+    target = (request.args.get("username") or "").strip()
+    if not target:
+        return jsonify({"error": "username is required"}), 400
+    try:
+        stored = _vip_read_user_svc(target)
+        if stored is None:
+            return jsonify({"active": False, "config": {}})
+        providers = {
+            'search':      stored.get('search',      {}).get('provider', 'google_cse'),
+            'llm':         stored.get('llm',         {}).get('provider', 'gemini'),
+            'email_verif': stored.get('email_verif', {}).get('provider', 'default'),
+            'contact_gen': stored.get('contact_gen', {}).get('provider', 'gemini'),
+        }
+        return jsonify({"active": True, "providers": providers, "config": _vip_mask_keys(stored)})
+    except Exception:
+        logger.exception("[admin/vip/user-service-config GET]")
+        return jsonify({"error": "Could not read user service config"}), 500
+
+
+@app.post("/admin/vip/user-service-config")
+@_csrf_required
+@_require_admin
+def admin_vip_set_user_svc_config():
+    """Admin: write service-config for a target user on their behalf."""
+    body = request.get_json(force=True, silent=True) or {}
+    target = (body.get("username") or "").strip()
+    if not target:
+        return jsonify({"error": "username is required"}), 400
+    try:
+        cfg = {
+            'search':      body.get('search')      or {},
+            'llm':         body.get('llm')         or {},
+            'email_verif': body.get('email_verif') or {},
+            'contact_gen': body.get('contact_gen') or {},
+        }
+        # Preserve existing key values for fields left blank (placeholder kept)
+        stored = _vip_read_user_svc(target) or {}
+        for section in ('search', 'llm', 'email_verif', 'contact_gen'):
+            existing = stored.get(section) or {}
+            new_sec  = cfg[section]
+            merged = dict(existing)
+            merged.update({k: v for k, v in new_sec.items() if v})
+            cfg[section] = merged
+        _vip_write_user_svc(target, cfg)
+        log_infrastructure("admin_vip_user_svc_set", username=target,
+                           detail="Admin set service config for user", status="success")
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception("[admin/vip/user-service-config POST]")
+        return jsonify({"error": "Save failed"}), 500
+
+
+@app.delete("/admin/vip/user-service-config")
+@_csrf_required
+@_require_admin
+def admin_vip_delete_user_svc_config():
+    """Admin: delete service-config for a target user."""
+    body = request.get_json(force=True, silent=True) or {}
+    target = (body.get("username") or "").strip()
+    if not target:
+        return jsonify({"error": "username is required"}), 400
+    try:
+        for fp in (_svc_config_path(target), _svc_config_json_path(target)):
+            try:
+                if os.path.isfile(fp):
+                    os.remove(fp)
+            except OSError:
+                pass
+        log_infrastructure("admin_vip_user_svc_deleted", username=target,
+                           detail="Admin cleared service config for user", status="success")
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception("[admin/vip/user-service-config DELETE]")
+        return jsonify({"error": "Clear failed"}), 500
+
+
+# ── Access-level service configs (stored in rate_limits.json) ──────────────
+
+_AL_SVC_KEY = "access_level_service_configs"
+
+
+@app.get("/admin/vip/access-level-service-config")
+@_require_admin
+def admin_vip_get_al_svc_config():
+    """Return the stored service-config for an access level."""
+    level = (request.args.get("level") or "").strip()
+    if not level:
+        return jsonify({"error": "level is required"}), 400
+    try:
+        cfg = _load_rate_limits()
+        al_cfgs = cfg.get(_AL_SVC_KEY) or {}
+        lvl_cfg = al_cfgs.get(level)
+        if not lvl_cfg:
+            return jsonify({"active": False, "config": {}})
+        return jsonify({"active": True, "config": _vip_mask_keys(lvl_cfg)})
+    except Exception:
+        logger.exception("[admin/vip/access-level-service-config GET]")
+        return jsonify({"error": "Could not read access-level service config"}), 500
+
+
+@app.post("/admin/vip/access-level-service-config")
+@_csrf_required
+@_require_admin
+def admin_vip_set_al_svc_config():
+    """Admin: save a service-config template for an access level."""
+    body = request.get_json(force=True, silent=True) or {}
+    level = (body.get("level") or "").strip()
+    if not level:
+        return jsonify({"error": "level is required"}), 400
+    try:
+        cfg = _load_rate_limits()
+        al_cfgs = cfg.get(_AL_SVC_KEY) or {}
+        existing = al_cfgs.get(level) or {}
+        new_cfg = {}
+        for section in ('search', 'llm', 'email_verif', 'contact_gen'):
+            merged = dict(existing.get(section) or {})
+            merged.update({k: v for k, v in (body.get(section) or {}).items() if v})
+            new_cfg[section] = merged
+        al_cfgs[level] = new_cfg
+        cfg[_AL_SVC_KEY] = al_cfgs
+        _save_rate_limits(cfg)
+        log_infrastructure("admin_vip_al_svc_set", username="admin",
+                           detail=f"Admin set service config for level {level}", status="success")
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception("[admin/vip/access-level-service-config POST]")
+        return jsonify({"error": "Save failed"}), 500
+
+
+@app.delete("/admin/vip/access-level-service-config")
+@_csrf_required
+@_require_admin
+def admin_vip_delete_al_svc_config():
+    """Admin: remove the service-config template for an access level."""
+    body = request.get_json(force=True, silent=True) or {}
+    level = (body.get("level") or "").strip()
+    if not level:
+        return jsonify({"error": "level is required"}), 400
+    try:
+        cfg = _load_rate_limits()
+        al_cfgs = cfg.get(_AL_SVC_KEY) or {}
+        al_cfgs.pop(level, None)
+        cfg[_AL_SVC_KEY] = al_cfgs
+        _save_rate_limits(cfg)
+        log_infrastructure("admin_vip_al_svc_deleted", username="admin",
+                           detail=f"Admin cleared service config for level {level}", status="success")
+        return jsonify({"ok": True})
+    except Exception:
+        logger.exception("[admin/vip/access-level-service-config DELETE]")
+        return jsonify({"error": "Clear failed"}), 500
 
 
 @app.get("/load_search_criteria")
