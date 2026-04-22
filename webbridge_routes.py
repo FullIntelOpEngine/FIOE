@@ -6909,14 +6909,15 @@ def linkdapi_get_profile_pdf():
     return resp
 
 
-@app.get("/api/linkdapi/list-profile-pdfs")
-@_require_session
-def linkdapi_list_profile_pdfs():
-    """List all saved GP profile PDFs belonging to the current session user.
+def _gp_list_profile_pdfs_impl():
+    """Shared implementation for listing saved GP profile PDFs.
 
     Returns ``{"files": ["slug_user.pdf", ...]}`` — only files whose name ends
     with ``_<session_username>.pdf`` are included, so each user sees only their
     own generated PDFs.
+
+    Called by all three service endpoints (BrightData, Scrapingdog, Linkdapi)
+    since they all write to the same shared profiles directory.
     """
     active_username = getattr(request, "_session_user", "") or ""
 
@@ -6934,11 +6935,22 @@ def linkdapi_list_profile_pdfs():
     except FileNotFoundError:
         return jsonify({"files": []}), 200
     except OSError as exc:
-        logger.exception("[linkdapi list-pdfs] cannot list profiles dir: %s", exc)
+        logger.exception("[gp list-pdfs] cannot list profiles dir: %s", exc)
         return jsonify({"error": "Cannot read profiles directory"}), 500
 
     user_pdfs = [f for f in all_entries if f.endswith(user_suffix)]
     return jsonify({"files": user_pdfs}), 200
+
+
+@app.get("/api/linkdapi/list-profile-pdfs")
+@_require_session
+def linkdapi_list_profile_pdfs():
+    """List saved GP profile PDFs for the current session user (Linkdapi variant).
+
+    Delegates to the shared implementation.  BrightData/Serp AI is the canonical
+    handler for profile-directory listing across all GP services.
+    """
+    return _gp_list_profile_pdfs_impl()
 
 
 @app.get("/api/linkdapi/get-pdf-by-filename")
@@ -7542,18 +7554,19 @@ def scrapingdog_list_profile_pdfs():
     Delegates to the shared implementation used by all GP profile services
     since they all write to the same profiles directory.
     """
-    return linkdapi_list_profile_pdfs()
+    return _gp_list_profile_pdfs_impl()
 
 
 @app.get("/api/brightdata/list-profile-pdfs")
 @_require_session
 def brightdata_list_profile_pdfs():
-    """List saved GP profile PDFs for the current session user (BrightData variant).
+    """List saved GP profile PDFs for the current session user (BrightData/Serp AI variant).
 
-    Delegates to the shared implementation used by all GP profile services
-    since they all write to the same profiles directory.
+    This is the canonical handler for profile-directory listing across all GP
+    services.  Linkdapi and Scrapingdog variants delegate here or to the shared
+    implementation; all services write to the same profiles directory.
     """
-    return linkdapi_list_profile_pdfs()
+    return _gp_list_profile_pdfs_impl()
 
 
 @app.get("/api/scrapingdog/check-profile-pdf")
