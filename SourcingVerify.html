@@ -3748,13 +3748,28 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 
 // ---------------------------------------------------------------------------
 // Returns the identifier of the currently active GP profile service.
-// Used to route profile-PDF check / retrieve requests to the correct backend
-// endpoint (all three services write to the same shared profiles directory).
+// Used to route profile-PDF retrieve requests to the correct backend endpoint
+// (all three services write to the same shared profiles directory).
 // ---------------------------------------------------------------------------
 function _activeGpService() {
   if (window.__GP_LINKDAPI_ENABLED)  return 'linkdapi';
   if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
   if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
+  return 'linkdapi';
+}
+
+// ---------------------------------------------------------------------------
+// Returns the service endpoint to use for check-profile-pdf existence checks.
+// BrightData/Serp AI handles profile-existence checks even when Linkdapi is
+// the active download service (the /api/brightdata/check-profile-pdf route is
+// always available and performs a filesystem check with no BrightData API key
+// required). Falls through to Scrapingdog only when it is the sole active
+// provider.
+// ---------------------------------------------------------------------------
+function _gpCheckService() {
+  // Use BrightData endpoint whenever Linkdapi or BrightData is active.
+  if (window.__GP_LINKDAPI_ENABLED || window.__BRIGHTDATA_ENABLED) return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED) return 'scrapingdog';
   return 'linkdapi';
 }
 
@@ -4591,8 +4606,9 @@ function buildRow(row) {
                 td.appendChild(ingestBtn);
 
                 // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
-                // Route to the endpoint that matches the active GP service.
-                const _gpCheckSvc = _activeGpService();
+                // BrightData/Serp AI handles profile-existence checks even when Linkdapi is the
+                // active download service, so use _gpCheckService() (not _activeGpService()).
+                const _gpCheckSvc = _gpCheckService();
                 fetch('/api/' + _gpCheckSvc + '/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
