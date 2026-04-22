@@ -3748,14 +3748,38 @@ async function _downloadRocketReachProfile(linkedinUrl, btnEl) {
 
 // ---------------------------------------------------------------------------
 // Returns the identifier of the currently active GP profile service.
-// Used to route profile-PDF check / retrieve requests to the correct backend
-// endpoint (all three services write to the same shared profiles directory).
+// Used to route profile-PDF retrieve requests to the correct backend endpoint
+// (all three services write to the same shared profiles directory).
 // ---------------------------------------------------------------------------
 function _activeGpService() {
   if (window.__GP_LINKDAPI_ENABLED)  return 'linkdapi';
   if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
   if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
   return 'linkdapi';
+}
+
+// ---------------------------------------------------------------------------
+// Returns the service endpoint to use for check-profile-pdf existence checks.
+// Check sequence: BrightData/Serp AI (primary) → Scrapingdog (fallback) →
+// Linkdapi (last resort).  BrightData is the canonical handler; no BrightData
+// API key is required for the filesystem existence check.
+// ---------------------------------------------------------------------------
+function _gpCheckService() {
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
+  return 'linkdapi';
+}
+
+// ---------------------------------------------------------------------------
+// Returns the service endpoint to use for list-profile-pdfs calls.
+// BrightData/Serp AI is the canonical handler for profile-directory listing.
+// Falls through to Scrapingdog, then Linkdapi, based on which services are
+// enabled.
+// ---------------------------------------------------------------------------
+function _gpListService() {
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
+  return 'brightdata';
 }
 
 // ---------------------------------------------------------------------------
@@ -4591,8 +4615,9 @@ function buildRow(row) {
                 td.appendChild(ingestBtn);
 
                 // Async PDF check: PDF exists → show Assess (Ingest hidden); no PDF → show Ingest (Assess hidden)
-                // Route to the endpoint that matches the active GP service.
-                const _gpCheckSvc = _activeGpService();
+                // BrightData/Serp AI handles profile-existence checks even when Linkdapi is the
+                // active download service, so use _gpCheckService() (not _activeGpService()).
+                const _gpCheckSvc = _gpCheckService();
                 fetch('/api/' + _gpCheckSvc + '/check-profile-pdf?linkedin_url=' + encodeURIComponent(value), { credentials: 'same-origin' })
                     .then(r => r.json()).then(chk => {
                         if (chk && chk.exists) {
@@ -8247,7 +8272,7 @@ async function _updateBulkActionButton() {
         return;
     }
     try {
-        const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
+        const lr = await fetch('/api/' + _gpListService() + '/list-profile-pdfs', { credentials: 'same-origin' });
         const ld = lr.ok ? await lr.json() : { files: [] };
         const existing = new Set((ld.files || []).map(f => f.toLowerCase()));
         const hasMissing = gpRows.some(r => !_hasPdfInSet(existing, _profileSlugFromUrl(r.linkedinurl)));
@@ -8412,7 +8437,7 @@ if (bulkAssessmentBtn && bulkDirInput) {
             // same upload+verify+assess pipeline (replicates the manual flow of clicking
             // Bulk Assessment → navigating to the profiles folder → clicking Upload).
             try {
-                const listResp = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
+                const listResp = await fetch('/api/' + _gpListService() + '/list-profile-pdfs', { credentials: 'same-origin' });
                 if (!listResp.ok) {
                     // Guard against non-JSON error bodies (HTML login redirects, 500 pages, etc.)
                     const ct = listResp.headers.get('content-type') || '';
@@ -8558,7 +8583,7 @@ if (bulkIngestBtn) {
         // Fetch existing PDFs to avoid re-ingesting profiles that already have a PDF
         let existingPdfs = new Set();
         try {
-            const lr = await fetch('/api/' + _activeGpService() + '/list-profile-pdfs', { credentials: 'same-origin' });
+            const lr = await fetch('/api/' + _gpListService() + '/list-profile-pdfs', { credentials: 'same-origin' });
             const ld = lr.ok ? await lr.json() : { files: [] };
             existingPdfs = new Set((ld.files || []).map(f => f.toLowerCase()));
         } catch (_) {}
