@@ -5172,7 +5172,7 @@ def _run_svc_config_validation(body: dict) -> list:
                     return exc2.code, exc2.read().decode('utf-8', errors='replace')
                 except Exception:
                     return exc2.code, ''
-            return None, str(exc2)
+            return None, ''
 
     def _probe_post(url, data, headers=None, timeout=8):
         req = _ureq2.Request(url, data=data, headers=headers or {}, method='POST')
@@ -5185,7 +5185,7 @@ def _run_svc_config_validation(body: dict) -> list:
                     return exc2.code, exc2.read().decode('utf-8', errors='replace')
                 except Exception:
                     return exc2.code, ''
-            return None, str(exc2)
+            return None, ''
 
     results = []
 
@@ -8023,7 +8023,7 @@ def admin_vip_validate_config():
                     return exc.code, exc.read().decode('utf-8', errors='replace')
                 except Exception:
                     return exc.code, ''
-            return None, str(exc)
+            return None, ''
 
     results = []
 
@@ -8139,8 +8139,7 @@ def admin_vip_validate_config():
                                 'detail': f'Unexpected HTTP {status}.' if status else 'Could not reach ScrapingDog API.'})
     else:
         results.append({'label': 'Get Profile', 'status': 'warn',
-                        'detail': f'Unknown provider "{gp_provider}".'})
-
+                        'detail': 'Unknown Get Profile provider selected.'})
     return jsonify({'results': results})
 
 

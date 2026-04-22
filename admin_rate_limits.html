@@ -11216,11 +11216,13 @@ function renderVipCard() {
             // Check whether the user already has their own config (personal keys take precedence)
             const statusR = await fetch(`${API}/admin/vip/user-service-config?username=${encodeURIComponent(u.username)}`, { credentials: 'same-origin' });
             const statusD = await statusR.json();
-            // Skip users who already have a personal get_profile config set
-            if (statusD.active && statusD.config && statusD.config.get_profile &&
-                (statusD.config.get_profile.GP_LINKDAPI_API_KEY === '***' ||
-                 statusD.config.get_profile.GP_BRIGHTDATA_API_KEY === '***' ||
-                 statusD.config.get_profile.GP_SCRAPINGDOG_API_KEY === '***')) {
+            // Skip users who already have a personal get_profile config set with a
+            // non-platform provider. The backend masks stored keys as '***', so any
+            // truthy key value (including the '***' sentinel) means a key is saved.
+            const gpCfg = statusD.active && statusD.config && statusD.config.get_profile;
+            const gpProvider = gpCfg && gpCfg.provider;
+            const gpHasKey = gpCfg && (gpCfg.GP_LINKDAPI_API_KEY || gpCfg.GP_BRIGHTDATA_API_KEY || gpCfg.GP_SCRAPINGDOG_API_KEY);
+            if (gpProvider && gpProvider !== 'platform' && gpHasKey) {
               skipped++; continue;
             }
             const r2 = await fetch(`${API}/admin/vip/user-service-config`, {
