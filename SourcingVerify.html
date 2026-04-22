@@ -3760,27 +3760,25 @@ function _activeGpService() {
 
 // ---------------------------------------------------------------------------
 // Returns the service endpoint to use for check-profile-pdf existence checks.
-// BrightData/Serp AI handles profile-existence checks even when Linkdapi is
-// the active download service (the /api/brightdata/check-profile-pdf route is
-// always available and performs a filesystem check with no BrightData API key
-// required). Falls through to Scrapingdog only when it is the sole active
-// provider.
+// Check sequence: BrightData/Serp AI (primary) → Scrapingdog (fallback) →
+// Linkdapi (last resort).  BrightData is the canonical handler; no BrightData
+// API key is required for the filesystem existence check.
 // ---------------------------------------------------------------------------
 function _gpCheckService() {
-  // Use BrightData endpoint whenever Linkdapi or BrightData is active.
-  if (window.__GP_LINKDAPI_ENABLED || window.__BRIGHTDATA_ENABLED) return 'brightdata';
-  if (window.__SCRAPINGDOG_ENABLED) return 'scrapingdog';
-  return 'brightdata';
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
+  return 'linkdapi';
 }
 
 // ---------------------------------------------------------------------------
 // Returns the service endpoint to use for list-profile-pdfs calls.
 // BrightData/Serp AI is the canonical handler for profile-directory listing.
-// Falls through to Scrapingdog only when it is the sole active provider.
+// Falls through to Scrapingdog, then Linkdapi, based on which services are
+// enabled.
 // ---------------------------------------------------------------------------
 function _gpListService() {
-  if (window.__GP_LINKDAPI_ENABLED || window.__BRIGHTDATA_ENABLED) return 'brightdata';
-  if (window.__SCRAPINGDOG_ENABLED) return 'scrapingdog';
+  if (window.__BRIGHTDATA_ENABLED)   return 'brightdata';
+  if (window.__SCRAPINGDOG_ENABLED)  return 'scrapingdog';
   return 'brightdata';
 }
 

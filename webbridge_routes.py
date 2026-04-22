@@ -6793,19 +6793,18 @@ def linkdapi_profile_to_pdf():
     })
 
 
-@app.get("/api/linkdapi/check-profile-pdf")
-@_require_session
-def linkdapi_check_profile_pdf():
-    """Check whether a saved GP profile PDF exists for the given LinkedIn URL.
-
-    Used by the frontend to decide whether to hide/disable the GP button and
-    whether clicking the profile picture should trigger a PDF download.
+def _gp_check_profile_pdf_impl():
+    """Shared implementation for checking whether a saved GP profile PDF exists.
 
     Query parameters:
       linkedin_url – the LinkedIn profile URL (required)
 
     Returns ``{"exists": true, "filename": "<slug>_<user>.pdf"}`` if found,
     or ``{"exists": false, "filename": ""}`` if not.
+
+    Called by all three service endpoints (BrightData, Scrapingdog, Linkdapi)
+    since they all write to the same shared profiles directory.  No external
+    API call is made — this is a pure filesystem existence check.
     """
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
     if not linkedin_url:
@@ -6823,7 +6822,7 @@ def linkdapi_check_profile_pdf():
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active = _safe_slug(active_username, "unknown")
-    safe_profile = _safe_slug(username, "linkdapi_profile")
+    safe_profile = _safe_slug(username, "gp_profile")
     pdf_filename = f"{safe_profile}_{safe_active}.pdf"
 
     out_dir = os.path.abspath(LINKDAPI_PROFILE_OUTPUT_DIR)
@@ -6833,6 +6832,17 @@ def linkdapi_check_profile_pdf():
         return jsonify({"exists": False, "filename": ""}), 200
 
     return jsonify({"exists": exists, "filename": pdf_filename if exists else ""}), 200
+
+
+@app.get("/api/linkdapi/check-profile-pdf")
+@_require_session
+def linkdapi_check_profile_pdf():
+    """Check whether a saved GP profile PDF exists (Linkdapi variant — last resort).
+
+    Delegates to the shared implementation.  The check sequence is:
+    BrightData (primary) → Scrapingdog (fallback) → Linkdapi (last resort).
+    """
+    return _gp_check_profile_pdf_impl()
 
 
 @app.get("/api/linkdapi/get-profile-pdf")
@@ -7572,23 +7582,26 @@ def brightdata_list_profile_pdfs():
 @app.get("/api/scrapingdog/check-profile-pdf")
 @_require_session
 def scrapingdog_check_profile_pdf():
-    """Check whether a saved GP profile PDF exists (Scrapingdog variant).
+    """Check whether a saved GP profile PDF exists (Scrapingdog variant — fallback).
 
     Delegates to the shared implementation used by all GP profile services
-    since they all write to the same profiles directory.
+    since they all write to the same profiles directory.  The check sequence
+    is: BrightData (primary) → Scrapingdog (fallback) → Linkdapi (last resort).
     """
-    return linkdapi_check_profile_pdf()
+    return _gp_check_profile_pdf_impl()
 
 
 @app.get("/api/brightdata/check-profile-pdf")
 @_require_session
 def brightdata_check_profile_pdf():
-    """Check whether a saved GP profile PDF exists (BrightData variant).
+    """Check whether a saved GP profile PDF exists (BrightData/Serp AI variant — primary).
 
-    Delegates to the shared implementation used by all GP profile services
-    since they all write to the same profiles directory.
+    This is the canonical handler for profile-existence checks across all GP
+    services.  The check sequence is: BrightData (primary) → Scrapingdog
+    (fallback) → Linkdapi (last resort).  No BrightData API key is required —
+    this is a pure filesystem existence check.
     """
-    return linkdapi_check_profile_pdf()
+    return _gp_check_profile_pdf_impl()
 
 
 @app.get("/api/scrapingdog/get-profile-pdf")
