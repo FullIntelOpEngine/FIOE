@@ -1201,7 +1201,7 @@ let _emailVerifConfig = { neverbounce: { api_key_set: false, enabled: 'disabled'
 let _serperConfig = { serper: { api_key_set: false, enabled: 'disabled' }, dataforseo: { login_set: false, password_set: false, enabled: 'disabled' }, linkedin: { api_key_set: false, enabled: 'disabled' }, google_cse: { api_key_set: false, cx_set: false, gemini_key_set: false } };
 let _llmConfig = { config: { active_provider: 'gemini', default_model: 'gemini-2.5-flash-lite', gemini: { api_key_set: false, model: 'gemini-2.5-flash-lite', enabled: 'enabled' }, openai: { api_key_set: false, model: 'gpt-4o-mini', enabled: 'disabled' }, anthropic: { api_key_set: false, model: 'claude-3-5-haiku-20241022', enabled: 'disabled' } } };
 let _contactGenConfig = { contactout: { api_key_set: false, enabled: 'disabled' }, apollo: { api_key_set: false, enabled: 'disabled' }, rocketreach: { api_key_set: false, enabled: 'disabled' } };
-let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' }, scrapingdog: { api_key_set: false, enabled: 'disabled' }, brightdata: { api_key_set: false, zone_set: false, enabled: 'disabled' } };
+let _getProfilesConfig = { linkdapi: { api_key_set: false, enabled: 'disabled' }, scrapingdog: { api_key_set: false, enabled: 'disabled' }, brightdata: { api_key_set: false, zone_set: false, enabled: 'disabled' }, rate_limit_per_minute: 0 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function toast(msg, type = 'success') {
@@ -4852,6 +4852,66 @@ function renderApiKeysCard() {
       sec.appendChild(row);
       return sec;
     }
+
+    // ── Rate limit block (applies to all providers) ───────────────────────────
+    (function renderGpRateLimitSection() {
+      const rlSec = document.createElement('div');
+      rlSec.className = 'apikey-service';
+      rlSec.id = 'gp-rate-limit-section';
+
+      const h3Wrap = document.createElement('div');
+      h3Wrap.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:4px';
+      const h3 = document.createElement('h3'); h3.textContent = 'Rate Limit'; h3.style.margin = '0';
+      const badge = document.createElement('span');
+      badge.textContent = 'All providers';
+      badge.style.cssText = 'font-size:11px;font-weight:500;color:var(--muted);background:var(--surface2,#f0f4f8);border:1px solid var(--border);border-radius:4px;padding:2px 7px;white-space:nowrap';
+      h3Wrap.appendChild(h3); h3Wrap.appendChild(badge);
+      rlSec.appendChild(h3Wrap);
+
+      const desc = document.createElement('p');
+      desc.style.cssText = 'color:var(--muted);font-size:13px;margin:0 0 12px';
+      desc.textContent = 'Maximum number of profile retrievals per minute across all active providers (Linkdapi, BrightData, Scrapingdog). Set to 0 for unlimited.';
+      rlSec.appendChild(desc);
+
+      const row = document.createElement('div'); row.className = 'apikey-row';
+
+      const field = document.createElement('div'); field.className = 'apikey-field'; field.style.maxWidth = '220px';
+      const lbl = document.createElement('label'); lbl.htmlFor = 'gp-rate-limit-input'; lbl.textContent = 'Max retrievals / minute';
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.id = 'gp-rate-limit-input'; inp.className = 'apikey-input';
+      inp.min = '0'; inp.step = '1';
+      inp.value = String(gp.rate_limit_per_minute || 0);
+      inp.style.cssText = 'width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:7px;font-size:13px;';
+      field.appendChild(lbl); field.appendChild(inp);
+      row.appendChild(field);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary apikey-save-btn';
+      saveBtn.textContent = '💾 Save';
+      saveBtn.addEventListener('click', async () => {
+        const val = parseInt(inp.value, 10);
+        if (isNaN(val) || val < 0) { toast('Enter a valid number (0 = unlimited)', 'error'); return; }
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+        try {
+          const r = await fetch(`${API}/admin/get-profiles-config`, {
+            method: 'POST', headers: csrfHeaders(), credentials: 'same-origin',
+            body: JSON.stringify({ rate_limit_per_minute: val }),
+          });
+          const data = await r.json();
+          if (!r.ok || !data.ok) throw new Error(data.error || 'Save failed');
+          _getProfilesConfig.rate_limit_per_minute = val;
+          _notifyConfigChanged('get-profiles');
+          toast('Rate limit saved', 'success');
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          saveBtn.disabled = false; saveBtn.textContent = '💾 Save';
+        }
+      });
+      row.appendChild(saveBtn);
+      rlSec.appendChild(row);
+      getProfilesPanel.appendChild(rlSec);
+    })();
 
     // Linkdapi — Primary
     getProfilesPanel.appendChild(_buildGpProviderSection('linkdapi', 'Linkdapi', ldCfg, '1st · Primary'));

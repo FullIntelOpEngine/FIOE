@@ -46,7 +46,7 @@ from webbridge import (
     ASSESSMENT_EXCELLENT_THRESHOLD, ASSESSMENT_GOOD_THRESHOLD, ASSESSMENT_MODERATE_THRESHOLD,
     CITY_TO_COUNTRY_DATA,
     _CV_ANALYZE_SEMAPHORE, _SINGLE_FILE_MAX,
-    _rate, _check_user_rate, _csrf_required, _require_admin, _require_session,
+    _rate, _check_user_rate, _check_gp_rate_limit, _csrf_required, _require_admin, _require_session,
     _user_has_custom_providers,
     _is_pdf_bytes,
     _extract_json_object, _extract_confirmed_skills,
@@ -5917,6 +5917,7 @@ LINKDAPI_PROFILE_OUTPUT_DIR = os.getenv(
 
 @app.get("/api/linkdapi/get-profile")
 @_require_session
+@_check_gp_rate_limit()
 def linkdapi_get_profile():
     """Fetch the full LinkedIn profile via linkdapi for a given LinkedIn URL.
 
@@ -7263,6 +7264,7 @@ def linkdapi_upload_profile_pdf():
 
 @app.get("/api/scrapingdog/get-profile")
 @_require_session
+@_check_gp_rate_limit()
 def scrapingdog_get_profile():
     """Fetch a LinkedIn profile via Scrapingdog for a given LinkedIn URL.
 
@@ -7402,6 +7404,7 @@ def scrapingdog_get_profile():
 
 @app.get("/api/brightdata/get-profile")
 @_require_session
+@_check_gp_rate_limit()
 def brightdata_get_profile():
     """Fetch a LinkedIn profile via BrightData for a given LinkedIn URL.
 
