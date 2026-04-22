@@ -10867,10 +10867,10 @@ function renderVipCard() {
             finp.placeholder = fd.ph || '';
             finp.autocomplete = 'off';
             finp.style.cssText = 'padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;';
-            // Pre-fill from initialCfg if present and not obfuscated
+            // Pre-fill from initialCfg if present and not obfuscated ('***' sentinel from backend)
             const storedVal = initCfgSec[fd.key] || '';
-            if (storedVal && !storedVal.startsWith('*')) finp.value = storedVal;
-            else if (storedVal.startsWith('*')) finp.placeholder = '(saved — enter new value to update)';
+            if (storedVal && storedVal !== '***') finp.value = storedVal;
+            else if (storedVal === '***') finp.placeholder = '(saved — enter new value to update)';
             fRow.appendChild(flbl); fRow.appendChild(finp);
             fc.appendChild(fRow);
             if (!fieldInputs[provVal]) fieldInputs[provVal] = {};

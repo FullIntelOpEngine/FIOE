@@ -7746,24 +7746,58 @@ def user_svc_config_deactivate():
 # ── Admin VIP endpoints — manage user/access-level service configs ────────────
 
 def _vip_read_user_svc(username: str):
-    """Read and return the parsed service config dict for *username*, or None."""
+    """Read and return the parsed service config dict for *username*, or None.
+    *username* must already be validated by the caller (e.g. via _VIP_USERNAME_RE)."""
     stored = None
-    enc_path  = _svc_config_path(username)
-    json_path = _svc_config_json_path(username)
+    safe   = _porting_safe_name(username)
+    svc_dir = os.path.realpath(os.path.join(_PORTING_INPUT_DIR, 'user-services'))
+    enc_path  = _svc_config_path(safe)
+    json_path = _svc_config_json_path(safe)
+    # Confinement: ensure both resolved paths stay within the expected directory.
+    if (not os.path.realpath(enc_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(enc_path) != svc_dir):
+        raise ValueError("Path traversal detected for enc_path")
+    if (not os.path.realpath(json_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(json_path) != svc_dir):
+        raise ValueError("Path traversal detected for json_path")
     if os.path.isfile(enc_path):
         try:
             with open(enc_path, 'rb') as fh:
                 raw = fh.read()
             stored = json.loads(_svc_config_decrypt(raw).decode('utf-8'))
         except Exception:
-            logger.warning("[vip] .enc decrypt failed for %s", username, exc_info=True)
+            logger.warning("[vip] .enc decrypt failed for %s", safe, exc_info=True)
     if stored is None and os.path.isfile(json_path):
         try:
             with open(json_path, 'r', encoding='utf-8') as fh:
                 stored = json.load(fh)
         except Exception:
-            logger.warning("[vip] .json parse failed for %s", username, exc_info=True)
+            logger.warning("[vip] .json parse failed for %s", safe, exc_info=True)
     return stored
+
+
+def _vip_write_user_svc(username: str, cfg: dict) -> None:
+    """Write *cfg* as the service config for *username* (encrypts when PORTING_SECRET set).
+    *username* must already be validated by the caller (e.g. via _VIP_USERNAME_RE)."""
+    safe    = _porting_safe_name(username)
+    svc_dir = os.path.realpath(os.path.join(_PORTING_INPUT_DIR, 'user-services'))
+    enc_path  = _svc_config_path(safe)
+    json_path = _svc_config_json_path(safe)
+    # Confinement: ensure resolved paths stay within the expected directory.
+    if (not os.path.realpath(enc_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(enc_path) != svc_dir):
+        raise ValueError("Path traversal detected for enc_path")
+    if (not os.path.realpath(json_path).startswith(svc_dir + os.sep) and
+            os.path.realpath(json_path) != svc_dir):
+        raise ValueError("Path traversal detected for json_path")
+    cfg['username'] = safe
+    raw = json.dumps(cfg).encode('utf-8')
+    if os.getenv("PORTING_SECRET", "").strip():
+        with open(enc_path, 'wb') as fh:
+            fh.write(_svc_config_encrypt(raw))
+    else:
+        with open(json_path, 'w', encoding='utf-8') as fh:
+            fh.write(raw.decode('utf-8'))
 
 
 def _vip_mask_keys(cfg: dict) -> dict:
@@ -7784,18 +7818,6 @@ def _vip_mask_keys(cfg: dict) -> dict:
         else:
             result[section] = val
     return result
-
-
-def _vip_write_user_svc(username: str, cfg: dict) -> None:
-    """Write *cfg* as the service config for *username* (encrypts when PORTING_SECRET set)."""
-    cfg['username'] = username
-    raw = json.dumps(cfg).encode('utf-8')
-    if os.getenv("PORTING_SECRET", "").strip():
-        with open(_svc_config_path(username), 'wb') as fh:
-            fh.write(_svc_config_encrypt(raw))
-    else:
-        with open(_svc_config_json_path(username), 'w', encoding='utf-8') as fh:
-            fh.write(raw.decode('utf-8'))
 
 
 # Regex that matches valid usernames accepted by _porting_safe_name (only alphanumerics + _-@.)
@@ -7868,13 +7890,19 @@ def admin_vip_delete_user_svc_config():
     if not target or not _VIP_USERNAME_RE.match(target):
         return jsonify({"error": "username is required and must contain only letters, numbers, and _@.-"}), 400
     try:
-        for fp in (_svc_config_path(target), _svc_config_json_path(target)):
+        safe    = _porting_safe_name(target)
+        svc_dir = os.path.realpath(os.path.join(_PORTING_INPUT_DIR, 'user-services'))
+        for fp in (_svc_config_path(safe), _svc_config_json_path(safe)):
+            # Confinement check before removal
+            if (not os.path.realpath(fp).startswith(svc_dir + os.sep) and
+                    os.path.realpath(fp) != svc_dir):
+                continue
             try:
                 if os.path.isfile(fp):
                     os.remove(fp)
             except OSError:
                 pass
-        log_infrastructure("admin_vip_user_svc_deleted", username=target,
+        log_infrastructure("admin_vip_user_svc_deleted", username=safe,
                            detail="Admin cleared service config for user", status="success")
         return jsonify({"ok": True})
     except Exception:
