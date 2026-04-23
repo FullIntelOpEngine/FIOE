@@ -3635,8 +3635,11 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     # always routes to Google CSE regardless of what the user has configured in their
     # Option A service settings.  Also bypass when selected_provider is any unrecognised
     # value (per docstring: 'any value not matching a known provider' forces CSE).
-    _known_api_providers = ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach')
-    _run_user_provider = (not selected_provider) or (selected_provider in _known_api_providers)
+    # Contact/enrichment providers (contactout/apollo/rocketreach) must also bypass
+    # per-user *search* keys — those providers are not search providers and should
+    # never be pre-empted by a per-user Serper/DataForSEO/LinkedIn key.
+    _known_search_providers = ('serper', 'dataforseo', 'linkedin')
+    _run_user_provider = (not selected_provider) or (selected_provider in _known_search_providers)
     if _run_user_provider:
         if user_provider == 'serper' and user_serper_key:
             results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
@@ -4064,13 +4067,16 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
     # Determine active search provider label for job status messages.
     # Explicit CSE selection (or any unrecognised value) always wins — per-user
     # provider labels must never override an explicit 'cse' selection.
+    # Contact/enrichment providers (contactout/apollo/rocketreach) must also prevent
+    # per-user search key labels from overriding the chosen contact provider.
     _known_api_providers_set = frozenset(('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'))
     _cse_forced = (not selected_provider) is False and (selected_provider not in _known_api_providers_set)
-    if not _cse_forced and user_provider == 'serper' and user_serper_key:
+    _contact_provider_selected = selected_provider in ('contactout', 'apollo', 'rocketreach')
+    if not _cse_forced and not _contact_provider_selected and user_provider == 'serper' and user_serper_key:
         _provider_label = "Serper (user)"
-    elif not _cse_forced and user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
+    elif not _cse_forced and not _contact_provider_selected and user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         _provider_label = "DataforSEO (user)"
-    elif not _cse_forced and user_provider == 'linkedin' and user_linkedin_key:
+    elif not _cse_forced and not _contact_provider_selected and user_provider == 'linkedin' and user_linkedin_key:
         _provider_label = "LinkedIn (user)"
     else:
         _sp = _load_search_provider_config()
@@ -4116,8 +4122,11 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
     # When the user has explicitly selected 'cse' (or any value not matching a
     # known API provider), _eff_provider must remain None so that the Xray
     # query is never translated for an API provider that won't actually be used.
+    # Contact providers (contactout/apollo/rocketreach) must also not allow a
+    # per-user search key to set _eff_provider (which would translate the Xray
+    # query for the wrong provider before passing it to the contact API).
     _eff_provider = None
-    if not _cse_forced and user_provider in ('serper', 'dataforseo', 'linkedin'):
+    if not _cse_forced and not _contact_provider_selected and user_provider in ('serper', 'dataforseo', 'linkedin'):
         _eff_provider = user_provider
     elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
