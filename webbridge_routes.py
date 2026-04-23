@@ -6439,7 +6439,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     try:
         from reportlab.platypus import (
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-            HRFlowable,
+            HRFlowable, ListFlowable, ListItem,
         )
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.pagesizes import A4
@@ -6598,6 +6598,55 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 color=ROBIN, spaceAfter=4,
             ))
 
+        def _desc_to_flowables(raw_text):
+            """Convert a description string to Platypus flowables.
+
+            If the sanitised text contains multiple newline-separated lines
+            (typically bullet items from an LLM response), each line is
+            rendered as a ListItem so that visual bullet glyphs (·) appear.
+            Single-line or already-wrapped text falls back to a plain
+            Paragraph with <br/> line-breaks.
+            """
+            from xml.sax.saxutils import escape as _xmlesc
+            if not raw_text or not raw_text.strip():
+                return []
+            raw = _s(raw_text)
+            segments = [seg.strip() for seg in raw.split('\n') if seg.strip()]
+            if len(segments) <= 1:
+                return [Paragraph(_spwrap(raw_text), body_style)]
+            # Multiple lines → ListFlowable with bullet items
+            # Characters that LLMs typically prepend to bullet lines; stripped
+            # so they aren't double-rendered alongside the ListItem bullet glyph.
+            _BULLET_LEAD_CHARS = '-*\u2022\u00b7\u25aa\u25ab\u25cf\u25e6\u2023\u2043\u2219 '
+            # Maximum characters per individual bullet segment to prevent a
+            # single runaway line from dominating the page layout.
+            _MAX_SEG_CHARS = 300
+            items = []
+            for seg in segments:
+                # Strip any leading bullet/dash characters that the LLM may
+                # have already prepended so we don't double-render them.
+                seg_clean = seg.lstrip(_BULLET_LEAD_CHARS)
+                if not seg_clean:
+                    continue
+                items.append(
+                    ListItem(
+                        Paragraph(_xmlesc(seg_clean[:_MAX_SEG_CHARS]), body_style),
+                        bulletColor=COOL,
+                        leftIndent=15,
+                        bulletIndent=5,
+                    )
+                )
+            if not items:
+                return [Paragraph(_spwrap(raw_text), body_style)]
+            return [ListFlowable(
+                items,
+                bulletType='bullet',
+                bulletFontSize=8,
+                bulletColor=COOL,
+                leftIndent=8,
+                spaceAfter=2,
+            )]
+
         # ── Contact strip ──────────────────────────────────────────────────
         loc   = _sp(data.get("location") or "")
         lnkd  = _sp(data.get("linkedin_url") or "")
@@ -6630,8 +6679,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 title   = _sp(exp.get("title") or "")
                 company = _sp(exp.get("company") or "")
                 dates   = _sp(exp.get("dates") or "")
-                desc    = _spwrap(exp.get("description") or "")
-                if not any([title, company, dates, desc]):
+                raw_desc = exp.get("description") or ""
+                if not any([title, company, dates, raw_desc.strip()]):
                     continue
                 if title:
                     story.append(Paragraph(title, title_style))
@@ -6640,8 +6689,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 if dates:   sub_parts.append(dates)
                 if sub_parts:
                     story.append(Paragraph("  |  ".join(sub_parts), sub_style))
-                if desc:
-                    story.append(Paragraph(desc, body_style))
+                for fl in _desc_to_flowables(raw_desc):
+                    story.append(fl)
                 story.append(Spacer(1, 4))
 
         # ── Education ─────────────────────────────────────────────────────
@@ -6762,7 +6811,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         for i in range(0, len(skls), 5):
             row = [str(x) for x in skls[i:i + 5] if str(x).strip()]
             if row:
-                lines.append(("item", "  \u2022  ".join(row)))
+                lines.append(("item", "  \u00b7  ".join(row)))
     return _lines_to_pdf_bytes(lines)
 
 
@@ -8754,7 +8803,16 @@ def _lines_to_pdf_bytes(lines: list) -> bytes:
         y = page_h - 50
 
         def _safe(s):
-            return str(s).encode("latin-1", errors="replace").decode("latin-1")
+            s = str(s)
+            # Map common Unicode punctuation to Latin-1 equivalents so they
+            # display correctly in Helvetica instead of rendering as '?'.
+            s = s.replace('\u2022', '\u00b7')   # bullet • → middle dot ·
+            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+            s = s.replace('\u2018', "'").replace('\u2019', "'")
+            s = s.replace('\u201c', '"').replace('\u201d', '"')
+            s = s.replace('\u2026', '...')
+            s = s.replace('\u2212', '-')
+            return s.encode("latin-1", errors="replace").decode("latin-1")
 
         def _wrap_text(text, font, size, avail_w):
             """Word-wrap text into lines that fit within avail_w pixels."""
