@@ -327,12 +327,16 @@ def _load_get_profiles_config() -> dict:
             cfg["brightdata"] = {"api_key": "", "zone": "", "enabled": "disabled"}
         elif "zone" not in cfg["brightdata"]:
             cfg["brightdata"]["zone"] = ""
+        # Ensure rate_limit_per_minute key exists (0 = unlimited)
+        if "rate_limit_per_minute" not in cfg:
+            cfg["rate_limit_per_minute"] = 0
         return cfg
     except Exception:
         return {
             "linkdapi": {"api_key": "", "enabled": "disabled"},
             "scrapingdog": {"api_key": "", "enabled": "disabled"},
             "brightdata": {"api_key": "", "zone": "", "enabled": "disabled"},
+            "rate_limit_per_minute": 0,
         }
 
 def _save_get_profiles_config(config: dict) -> None:
@@ -511,6 +515,76 @@ def _check_user_rate(feature: str):
             return f(*args, **kwargs)
         return wrapper
     return decorator
+
+
+class _GpRateLimiter:
+    """Global sliding-window rate limiter for Get Profile API calls.
+
+    Enforces a single shared counter across all three providers (Linkdapi,
+    BrightData, Scrapingdog) so the admin-configured cap covers every
+    profile retrieval regardless of which service handles the request.
+
+    ``rate_limit_per_minute`` is read live from get_profiles_config.json on
+    every call — changes take effect immediately without a server restart.
+    A value of 0 means unlimited.
+    """
+    def __init__(self):
+        import collections
+        self._history = collections.deque()
+        self._lock = threading.Lock()
+
+    def is_allowed(self) -> tuple:
+        """Return (allowed: bool, retry_after: int).
+
+        ``retry_after`` is the number of whole seconds until the oldest
+        in-window request ages out, giving callers a precise Retry-After
+        value.  Returns (True, 0) when the request is permitted.
+        """
+        cfg = _load_get_profiles_config()
+        try:
+            limit = int(cfg.get("rate_limit_per_minute", 0))
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return True, 0  # 0 = unlimited
+        now = time.time()
+        window = 60.0
+        with self._lock:
+            # Evict timestamps older than the 1-minute window
+            while self._history and now - self._history[0] >= window:
+                self._history.popleft()
+            if len(self._history) >= limit:
+                # Time until the oldest entry expires from the window
+                oldest = self._history[0]
+                retry_after = max(1, int(window - (now - oldest)) + 1)
+                return False, retry_after
+            self._history.append(now)
+            return True, 0
+
+
+_gp_rate_limiter = _GpRateLimiter()
+
+
+def _check_gp_rate_limit():
+    """Decorator that enforces the global Get Profile per-minute rate limit.
+
+    Reads ``rate_limit_per_minute`` from get_profiles_config.json on every
+    request. Returns HTTP 429 when the limit is exceeded.
+    """
+    def decorator(f):
+        import functools
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            allowed, retry_after = _gp_rate_limiter.is_allowed()
+            if not allowed:
+                return jsonify({
+                    "error": "Get Profile rate limit exceeded. Please try again in a moment.",
+                    "retry_after_seconds": retry_after,
+                }), 429
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
 
 def _require_admin(f):
     """Decorator: reject request with 403 unless the caller is an admin.
@@ -1286,6 +1360,7 @@ def admin_get_get_profiles_config():
                 "zone_set": bool(brightdata.get("zone")),
                 "enabled": brightdata.get("enabled", "disabled"),
             },
+            "rate_limit_per_minute": int(config.get("rate_limit_per_minute", 0)),
         }
     }), 200
 
@@ -1294,8 +1369,43 @@ def admin_get_get_profiles_config():
 @_rate(_make_flask_limit("api"))
 @_require_session
 def api_linkdapi_status():
-    """Return whether linkdapi, scrapingdog, or brightdata is enabled — user-accessible (no admin required)."""
+    """Return whether linkdapi, scrapingdog, or brightdata is enabled — user-accessible (no admin required).
+
+    Per-user GP config (set via VIP admin or the user's own api_porting page) takes
+    priority over the global platform config.  If the user has a specific provider
+    assigned, only that provider is reported as enabled so the frontend routes the
+    request to the correct endpoint.
+    """
     try:
+        # Check per-user GP config first (VIP admin assignment or user self-service)
+        _req_user = getattr(request, '_session_user', None) or (request.cookies.get('username') or '').strip()
+        _user_gp = _load_user_gp_cfg(_req_user)
+        _user_provider = (_user_gp.get('provider') or '').strip()
+
+        if _user_provider == 'linkdapi':
+            _key = (_user_gp.get('GP_LINKDAPI_API_KEY') or '').strip()
+            return jsonify({
+                "enabled": bool(_key),
+                "scrapingdog_enabled": False,
+                "brightdata_enabled": False,
+            }), 200
+        if _user_provider == 'scrapingdog':
+            _key = (_user_gp.get('GP_SCRAPINGDOG_API_KEY') or '').strip()
+            return jsonify({
+                "enabled": False,
+                "scrapingdog_enabled": bool(_key),
+                "brightdata_enabled": False,
+            }), 200
+        if _user_provider == 'brightdata':
+            _key  = (_user_gp.get('GP_BRIGHTDATA_API_KEY') or '').strip()
+            _zone = (_user_gp.get('GP_BRIGHTDATA_ZONE') or '').strip()
+            return jsonify({
+                "enabled": False,
+                "scrapingdog_enabled": False,
+                "brightdata_enabled": bool(_key) and bool(_zone),
+            }), 200
+
+        # Fall back to global platform config
         config = _load_get_profiles_config()
         ld = config.get("linkdapi", {})
         sd = config.get("scrapingdog", {})
@@ -1372,6 +1482,15 @@ def admin_save_get_profiles_config():
             current["brightdata"]["enabled"] = entry["enabled"]
             if entry["enabled"] == "disabled":
                 current["brightdata"]["api_key"] = ""
+
+    if "rate_limit_per_minute" in body:
+        try:
+            rl = int(body["rate_limit_per_minute"])
+            if rl < 0:
+                return jsonify({"error": "rate_limit_per_minute must be 0 or greater (0 = unlimited)"}), 400
+            current["rate_limit_per_minute"] = rl
+        except (TypeError, ValueError):
+            return jsonify({"error": "rate_limit_per_minute must be an integer"}), 400
 
     try:
         _save_get_profiles_config(current)
@@ -6826,6 +6945,7 @@ from webbridge_routes import (
     _gemini_suggestions, _heuristic_job_suggestions,
     _read_search_criteria,
     unified_llm_call_text,
+    _load_user_gp_cfg,
 )
 
 if __name__ == '__main__':
