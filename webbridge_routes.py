@@ -6192,9 +6192,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
             "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
             "- Omit keys whose values are empty or unknown\n"
-            "- IMPORTANT: Every text value must be pre-wrapped so that each line contains at most 100 characters "
-            "(letters, spaces, and punctuation). Break at word boundaries and separate lines with '\\n'. "
-            "This applies to summary, all experience descriptions, and any other multi-word text field.\n"
+            "- Do NOT insert line breaks (\\n) inside any text value; keep every field as a single continuous string\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
@@ -6339,16 +6337,37 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
         s = _re.sub(
             r'[\u0400-\u04ff'           # Cyrillic
+            r'\u0500-\u05ff'           # Cyrillic Supplement, Hebrew, Armenian
             r'\u0600-\u06ff'           # Arabic
-            r'\u3000-\u303f'           # CJK symbols/punctuation
+            r'\u0700-\u08ff'           # Syriac, Thaana, NKo, Samaritan, Mandaic
+            r'\u0900-\u0dff'           # Devanagari, Bengali, Gurmukhi, Gujarati,
+                                       #   Oriya, Tamil, Telugu, Kannada, Malayalam
+            r'\u0e00-\u0e7f'           # Thai
+            r'\u0e80-\u0eff'           # Lao
+            r'\u1000-\u10ff'           # Myanmar, Georgian
+            r'\u1100-\u11ff'           # Hangul Jamo
+            r'\u1200-\u137f'           # Ethiopic
+            r'\u1700-\u17ff'           # Tagalog, Hanunoo, Buhid, Tagbanwa, Khmer
+            r'\u1800-\u18af'           # Mongolian
+            r'\u1e00-\u1eff'           # Latin Extended Additional (pre-composed)
+            r'\u2e80-\u2eff'           # CJK Radicals Supplement
+            r'\u2f00-\u2fdf'           # Kangxi Radicals
+            r'\u3000-\u303f'           # CJK symbols / punctuation
             r'\u3040-\u30ff'           # Hiragana + Katakana
-            r'\u4e00-\u9fff'           # CJK unified ideographs
-            r'\uf900-\ufaff'           # CJK compatibility ideographs
-            r'\uac00-\ud7af'           # Hangul syllables
-            r'\uff00-\uffef'           # Halfwidth/fullwidth forms
+            r'\u3130-\u318f'           # Hangul Compatibility Jamo
+            r'\u3190-\u31ef'           # Kanbun, Bopomofo Extended, CJK Strokes
+            r'\u3200-\u33ff'           # Enclosed CJK + CJK Compatibility
+            r'\u3400-\u4dbf'           # CJK Unified Ideographs Extension A
+            r'\u4e00-\u9fff'           # CJK Unified Ideographs (main block)
+            r'\ua000-\ua4cf'           # Yi Syllables + Yi Radicals
+            r'\ua960-\ua97f'           # Hangul Jamo Extended-A
+            r'\uf900-\ufaff'           # CJK Compatibility Ideographs
+            r'\uac00-\ud7af'           # Hangul Syllables
+            r'\ud7b0-\ud7ff'           # Hangul Jamo Extended-B
+            r'\uff00-\uffef'           # Halfwidth / Fullwidth forms
             r']+'
             ,
-            '[...]', s
+            '', s
         )
         # 4a. Named Unicode punctuation replacements
         s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
@@ -6374,10 +6393,10 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 return '-'
             if cat == 'Zs':
                 return ' '
-            return c  # keep; encode() will replace with '?' if not Latin-1
+            return c  # keep; encode() will drop silently if not Latin-1
 
         s = _re.sub(r'[\u0100-\uffff]', _map_non_latin1, s)
-        return s.encode("latin-1", errors="replace").decode("latin-1")
+        return s.encode("latin-1", errors="ignore").decode("latin-1")
 
     def _sp(t):
         """Return text safe for Platypus Paragraph (Latin-1 + XML-escaped).
@@ -6392,7 +6411,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     def _spwrap(t, max_chars=100):
         """Return XML-safe text with hard line breaks every ``max_chars`` chars.
 
-        Honors existing ``\\n`` line breaks (e.g. from Gemini pre-wrapping)
+        Honors existing ``\\n`` line breaks (intentional multi-line content)
         and additionally enforces the ``max_chars`` limit on any line that
         still exceeds it.  Words are preserved wherever possible; a word that
         exceeds ``max_chars`` by itself is hard-split at the character boundary.
@@ -6401,7 +6420,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         """
         from xml.sax.saxutils import escape as _xmlesc
         raw = _s(t)
-        # Split on existing newlines first (Gemini pre-wrapping), then
+        # Split on existing newlines first (intentional line breaks), then
         # enforce max_chars within each segment.
         segments = raw.split('\n')
         final_lines = []
@@ -6441,6 +6460,12 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
             HRFlowable,
         )
+        try:
+            from reportlab.platypus import ListFlowable as _ListFlowable
+            from reportlab.platypus import ListItem as _ListItem
+        except ImportError:
+            _ListFlowable = None
+            _ListItem = None
         from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.units import pt
@@ -6504,7 +6529,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             canvas_obj.setFont("Helvetica-Bold", _name_sz)
             _NAME_FONT_HALF = _name_sz + 2
             name_y = PAGE_H - dynamic_hdr_h + (dynamic_hdr_h - _NAME_FONT_HALF) // 2 + \
-                     (14 if headline else 0)
+                     (18 if headline else 0)
             canvas_obj.drawString(ML, name_y, name)
             # Headline: compute target font size similarly
             if headline:
@@ -6514,7 +6539,12 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 else:
                     _hl_sz = 10
                 canvas_obj.setFont("Helvetica", _hl_sz)
-                canvas_obj.drawString(ML, name_y - _hl_sz - 4, headline)
+                # Ensure the headline baseline sits at least 10pt above the Robin
+                # stripe (which occupies the bottom 3pt of the azure band) so it
+                # is always clearly separated from the decorative line.
+                _stripe_top = PAGE_H - dynamic_hdr_h + 3
+                _headline_y = max(name_y - _hl_sz - 4, _stripe_top + 10)
+                canvas_obj.drawString(ML, _headline_y, headline)
             # Footer
             canvas_obj.setFillColor(AZURE)
             canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
@@ -6587,6 +6617,13 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             textColor=DARK, leading=13,
             spaceBefore=0, spaceAfter=2,
         )
+        bullet_style = ParagraphStyle(
+            'FIOEBullet',
+            fontName='Helvetica', fontSize=9,
+            textColor=DARK, leading=13,
+            leftIndent=15, firstLineIndent=-8,
+            spaceBefore=1, spaceAfter=1,
+        )
 
         story = []
         CW = PAGE_W - ML - MR   # usable content width
@@ -6597,6 +6634,83 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 width='100%', thickness=1.5,
                 color=ROBIN, spaceAfter=4,
             ))
+
+        def _desc_to_flowables(raw_text):
+            """Convert a description string to Platypus flowables.
+
+            Priority order for bullet detection:
+            1. Newline-separated lines — only treated as distinct bullet items
+               when each line plausibly begins a new sentence (starts with an
+               uppercase letter after stripping leading bullet/dash characters)
+               OR there are at least 2 lines and every line ends with
+               punctuation.  Lines that look like LLM word-wrap artefacts
+               (continuation fragments that start mid-sentence) are rejoined
+               with a space before bullet processing.
+            2. Sentence-boundary split — applied when the sanitised text is a
+               single continuous paragraph of >= 80 chars; splits on ". " that
+               follows at least two lowercase letters (avoids splitting "Dr. X"
+               or "e.g. foo") to produce readable bullet points from prose.
+               Requires at least 2 sentences.
+            3. Plain Paragraph with <br/> word-wrap as final fallback.
+
+            Bullets are rendered as "- text" Paragraphs with a hanging indent
+            so they display correctly in any ReportLab version without needing
+            the optional ListFlowable / ListItem classes.
+            """
+            import re as _re2
+            from xml.sax.saxutils import escape as _xmlesc
+            if not raw_text or not raw_text.strip():
+                return []
+            raw = _s(raw_text)
+
+            # Split on explicit newlines.
+            raw_segments = [seg.strip() for seg in raw.split('\n') if seg.strip()]
+
+            # Re-join segments that are clearly word-wrap artefacts: a
+            # continuation fragment starts with a lowercase letter (after
+            # stripping any leading bullet characters) meaning it doesn't begin
+            # a new sentence/point.
+            _BULLET_LEAD_CHARS = '-*\u2022\u00b7\u25aa\u25ab\u25cf\u25e6\u2023\u2043\u2219 '
+            merged = []
+            for seg in raw_segments:
+                seg_stripped = seg.lstrip(_BULLET_LEAD_CHARS)
+                if merged and seg_stripped and seg_stripped[0].islower():
+                    # Continuation of the previous segment — rejoin with space.
+                    merged[-1] = merged[-1].rstrip() + ' ' + seg_stripped
+                else:
+                    merged.append(seg)
+            segments = merged
+
+            # If no explicit bullet-style segments, try sentence-based splitting
+            # on long prose descriptions so each sentence becomes a bullet point.
+            if len(segments) == 1 and len(raw) >= 80:
+                # Split only when a period follows >=2 lowercase letters
+                # (guards against abbreviations like "Dr." or "e.g.") and is
+                # followed by whitespace + an uppercase letter.
+                sent_segs = [s.strip() for s in
+                             _re2.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', segments[0])
+                             if s.strip()]
+                if len(sent_segs) >= 2:
+                    segments = sent_segs
+            if len(segments) <= 1:
+                return [Paragraph(_spwrap(segments[0] if segments else raw_text), body_style)]
+            # Multiple segments → dash-prefixed Paragraphs with hanging indent.
+            # Maximum characters per individual bullet segment.
+            _MAX_SEG_CHARS = 300
+            result = []
+            for seg in segments:
+                seg_clean = seg.lstrip(_BULLET_LEAD_CHARS)
+                if not seg_clean:
+                    continue
+                result.append(
+                    Paragraph(
+                        "- " + _xmlesc(seg_clean[:_MAX_SEG_CHARS]),
+                        bullet_style,
+                    )
+                )
+            if not result:
+                return [Paragraph(_spwrap(raw_text), body_style)]
+            return result
 
         # ── Contact strip ──────────────────────────────────────────────────
         loc   = _sp(data.get("location") or "")
@@ -6630,8 +6744,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 title   = _sp(exp.get("title") or "")
                 company = _sp(exp.get("company") or "")
                 dates   = _sp(exp.get("dates") or "")
-                desc    = _spwrap(exp.get("description") or "")
-                if not any([title, company, dates, desc]):
+                raw_desc = exp.get("description") or ""
+                if not any([title, company, dates, raw_desc.strip()]):
                     continue
                 if title:
                     story.append(Paragraph(title, title_style))
@@ -6640,8 +6754,8 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 if dates:   sub_parts.append(dates)
                 if sub_parts:
                     story.append(Paragraph("  |  ".join(sub_parts), sub_style))
-                if desc:
-                    story.append(Paragraph(desc, body_style))
+                for fl in _desc_to_flowables(raw_desc):
+                    story.append(fl)
                 story.append(Spacer(1, 4))
 
         # ── Education ─────────────────────────────────────────────────────
@@ -6741,7 +6855,37 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if h:
             lines.append(("key", h))
         if dc:
-            lines.append(("item", dc))
+            # Split multi-sentence descriptions into dash-prefixed bullet items
+            # so the fallback canvas renderer produces readable output.
+            import re as _fb_re
+            dc_clean = dc.replace('\r', '')
+            raw_paras = [p.strip() for p in dc_clean.split('\n') if p.strip()]
+            # Re-join continuation fragments (lines starting with a lowercase
+            # letter) to undo any LLM word-wrap artefacts before bullet split.
+            merged_paras = []
+            _bl_chars = '-*\u2022\u00b7 '
+            for para in raw_paras:
+                stripped = para.lstrip(_bl_chars)
+                if merged_paras and stripped and stripped[0].islower():
+                    merged_paras[-1] = merged_paras[-1].rstrip() + ' ' + stripped
+                else:
+                    merged_paras.append(para)
+            dc_paras = merged_paras
+            if len(dc_paras) <= 1:
+                # Try sentence-based split when text is a single prose paragraph
+                sents = [s.strip() for s in
+                         _fb_re.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', dc_clean)
+                         if s.strip()]
+                if len(sents) >= 2:
+                    dc_paras = sents
+            if len(dc_paras) > 1:
+                for para in dc_paras:
+                    # Strip any leading bullet/dash chars the LLM may have added
+                    para = para.lstrip('-*\u2022\u00b7 ')
+                    if para:
+                        lines.append(("item", f"- {para}"))
+            else:
+                lines.append(("item", dc_clean))
         lines.append(("gap", ""))
     if data.get("education"):
         lines.append(("section", "EDUCATION"))
@@ -6762,7 +6906,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         for i in range(0, len(skls), 5):
             row = [str(x) for x in skls[i:i + 5] if str(x).strip()]
             if row:
-                lines.append(("item", "  \u2022  ".join(row)))
+                lines.append(("item", "  \u00b7  ".join(row)))
     return _lines_to_pdf_bytes(lines)
 
 
@@ -8396,8 +8540,8 @@ def _criteria_record_to_pdf_bytes(record: dict) -> bytes:
                 y -= 4
             else:
                 c.setFont("Helvetica", 11)
-            # Encode to latin-1 to avoid non-Latin characters crashing Helvetica
-            safe = text.encode("latin-1", errors="replace").decode("latin-1")
+            # Encode to latin-1; strip non-encodable characters silently
+            safe = str(text).encode("latin-1", errors="ignore").decode("latin-1")
             c.drawString(40, y, safe)
             y -= 16
             if y < 60:
@@ -8412,7 +8556,7 @@ def _criteria_record_to_pdf_bytes(record: dict) -> bytes:
     import struct as _struct
     text_parts = []
     for kind, text in lines:
-        safe = text.encode("latin-1", errors="replace").decode("latin-1")
+        safe = str(text).encode("latin-1", errors="ignore").decode("latin-1")
         size = 16 if kind == "title" else (12 if kind == "section" else 11)
         bold = "-Bold" if kind in ("title", "section") else ""
         text_parts.append((safe, size, bold))
@@ -8754,7 +8898,25 @@ def _lines_to_pdf_bytes(lines: list) -> bytes:
         y = page_h - 50
 
         def _safe(s):
-            return str(s).encode("latin-1", errors="replace").decode("latin-1")
+            import re as _re
+            s = str(s)
+            # Strip CJK and other non-Latin-1 character runs to prevent '?'
+            # placeholders when encoding to Latin-1.
+            s = _re.sub(
+                r'[\u0400-\u04ff\u0600-\u06ff\u0900-\u0dff\u3040-\u30ff'
+                r'\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7af'
+                r'\uf900-\ufaff\uff00-\uffef]+',
+                '', s,
+            )
+            # Map common Unicode punctuation to Latin-1 equivalents so they
+            # display correctly in Helvetica instead of rendering as '?'.
+            s = s.replace('\u2022', '-')   # bullet • → dash (ASCII-safe fallback)
+            s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+            s = s.replace('\u2018', "'").replace('\u2019', "'")
+            s = s.replace('\u201c', '"').replace('\u201d', '"')
+            s = s.replace('\u2026', '...')
+            s = s.replace('\u2212', '-')
+            return s.encode("latin-1", errors="ignore").decode("latin-1")
 
         def _wrap_text(text, font, size, avail_w):
             """Word-wrap text into lines that fit within avail_w pixels."""
@@ -8896,7 +9058,9 @@ def _lines_to_pdf_bytes(lines: list) -> bytes:
                 c.setStrokeColorRGB(0.18, 0.36, 0.56)
                 c.setLineWidth(1.5)
                 c.line(MARGIN_L, y, MARGIN_L + CONTENT_W, y)
-                y -= 6
+                # Increase gap so the next element (headline) starts well below
+                # the underline and does not visually overlap it.
+                y -= 14
                 continue
             elif kind == "section":
                 font_n, font_s = "Helvetica-Bold", 11
@@ -8925,19 +9089,34 @@ def _lines_to_pdf_bytes(lines: list) -> bytes:
     def _pdf_str(s):
         return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
+    def _pdf_safe(s):
+        import re as _re
+        s = str(s)
+        s = _re.sub(
+            r'[\u0400-\u04ff\u0600-\u06ff\u0900-\u0dff\u3040-\u30ff'
+            r'\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7af'
+            r'\uf900-\ufaff\uff00-\uffef]+',
+            '', s,
+        )
+        s = s.replace('\u2013', '-').replace('\u2014', '-')
+        s = s.replace('\u2018', "'").replace('\u2019', "'")
+        s = s.replace('\u201c', '"').replace('\u201d', '"')
+        s = s.replace('\u2026', '...')
+        return s.encode("latin-1", errors="ignore").decode("latin-1")
+
     stream_lines = ["BT", "/F1 16 Tf", "40 792 Td"]
     for kind, text in lines:
         if kind == "table":
             rows = text
             for r_idx, row in enumerate(rows):
                 row_text = " | ".join(str(c) for c in row)
-                safe = row_text.encode("latin-1", errors="replace").decode("latin-1")
+                safe = _pdf_safe(row_text)
                 fname = "/FB" if r_idx == 0 else "/F1"
                 stream_lines.append(f"{fname} 9 Tf")
                 stream_lines.append(f"({_pdf_str(safe)}) Tj")
                 stream_lines.append("0 -14 Td")
             continue
-        safe = str(text).encode("latin-1", errors="replace").decode("latin-1")
+        safe = _pdf_safe(str(text))
         if not safe.strip() or kind == "gap":
             stream_lines.append("0 -10 Td")
             continue
