@@ -3606,6 +3606,10 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
 
     When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
     config lookup is overridden to route to that specific provider instead.
+    ``selected_provider='cse'`` (or any value not matching a known provider) forces
+    Google CSE — the admin-configured provider auto-detection is skipped entirely.
+    Pass ``selected_provider=None`` only when no explicit selection was made (legacy
+    callers), which preserves the original auto-detect behaviour.
 
     When ``selected_provider`` is 'contactout', 'apollo', or 'rocketreach', the search
     is executed *directly* against that provider's API using ``raw_form_fields`` (if
@@ -3737,22 +3741,27 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         # Raises ProviderSearchError on API failure — no CSE fallback
         return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
-    serper_cfg = cfg.get("serper", {})
-    serper_key = serper_cfg.get("api_key", "")
-    if serper_cfg.get("enabled", "disabled") == "enabled" and serper_key:
-        return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
+    # Auto-detect the admin-configured provider ONLY when no explicit selection was
+    # made (selected_provider is None/empty).  When the user has explicitly chosen
+    # a provider — including 'cse' for Default CSE — skip this block so we never
+    # silently route to a different provider than what was selected.
+    if not selected_provider:
+        serper_cfg = cfg.get("serper", {})
+        serper_key = serper_cfg.get("api_key", "")
+        if serper_cfg.get("enabled", "disabled") == "enabled" and serper_key:
+            return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
 
-    dfs_cfg = cfg.get("dataforseo", {})
-    dfs_login = (dfs_cfg.get("login") or "").strip()
-    dfs_password = (dfs_cfg.get("password") or "").strip()
-    if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
-        return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
+        dfs_cfg = cfg.get("dataforseo", {})
+        dfs_login = (dfs_cfg.get("login") or "").strip()
+        dfs_password = (dfs_cfg.get("password") or "").strip()
+        if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
+            return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
 
-    li_cfg = cfg.get("linkedin", {})
-    li_key = li_cfg.get("api_key", "")
-    if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
-        li_query = _translate_xray_for_provider(query, 'linkedin')
-        return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
+        li_cfg = cfg.get("linkedin", {})
+        li_key = li_cfg.get("api_key", "")
+        if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
+            li_query = _translate_xray_for_provider(query, 'linkedin')
+            return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
 
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
@@ -4066,7 +4075,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "Apollo (selected)"
         elif selected_provider == 'rocketreach':
             _provider_label = "RocketReach (selected)"
-        else:
+        elif not selected_provider:
+            # No explicit selection — auto-detect from admin config
             _serper_on = (
                 _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
                 and bool(_sp.get("serper", {}).get("api_key"))
@@ -4087,6 +4097,9 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 _provider_label = "DataforSEO"
             elif _li_on:
                 _provider_label = "LinkedIn"
+        else:
+            # Explicit 'cse' selection (or any unrecognised value) → use CSE label
+            _provider_label = "CSE"
 
     # Determine the effective provider for Xray-translation decisions.
     _eff_provider = None
@@ -4094,7 +4107,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         _eff_provider = user_provider
     elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
-    else:
+    elif not selected_provider:
+        # No explicit selection — auto-detect from admin config (legacy behaviour)
         _sp_cfg = _load_search_provider_config()
         for _p in ('serper', 'dataforseo', 'linkedin'):
             _pc = _sp_cfg.get(_p, {})
@@ -4103,6 +4117,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             ):
                 _eff_provider = _p
                 break
+    # else: explicit 'cse' (or unknown) selection → _eff_provider stays None (no translation)
 
     # Provider API searches (ContactOut/Apollo/RocketReach) use native params
     # built from form fields — no Xray translation needed.

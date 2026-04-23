@@ -4561,13 +4561,17 @@ async function generateAndStart(){
       }
     }
   } catch (_) {}
-  // Apply Search Provider toggle selection — when user chose API Provider mode with a
-  // specific provider, tell the backend to route through that admin-configured provider.
+  // Apply Search Provider toggle selection — always tell the backend which provider was
+  // selected so it can honour the user's explicit choice (including 'cse' for Default CSE)
+  // and never silently fall back to a different admin-configured provider.
   try {
     if (typeof window._getSelectedSearchProvider === 'function') {
       const spSel = window._getSelectedSearchProvider();
       if (spSel.mode === 'api' && spSel.provider) {
         payload._selectedSearchProvider = spSel.provider;
+      } else {
+        // Explicit CSE selection — send 'cse' so the backend skips provider auto-detection
+        payload._selectedSearchProvider = 'cse';
       }
     }
   } catch (_) {}
