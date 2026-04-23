@@ -4061,13 +4061,16 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         m_cc = re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
         country_code_hint = m_cc.group(1).lower() if m_cc else None
 
-    # Determine active search provider label for job status messages
-    # Per-user provider takes priority over admin config for label determination
-    if user_provider == 'serper' and user_serper_key:
+    # Determine active search provider label for job status messages.
+    # Explicit CSE selection (or any unrecognised value) always wins — per-user
+    # provider labels must never override an explicit 'cse' selection.
+    _known_api_providers_set = frozenset(('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'))
+    _cse_forced = (not selected_provider) is False and (selected_provider not in _known_api_providers_set)
+    if not _cse_forced and user_provider == 'serper' and user_serper_key:
         _provider_label = "Serper (user)"
-    elif user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
+    elif not _cse_forced and user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         _provider_label = "DataforSEO (user)"
-    elif user_provider == 'linkedin' and user_linkedin_key:
+    elif not _cse_forced and user_provider == 'linkedin' and user_linkedin_key:
         _provider_label = "LinkedIn (user)"
     else:
         _sp = _load_search_provider_config()
@@ -4110,8 +4113,11 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "CSE"
 
     # Determine the effective provider for Xray-translation decisions.
+    # When the user has explicitly selected 'cse' (or any value not matching a
+    # known API provider), _eff_provider must remain None so that the Xray
+    # query is never translated for an API provider that won't actually be used.
     _eff_provider = None
-    if user_provider in ('serper', 'dataforseo', 'linkedin'):
+    if not _cse_forced and user_provider in ('serper', 'dataforseo', 'linkedin'):
         _eff_provider = user_provider
     elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
