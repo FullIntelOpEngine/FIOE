@@ -6192,9 +6192,7 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
             "- Transliterate or translate any non-English text (e.g. Japanese, Chinese, Korean) to English\n"
             "- Use only ASCII or Latin characters in all fields — no CJK, Arabic, Cyrillic or other scripts\n"
             "- Omit keys whose values are empty or unknown\n"
-            "- IMPORTANT: Every text value must be pre-wrapped so that each line contains at most 100 characters "
-            "(letters, spaces, and punctuation). Break at word boundaries and separate lines with '\\n'. "
-            "This applies to summary, all experience descriptions, and any other multi-word text field.\n"
+            "- Do NOT insert line breaks (\\n) inside any text value; keep every field as a single continuous string\n"
             "- Return ONLY valid JSON\n\n"
             f"Profile JSON:\n{profile_json_str}"
         )
@@ -6413,7 +6411,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
     def _spwrap(t, max_chars=100):
         """Return XML-safe text with hard line breaks every ``max_chars`` chars.
 
-        Honors existing ``\\n`` line breaks (e.g. from Gemini pre-wrapping)
+        Honors existing ``\\n`` line breaks (intentional multi-line content)
         and additionally enforces the ``max_chars`` limit on any line that
         still exceeds it.  Words are preserved wherever possible; a word that
         exceeds ``max_chars`` by itself is hard-split at the character boundary.
@@ -6422,7 +6420,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         """
         from xml.sax.saxutils import escape as _xmlesc
         raw = _s(t)
-        # Split on existing newlines first (Gemini pre-wrapping), then
+        # Split on existing newlines first (intentional line breaks), then
         # enforce max_chars within each segment.
         segments = raw.split('\n')
         final_lines = []
@@ -6641,7 +6639,13 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             """Convert a description string to Platypus flowables.
 
             Priority order for bullet detection:
-            1. Newline-separated lines — used as-is (LLM pre-formatted output).
+            1. Newline-separated lines — only treated as distinct bullet items
+               when each line plausibly begins a new sentence (starts with an
+               uppercase letter after stripping leading bullet/dash characters)
+               OR there are at least 2 lines and every line ends with
+               punctuation.  Lines that look like LLM word-wrap artefacts
+               (continuation fragments that start mid-sentence) are rejoined
+               with a space before bullet processing.
             2. Sentence-boundary split — applied when the sanitised text is a
                single continuous paragraph of >= 80 chars; splits on ". " that
                follows at least two lowercase letters (avoids splitting "Dr. X"
@@ -6658,24 +6662,39 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             if not raw_text or not raw_text.strip():
                 return []
             raw = _s(raw_text)
-            segments = [seg.strip() for seg in raw.split('\n') if seg.strip()]
-            # If no explicit newline bullets, try sentence-based splitting on
-            # long prose descriptions so each sentence becomes a bullet point.
+
+            # Split on explicit newlines.
+            raw_segments = [seg.strip() for seg in raw.split('\n') if seg.strip()]
+
+            # Re-join segments that are clearly word-wrap artefacts: a
+            # continuation fragment starts with a lowercase letter (after
+            # stripping any leading bullet characters) meaning it doesn't begin
+            # a new sentence/point.
+            _BULLET_LEAD_CHARS = '-*\u2022\u00b7\u25aa\u25ab\u25cf\u25e6\u2023\u2043\u2219 '
+            merged = []
+            for seg in raw_segments:
+                seg_stripped = seg.lstrip(_BULLET_LEAD_CHARS)
+                if merged and seg_stripped and seg_stripped[0].islower():
+                    # Continuation of the previous segment — rejoin with space.
+                    merged[-1] = merged[-1].rstrip() + ' ' + seg_stripped
+                else:
+                    merged.append(seg)
+            segments = merged
+
+            # If no explicit bullet-style segments, try sentence-based splitting
+            # on long prose descriptions so each sentence becomes a bullet point.
             if len(segments) == 1 and len(raw) >= 80:
                 # Split only when a period follows >=2 lowercase letters
                 # (guards against abbreviations like "Dr." or "e.g.") and is
                 # followed by whitespace + an uppercase letter.
                 sent_segs = [s.strip() for s in
-                             _re2.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', raw)
+                             _re2.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', segments[0])
                              if s.strip()]
                 if len(sent_segs) >= 2:
                     segments = sent_segs
             if len(segments) <= 1:
-                return [Paragraph(_spwrap(raw_text), body_style)]
+                return [Paragraph(_spwrap(segments[0] if segments else raw_text), body_style)]
             # Multiple segments → dash-prefixed Paragraphs with hanging indent.
-            # Characters that LLMs typically prepend to bullet lines; stripped
-            # so they aren't double-rendered alongside the manual "- " prefix.
-            _BULLET_LEAD_CHARS = '-*\u2022\u00b7\u25aa\u25ab\u25cf\u25e6\u2023\u2043\u2219 '
             # Maximum characters per individual bullet segment.
             _MAX_SEG_CHARS = 300
             result = []
@@ -6838,11 +6857,22 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         if dc:
             # Split multi-sentence descriptions into dash-prefixed bullet items
             # so the fallback canvas renderer produces readable output.
+            import re as _fb_re
             dc_clean = dc.replace('\r', '')
-            dc_paras = [p.strip() for p in dc_clean.split('\n') if p.strip()]
+            raw_paras = [p.strip() for p in dc_clean.split('\n') if p.strip()]
+            # Re-join continuation fragments (lines starting with a lowercase
+            # letter) to undo any LLM word-wrap artefacts before bullet split.
+            merged_paras = []
+            _bl_chars = '-*\u2022\u00b7 '
+            for para in raw_paras:
+                stripped = para.lstrip(_bl_chars)
+                if merged_paras and stripped and stripped[0].islower():
+                    merged_paras[-1] = merged_paras[-1].rstrip() + ' ' + stripped
+                else:
+                    merged_paras.append(para)
+            dc_paras = merged_paras
             if len(dc_paras) <= 1:
                 # Try sentence-based split when text is a single prose paragraph
-                import re as _fb_re
                 sents = [s.strip() for s in
                          _fb_re.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', dc_clean)
                          if s.strip()]
@@ -6855,7 +6885,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                     if para:
                         lines.append(("item", f"- {para}"))
             else:
-                lines.append(("item", dc))
+                lines.append(("item", dc_clean))
         lines.append(("gap", ""))
     if data.get("education"):
         lines.append(("section", "EDUCATION"))
