@@ -6339,16 +6339,37 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         # 3. Replace runs of non-Latin characters (CJK, Arabic, Cyrillic, etc.)
         s = _re.sub(
             r'[\u0400-\u04ff'           # Cyrillic
+            r'\u0500-\u05ff'           # Cyrillic Supplement, Hebrew, Armenian
             r'\u0600-\u06ff'           # Arabic
-            r'\u3000-\u303f'           # CJK symbols/punctuation
+            r'\u0700-\u08ff'           # Syriac, Thaana, NKo, Samaritan, Mandaic
+            r'\u0900-\u0dff'           # Devanagari, Bengali, Gurmukhi, Gujarati,
+                                       #   Oriya, Tamil, Telugu, Kannada, Malayalam
+            r'\u0e00-\u0e7f'           # Thai
+            r'\u0e80-\u0eff'           # Lao
+            r'\u1000-\u10ff'           # Myanmar, Georgian
+            r'\u1100-\u11ff'           # Hangul Jamo
+            r'\u1200-\u137f'           # Ethiopic
+            r'\u1700-\u17ff'           # Tagalog, Hanunoo, Buhid, Tagbanwa, Khmer
+            r'\u1800-\u18af'           # Mongolian
+            r'\u1e00-\u1eff'           # Latin Extended Additional (pre-composed)
+            r'\u2e80-\u2eff'           # CJK Radicals Supplement
+            r'\u2f00-\u2fdf'           # Kangxi Radicals
+            r'\u3000-\u303f'           # CJK symbols / punctuation
             r'\u3040-\u30ff'           # Hiragana + Katakana
-            r'\u4e00-\u9fff'           # CJK unified ideographs
-            r'\uf900-\ufaff'           # CJK compatibility ideographs
-            r'\uac00-\ud7af'           # Hangul syllables
-            r'\uff00-\uffef'           # Halfwidth/fullwidth forms
+            r'\u3130-\u318f'           # Hangul Compatibility Jamo
+            r'\u3190-\u31ef'           # Kanbun, Bopomofo Extended, CJK Strokes
+            r'\u3200-\u33ff'           # Enclosed CJK + CJK Compatibility
+            r'\u3400-\u4dbf'           # CJK Unified Ideographs Extension A
+            r'\u4e00-\u9fff'           # CJK Unified Ideographs (main block)
+            r'\ua000-\ua4cf'           # Yi Syllables + Yi Radicals
+            r'\ua960-\ua97f'           # Hangul Jamo Extended-A
+            r'\uf900-\ufaff'           # CJK Compatibility Ideographs
+            r'\uac00-\ud7af'           # Hangul Syllables
+            r'\ud7b0-\ud7ff'           # Hangul Jamo Extended-B
+            r'\uff00-\uffef'           # Halfwidth / Fullwidth forms
             r']+'
             ,
-            '[...]', s
+            '', s
         )
         # 4a. Named Unicode punctuation replacements
         s = s.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
@@ -6374,10 +6395,10 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 return '-'
             if cat == 'Zs':
                 return ' '
-            return c  # keep; encode() will replace with '?' if not Latin-1
+            return c  # keep; encode() will drop silently if not Latin-1
 
         s = _re.sub(r'[\u0100-\uffff]', _map_non_latin1, s)
-        return s.encode("latin-1", errors="replace").decode("latin-1")
+        return s.encode("latin-1", errors="ignore").decode("latin-1")
 
     def _sp(t):
         """Return text safe for Platypus Paragraph (Latin-1 + XML-escaped).
@@ -6504,7 +6525,7 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
             canvas_obj.setFont("Helvetica-Bold", _name_sz)
             _NAME_FONT_HALF = _name_sz + 2
             name_y = PAGE_H - dynamic_hdr_h + (dynamic_hdr_h - _NAME_FONT_HALF) // 2 + \
-                     (14 if headline else 0)
+                     (18 if headline else 0)
             canvas_obj.drawString(ML, name_y, name)
             # Headline: compute target font size similarly
             if headline:
@@ -6514,7 +6535,12 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
                 else:
                     _hl_sz = 10
                 canvas_obj.setFont("Helvetica", _hl_sz)
-                canvas_obj.drawString(ML, name_y - _hl_sz - 4, headline)
+                # Ensure the headline baseline sits at least 10pt above the Robin
+                # stripe (which occupies the bottom 3pt of the azure band) so it
+                # is always clearly separated from the decorative line.
+                _stripe_top = PAGE_H - dynamic_hdr_h + 3
+                _headline_y = max(name_y - _hl_sz - 4, _stripe_top + 10)
+                canvas_obj.drawString(ML, _headline_y, headline)
             # Footer
             canvas_obj.setFillColor(AZURE)
             canvas_obj.rect(0, 0, PAGE_W, 16, fill=1, stroke=0)
@@ -6601,20 +6627,34 @@ def _render_fioe_profile_pdf(data: dict) -> bytes:
         def _desc_to_flowables(raw_text):
             """Convert a description string to Platypus flowables.
 
-            If the sanitised text contains multiple newline-separated lines
-            (typically bullet items from an LLM response), each line is
-            rendered as a ListItem so that visual bullet glyphs (·) appear.
-            Single-line or already-wrapped text falls back to a plain
-            Paragraph with <br/> line-breaks.
+            Priority order for bullet detection:
+            1. Newline-separated lines — used as-is (LLM pre-formatted output).
+            2. Sentence-boundary split — applied when the sanitised text is a
+               single continuous paragraph of >= 100 chars; splits on ". " that
+               follows at least two lowercase letters (avoids splitting "Dr. X"
+               or "e.g. foo") to produce readable bullet points from prose.
+            3. Plain Paragraph with <br/> word-wrap as final fallback.
             """
+            import re as _re2
             from xml.sax.saxutils import escape as _xmlesc
             if not raw_text or not raw_text.strip():
                 return []
             raw = _s(raw_text)
             segments = [seg.strip() for seg in raw.split('\n') if seg.strip()]
+            # If no explicit newline bullets, try sentence-based splitting on
+            # long prose descriptions so each sentence becomes a bullet point.
+            if len(segments) == 1 and len(raw) >= 100:
+                # Split only when a period follows >=2 lowercase letters
+                # (guards against abbreviations like "Dr." or "e.g.") and is
+                # followed by whitespace + an uppercase letter.
+                sent_segs = [s.strip() for s in
+                             _re2.split(r'(?<=[a-z][a-z])\.\s+(?=[A-Z])', raw)
+                             if s.strip()]
+                if len(sent_segs) >= 3:
+                    segments = sent_segs
             if len(segments) <= 1:
                 return [Paragraph(_spwrap(raw_text), body_style)]
-            # Multiple lines → ListFlowable with bullet items
+            # Multiple segments → ListFlowable with bullet items
             # Characters that LLMs typically prepend to bullet lines; stripped
             # so they aren't double-rendered alongside the ListItem bullet glyph.
             _BULLET_LEAD_CHARS = '-*\u2022\u00b7\u25aa\u25ab\u25cf\u25e6\u2023\u2043\u2219 '
