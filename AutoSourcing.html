@@ -2127,6 +2127,7 @@ let jdSuggestionsLocked = false;    // when true, suggestion lists are frozen
 let jdJobSnapshot = [];             // frozen job suggestion list
 let jdCompanySnapshot = [];         // frozen company suggestion list
 let jdProducts = [];                // product/technology references extracted from JD (e.g., "Aircon", "HVAC")
+let jdDetectedCompanies = new Set(); // canonical keys of companies detected IN the JD — excluded from suggestions
 
 function captureSuggestionSnapshot(){
   try{
@@ -3055,6 +3056,12 @@ function renderSuggestionsAggregated(data){
 
     jobList = Array.from(jobSet);
     companyList = Array.from(companySet);
+  }
+
+  // Exclude companies that were detected in the job description (they are the hiring employer
+  // or named clients in the JD, not targets for sourcing).
+  if (jdDetectedCompanies && jdDetectedCompanies.size > 0) {
+    companyList = companyList.filter(c => !jdDetectedCompanies.has(canonicalKey(c)));
   }
 
   // Sector ordering: when a sector is active, display direct competitors (from /suggest, not in
@@ -4569,10 +4576,11 @@ async function generateAndStart(){
       const spSel = window._getSelectedSearchProvider();
       if (spSel.mode === 'api' && spSel.provider) {
         payload._selectedSearchProvider = spSel.provider;
-      } else {
+      } else if (spSel.mode === 'cse') {
         // Explicit CSE selection — send 'cse' so the backend skips provider auto-detection
         payload._selectedSearchProvider = 'cse';
       }
+      // Unrecognised mode → don't set; backend defaults to auto-detect (legacy behaviour)
     }
   } catch (_) {}
   try{
@@ -4989,6 +4997,17 @@ function updateSectorEnabledState(){
             if (analyzeData.companies && analyzeData.companies.length) {
               const countryLabel = analyzeData.country ? ` in ${escapeHtml(analyzeData.country)}` : '';
               tagHtml += `<div><strong>Companies (with local presence${countryLabel}):</strong> ${escapeHtml(analyzeData.companies.join(', '))}</div>`;
+              // Store canonical keys so renderSuggestionsAggregated can exclude them from the
+              // company suggestion list — a company that appears in the JD is likely the hiring
+              // employer or a named client, not a target-sourcing company.
+              jdDetectedCompanies.clear();
+              analyzeData.companies.forEach(function(c){
+                const k = canonicalKey(normalizeSpaces(c));
+                if (k) jdDetectedCompanies.add(k);
+              });
+            } else {
+              // This JD has no detected companies — clear any Set populated by a prior JD upload.
+              jdDetectedCompanies.clear();
             }
             // Normalize "South Korea" to "Korea" for display
             if (analyzeData.country) {

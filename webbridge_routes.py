@@ -3629,27 +3629,35 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     """
     page = max(1, ((start_index - 1) // max(num, 1)) + 1)
 
-    # Per-user search provider takes priority over the global admin config
-    if user_provider == 'serper' and user_serper_key:
-        results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        # User key returned empty — fall back to admin config
-        logger.warning(f"[Search] User Serper key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
-    if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
-        results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
-    if user_provider == 'linkedin' and user_linkedin_key:
-        li_query = _translate_xray_for_provider(query, 'linkedin')
-        results, total = linkedin_search_page(li_query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
+    # Per-user search provider takes priority over the global admin config.
+    # Exception: when the user has explicitly selected 'cse' (Default CSE) from the
+    # AutoSourcing toggle, per-user API provider keys are bypassed so that the request
+    # always routes to Google CSE regardless of what the user has configured in their
+    # Option A service settings.  Also bypass when selected_provider is any unrecognised
+    # value (per docstring: 'any value not matching a known provider' forces CSE).
+    _known_api_providers = ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach')
+    _run_user_provider = (not selected_provider) or (selected_provider in _known_api_providers)
+    if _run_user_provider:
+        if user_provider == 'serper' and user_serper_key:
+            results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            # User key returned empty — fall back to admin config
+            logger.warning(f"[Search] User Serper key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
+        if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
+            results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
+        if user_provider == 'linkedin' and user_linkedin_key:
+            li_query = _translate_xray_for_provider(query, 'linkedin')
+            results, total = linkedin_search_page(li_query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
     ev_cfg = _load_email_verif_config()
