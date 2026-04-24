@@ -285,6 +285,8 @@ label {
   box-shadow: none;
 }
 .tag-chip button:hover { color: var(--danger); transform: none; box-shadow: none; }
+.tag-chip.tag-locked { background: var(--accent-dim, rgba(30,120,200,0.15)); border-color: var(--accent, #1e78c8); }
+.tag-chip.tag-locked button { color: var(--accent, #1e78c8); }
 
 /* Dynamic Company Preview Area */
 #dynamicCompanyPreview {
@@ -2117,6 +2119,8 @@ const MIN_SUGGEST_COMPANIES_FOR_VALIDATION = 5;
 // Capped to avoid bloating the Gemini prompt with an exhaustive product list.
 const MAX_JD_PRODUCTS_HINT = 20;
 const suppressedAutoSuggestedCompanies=new Set();
+const lockedJobTags=new Map();     // canonical key → display text; locked suggestion chips (job type)
+const lockedCompanyTags=new Map(); // canonical key → display text; locked suggestion chips (company type)
 const userSkills = []; const userSkillIndex = new Set();
 const estimateValueEl = document.getElementById('estimateValue');
 const estimateSpinnerEl = document.getElementById('estimateSpinner');
@@ -2228,7 +2232,7 @@ function addJobTitle(){
 }
 function removeJobTitle(i){
   const v=jobTitles.splice(i,1)[0];
-  if(v){ jobTitleIndex.delete(canonicalKey(v)); renderJobTitleChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
+  if(v){ lockedJobTags.delete(canonicalKey(v)); jobTitleIndex.delete(canonicalKey(v)); renderJobTitleChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
   try { 
     const rt = buildRoleTagFromJobTitles();
     persistRoleTag(rt);
@@ -2308,7 +2312,7 @@ function addCompany(){
 }
 function removeCompany(i){
   const v=companies.splice(i,1)[0];
-  if(v){ companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
+  if(v){ lockedCompanyTags.delete(canonicalKey(v)); companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
 }
 function renderCompanyChips(){
   const wrap=document.getElementById('companyAggregator'); const box=document.getElementById('companyChips');
@@ -3145,6 +3149,14 @@ function renderSuggestionsAggregated(data){
   // Apply the same suppression to companyList so chips are hidden when the user dismisses them.
   companyList = companyList.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
 
+  // Preserve locked suggestion chips — re-inject any pinned tags not already in the lists
+  lockedJobTags.forEach((displayText, key) => {
+    if (!jobList.some(j => canonicalKey(j) === key)) jobList.push(displayText);
+  });
+  lockedCompanyTags.forEach((displayText, key) => {
+    if (!companyList.some(c => canonicalKey(c) === key)) companyList.push(displayText);
+  });
+
   try {
     const jobBox = document.getElementById('jobTitleSuggestionBox');
     const jobGrid = document.getElementById('jobTitleSuggestionsGrid');
@@ -3191,19 +3203,40 @@ function makeChip(text,type,isExisting){
   chip.innerHTML=`<span class="suggest-text" data-original="${text}" data-translated="0">${text}</span>`;
   const trans=document.createElement('button'); trans.className='translate-btn'; trans.type='button'; trans.textContent='文'; trans.style.marginLeft='6px';
   const add=document.createElement('button'); add.type='button'; add.textContent=isExisting?'✓':'+'; add.disabled=!!isExisting; add.style.marginLeft='4px';
-  
+
+  const lockedMap=type==='job'?lockedJobTags:lockedCompanyTags;
+
   function updateAddState(){
     const span=chip.querySelector('.suggest-text'); const v=span.textContent; const key=canonicalKey(v);
-    const set= type==='job'?jobTitleIndex:companyIndex;
-    if(set.has(key)){ add.textContent='✓'; add.disabled=true; } else { add.textContent='+'; add.disabled=false; }
+    const isLocked=lockedMap.has(key);
+    chip.classList.toggle('tag-locked',isLocked);
+    add.textContent=(isLocked||(!isExisting&&(type==='job'?jobTitleIndex:companyIndex).has(key)))?'✓':'+';
+    add.disabled=false;
   }
   add.addEventListener('click',()=>{
-    const v=chip.querySelector('.suggest-text').textContent;
-    if(type==='job'){ if(!jobTitleIndex.has(canonicalKey(v))){ jobTitles.push(v); jobTitleIndex.add(canonicalKey(v)); renderJobTitleChips(); } }
-    else { if(!companyIndex.has(canonicalKey(v))){ companies.push(v); companyIndex.add(canonicalKey(v)); renderCompanyChips(); } }
+    const span=chip.querySelector('.suggest-text'); const v=span.textContent; const key=canonicalKey(v);
+    const isLocked=lockedMap.has(key);
+    if(isLocked){
+      // Deselect: unlock and remove from the active list
+      lockedMap.delete(key);
+      if(type==='job'){
+        const idx=jobTitles.findIndex(t=>canonicalKey(t)===key);
+        if(idx>-1){ jobTitles.splice(idx,1); jobTitleIndex.delete(key); renderJobTitleChips(); }
+      } else {
+        const idx=companies.findIndex(c=>canonicalKey(c)===key);
+        if(idx>-1){ companies.splice(idx,1); companyIndex.delete(key); renderCompanyChips(); }
+      }
+    } else {
+      // Select and lock: add to active list and pin the chip in suggestions
+      if(type==='job'){ if(!jobTitleIndex.has(key)){ jobTitles.push(v); jobTitleIndex.add(key); renderJobTitleChips(); } }
+      else { if(!companyIndex.has(key)){ companies.push(v); companyIndex.add(key); renderCompanyChips(); } }
+      lockedMap.set(key,v);
+      // Ensure a previously-suppressed company is un-suppressed when explicitly locked
+      if(type==='company'){ suppressedAutoSuggestedCompanies.delete(v.toLowerCase()); suppressedAutoSuggestedCompanies.delete((span.getAttribute('data-original')||'').toLowerCase()); }
+    }
     updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateAddState(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview();
   });
-  trans.addEventListener('click',async ()=>{ 
+  trans.addEventListener('click',async ()=>{
     if(!translationActive||!translationLang){ trans.title='Activate Translation first.'; return; }
     if(trans.classList.contains('loading')) return; trans.classList.add('loading');
     const span=chip.querySelector('.suggest-text'); const original=span.getAttribute('data-original');
@@ -3214,24 +3247,6 @@ function makeChip(text,type,isExisting){
     }catch(e){ console.warn('Translation error',e); } finally { trans.classList.remove('loading'); }
   });
   chip.appendChild(trans); chip.appendChild(add);
-  if(type==='company'){
-    // Wrap chip + dismiss so the × sits BESIDE (outside) the chip border, not inside it
-    const wrapper=document.createElement('span');
-    wrapper.style.cssText='display:inline-flex;align-items:center;gap:0;vertical-align:middle;';
-    const dismiss=document.createElement('button'); dismiss.type='button'; dismiss.textContent='×'; dismiss.title='Remove from suggestions';
-    dismiss.style.cssText='background:none;border:none;cursor:pointer;font-size:14px;color:#888;padding:0 3px;line-height:1;margin-left:2px;flex-shrink:0;';
-    dismiss.addEventListener('click',()=>{
-      const span=chip.querySelector('.suggest-text');
-      const original=(span.getAttribute('data-original')||'').toLowerCase();
-      const current=span.textContent.toLowerCase();
-      if(original) suppressedAutoSuggestedCompanies.add(original);
-      if(current && current!==original) suppressedAutoSuggestedCompanies.add(current);
-      if(lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions); else wrapper.remove();
-    });
-    wrapper.appendChild(chip);
-    wrapper.appendChild(dismiss);
-    updateAddState(); return wrapper;
-  }
   updateAddState(); return chip;
 }
 function updateTranslateButtonsState(){
