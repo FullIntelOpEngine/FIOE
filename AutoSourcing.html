@@ -272,7 +272,10 @@ label {
   border-radius: 20px;
   font-size: 13px;
   font-weight: 600;
+  cursor: pointer;
+  user-select: none;
 }
+.tag-chip:not(.tag-locked):hover { filter: brightness(0.93); }
 .tag-chip button {
   background: transparent;
   border: none;
@@ -2249,8 +2252,17 @@ function renderJobTitleChips(){
   const jobChipFrag=document.createDocumentFragment();
   jobTitles.forEach((t,i)=>{ 
     const d=document.createElement('div'); d.className='tag-chip';
+    const isLocked=lockedJobTags.has(canonicalKey(t));
+    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${t}</span><button type="button" aria-label="Remove ${t}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeJobTitle(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(t);
+      if(lockedJobTags.has(key)){ lockedJobTags.delete(key); } else { lockedJobTags.set(key,t); }
+      renderJobTitleChips(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate();
+    });
+    removeBtn.addEventListener('click', ()=>removeJobTitle(i));
     jobChipFrag.appendChild(d);
   });
   box.appendChild(jobChipFrag);
@@ -2322,8 +2334,17 @@ function renderCompanyChips(){
   const compChipFrag=document.createDocumentFragment();
   companies.forEach((c,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
+    const isLocked=lockedCompanyTags.has(canonicalKey(c));
+    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${c}</span><button type="button" aria-label="Remove ${c}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeCompany(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(c);
+      if(lockedCompanyTags.has(key)){ lockedCompanyTags.delete(key); } else { lockedCompanyTags.set(key,c); }
+      renderCompanyChips(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview();
+    });
+    removeBtn.addEventListener('click', ()=>removeCompany(i));
     compChipFrag.appendChild(d);
   });
   box.appendChild(compChipFrag);
@@ -2561,7 +2582,11 @@ function updateDynamicCompanyPreview(clear=false){
     opts.forEach(o => {
       const chip = document.createElement('div');
       chip.className = 'tag-chip';
-      chip.innerHTML = `<span>${escapeHtml(o)}</span>`;
+      chip.innerHTML = `<span>${escapeHtml(o)}</span><button type="button" aria-label="Remove ${escapeHtml(o)}" style="margin-left:4px;">&times;</button>`;
+      chip.querySelector('button').addEventListener('click', ()=>{
+        suppressedAutoSuggestedCompanies.add(o.toLowerCase());
+        updateDynamicCompanyPreview();
+      });
       frag.appendChild(chip);
     });
     listEl.appendChild(frag);
