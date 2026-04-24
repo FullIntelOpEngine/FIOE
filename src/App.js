@@ -4004,7 +4004,9 @@ function CandidatesTable({
       localStorage.removeItem('orgChartManualOverrides');
       localStorage.removeItem('dismissedNewCandidateIds');
     } catch (cacheErr) { console.warn('[DB Dock Out] Failed to clear cache:', cacheErr); }
-    // Clear SourcingVerify.html session caches and signal it to reload.
+    // Clear SourcingVerify.html session caches. The reload signal (sv_dock_out_signal) is sent
+    // only after the DB clear below so that SourcingVerify.html reloads against an empty DB
+    // and the Action column correctly resets to 'Assess' (not 'View').
     try {
       [
         'sv_namecard_cache_v1',
@@ -4020,7 +4022,6 @@ function CandidatesTable({
       ].forEach(k => {
         try { localStorage.removeItem(k); } catch(_) {}
       });
-      localStorage.setItem('sv_dock_out_signal', String(Date.now()));
     } catch (svErr) { console.warn('[DB Dock Out] Failed to clear SourcingVerify session:', svErr); }
     fetch(`http://localhost:${API_PORT}/candidates/clear-user`, {
       method: 'DELETE',
@@ -4030,7 +4031,13 @@ function CandidatesTable({
     .then(res => res.ok ? res.json() : Promise.reject())
     .then(() => { onDockIn && onDockIn(); })
     .catch(err => { console.warn('[DB Dock Out] Clear-user failed (export completed):', err); /* non-fatal: export already happened */ })
-    .finally(() => { setDockOutClearing(false); });
+    .finally(() => {
+      // Signal SourcingVerify.html to reload now that the DB has been cleared (or the
+      // clear attempt has completed). This ordering ensures the page reloads against an
+      // empty database so the Action column shows 'Assess' instead of 'View'.
+      try { localStorage.setItem('sv_dock_out_signal', String(Date.now())); } catch(_) {}
+      setDockOutClearing(false);
+    });
   };
 
   const handleDockOut = () => {
