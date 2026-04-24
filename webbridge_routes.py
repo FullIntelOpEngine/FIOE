@@ -5599,7 +5599,7 @@ def apollo_download_profile():
       person_id    – the Apollo contact/person ID (preferred)
       linkedin_url – the LinkedIn profile URL (fallback lookup)
 
-    Calls the Apollo contacts/search endpoint.  The response prominently
+    Calls the Apollo mixed_people/search endpoint.  The response prominently
     exposes ``email``, ``mobile_phone``, and ``office_phone``; the complete
     contact record is included under ``_details`` for reference.
     """
@@ -5644,20 +5644,21 @@ def apollo_download_profile():
 
     try:
         if person_id:
-            # Search contacts by ID array
+            # Search global database by person ID array
             payload = {"ids": [person_id], "per_page": 1, "page": 1}
-            logger.debug(f"[Apollo] contacts/search by person_id={person_id!r}")
+            logger.debug(f"[Apollo] mixed_people/search by person_id={person_id!r}")
         else:
-            # Search contacts using the LinkedIn URL as a keyword filter
-            payload = {"q_keywords": linkedin_url, "per_page": 1, "page": 1}
-            logger.debug(f"[Apollo] contacts/search by linkedin_url={linkedin_url!r}")
+            # Search global database using the LinkedIn URL
+            payload = {"person_linkedin_urls": [linkedin_url], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] mixed_people/search by linkedin_url={linkedin_url!r}")
 
         r = requests.post(
-            "https://api.apollo.io/api/v1/contacts/search",
+            "https://api.apollo.io/api/v1/mixed_people/search",
             headers={
-                "x-api-key": ap_key,
+                "Cache-Control": "no-cache",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "x-api-key": ap_key,
             },
             json=payload,
             timeout=30,
@@ -5669,11 +5670,11 @@ def apollo_download_profile():
         r.raise_for_status()
         resp_data = r.json()
 
-        contacts = resp_data.get("contacts") or []
-        if not contacts:
+        people = resp_data.get("people") or []
+        if not people:
             return jsonify({"error": "No matching contact found in Apollo"}), 404
 
-        contact = contacts[0]
+        contact = people[0]
 
         # --- Primary contact fields ---
         email = (contact.get("email") or "").strip()
@@ -5710,7 +5711,7 @@ def apollo_download_profile():
             "_details": contact,
         }
         logger.info(
-            f"[Apollo] contacts/search returned contact id={contact.get('id')!r} "
+            f"[Apollo] mixed_people/search returned person id={contact.get('id')!r} "
             f"email={'***' if email else '(none)'} "
             f"mobile={'***' if mobile_phone else '(none)'} "
             f"office={'***' if office_phone else '(none)'}"

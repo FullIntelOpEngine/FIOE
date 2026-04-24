@@ -7857,12 +7857,12 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
       const apolloRes = await new Promise((resolve, reject) => {
-        // Use contacts/search endpoint; search by LinkedIn URL via q_keywords
-        const bodyStr = JSON.stringify({ q_keywords: apolloUrl, per_page: 1, page: 1 });
+        // Use mixed_people/search endpoint; search by LinkedIn URL
+        const bodyStr = JSON.stringify({ person_linkedin_urls: [apolloUrl], per_page: 1, page: 1 });
         const reqOpts = {
           hostname: 'api.apollo.io',
           port: 443,
-          path: '/api/v1/contacts/search',
+          path: '/api/v1/mixed_people/search',
           method: 'POST',
           headers: {
             'Cache-Control': 'no-cache',
@@ -7872,7 +7872,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
             'Content-Length': Buffer.byteLength(bodyStr),
           },
         };
-        console.log('[Apollo] Request: POST https://api.apollo.io/api/v1/contacts/search body:', bodyStr);
+        console.log('[Apollo] Request: POST https://api.apollo.io/api/v1/mixed_people/search body:', bodyStr);
         const r = https.request(reqOpts, (resp) => {
           let body = '';
           resp.on('data', d => body += d);
@@ -7908,9 +7908,9 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: apiMsg });
       }
 
-      // contacts/search returns a contacts array; take the first match
-      const contact = (Array.isArray(apolloRes.contacts) && apolloRes.contacts[0]) || {};
-      console.log('[Apollo] contact fields — keys:', Object.keys(contact));
+      // mixed_people/search returns a people array; take the first match
+      const contact = (Array.isArray(apolloRes.people) && apolloRes.people[0]) || {};
+      console.log('[Apollo] person fields — keys:', Object.keys(contact));
       console.log('[Apollo] contact.email:', JSON.stringify(contact.email));
       console.log('[Apollo] contact.phone_numbers:', JSON.stringify(contact.phone_numbers));
 
