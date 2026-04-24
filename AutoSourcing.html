@@ -285,8 +285,9 @@ label {
   box-shadow: none;
 }
 .tag-chip button:hover { color: var(--danger); transform: none; box-shadow: none; }
-.tag-chip.tag-locked { background: var(--accent-dim, rgba(30,120,200,0.15)); border-color: var(--accent, #1e78c8); }
-.tag-chip.tag-locked button { color: var(--accent, #1e78c8); }
+.tag-chip.tag-locked { background: var(--accent, #1e78c8); border-color: var(--accent, #1e78c8); color: #fff; }
+.tag-chip.tag-locked button { color: rgba(255,255,255,0.85); }
+.tag-chip.tag-locked button:hover { color: #fff; }
 
 /* Dynamic Company Preview Area */
 #dynamicCompanyPreview {
@@ -2560,11 +2561,7 @@ function updateDynamicCompanyPreview(clear=false){
     opts.forEach(o => {
       const chip = document.createElement('div');
       chip.className = 'tag-chip';
-      chip.innerHTML = `<span>${escapeHtml(o)}</span><button type="button" aria-label="Remove ${escapeHtml(o)}">×</button>`;
-      chip.querySelector('button').addEventListener('click', () => {
-        suppressedAutoSuggestedCompanies.add(o.toLowerCase());
-        updateDynamicCompanyPreview();
-      });
+      chip.innerHTML = `<span>${escapeHtml(o)}</span>`;
       frag.appendChild(chip);
     });
     listEl.appendChild(frag);
