@@ -3231,7 +3231,9 @@ function makeChip(text,type,isExisting){
       if(type==='job'){ if(!jobTitleIndex.has(key)){ jobTitles.push(v); jobTitleIndex.add(key); renderJobTitleChips(); } }
       else { if(!companyIndex.has(key)){ companies.push(v); companyIndex.add(key); renderCompanyChips(); } }
       lockedMap.set(key,v);
-      // Ensure a previously-suppressed company is un-suppressed when explicitly locked
+      // Ensure a previously-suppressed company is un-suppressed when explicitly locked.
+      // Both v (current display text, may be translated) and the data-original are cleared
+      // so the company resurfaces regardless of whether it was suppressed before or after translation.
       if(type==='company'){ suppressedAutoSuggestedCompanies.delete(v.toLowerCase()); suppressedAutoSuggestedCompanies.delete((span.getAttribute('data-original')||'').toLowerCase()); }
     }
     updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateAddState(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview();
