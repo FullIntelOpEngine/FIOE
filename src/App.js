@@ -8497,12 +8497,28 @@ export default function App() {
         if (data.error) { alert(data.error); return; }
 
         const updates = {};
-        if (data.email)          updates.email = data.email;
-        if (data.phone)          updates.mobile = data.phone;
-        if (data.work_email)     updates.office = data.work_email;
+        if (data.email)         updates.email  = data.email;
+        if (data.mobile_phone)  updates.mobile = data.mobile_phone;
+        if (data.office_phone)  updates.office = data.office_phone;
+
+        // Put additional details from _details into the comment section
         const commentParts = [];
-        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
-        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        const det = data._details || {};
+        if (det.name)                commentParts.push(`Name: ${det.name}`);
+        if (det.title)               commentParts.push(`Title: ${det.title}`);
+        if (det.organization_name)   commentParts.push(`Organization: ${det.organization_name}`);
+        if (det.linkedin_url)        commentParts.push(`LinkedIn: ${det.linkedin_url}`);
+        if (det.present_raw_address) commentParts.push(`Address: ${det.present_raw_address}`);
+        if (det.account_phone)       commentParts.push(`Account Phone: ${det.account_phone}`);
+        if (det.sanitized_phone)     commentParts.push(`Sanitized Phone: ${det.sanitized_phone}`);
+        if (det.email_status)        commentParts.push(`Email Status: ${det.email_status}`);
+        if (Array.isArray(det.phone_numbers) && det.phone_numbers.length > 0) {
+          det.phone_numbers.forEach(pn => {
+            if (pn.sanitized_number || pn.raw_number) {
+              commentParts.push(`Phone (${pn.type || 'unknown'}): ${pn.sanitized_number || pn.raw_number}`);
+            }
+          });
+        }
         if (commentParts.length > 0) {
           const existing = resumeCandidate.comment || '';
           updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
@@ -8515,7 +8531,7 @@ export default function App() {
 
         const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
           ? data.all_emails
-          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+          : [data.email].filter(Boolean);
         if (allEmailsToAdd.length > 0) {
           setResumeEmailList(prev => {
             const existing = new Set(prev.map(item => item.value));
@@ -8528,15 +8544,13 @@ export default function App() {
 
         const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
           ? data.all_emails.join(', ')
-          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+          : (data.email || '(not found)');
         const summary = [
           `✅ Apollo API Response Summary`,
           `──────────────────────────────`,
           `Emails: ${allEmailsDisplay}`,
-          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
-          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
-          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
-          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          data.mobile_phone ? `Mobile: ${data.mobile_phone}` : 'Mobile: (not found)',
+          data.office_phone ? `Office: ${data.office_phone}` : 'Office: (not found)',
           `──────────────────────────────`,
           Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
         ].filter(Boolean).join('\n');

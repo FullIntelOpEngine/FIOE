@@ -7857,11 +7857,12 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
       const apolloRes = await new Promise((resolve, reject) => {
-        const bodyStr = JSON.stringify({ linkedin_url: apolloUrl });
+        // Use contacts/search endpoint; search by LinkedIn URL via q_keywords
+        const bodyStr = JSON.stringify({ q_keywords: apolloUrl, per_page: 1, page: 1 });
         const reqOpts = {
           hostname: 'api.apollo.io',
           port: 443,
-          path: '/v1/people/match',
+          path: '/api/v1/contacts/search',
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -7870,7 +7871,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
             'Content-Length': Buffer.byteLength(bodyStr),
           },
         };
-        console.log('[Apollo] Request: POST https://api.apollo.io/v1/people/match body:', bodyStr);
+        console.log('[Apollo] Request: POST https://api.apollo.io/api/v1/contacts/search body:', bodyStr);
         const r = https.request(reqOpts, (resp) => {
           let body = '';
           resp.on('data', d => body += d);
@@ -7906,25 +7907,25 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return res.status(400).json({ error: apiMsg });
       }
 
-      const person = apolloRes.person || {};
-      console.log('[Apollo] person fields — keys:', Object.keys(person));
-      console.log('[Apollo] person.email:', JSON.stringify(person.email));
-      console.log('[Apollo] person.phone_numbers:', JSON.stringify(person.phone_numbers));
+      // contacts/search returns a contacts array; take the first match
+      const contact = (Array.isArray(apolloRes.contacts) && apolloRes.contacts[0]) || {};
+      console.log('[Apollo] contact fields — keys:', Object.keys(contact));
+      console.log('[Apollo] contact.email:', JSON.stringify(contact.email));
+      console.log('[Apollo] contact.phone_numbers:', JSON.stringify(contact.phone_numbers));
 
-      const _first = (arrOrStr) => {
-        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
-        return typeof arrOrStr === 'string' ? arrOrStr : '';
-      };
+      const email = contact.email || '';
 
-      const email = person.email || '';
-      // phone_numbers is an array of objects with sanitized_number
-      const phoneObj = Array.isArray(person.phone_numbers) && person.phone_numbers.length > 0
-        ? person.phone_numbers[0]
-        : null;
-      const phone = (phoneObj && (phoneObj.sanitized_number || phoneObj.raw_number)) || '';
-      const work_email = person.work_email || _first(person.work_emails) || '';
-      const personal_email = person.personal_email || _first(person.personal_emails) || '';
-      const github = person.github_url || '';
+      // Extract mobile and office phone from phone_numbers array or direct fields
+      const phoneNumbers = Array.isArray(contact.phone_numbers) ? contact.phone_numbers : [];
+      const mobileEntry = phoneNumbers.find(p => p.type === 'mobile' || (p.type && p.type.includes('mobile')));
+      const officeEntry = phoneNumbers.find(p =>
+        p.type === 'work_hq' || p.type === 'work_direct' || p.type === 'work' ||
+        (p.type && p.type.includes('work'))
+      );
+      const mobile_phone = contact.mobile_phone ||
+        (mobileEntry && (mobileEntry.sanitized_number || mobileEntry.raw_number)) || '';
+      const office_phone = contact.office_phone ||
+        (officeEntry && (officeEntry.sanitized_number || officeEntry.raw_number)) || '';
 
       const _toArr = (v) => {
         if (Array.isArray(v)) return v.filter(Boolean);
@@ -7932,20 +7933,29 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return [];
       };
 
-      const allEmails = [
-        ..._toArr(email),
-        ..._toArr(work_email),
-        ..._toArr(personal_email),
-      ].filter((v, i, a) => v && a.indexOf(v) === i);
+      const allEmails = _toArr(email).filter((v, i, a) => v && a.indexOf(v) === i);
+
+      // Collect additional details for the comment section
+      const _details = {
+        name: contact.name || '',
+        title: contact.title || '',
+        organization_name: contact.organization_name || '',
+        linkedin_url: contact.linkedin_url || apolloUrl,
+        present_raw_address: contact.present_raw_address || '',
+        account_phone: (contact.account && contact.account.phone) || '',
+        sanitized_phone: contact.sanitized_phone || '',
+        phone_numbers: phoneNumbers,
+        email_status: contact.email_status || '',
+        existence_level: contact.existence_level || '',
+      };
 
       const result = {
         provider: 'apollo',
         email,
-        phone,
-        work_email,
-        github,
-        personal_email,
+        mobile_phone,
+        office_phone,
         all_emails: allEmails,
+        _details,
       };
       console.log('[Apollo] Mapped result:', JSON.stringify(result));
       return res.json(result);
