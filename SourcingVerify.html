@@ -445,8 +445,8 @@ html, body {
       <!-- Refresh Button - Moved to former checkbox position -->
       <button id="reloadBtn" title="Reset assessment state and refetch data">Refresh</button>
 
-      <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
-      <button id="bulkAssessmentBtn" style="background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
+      <!-- Combined Bulk Assessment Button: hidden until useraccess is confirmed as admin/enterprise/vip. -->
+      <button id="bulkAssessmentBtn" style="display:none; background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
       <!-- Bulk Ingest Button: only shown when linkdapi is enabled AND any GP row lacks a PDF in the profiles directory. -->
       <button id="bulkIngestBtn" style="display:none; background:var(--desired-dawn,#d8d8d8); border:1px solid #b8b8b8; color:var(--azure-dragon,#073679); margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
@@ -802,6 +802,8 @@ function toggleSearchConfig() {
   arrow.textContent = isOpen ? '▲' : '▼';
   // Auto-focus the search input when the panel opens
   if (isOpen) {
+    // Capture slider state at open time so we can detect actual changes on close.
+    if (typeof window._captureWeightsAtOpen === 'function') window._captureWeightsAtOpen();
     const input = document.getElementById('candidateSearchInput');
     if (input) setTimeout(() => input.focus(), 50);
   } else {
@@ -1057,6 +1059,35 @@ function _applyWeightLockState() {
   // previous weights snapshot (in-memory and persisted briefly)
   let _prevWeights = null;
 
+  // Snapshot of slider values captured each time the assessment panel opens.
+  // Used to detect whether the user actually changed any values before closing.
+  let _weightsAtPanelOpen = null;
+
+  /** Capture current slider values when the panel opens. Exposed globally. */
+  window._captureWeightsAtOpen = function() {
+    const inputs = document.querySelectorAll('.weight-sliders input[type=range]');
+    const snap = {};
+    inputs.forEach(function(inp) {
+      if (inp.dataset && inp.dataset.key) snap[inp.dataset.key] = parseInt(inp.value) || 0;
+    });
+    _weightsAtPanelOpen = snap;
+  };
+
+  /** Returns true if any slider value differs from the snapshot taken at panel-open time. */
+  function _weightsChangedSinceOpen() {
+    if (!_weightsAtPanelOpen) return true; // no snapshot → treat as changed to be safe
+    const inputs = document.querySelectorAll('.weight-sliders input[type=range]');
+    for (let i = 0; i < inputs.length; i++) {
+      const inp = inputs[i];
+      const key = inp.dataset && inp.dataset.key;
+      if (!key) continue;
+      const current = parseInt(inp.value) || 0;
+      const atOpen  = typeof _weightsAtPanelOpen[key] !== 'undefined' ? _weightsAtPanelOpen[key] : 0;
+      if (current !== atOpen) return true;
+    }
+    return false;
+  }
+
   function readSavedWeights() {
     try {
       const raw = localStorage.getItem('sv_assessment_weights');
@@ -1140,10 +1171,34 @@ function _applyWeightLockState() {
         }
       }
     } else {
-      // Valid save — mark that 100% has been achieved, reset the attempt counter, and lock.
+      // Valid save (sum === 100).
+
+      // Only treat this as an adjustment when the user actually moved a slider.
+      // If nothing changed, close the panel silently — do not lock.
+      if (!_weightsChangedSinceOpen()) {
+        return;
+      }
+
+      const activeRole = (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '').trim();
+
+      // If the role is not yet locked, ask the user to confirm before locking.
+      // (Already-locked roles: sliders are disabled so values cannot change —
+      //  _weightsChangedSinceOpen() would return false and we'd have returned above.)
+      if (activeRole && !isWeightLockedForRole(activeRole)) {
+        const confirmed = confirm(
+          'Closing the Assessment Weightage will apply these weights as your final adjustment.\n\n' +
+          'Only one adjustment is allowed per role search. Are you sure you want to lock these weights?'
+        );
+        if (!confirmed) {
+          // User wants to keep adjusting — reopen the panel.
+          _reopenWeightPanel();
+          return;
+        }
+      }
+
+      // Mark weights as valid, reset attempt counter, and lock.
       _weightsEverSetTo100 = true;
       _adjAttempts = 0;
-      const activeRole = (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '').trim();
       if (activeRole && !isWeightLockedForRole(activeRole)) {
         lockWeightForRole(activeRole);
         _applyWeightLockState();
@@ -2751,6 +2806,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         }
         // Store BYOK status and hide token metric displays for BYOK users
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
+        window.__USER_ACCESS = (data.useraccess || '').trim().toLowerCase();
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
         window.__GP_LINKDAPI_ENABLED = false;
@@ -3619,6 +3675,27 @@ function _countryFromLinkedInUrl(url) {
   return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
 }
 
+/**
+ * Derive a person's display name from a LinkedIn profile URL slug.
+ * e.g. https://kr.linkedin.com/in/seonghyeon-ryu-866a1b197/ko → "Seonghyeon Ryu"
+ * The trailing alphanumeric ID segment (contains digits) is stripped before
+ * converting hyphens to title-cased words.
+ * Returns null when the URL does not contain a recognisable /in/ slug.
+ */
+function _nameFromLinkedInUrl(url) {
+  if (!url) return null;
+  const m = url.trim().match(/\/in\/([^/?#]+)/i);
+  if (!m) return null;
+  const slug = m[1].replace(/\/$/, '').toLowerCase();
+  const parts = slug.split('-').filter(Boolean);
+  // Drop the trailing LinkedIn numeric/alphanumeric profile-ID segment
+  const nameParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
+    ? parts.slice(0, -1)
+    : parts;
+  if (!nameParts.length) return null;
+  return nameParts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+
 // ---------------------------------------------------------------------------
 // ContactOut profile download helper
 // ---------------------------------------------------------------------------
@@ -4346,6 +4423,28 @@ function buildRow(row) {
                     btn.textContent = 'Parsing CV…';
                     await verifyBulkUploadedProfiles([value]);
 
+                    // Parse the uploaded PDF to extract job_title / company / country
+                    // and overwrite the table row cells (same pattern as Upload CV path).
+                    try {
+                        const _parseResp = await fetch(API_PARSE_CV_AND_UPDATE, {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ linkedinurl: value }), credentials: 'same-origin'
+                        });
+                        const _parseData = await _parseResp.json().catch(() => ({}));
+                        if (_parseResp.ok && _parseData) {
+                            const _pCo  = _parseData.company || _parseData.organisation || '';
+                            const _pJob = _parseData.job_title || _parseData.jobtitle || '';
+                            const _pCnt = _parseData.country || _parseData.location || '';
+                            if (_pCo)  { const c = tr.querySelector('td[data-field="company"]');  if (c)  { c.textContent = _pCo;  markDirty(c);  flushImmediate(value, 'company',  _pCo,  c);  } }
+                            if (_pJob) { const j = tr.querySelector('td[data-field="jobtitle"]'); if (j)  { j.textContent = _pJob; markDirty(j);  flushImmediate(value, 'jobtitle', _pJob, j);  } }
+                            if (_pCnt) { const ct = tr.querySelector('td[data-field="country"]'); if (ct) { ct.textContent = _pCnt; markDirty(ct); flushImmediate(value, 'country',  _pCnt, ct); } }
+                            const _pName = _nameFromLinkedInUrl(value) || (_parseData.name || '').trim();
+                            if (_pName) { const n = tr.querySelector('td[data-field="name"]'); if (n) { n.textContent = _pName; flushImmediate(value, 'name', _pName, n); } }
+                        }
+                    } catch (_parseErr) {
+                        console.warn('[GP ' + label + '] parse_cv_and_update failed (non-fatal):', _parseErr);
+                    }
+
                     btn.textContent = 'Processing…';
                     return await performCombinedAssessment(tr, value, {}, true, true);
                 }
@@ -4709,6 +4808,10 @@ function buildRow(row) {
                                 if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
                                 if (newJob) { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                                 if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
+                                const newName = (newJob && newCompany)
+                                    ? `${newJob.trim()} at ${newCompany.trim()}`
+                                    : (analyzeData.name || '').trim();
+                                if (newName) { const nCell = tr.querySelector('td[data-field="name"]'); if(nCell) { nCell.textContent = newName; flushImmediate(value, 'name', newName, nCell); } }
                                 
                                 // All assessments use L2 (inference mode) by default
                                 const useL2 = true;
@@ -4976,11 +5079,11 @@ function buildRow(row) {
     return td;
   }
 
-  tr.appendChild(makeEditableCell('name', row.name, true, row.linkedinurl));
-  tr.appendChild(makeEditableCell('company', row.company, true));
-  tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, true));
+  tr.appendChild(makeEditableCell('name', row.name || '', false, row.linkedinurl));
+  tr.appendChild(makeEditableCell('company', row.company, false));
+  tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
-  tr.appendChild(makeEditableCell('country', urlCountry || row.country, true));
+  tr.appendChild(makeEditableCell('country', urlCountry || row.country, false));
   tr.appendChild(makeEditableCell('linkedinurl', row.linkedinurl, false));
   
   // Matching Level / Assessment Score column
@@ -5822,7 +5925,7 @@ async function loadRows(page=1){
     } else if (_serverSortBy) {
       url += `&sort_by=${encodeURIComponent(_serverSortBy)}&sort_dir=${encodeURIComponent(_serverSortDir || 'desc')}`;
     }
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: 'no-store' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load');
     rowsData = Array.isArray(data.rows) ? data.rows : [];
@@ -5861,18 +5964,17 @@ function renderTable(){
 
 /* --- AFFECTED: Namecard UI injection modified for Tab Layout --- */
 (function(){
-  const CACHE_KEY = 'sv_namecard_cache_v1';
-  const OPEN_STATE_KEY = 'sv_namecard_open_state_v1';
+  // NOTE: Namecard cache uses in-memory storage (not localStorage) so that it is
+  // automatically cleared on every page reload — including dock-out-triggered reloads.
+  // Previously, using localStorage caused assessment data to persist across dock-out
+  // sessions when the dock-out signal could not cross browser origins (port 3000 vs 8091).
+  let _namecardMemCache = {};
 
   function readCache() {
-    try {
-      const raw = localStorage.getItem(CACHE_KEY);
-      const obj = raw ? JSON.parse(raw) : {};
-      return obj && typeof obj === 'object' ? obj : {};
-    } catch(_) { return {}; }
+    return _namecardMemCache;
   }
   function writeCache(cache) {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache || {})); } catch(_) {}
+    _namecardMemCache = (cache && typeof cache === 'object') ? cache : {};
   }
   function setCardCache(anchor, data) {
     if (!anchor) return;
@@ -6650,6 +6752,11 @@ function renderTable(){
                     const cntCell = tr.querySelector('td[data-field="country"]');
                     if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(anchor, 'country', newCountry, cntCell); }
                 }
+                const _parsedName = _nameFromLinkedInUrl(anchor) || (analyzeData.name || '').trim();
+                if (_parsedName) {
+                    const nCell = tr.querySelector('td[data-field="name"]');
+                    if (nCell) { nCell.textContent = _parsedName; flushImmediate(anchor, 'name', _parsedName, nCell); }
+                }
 
                 // Update namecard as before
                 updateNameCard(tr, {
@@ -6685,6 +6792,8 @@ function renderTable(){
                         console.warn('[Reassess File] Assessment blocked for', anchor);
                         return; // skip the 'Analyzed' text update below
                     } else {
+                        // Ensure Download Assessment button stays visible after reassessment
+                        downloadBtn.style.display = 'block';
                         // Auto-refresh after individual assessment completion
                         setTimeout(() => {
                             const reloadBtn = document.getElementById('reloadBtn');
@@ -8254,6 +8363,13 @@ function _hasPdfInSet(existingSet, slug) {
 // ---------------------------------------------------------------------------
 async function _updateBulkActionButton() {
     if (!bulkIngestBtn || !bulkAssessmentBtn) return;
+    // Only show bulk buttons for privileged access levels
+    const _privLevels = new Set(['admin', 'enterprise', 'vip']);
+    if (!_privLevels.has(window.__USER_ACCESS || '')) {
+        bulkAssessmentBtn.style.display = 'none';
+        bulkIngestBtn.style.display = 'none';
+        return;
+    }
     // Don't attempt list-profile-pdfs until the GP status fetch has resolved;
     // without this guard the call fires before __BRIGHTDATA_ENABLED / __GP_LINKDAPI_ENABLED
     // are set, causing the wrong service endpoint to be used.
@@ -9567,6 +9683,47 @@ function printDataAnalysis() {
   var PRINT_RENDER_DELAY_MS = 600;
   setTimeout(function() { printWin.print(); }, PRINT_RENDER_DELAY_MS);
 }
+
+// ── Dock-Out session clear ─────────────────────────────────────────────────
+// When App.js (DB Dock Out) sets the 'sv_dock_out_signal' localStorage key,
+// wipe all SourcingVerify local caches so the page reflects the cleared DB.
+window.addEventListener('storage', function(e) {
+  if (e.key !== 'sv_dock_out_signal') return;
+  try {
+    // Sweep all sv_* localStorage keys so any future additions are automatically cleared.
+    var svKeys = [];
+    for (var _li = 0; _li < localStorage.length; _li++) {
+      var _lk = localStorage.key(_li);
+      if (_lk && _lk.startsWith('sv_')) svKeys.push(_lk);
+    }
+    svKeys.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
+    // assessmentState is not sv_-prefixed but holds per-URL completion data
+    try { localStorage.removeItem('assessmentState'); } catch(_) {}
+    // Also clear session-storage suppression/skip flags so dialogs and bulk-info
+    // popups are not permanently silenced after the dock-out resets the DB state.
+    // Additionally clear role-context and any SV-specific session keys so the
+    // View Details tab starts completely fresh (no prior assessment data retained).
+    try {
+      var ssToRemove = [];
+      for (var _i = 0; _i < sessionStorage.length; _i++) {
+        var _sk = sessionStorage.key(_i);
+        if (_sk === 'sv_bulk_info_skip' || _sk === 'role_tag' ||
+            (_sk && _sk.startsWith('rle_suppress_'))) {
+          ssToRemove.push(_sk);
+        }
+      }
+      ssToRemove.forEach(function(k) { try { sessionStorage.removeItem(k); } catch(_) {} });
+    } catch(_) {}
+    // Clear any SV-related cookies (role_tag may be set as a server-side cookie).
+    // Auth cookies (username, userid, fullname, account_token) are intentionally
+    // left intact so the user remains logged in after dock-out.
+    try {
+      document.cookie = 'role_tag=; Max-Age=0; path=/';
+    } catch(_) {}
+    // Reload the page so the table reflects the now-empty database.
+    window.location.reload();
+  } catch(_) {}
+});
 
 </script>
 </div><!-- /.page-main -->

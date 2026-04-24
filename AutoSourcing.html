@@ -272,7 +272,10 @@ label {
   border-radius: 20px;
   font-size: 13px;
   font-weight: 600;
+  cursor: pointer;
+  user-select: none;
 }
+.tag-chip:not(.tag-locked):hover { filter: brightness(0.93); }
 .tag-chip button {
   background: transparent;
   border: none;
@@ -285,6 +288,9 @@ label {
   box-shadow: none;
 }
 .tag-chip button:hover { color: var(--danger); transform: none; box-shadow: none; }
+.tag-chip.tag-locked { background: var(--accent, #1e78c8); border-color: var(--accent, #1e78c8); color: #fff; }
+.tag-chip.tag-locked button { color: rgba(255,255,255,0.85); }
+.tag-chip.tag-locked button:hover { color: #fff; }
 
 /* Dynamic Company Preview Area */
 #dynamicCompanyPreview {
@@ -2117,6 +2123,13 @@ const MIN_SUGGEST_COMPANIES_FOR_VALIDATION = 5;
 // Capped to avoid bloating the Gemini prompt with an exhaustive product list.
 const MAX_JD_PRODUCTS_HINT = 20;
 const suppressedAutoSuggestedCompanies=new Set();
+const lockedJobTags=new Map();     // canonical key → display text; locked suggestion chips (job type)
+const lockedCompanyTags=new Map(); // canonical key → display text; locked suggestion chips (company type)
+const lockedPreviewCompanies=new Map(); // lowercased display text → original display text; locked pre-search preview chips
+const lockedLanguageTags=new Map();    // canonical key → display text; locked language chips
+const lockedSkillTags=new Map();       // canonical key → display text; locked skill chips
+const lockedSectorTags=new Set();      // sector label strings; locked sector chips in sector-based selection
+const lockedSectorCompanyTags=new Set(); // lowercase company names; locked chips in "Sector-based Selections" display
 const userSkills = []; const userSkillIndex = new Set();
 const estimateValueEl = document.getElementById('estimateValue');
 const estimateSpinnerEl = document.getElementById('estimateSpinner');
@@ -2127,6 +2140,7 @@ let jdSuggestionsLocked = false;    // when true, suggestion lists are frozen
 let jdJobSnapshot = [];             // frozen job suggestion list
 let jdCompanySnapshot = [];         // frozen company suggestion list
 let jdProducts = [];                // product/technology references extracted from JD (e.g., "Aircon", "HVAC")
+let jdDetectedCompanies = new Set(); // canonical keys of companies detected IN the JD — excluded from suggestions
 
 function captureSuggestionSnapshot(){
   try{
@@ -2227,7 +2241,7 @@ function addJobTitle(){
 }
 function removeJobTitle(i){
   const v=jobTitles.splice(i,1)[0];
-  if(v){ jobTitleIndex.delete(canonicalKey(v)); renderJobTitleChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
+  if(v){ lockedJobTags.delete(canonicalKey(v)); jobTitleIndex.delete(canonicalKey(v)); renderJobTitleChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
   try { 
     const rt = buildRoleTagFromJobTitles();
     persistRoleTag(rt);
@@ -2244,7 +2258,14 @@ function renderJobTitleChips(){
   jobTitles.forEach((t,i)=>{ 
     const d=document.createElement('div'); d.className='tag-chip';
     d.innerHTML=`<span>${t}</span><button type="button" aria-label="Remove ${t}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeJobTitle(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(t);
+      if(lockedJobTags.has(key)){ lockedJobTags.delete(key); } else { lockedJobTags.set(key,t); }
+      renderJobTitleChips(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate();
+    });
+    removeBtn.addEventListener('click', ()=>removeJobTitle(i));
     jobChipFrag.appendChild(d);
   });
   box.appendChild(jobChipFrag);
@@ -2274,16 +2295,23 @@ function addLanguage(raw){
 }
 function removeLanguage(i){
   const v=languages.splice(i,1)[0];
-  if(v){ languageIndex.delete(canonicalKey(v)); renderLanguageChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
+  if(v){ lockedLanguageTags.delete(canonicalKey(v)); languageIndex.delete(canonicalKey(v)); renderLanguageChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
 }
 function renderLanguageChips(){
   const wrap=document.getElementById('languageAggregator'); const box=document.getElementById('languageChips');
   box.innerHTML=''; if(!languages.length){ wrap.classList.add('hidden'); document.getElementById('compiledLanguageExpr').textContent=''; return; }
   wrap.classList.remove('hidden');
-  languages.forEach((l,i)=>{ 
+  languages.forEach((l,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
     d.innerHTML=`<span>${l}</span><button type="button" aria-label="Remove ${l}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeLanguage(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(l);
+      if(lockedLanguageTags.has(key)){ lockedLanguageTags.delete(key); } else { lockedLanguageTags.set(key,l); }
+      renderLanguageChips();
+    });
+    removeBtn.addEventListener('click', ()=>removeLanguage(i));
     box.appendChild(d);
   });
   document.getElementById('compiledLanguageExpr').textContent=buildLanguageXrayBlock();
@@ -2307,7 +2335,7 @@ function addCompany(){
 }
 function removeCompany(i){
   const v=companies.splice(i,1)[0];
-  if(v){ companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
+  if(v){ lockedCompanyTags.delete(canonicalKey(v)); lockedSectorCompanyTags.delete(v.toLowerCase()); companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
 }
 function renderCompanyChips(){
   const wrap=document.getElementById('companyAggregator'); const box=document.getElementById('companyChips');
@@ -2317,7 +2345,14 @@ function renderCompanyChips(){
   companies.forEach((c,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
     d.innerHTML=`<span>${c}</span><button type="button" aria-label="Remove ${c}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeCompany(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(c);
+      if(lockedCompanyTags.has(key)){ lockedCompanyTags.delete(key); } else { lockedCompanyTags.set(key,c); }
+      renderCompanyChips(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview();
+    });
+    removeBtn.addEventListener('click', ()=>removeCompany(i));
     compChipFrag.appendChild(d);
   });
   box.appendChild(compChipFrag);
@@ -2407,9 +2442,19 @@ function renderSectorChips(){
   const sectorChipFrag = document.createDocumentFragment();
   selectedSectors.forEach((label,idx)=>{
     const chip=document.createElement('div'); chip.className='tag-chip';
-    chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector">&times;</button>`;
-    chip.querySelector('button').addEventListener('click',()=>{
-      selectedSectors.splice(idx,1); renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
+    const isLocked=lockedSectorTags.has(label);
+    if(isLocked) chip.classList.add('tag-locked');
+    chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector" style="margin-left:4px;">&times;</button>`;
+    const removeBtn=chip.querySelector('button');
+    if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
+    chip.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); }
+      renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
+    });
+    removeBtn.addEventListener('click',()=>{
+      if(lockedSectorTags.has(label)) return; // locked — cannot remove
+      selectedSectors.splice(idx,1); lockedSectorTags.delete(label); renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
     });
     sectorChipFrag.appendChild(chip);
   });
@@ -2432,7 +2477,7 @@ function addManualSector(){
 
 function renderEffectiveCompaniesDisplay(){
   if(!selectedSectors.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
-  const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()))]);
+  const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedSectorCompanyTags.has(c.toLowerCase()))]);
   if(!effective.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   show(sectorCompanyDisplay); sectorCompanyList.innerHTML='';
   const dynamicSet = new Set((lastDynamicPreviewCompanies || []).map(x => x.toLowerCase()));
@@ -2440,9 +2485,20 @@ function renderEffectiveCompaniesDisplay(){
   effective.forEach(name=>{
     if(dynamicSet.has(name.toLowerCase())) return;
     const isUser=companyIndex.has(name.toLowerCase());
+    const isLocked=lockedSectorCompanyTags.has(name.toLowerCase());
     const div=document.createElement('div'); div.className='tag-chip';
-    div.innerHTML=`<span>${name}</span><button type="button" aria-label="Remove ${name}">×</button>`;
-    div.querySelector('button').addEventListener('click',()=>{
+    if(isLocked) div.classList.add('tag-locked');
+    div.innerHTML=`<span>${name}</span><button type="button" aria-label="Remove ${name}" style="margin-left:4px;">×</button>`;
+    const removeBtn=div.querySelector('button');
+    if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
+    div.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=name.toLowerCase();
+      if(lockedSectorCompanyTags.has(key)){ lockedSectorCompanyTags.delete(key); } else { lockedSectorCompanyTags.add(key); }
+      renderEffectiveCompaniesDisplay();
+    });
+    removeBtn.addEventListener('click',()=>{
+      if(lockedSectorCompanyTags.has(name.toLowerCase())) return;
       if(isUser){
         const idx=companies.findIndex(c=>c.toLowerCase()===name.toLowerCase());
         if(idx>-1) removeCompany(idx);
@@ -2543,13 +2599,45 @@ function updateDynamicCompanyPreview(clear=false){
     const candidates = dedupe([...sectorArr, ...autoRelated]);
 
     // Exclude companies the user explicitly added (we show separate user chips elsewhere)
-    opts = candidates.filter(c => c && !companyIndex.has(canonicalKey(c)));
+    // Also exclude companies the user has suppressed via the × dismiss button (unless locked)
+    opts = candidates.filter(c => c && !companyIndex.has(canonicalKey(c)) && (!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedPreviewCompanies.has(c.toLowerCase())));
   } else {
     opts = collectCompanyDropdownOptions();
   }
 
+  // Inject locked preview companies that may have been filtered out by a suggestion refresh
+  lockedPreviewCompanies.forEach((displayText, lockedKey) => {
+    if(!opts.some(o => o.toLowerCase() === lockedKey) && !companyIndex.has(canonicalKey(displayText))) {
+      opts.push(displayText);
+    }
+  });
+
   if(listEl){
-    listEl.innerHTML=opts.map(o=>`<div class="tag-chip"><span>${escapeHtml(o)}</span></div>`).join('');
+    listEl.innerHTML = '';
+    const frag = document.createDocumentFragment();
+    opts.forEach(o => {
+      const chip = document.createElement('div');
+      chip.className = 'tag-chip';
+      const isLocked = lockedPreviewCompanies.has(o.toLowerCase());
+      if(isLocked) chip.classList.add('tag-locked');
+      chip.innerHTML = `<span>${escapeHtml(o)}</span><button type="button" aria-label="Remove ${escapeHtml(o)}" style="margin-left:4px;">&times;</button>`;
+      const removeBtn = chip.querySelector('button');
+      chip.addEventListener('click', e => {
+        if(e.target === removeBtn) return;
+        const key = o.toLowerCase();
+        if(lockedPreviewCompanies.has(key)){ lockedPreviewCompanies.delete(key); } else { lockedPreviewCompanies.set(key, o); }
+        updateDynamicCompanyPreview();
+      });
+      removeBtn.addEventListener('click', ()=>{
+        lockedPreviewCompanies.delete(o.toLowerCase());
+        suppressedAutoSuggestedCompanies.add(o.toLowerCase());
+        updateFullCompiledQuery();
+        scheduleEstimateUpdate();
+        updateDynamicCompanyPreview();
+      });
+      frag.appendChild(chip);
+    });
+    listEl.appendChild(frag);
   }
   lastDynamicPreviewCompanies = opts.map(x => x.toString());
 
@@ -3057,6 +3145,12 @@ function renderSuggestionsAggregated(data){
     companyList = Array.from(companySet);
   }
 
+  // Exclude companies that were detected in the job description (they are the hiring employer
+  // or named clients in the JD, not targets for sourcing).
+  if (jdDetectedCompanies && jdDetectedCompanies.size > 0) {
+    companyList = companyList.filter(c => !jdDetectedCompanies.has(canonicalKey(c)));
+  }
+
   // Sector ordering: when a sector is active, display direct competitors (from /suggest, not in
   // sectorCompanyRelated) FIRST so users see the most job-title-relevant suggestions immediately.
   // Sector companies follow. This respects the "competitor priority" rule while keeping sector
@@ -3122,6 +3216,16 @@ function renderSuggestionsAggregated(data){
 
   // ALWAYS populate autoSuggestedCompanies from the companyList so left suggestions appear on the right
   autoSuggestedCompanies = dedupe([...companyList]).filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
+  // Apply the same suppression to companyList so chips are hidden when the user dismisses them.
+  companyList = companyList.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
+
+  // Preserve locked suggestion chips — re-inject any pinned tags not already in the lists
+  lockedJobTags.forEach((displayText, key) => {
+    if (!jobList.some(j => canonicalKey(j) === key)) jobList.push(displayText);
+  });
+  lockedCompanyTags.forEach((displayText, key) => {
+    if (!companyList.some(c => canonicalKey(c) === key)) companyList.push(displayText);
+  });
 
   try {
     const jobBox = document.getElementById('jobTitleSuggestionBox');
@@ -3169,19 +3273,41 @@ function makeChip(text,type,isExisting){
   chip.innerHTML=`<span class="suggest-text" data-original="${text}" data-translated="0">${text}</span>`;
   const trans=document.createElement('button'); trans.className='translate-btn'; trans.type='button'; trans.textContent='文'; trans.style.marginLeft='6px';
   const add=document.createElement('button'); add.type='button'; add.textContent=isExisting?'✓':'+'; add.disabled=!!isExisting; add.style.marginLeft='4px';
-  
+
+  const lockedMap=type==='job'?lockedJobTags:lockedCompanyTags;
+
   function updateAddState(){
     const span=chip.querySelector('.suggest-text'); const v=span.textContent; const key=canonicalKey(v);
-    const set= type==='job'?jobTitleIndex:companyIndex;
-    if(set.has(key)){ add.textContent='✓'; add.disabled=true; } else { add.textContent='+'; add.disabled=false; }
+    const isLocked=lockedMap.has(key);
+    add.textContent=(isLocked||(!isExisting&&(type==='job'?jobTitleIndex:companyIndex).has(key)))?'✓':'+';
+    add.disabled=false;
   }
   add.addEventListener('click',()=>{
-    const v=chip.querySelector('.suggest-text').textContent;
-    if(type==='job'){ if(!jobTitleIndex.has(canonicalKey(v))){ jobTitles.push(v); jobTitleIndex.add(canonicalKey(v)); renderJobTitleChips(); } }
-    else { if(!companyIndex.has(canonicalKey(v))){ companies.push(v); companyIndex.add(canonicalKey(v)); renderCompanyChips(); } }
+    const span=chip.querySelector('.suggest-text'); const v=span.textContent; const key=canonicalKey(v);
+    const isLocked=lockedMap.has(key);
+    if(isLocked){
+      // Deselect: unlock and remove from the active list
+      lockedMap.delete(key);
+      if(type==='job'){
+        const idx=jobTitles.findIndex(t=>canonicalKey(t)===key);
+        if(idx>-1){ jobTitles.splice(idx,1); jobTitleIndex.delete(key); renderJobTitleChips(); }
+      } else {
+        const idx=companies.findIndex(c=>canonicalKey(c)===key);
+        if(idx>-1){ companies.splice(idx,1); companyIndex.delete(key); renderCompanyChips(); }
+      }
+    } else {
+      // Select and lock: add to active list and pin the chip in suggestions
+      if(type==='job'){ if(!jobTitleIndex.has(key)){ jobTitles.push(v); jobTitleIndex.add(key); renderJobTitleChips(); } }
+      else { if(!companyIndex.has(key)){ companies.push(v); companyIndex.add(key); renderCompanyChips(); } }
+      lockedMap.set(key,v);
+      // Ensure a previously-suppressed company is un-suppressed when explicitly locked.
+      // Both v (current display text, may be translated) and the data-original are cleared
+      // so the company resurfaces regardless of whether it was suppressed before or after translation.
+      if(type==='company'){ suppressedAutoSuggestedCompanies.delete(v.toLowerCase()); suppressedAutoSuggestedCompanies.delete((span.getAttribute('data-original')||'').toLowerCase()); }
+    }
     updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateAddState(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview();
   });
-  trans.addEventListener('click',async ()=>{ 
+  trans.addEventListener('click',async ()=>{
     if(!translationActive||!translationLang){ trans.title='Activate Translation first.'; return; }
     if(trans.classList.contains('loading')) return; trans.classList.add('loading');
     const span=chip.querySelector('.suggest-text'); const original=span.getAttribute('data-original');
@@ -3191,7 +3317,8 @@ function makeChip(text,type,isExisting){
       updateAddState(); updateDynamicCompanyPreview();
     }catch(e){ console.warn('Translation error',e); } finally { trans.classList.remove('loading'); }
   });
-  chip.appendChild(trans); chip.appendChild(add); updateAddState(); return chip;
+  chip.appendChild(trans); chip.appendChild(add);
+  updateAddState(); return chip;
 }
 function updateTranslateButtonsState(){
   document.querySelectorAll('.translate-btn').forEach(btn=>{
@@ -4561,14 +4688,19 @@ async function generateAndStart(){
       }
     }
   } catch (_) {}
-  // Apply Search Provider toggle selection — when user chose API Provider mode with a
-  // specific provider, tell the backend to route through that admin-configured provider.
+  // Apply Search Provider toggle selection — always tell the backend which provider was
+  // selected so it can honour the user's explicit choice (including 'cse' for Default CSE)
+  // and never silently fall back to a different admin-configured provider.
   try {
     if (typeof window._getSelectedSearchProvider === 'function') {
       const spSel = window._getSelectedSearchProvider();
       if (spSel.mode === 'api' && spSel.provider) {
         payload._selectedSearchProvider = spSel.provider;
+      } else if (spSel.mode === 'cse') {
+        // Explicit CSE selection — send 'cse' so the backend skips provider auto-detection
+        payload._selectedSearchProvider = 'cse';
       }
+      // Unrecognised mode → don't set; backend defaults to auto-detect (legacy behaviour)
     }
   } catch (_) {}
   try{
@@ -4985,6 +5117,17 @@ function updateSectorEnabledState(){
             if (analyzeData.companies && analyzeData.companies.length) {
               const countryLabel = analyzeData.country ? ` in ${escapeHtml(analyzeData.country)}` : '';
               tagHtml += `<div><strong>Companies (with local presence${countryLabel}):</strong> ${escapeHtml(analyzeData.companies.join(', '))}</div>`;
+              // Store canonical keys so renderSuggestionsAggregated can exclude them from the
+              // company suggestion list — a company that appears in the JD is likely the hiring
+              // employer or a named client, not a target-sourcing company.
+              jdDetectedCompanies.clear();
+              analyzeData.companies.forEach(function(c){
+                const k = canonicalKey(normalizeSpaces(c));
+                if (k) jdDetectedCompanies.add(k);
+              });
+            } else {
+              // This JD has no detected companies — clear any Set populated by a prior JD upload.
+              jdDetectedCompanies.clear();
             }
             // Normalize "South Korea" to "Korea" for display
             if (analyzeData.country) {
@@ -5346,6 +5489,7 @@ function renderExternalSuggestions(jobs, comps){
   window.removeUserSkill = function(i){
     const v = userSkills.splice(i, 1)[0];
     if(v){
+      lockedSkillTags.delete(canonicalKey(v));
       userSkillIndex.delete(canonicalKey(v));
       renderUserSkillChips();
       syncUserSkillsToServer();
@@ -5364,7 +5508,14 @@ function renderExternalSuggestions(jobs, comps){
       const d = document.createElement('div');
       d.className = 'tag-chip';
       d.innerHTML = `<span>${s}</span><button type="button" aria-label="Remove ${s}">&times;</button>`;
-      d.querySelector('button').addEventListener('click', () => removeUserSkill(i));
+      const removeBtn = d.querySelector('button');
+      d.addEventListener('click', e => {
+        if(e.target === removeBtn) return;
+        const key = canonicalKey(s);
+        if(lockedSkillTags.has(key)){ lockedSkillTags.delete(key); } else { lockedSkillTags.set(key, s); }
+        renderUserSkillChips();
+      });
+      removeBtn.addEventListener('click', () => removeUserSkill(i));
       chipsBox.appendChild(d);
     });
   };

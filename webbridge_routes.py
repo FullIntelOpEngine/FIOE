@@ -3606,6 +3606,10 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
 
     When ``selected_provider`` is set (from the AutoSourcing.html toggle), the admin
     config lookup is overridden to route to that specific provider instead.
+    ``selected_provider='cse'`` (or any value not matching a known provider) forces
+    Google CSE — the admin-configured provider auto-detection is skipped entirely.
+    Pass ``selected_provider=None`` only when no explicit selection was made (legacy
+    callers), which preserves the original auto-detect behaviour.
 
     When ``selected_provider`` is 'contactout', 'apollo', or 'rocketreach', the search
     is executed *directly* against that provider's API using ``raw_form_fields`` (if
@@ -3625,27 +3629,38 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     """
     page = max(1, ((start_index - 1) // max(num, 1)) + 1)
 
-    # Per-user search provider takes priority over the global admin config
-    if user_provider == 'serper' and user_serper_key:
-        results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        # User key returned empty — fall back to admin config
-        logger.warning(f"[Search] User Serper key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
-    if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
-        results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
-    if user_provider == 'linkedin' and user_linkedin_key:
-        li_query = _translate_xray_for_provider(query, 'linkedin')
-        results, total = linkedin_search_page(li_query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
-        if results:
-            return results, total
-        logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
-        _search_fallback_flag.used = True
+    # Per-user search provider takes priority over the global admin config.
+    # Exception: when the user has explicitly selected 'cse' (Default CSE) from the
+    # AutoSourcing toggle, per-user API provider keys are bypassed so that the request
+    # always routes to Google CSE regardless of what the user has configured in their
+    # Option A service settings.  Also bypass when selected_provider is any unrecognised
+    # value (per docstring: 'any value not matching a known provider' forces CSE).
+    # Contact/enrichment providers (contactout/apollo/rocketreach) must also bypass
+    # per-user *search* keys — those providers are not search providers and should
+    # never be pre-empted by a per-user Serper/DataForSEO/LinkedIn key.
+    _known_search_providers = ('serper', 'dataforseo', 'linkedin')
+    _run_user_provider = (not selected_provider) or (selected_provider in _known_search_providers)
+    if _run_user_provider:
+        if user_provider == 'serper' and user_serper_key:
+            results, total = serper_search_page(query, user_serper_key, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            # User key returned empty — fall back to admin config
+            logger.warning(f"[Search] User Serper key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
+        if user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
+            results, total = dataforseo_search_page(query, user_dfs_login, user_dfs_password, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            logger.warning(f"[Search] User DataforSEO key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
+        if user_provider == 'linkedin' and user_linkedin_key:
+            li_query = _translate_xray_for_provider(query, 'linkedin')
+            results, total = linkedin_search_page(li_query, user_linkedin_key, num, gl_hint=gl_hint, page=page)
+            if results:
+                return results, total
+            logger.warning(f"[Search] User LinkedIn key returned 0 results for query={query!r}; falling back to admin config")
+            _search_fallback_flag.used = True
 
     cfg = _load_search_provider_config()
     ev_cfg = _load_email_verif_config()
@@ -3737,22 +3752,27 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
         # Raises ProviderSearchError on API failure — no CSE fallback
         return rocketreach_people_search_page(query, rr_key, num, gl_hint=gl_hint, page=page, raw_params=raw_params)
 
-    serper_cfg = cfg.get("serper", {})
-    serper_key = serper_cfg.get("api_key", "")
-    if serper_cfg.get("enabled", "disabled") == "enabled" and serper_key:
-        return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
+    # Auto-detect the admin-configured provider ONLY when no explicit selection was
+    # made (selected_provider is None/empty).  When the user has explicitly chosen
+    # a provider — including 'cse' for Default CSE — skip this block so we never
+    # silently route to a different provider than what was selected.
+    if not selected_provider:
+        serper_cfg = cfg.get("serper", {})
+        serper_key = serper_cfg.get("api_key", "")
+        if serper_cfg.get("enabled", "disabled") == "enabled" and serper_key:
+            return serper_search_page(query, serper_key, num, gl_hint=gl_hint, page=page)
 
-    dfs_cfg = cfg.get("dataforseo", {})
-    dfs_login = (dfs_cfg.get("login") or "").strip()
-    dfs_password = (dfs_cfg.get("password") or "").strip()
-    if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
-        return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
+        dfs_cfg = cfg.get("dataforseo", {})
+        dfs_login = (dfs_cfg.get("login") or "").strip()
+        dfs_password = (dfs_cfg.get("password") or "").strip()
+        if dfs_cfg.get("enabled", "disabled") == "enabled" and dfs_login and dfs_password:
+            return dataforseo_search_page(query, dfs_login, dfs_password, num, gl_hint=gl_hint, page=page)
 
-    li_cfg = cfg.get("linkedin", {})
-    li_key = li_cfg.get("api_key", "")
-    if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
-        li_query = _translate_xray_for_provider(query, 'linkedin')
-        return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
+        li_cfg = cfg.get("linkedin", {})
+        li_key = li_cfg.get("api_key", "")
+        if li_cfg.get("enabled", "disabled") == "enabled" and li_key:
+            li_query = _translate_xray_for_provider(query, 'linkedin')
+            return linkedin_search_page(li_query, li_key, num, gl_hint=gl_hint, page=page)
 
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
@@ -4044,13 +4064,19 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
         m_cc = re.search(r'site:([a-z]{2})\.linkedin\.com/in', " ".join(queries), re.I)
         country_code_hint = m_cc.group(1).lower() if m_cc else None
 
-    # Determine active search provider label for job status messages
-    # Per-user provider takes priority over admin config for label determination
-    if user_provider == 'serper' and user_serper_key:
+    # Determine active search provider label for job status messages.
+    # Explicit CSE selection (or any unrecognised value) always wins — per-user
+    # provider labels must never override an explicit 'cse' selection.
+    # Contact/enrichment providers (contactout/apollo/rocketreach) must also prevent
+    # per-user search key labels from overriding the chosen contact provider.
+    _known_api_providers_set = frozenset(('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'))
+    _cse_forced = (not selected_provider) is False and (selected_provider not in _known_api_providers_set)
+    _contact_provider_selected = selected_provider in ('contactout', 'apollo', 'rocketreach')
+    if not _cse_forced and not _contact_provider_selected and user_provider == 'serper' and user_serper_key:
         _provider_label = "Serper (user)"
-    elif user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
+    elif not _cse_forced and not _contact_provider_selected and user_provider == 'dataforseo' and user_dfs_login and user_dfs_password:
         _provider_label = "DataforSEO (user)"
-    elif user_provider == 'linkedin' and user_linkedin_key:
+    elif not _cse_forced and not _contact_provider_selected and user_provider == 'linkedin' and user_linkedin_key:
         _provider_label = "LinkedIn (user)"
     else:
         _sp = _load_search_provider_config()
@@ -4066,7 +4092,8 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             _provider_label = "Apollo (selected)"
         elif selected_provider == 'rocketreach':
             _provider_label = "RocketReach (selected)"
-        else:
+        elif not selected_provider:
+            # No explicit selection — auto-detect from admin config
             _serper_on = (
                 _sp.get("serper", {}).get("enabled", "disabled") == "enabled"
                 and bool(_sp.get("serper", {}).get("api_key"))
@@ -4087,14 +4114,24 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
                 _provider_label = "DataforSEO"
             elif _li_on:
                 _provider_label = "LinkedIn"
+        else:
+            # Explicit 'cse' selection (or any unrecognised value) → use CSE label
+            _provider_label = "CSE"
 
     # Determine the effective provider for Xray-translation decisions.
+    # When the user has explicitly selected 'cse' (or any value not matching a
+    # known API provider), _eff_provider must remain None so that the Xray
+    # query is never translated for an API provider that won't actually be used.
+    # Contact providers (contactout/apollo/rocketreach) must also not allow a
+    # per-user search key to set _eff_provider (which would translate the Xray
+    # query for the wrong provider before passing it to the contact API).
     _eff_provider = None
-    if user_provider in ('serper', 'dataforseo', 'linkedin'):
+    if not _cse_forced and not _contact_provider_selected and user_provider in ('serper', 'dataforseo', 'linkedin'):
         _eff_provider = user_provider
     elif selected_provider in ('serper', 'dataforseo', 'linkedin', 'contactout', 'apollo', 'rocketreach'):
         _eff_provider = selected_provider
-    else:
+    elif not selected_provider:
+        # No explicit selection — auto-detect from admin config (legacy behaviour)
         _sp_cfg = _load_search_provider_config()
         for _p in ('serper', 'dataforseo', 'linkedin'):
             _pc = _sp_cfg.get(_p, {})
@@ -4103,6 +4140,7 @@ def _perform_cse_queries(job_id, queries, target_limit, country,
             ):
                 _eff_provider = _p
                 break
+    # else: explicit 'cse' (or unknown) selection → _eff_provider stays None (no translation)
 
     # Provider API searches (ContactOut/Apollo/RocketReach) use native params
     # built from form fields — no Xray translation needed.
@@ -5555,13 +5593,15 @@ def contactout_download_profile():
 @app.get("/api/apollo/download-profile")
 @_require_session
 def apollo_download_profile():
-    """Fetch the full Apollo profile for a given person ID or LinkedIn URL.
+    """Fetch the Apollo contact profile for a given person ID or LinkedIn URL.
 
     Query parameters (at least one required):
-      person_id    – the Apollo person ID (preferred)
+      person_id    – the Apollo contact/person ID (preferred)
       linkedin_url – the LinkedIn profile URL (fallback lookup)
 
-    Calls the Apollo people/match endpoint to retrieve the full profile JSON.
+    Calls the Apollo mixed_people/search endpoint.  The response prominently
+    exposes ``email``, ``mobile_phone``, and ``office_phone``; the complete
+    contact record is included under ``_details`` for reference.
     """
     person_id = (request.args.get("person_id") or "").strip()
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
@@ -5602,44 +5642,142 @@ def apollo_download_profile():
     if not ap_key:
         return jsonify({"error": "Apollo API key is not configured or not enabled"}), 503
 
+    def _extract_contact_fields(contact):
+        """Extract email, mobile_phone, office_phone from an Apollo person/contact dict."""
+        email = (contact.get("email") or "").strip()
+        mobile_phone = ""
+        office_phone = ""
+        _mobile_types = {"mobile", "cell", "home", "personal"}
+        _office_types = {"work", "office", "direct", "direct_phone", "work_hq"}
+        for ph in (contact.get("phone_numbers") or []):
+            ph_type = (ph.get("type") or "").lower().replace(" ", "_")
+            ph_num = (ph.get("sanitized_number") or ph.get("raw_number") or "").strip()
+            if not ph_num:
+                continue
+            if ph_type in _mobile_types and not mobile_phone:
+                mobile_phone = ph_num
+            elif ph_type in _office_types and not office_phone:
+                office_phone = ph_num
+        if not office_phone:
+            _acct = contact.get("account") or {}
+            office_phone = (
+                _acct.get("sanitized_phone") or _acct.get("phone") or ""
+            ).strip()
+        return email, mobile_phone, office_phone
+
+    def _apollo_people_match_fallback(ap_key, linkedin_url):
+        """Fallback enrichment via POST /v1/people/match. Returns person dict or None."""
+        logger.debug(f"[Apollo] people/match fallback for linkedin_url={linkedin_url!r}")
+        try:
+            r2 = requests.post(
+                "https://api.apollo.io/v1/people/match",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "x-api-key": ap_key,
+                },
+                json={
+                    "linkedin_url": linkedin_url,
+                    "reveal_personal_emails": True,
+                    "reveal_phone_number": True,
+                },
+                timeout=30,
+            )
+            if r2.status_code == 401:
+                logger.warning("[Apollo] people/match returned HTTP 401")
+                return None
+            r2.raise_for_status()
+            return r2.json().get("person")
+        except Exception as exc2:
+            logger.warning(f"[Apollo] people/match fallback error: {exc2}")
+            return None
+
     try:
         if person_id:
-            # Use the people/match endpoint to get full details by Apollo ID
-            r = requests.post(
-                "https://api.apollo.io/api/v1/people/match",
-                headers={
-                    "x-api-key": ap_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={"id": person_id, "reveal_personal_emails": True, "reveal_phone_number": True},
-                timeout=30,
-            )
+            # Search global database by person ID array
+            payload = {"ids": [person_id], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] mixed_people/search by person_id={person_id!r}")
         else:
-            # Lookup by LinkedIn URL
+            # Search global database using the LinkedIn URL
+            payload = {"person_linkedin_urls": [linkedin_url], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] mixed_people/search by linkedin_url={linkedin_url!r}")
+
+        contact = None
+        used_fallback = False
+
+        try:
             r = requests.post(
-                "https://api.apollo.io/api/v1/people/match",
+                "https://api.apollo.io/api/v1/mixed_people/search",
                 headers={
-                    "x-api-key": ap_key,
+                    "Cache-Control": "no-cache",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
+                    "x-api-key": ap_key,
                 },
-                json={"linkedin_url": linkedin_url, "reveal_personal_emails": True, "reveal_phone_number": True},
+                json=payload,
                 timeout=30,
             )
-        if r.status_code == 401:
-            return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
-        if r.status_code == 403:
-            return jsonify({"error": "Apollo returned HTTP 403 — quota may be exceeded or plan lacks access"}), 403
-        r.raise_for_status()
-        profile_data = r.json()
-        return jsonify(profile_data)
-    except requests.exceptions.HTTPError as http_err:
-        logger.warning(f"[Apollo] download-profile HTTP error: {http_err}")
-        return jsonify({"error": "Apollo API request failed"}), 502
+            if r.status_code == 401:
+                return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
+
+            # Check for free-plan restriction message before raising for status
+            _mixed_body = {}
+            try:
+                _mixed_body = r.json()
+            except Exception:
+                pass
+            _mixed_msg = (_mixed_body.get("message") or _mixed_body.get("error") or "").lower()
+            _is_plan_restricted = "not accessible" in _mixed_msg and "free plan" in _mixed_msg
+
+            if r.status_code == 200 and not _is_plan_restricted:
+                r.raise_for_status()
+                people = _mixed_body.get("people") or []
+                if people:
+                    contact = people[0]
+                    logger.debug(f"[Apollo] mixed_people/search found person id={contact.get('id')!r}")
+                else:
+                    logger.info("[Apollo] mixed_people/search returned empty people — trying people/match fallback")
+            else:
+                logger.info(
+                    f"[Apollo] mixed_people/search failed (status={r.status_code}, "
+                    f"plan_restricted={_is_plan_restricted}) — trying people/match fallback"
+                )
+        except requests.exceptions.HTTPError as primary_err:
+            logger.info(f"[Apollo] mixed_people/search HTTP error ({primary_err}) — trying people/match fallback")
+        except Exception as primary_exc:
+            logger.info(f"[Apollo] mixed_people/search error ({primary_exc}) — trying people/match fallback")
+
+        # Fallback to people/match when primary search did not return a contact
+        if contact is None and linkedin_url:
+            contact = _apollo_people_match_fallback(ap_key, linkedin_url)
+            if contact:
+                used_fallback = True
+
+        if not contact:
+            return jsonify({"error": "No matching contact found in Apollo"}), 404
+
+        # --- Extract contact fields ---
+        email, mobile_phone, office_phone = _extract_contact_fields(contact)
+
+        # --- Build the response ---
+        result = {
+            "email": email,
+            "mobile_phone": mobile_phone,
+            "office_phone": office_phone,
+            "_details": contact,
+        }
+        logger.info(
+            f"[Apollo] {'people/match' if used_fallback else 'mixed_people/search'} "
+            f"returned person id={contact.get('id')!r} "
+            f"email={'***' if email else '(none)'} "
+            f"mobile={'***' if mobile_phone else '(none)'} "
+            f"office={'***' if office_phone else '(none)'}"
+        )
+        return jsonify(result)
     except Exception as exc:
         logger.warning(f"[Apollo] download-profile error: {exc}")
-        return jsonify({"error": "Failed to fetch Apollo profile"}), 500
+        return jsonify({"error": "Failed to fetch Apollo contact"}), 500
 
 
 @app.get("/api/rocketreach/download-profile")

@@ -1,7 +1,7 @@
 {
   "neverbounce": {
-    "api_key": "",
-    "enabled": "disabled"
+    "api_key": "private_b636b7c8b49d14c064a84c0670e80c0b",
+    "enabled": "enabled"
   },
   "zerobounce": {
     "api_key": "",
@@ -16,7 +16,7 @@
     "enabled": "enabled"
   },
   "apollo": {
-    "api_key": "sED6SceFjPQ5jbANFmwNoA",
+    "api_key": "5GpqQ_0CXaE0ksm1zRiZrg",
     "enabled": "enabled"
   },
   "rocketreach": {
