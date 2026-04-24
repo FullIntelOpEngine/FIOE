@@ -2128,6 +2128,7 @@ const lockedCompanyTags=new Map(); // canonical key → display text; locked sug
 const lockedPreviewCompanies=new Map(); // lowercased display text → original display text; locked pre-search preview chips
 const lockedLanguageTags=new Map();    // canonical key → display text; locked language chips
 const lockedSkillTags=new Map();       // canonical key → display text; locked skill chips
+const lockedSectorTags=new Set();      // sector label strings; locked sector chips in sector-based selection
 const userSkills = []; const userSkillIndex = new Set();
 const estimateValueEl = document.getElementById('estimateValue');
 const estimateSpinnerEl = document.getElementById('estimateSpinner');
@@ -2255,8 +2256,6 @@ function renderJobTitleChips(){
   const jobChipFrag=document.createDocumentFragment();
   jobTitles.forEach((t,i)=>{ 
     const d=document.createElement('div'); d.className='tag-chip';
-    const isLocked=lockedJobTags.has(canonicalKey(t));
-    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${t}</span><button type="button" aria-label="Remove ${t}">&times;</button>`;
     const removeBtn=d.querySelector('button');
     d.addEventListener('click', e=>{
@@ -2303,8 +2302,6 @@ function renderLanguageChips(){
   wrap.classList.remove('hidden');
   languages.forEach((l,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
-    const isLocked=lockedLanguageTags.has(canonicalKey(l));
-    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${l}</span><button type="button" aria-label="Remove ${l}">&times;</button>`;
     const removeBtn=d.querySelector('button');
     d.addEventListener('click', e=>{
@@ -2346,8 +2343,6 @@ function renderCompanyChips(){
   const compChipFrag=document.createDocumentFragment();
   companies.forEach((c,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
-    const isLocked=lockedCompanyTags.has(canonicalKey(c));
-    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${c}</span><button type="button" aria-label="Remove ${c}">&times;</button>`;
     const removeBtn=d.querySelector('button');
     d.addEventListener('click', e=>{
@@ -2446,9 +2441,18 @@ function renderSectorChips(){
   const sectorChipFrag = document.createDocumentFragment();
   selectedSectors.forEach((label,idx)=>{
     const chip=document.createElement('div'); chip.className='tag-chip';
-    chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector">&times;</button>`;
-    chip.querySelector('button').addEventListener('click',()=>{
-      selectedSectors.splice(idx,1); renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
+    const isLocked=lockedSectorTags.has(label);
+    if(isLocked) chip.classList.add('tag-locked');
+    chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector" style="margin-left:4px;">&times;</button>`;
+    const removeBtn=chip.querySelector('button');
+    chip.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); }
+      renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
+    });
+    removeBtn.addEventListener('click',()=>{
+      if(lockedSectorTags.has(label)) return; // locked — cannot remove
+      selectedSectors.splice(idx,1); lockedSectorTags.delete(label); renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
     });
     sectorChipFrag.appendChild(chip);
   });
@@ -3262,7 +3266,6 @@ function makeChip(text,type,isExisting){
   function updateAddState(){
     const span=chip.querySelector('.suggest-text'); const v=span.textContent; const key=canonicalKey(v);
     const isLocked=lockedMap.has(key);
-    chip.classList.toggle('tag-locked',isLocked);
     add.textContent=(isLocked||(!isExisting&&(type==='job'?jobTitleIndex:companyIndex).has(key)))?'✓':'+';
     add.disabled=false;
   }
@@ -5491,8 +5494,6 @@ function renderExternalSuggestions(jobs, comps){
     userSkills.forEach((s, i) => {
       const d = document.createElement('div');
       d.className = 'tag-chip';
-      const isLocked = lockedSkillTags.has(canonicalKey(s));
-      if(isLocked) d.classList.add('tag-locked');
       d.innerHTML = `<span>${s}</span><button type="button" aria-label="Remove ${s}">&times;</button>`;
       const removeBtn = d.querySelector('button');
       d.addEventListener('click', e => {
