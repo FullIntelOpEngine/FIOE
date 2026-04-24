@@ -3202,16 +3202,22 @@ function makeChip(text,type,isExisting){
   });
   chip.appendChild(trans); chip.appendChild(add);
   if(type==='company'){
-    const dismiss=document.createElement('button'); dismiss.type='button'; dismiss.textContent='×'; dismiss.style.marginLeft='4px'; dismiss.title='Remove from suggestions';
+    // Wrap chip + dismiss so the × sits BESIDE (outside) the chip border, not inside it
+    const wrapper=document.createElement('span');
+    wrapper.style.cssText='display:inline-flex;align-items:center;gap:0;vertical-align:middle;';
+    const dismiss=document.createElement('button'); dismiss.type='button'; dismiss.textContent='×'; dismiss.title='Remove from suggestions';
+    dismiss.style.cssText='background:none;border:none;cursor:pointer;font-size:14px;color:#888;padding:0 3px;line-height:1;margin-left:2px;flex-shrink:0;';
     dismiss.addEventListener('click',()=>{
       const span=chip.querySelector('.suggest-text');
       const original=(span.getAttribute('data-original')||'').toLowerCase();
       const current=span.textContent.toLowerCase();
       if(original) suppressedAutoSuggestedCompanies.add(original);
       if(current && current!==original) suppressedAutoSuggestedCompanies.add(current);
-      if(lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions); else chip.remove();
+      if(lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions); else wrapper.remove();
     });
-    chip.appendChild(dismiss);
+    wrapper.appendChild(chip);
+    wrapper.appendChild(dismiss);
+    updateAddState(); return wrapper;
   }
   updateAddState(); return chip;
 }

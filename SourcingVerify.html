@@ -5964,18 +5964,17 @@ function renderTable(){
 
 /* --- AFFECTED: Namecard UI injection modified for Tab Layout --- */
 (function(){
-  const CACHE_KEY = 'sv_namecard_cache_v1';
-  const OPEN_STATE_KEY = 'sv_namecard_open_state_v1';
+  // NOTE: Namecard cache uses in-memory storage (not localStorage) so that it is
+  // automatically cleared on every page reload — including dock-out-triggered reloads.
+  // Previously, using localStorage caused assessment data to persist across dock-out
+  // sessions when the dock-out signal could not cross browser origins (port 3000 vs 8091).
+  let _namecardMemCache = {};
 
   function readCache() {
-    try {
-      const raw = localStorage.getItem(CACHE_KEY);
-      const obj = raw ? JSON.parse(raw) : {};
-      return obj && typeof obj === 'object' ? obj : {};
-    } catch(_) { return {}; }
+    return _namecardMemCache;
   }
   function writeCache(cache) {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache || {})); } catch(_) {}
+    _namecardMemCache = (cache && typeof cache === 'object') ? cache : {};
   }
   function setCardCache(anchor, data) {
     if (!anchor) return;
