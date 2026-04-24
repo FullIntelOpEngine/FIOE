@@ -9704,15 +9704,24 @@ window.addEventListener('storage', function(e) {
     SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
     // Also clear session-storage suppression/skip flags so dialogs and bulk-info
     // popups are not permanently silenced after the dock-out resets the DB state.
+    // Additionally clear role-context and any SV-specific session keys so the
+    // View Details tab starts completely fresh (no prior assessment data retained).
     try {
       var ssToRemove = [];
       for (var _i = 0; _i < sessionStorage.length; _i++) {
         var _sk = sessionStorage.key(_i);
-        if (_sk === 'sv_bulk_info_skip' || (_sk && _sk.startsWith('rle_suppress_'))) {
+        if (_sk === 'sv_bulk_info_skip' || _sk === 'role_tag' ||
+            (_sk && _sk.startsWith('rle_suppress_'))) {
           ssToRemove.push(_sk);
         }
       }
       ssToRemove.forEach(function(k) { try { sessionStorage.removeItem(k); } catch(_) {} });
+    } catch(_) {}
+    // Clear any SV-related cookies (role_tag may be set as a server-side cookie).
+    // Auth cookies (username, userid, fullname, account_token) are intentionally
+    // left intact so the user remains logged in after dock-out.
+    try {
+      document.cookie = 'role_tag=; Max-Age=0; path=/';
     } catch(_) {}
     // Reload the page so the table reflects the now-empty database.
     window.location.reload();
