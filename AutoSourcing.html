@@ -2125,6 +2125,9 @@ const MAX_JD_PRODUCTS_HINT = 20;
 const suppressedAutoSuggestedCompanies=new Set();
 const lockedJobTags=new Map();     // canonical key → display text; locked suggestion chips (job type)
 const lockedCompanyTags=new Map(); // canonical key → display text; locked suggestion chips (company type)
+const lockedPreviewCompanies=new Map(); // lowercased display text → original display text; locked pre-search preview chips
+const lockedLanguageTags=new Map();    // canonical key → display text; locked language chips
+const lockedSkillTags=new Map();       // canonical key → display text; locked skill chips
 const userSkills = []; const userSkillIndex = new Set();
 const estimateValueEl = document.getElementById('estimateValue');
 const estimateSpinnerEl = document.getElementById('estimateSpinner');
@@ -2292,16 +2295,25 @@ function addLanguage(raw){
 }
 function removeLanguage(i){
   const v=languages.splice(i,1)[0];
-  if(v){ languageIndex.delete(canonicalKey(v)); renderLanguageChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
+  if(v){ lockedLanguageTags.delete(canonicalKey(v)); languageIndex.delete(canonicalKey(v)); renderLanguageChips(); updateFullCompiledQuery(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); }
 }
 function renderLanguageChips(){
   const wrap=document.getElementById('languageAggregator'); const box=document.getElementById('languageChips');
   box.innerHTML=''; if(!languages.length){ wrap.classList.add('hidden'); document.getElementById('compiledLanguageExpr').textContent=''; return; }
   wrap.classList.remove('hidden');
-  languages.forEach((l,i)=>{ 
+  languages.forEach((l,i)=>{
     const d=document.createElement('div'); d.className='tag-chip';
+    const isLocked=lockedLanguageTags.has(canonicalKey(l));
+    if(isLocked) d.classList.add('tag-locked');
     d.innerHTML=`<span>${l}</span><button type="button" aria-label="Remove ${l}">&times;</button>`;
-    d.querySelector('button').addEventListener('click', ()=>removeLanguage(i));
+    const removeBtn=d.querySelector('button');
+    d.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=canonicalKey(l);
+      if(lockedLanguageTags.has(key)){ lockedLanguageTags.delete(key); } else { lockedLanguageTags.set(key,l); }
+      renderLanguageChips();
+    });
+    removeBtn.addEventListener('click', ()=>removeLanguage(i));
     box.appendChild(d);
   });
   document.getElementById('compiledLanguageExpr').textContent=buildLanguageXrayBlock();
@@ -2570,11 +2582,18 @@ function updateDynamicCompanyPreview(clear=false){
     const candidates = dedupe([...sectorArr, ...autoRelated]);
 
     // Exclude companies the user explicitly added (we show separate user chips elsewhere)
-    // Also exclude companies the user has suppressed via the × dismiss button
-    opts = candidates.filter(c => c && !companyIndex.has(canonicalKey(c)) && !suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
+    // Also exclude companies the user has suppressed via the × dismiss button (unless locked)
+    opts = candidates.filter(c => c && !companyIndex.has(canonicalKey(c)) && (!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedPreviewCompanies.has(c.toLowerCase())));
   } else {
     opts = collectCompanyDropdownOptions();
   }
+
+  // Inject locked preview companies that may have been filtered out by a suggestion refresh
+  lockedPreviewCompanies.forEach((displayText, lockedKey) => {
+    if(!opts.some(o => o.toLowerCase() === lockedKey) && !companyIndex.has(canonicalKey(displayText))) {
+      opts.push(displayText);
+    }
+  });
 
   if(listEl){
     listEl.innerHTML = '';
@@ -2582,9 +2601,21 @@ function updateDynamicCompanyPreview(clear=false){
     opts.forEach(o => {
       const chip = document.createElement('div');
       chip.className = 'tag-chip';
+      const isLocked = lockedPreviewCompanies.has(o.toLowerCase());
+      if(isLocked) chip.classList.add('tag-locked');
       chip.innerHTML = `<span>${escapeHtml(o)}</span><button type="button" aria-label="Remove ${escapeHtml(o)}" style="margin-left:4px;">&times;</button>`;
-      chip.querySelector('button').addEventListener('click', ()=>{
+      const removeBtn = chip.querySelector('button');
+      chip.addEventListener('click', e => {
+        if(e.target === removeBtn) return;
+        const key = o.toLowerCase();
+        if(lockedPreviewCompanies.has(key)){ lockedPreviewCompanies.delete(key); } else { lockedPreviewCompanies.set(key, o); }
+        updateDynamicCompanyPreview();
+      });
+      removeBtn.addEventListener('click', ()=>{
+        lockedPreviewCompanies.delete(o.toLowerCase());
         suppressedAutoSuggestedCompanies.add(o.toLowerCase());
+        updateFullCompiledQuery();
+        scheduleEstimateUpdate();
         updateDynamicCompanyPreview();
       });
       frag.appendChild(chip);
@@ -5442,6 +5473,7 @@ function renderExternalSuggestions(jobs, comps){
   window.removeUserSkill = function(i){
     const v = userSkills.splice(i, 1)[0];
     if(v){
+      lockedSkillTags.delete(canonicalKey(v));
       userSkillIndex.delete(canonicalKey(v));
       renderUserSkillChips();
       syncUserSkillsToServer();
@@ -5459,8 +5491,17 @@ function renderExternalSuggestions(jobs, comps){
     userSkills.forEach((s, i) => {
       const d = document.createElement('div');
       d.className = 'tag-chip';
+      const isLocked = lockedSkillTags.has(canonicalKey(s));
+      if(isLocked) d.classList.add('tag-locked');
       d.innerHTML = `<span>${s}</span><button type="button" aria-label="Remove ${s}">&times;</button>`;
-      d.querySelector('button').addEventListener('click', () => removeUserSkill(i));
+      const removeBtn = d.querySelector('button');
+      d.addEventListener('click', e => {
+        if(e.target === removeBtn) return;
+        const key = canonicalKey(s);
+        if(lockedSkillTags.has(key)){ lockedSkillTags.delete(key); } else { lockedSkillTags.set(key, s); }
+        renderUserSkillChips();
+      });
+      removeBtn.addEventListener('click', () => removeUserSkill(i));
       chipsBox.appendChild(d);
     });
   };
