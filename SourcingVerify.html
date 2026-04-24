@@ -4347,6 +4347,30 @@ function buildRow(row) {
                     btn.textContent = 'Parsing CV…';
                     await verifyBulkUploadedProfiles([value]);
 
+                    // Parse the uploaded PDF to extract job_title / company / country
+                    // and overwrite the table row cells (same pattern as Upload CV path).
+                    try {
+                        const _parseResp = await fetch(API_PARSE_CV_AND_UPDATE, {
+                            method: 'POST', headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ linkedinurl: value }), credentials: 'same-origin'
+                        });
+                        const _parseData = await _parseResp.json().catch(() => ({}));
+                        if (_parseResp.ok && _parseData) {
+                            const _pCo  = _parseData.company || _parseData.organisation || '';
+                            const _pJob = _parseData.job_title || _parseData.jobtitle || '';
+                            const _pCnt = _parseData.country || _parseData.location || '';
+                            if (_pCo)  { const c = tr.querySelector('td[data-field="company"]');  if (c)  { c.textContent = _pCo;  markDirty(c);  flushImmediate(value, 'company',  _pCo,  c);  } }
+                            if (_pJob) { const j = tr.querySelector('td[data-field="jobtitle"]'); if (j)  { j.textContent = _pJob; markDirty(j);  flushImmediate(value, 'jobtitle', _pJob, j);  } }
+                            if (_pCnt) { const ct = tr.querySelector('td[data-field="country"]'); if (ct) { ct.textContent = _pCnt; markDirty(ct); flushImmediate(value, 'country',  _pCnt, ct); } }
+                            const _pName = (_pJob && _pCo)
+                                ? `${_pJob.trim()} at ${_pCo.trim()}`
+                                : (_parseData.name || '').trim();
+                            if (_pName) { const n = tr.querySelector('td[data-field="name"]'); if (n) { n.textContent = _pName; flushImmediate(value, 'name', _pName, n); } }
+                        }
+                    } catch (_parseErr) {
+                        console.warn('[GP ' + label + '] parse_cv_and_update failed (non-fatal):', _parseErr);
+                    }
+
                     btn.textContent = 'Processing…';
                     return await performCombinedAssessment(tr, value, {}, true, true);
                 }
@@ -9598,6 +9622,10 @@ window.addEventListener('storage', function(e) {
       'sv_completed_detail_rows',
       'sv_disabled_detail_rows',
       'sv_last_viewed_anchor',
+      'sv_assessment_weights',
+      'sv_assessment_weights_prev',
+      'sv_weights_locked_roles',
+      'assessmentState',
     ];
     SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
     // Reload the page so the table reflects the now-empty database.
