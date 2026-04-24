@@ -445,8 +445,8 @@ html, body {
       <!-- Refresh Button - Moved to former checkbox position -->
       <button id="reloadBtn" title="Reset assessment state and refetch data">Refresh</button>
 
-      <!-- Combined Bulk Assessment Button: always visible. When linkdapi active → auto-load from profiles directory; otherwise → open directory picker. -->
-      <button id="bulkAssessmentBtn" style="background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
+      <!-- Combined Bulk Assessment Button: hidden until useraccess is confirmed as admin/enterprise/vip. -->
+      <button id="bulkAssessmentBtn" style="display:none; background:var(--cool-blue,#4c82b8); border:1px solid var(--cool-blue,#4c82b8); color:#ffffff; margin-right:8px;" title="Bulk-assess candidates. When GP mode active: loads PDFs from the profiles directory automatically. Otherwise: opens a folder selector to choose PDFs.">Bulk Assessment</button>
       <!-- Bulk Ingest Button: only shown when linkdapi is enabled AND any GP row lacks a PDF in the profiles directory. -->
       <button id="bulkIngestBtn" style="display:none; background:var(--desired-dawn,#d8d8d8); border:1px solid #b8b8b8; color:var(--azure-dragon,#073679); margin-right:8px;" title="Bulk ingest all GP profiles that are missing PDFs. Fetches LinkedIn JSON and generates FIOE-branded PDFs for each unmatched candidate.">Bulk Ingest</button>
       <button id="exportExcelBtn" title="Download Excel">Download Excel</button>
@@ -2751,6 +2751,7 @@ async function finalizeIndividualAssessment(linkedinurl, action) {
         }
         // Store BYOK status and hide token metric displays for BYOK users
         window.__IS_BYOK = (data.useraccess || '').trim().toLowerCase() === 'byok';
+        window.__USER_ACCESS = (data.useraccess || '').trim().toLowerCase();
         window.__HAS_CUSTOM_LLM = false;
         window.__LINKDAPI_ENABLED = false;
         window.__GP_LINKDAPI_ENABLED = false;
@@ -4709,7 +4710,9 @@ function buildRow(row) {
                                 if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
                                 if (newJob) { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                                 if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
-                                const newName = (analyzeData.name || '').trim();
+                                const newName = (newJob && newCompany)
+                                    ? `${newJob.trim()} at ${newCompany.trim()}`
+                                    : (analyzeData.name || '').trim();
                                 if (newName) { const nCell = tr.querySelector('td[data-field="name"]'); if(nCell) { nCell.textContent = newName; flushImmediate(value, 'name', newName, nCell); } }
                                 
                                 // All assessments use L2 (inference mode) by default
@@ -4978,7 +4981,7 @@ function buildRow(row) {
     return td;
   }
 
-  tr.appendChild(makeEditableCell('name', row.name, true, row.linkedinurl));
+  tr.appendChild(makeEditableCell('name', row.name, false, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, false));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
@@ -6652,7 +6655,9 @@ function renderTable(){
                     const cntCell = tr.querySelector('td[data-field="country"]');
                     if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(anchor, 'country', newCountry, cntCell); }
                 }
-                const _parsedName = (analyzeData.name || '').trim();
+                const _parsedName = (newJob && newCompany)
+                    ? `${newJob.trim()} at ${newCompany.trim()}`
+                    : (analyzeData.name || '').trim();
                 if (_parsedName) {
                     const nCell = tr.querySelector('td[data-field="name"]');
                     if (nCell) { nCell.textContent = _parsedName; flushImmediate(anchor, 'name', _parsedName, nCell); }
@@ -8261,6 +8266,13 @@ function _hasPdfInSet(existingSet, slug) {
 // ---------------------------------------------------------------------------
 async function _updateBulkActionButton() {
     if (!bulkIngestBtn || !bulkAssessmentBtn) return;
+    // Only show bulk buttons for privileged access levels
+    const _privLevels = new Set(['admin', 'enterprise', 'vip']);
+    if (!_privLevels.has(window.__USER_ACCESS || '')) {
+        bulkAssessmentBtn.style.display = 'none';
+        bulkIngestBtn.style.display = 'none';
+        return;
+    }
     // Don't attempt list-profile-pdfs until the GP status fetch has resolved;
     // without this guard the call fires before __BRIGHTDATA_ENABLED / __GP_LINKDAPI_ENABLED
     // are set, causing the wrong service endpoint to be used.
