@@ -2445,6 +2445,7 @@ function renderSectorChips(){
     if(isLocked) chip.classList.add('tag-locked');
     chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector" style="margin-left:4px;">&times;</button>`;
     const removeBtn=chip.querySelector('button');
+    if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
     chip.addEventListener('click', e=>{
       if(e.target===removeBtn) return;
       if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); }
