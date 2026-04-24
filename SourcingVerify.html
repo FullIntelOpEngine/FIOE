@@ -802,6 +802,8 @@ function toggleSearchConfig() {
   arrow.textContent = isOpen ? '▲' : '▼';
   // Auto-focus the search input when the panel opens
   if (isOpen) {
+    // Capture slider state at open time so we can detect actual changes on close.
+    if (typeof window._captureWeightsAtOpen === 'function') window._captureWeightsAtOpen();
     const input = document.getElementById('candidateSearchInput');
     if (input) setTimeout(() => input.focus(), 50);
   } else {
@@ -1057,6 +1059,35 @@ function _applyWeightLockState() {
   // previous weights snapshot (in-memory and persisted briefly)
   let _prevWeights = null;
 
+  // Snapshot of slider values captured each time the assessment panel opens.
+  // Used to detect whether the user actually changed any values before closing.
+  let _weightsAtPanelOpen = null;
+
+  /** Capture current slider values when the panel opens. Exposed globally. */
+  window._captureWeightsAtOpen = function() {
+    const inputs = document.querySelectorAll('.weight-sliders input[type=range]');
+    const snap = {};
+    inputs.forEach(function(inp) {
+      if (inp.dataset && inp.dataset.key) snap[inp.dataset.key] = parseInt(inp.value) || 0;
+    });
+    _weightsAtPanelOpen = snap;
+  };
+
+  /** Returns true if any slider value differs from the snapshot taken at panel-open time. */
+  function _weightsChangedSinceOpen() {
+    if (!_weightsAtPanelOpen) return true; // no snapshot → treat as changed to be safe
+    const inputs = document.querySelectorAll('.weight-sliders input[type=range]');
+    for (let i = 0; i < inputs.length; i++) {
+      const inp = inputs[i];
+      const key = inp.dataset && inp.dataset.key;
+      if (!key) continue;
+      const current = parseInt(inp.value) || 0;
+      const atOpen  = typeof _weightsAtPanelOpen[key] !== 'undefined' ? _weightsAtPanelOpen[key] : 0;
+      if (current !== atOpen) return true;
+    }
+    return false;
+  }
+
   function readSavedWeights() {
     try {
       const raw = localStorage.getItem('sv_assessment_weights');
@@ -1140,10 +1171,34 @@ function _applyWeightLockState() {
         }
       }
     } else {
-      // Valid save — mark that 100% has been achieved, reset the attempt counter, and lock.
+      // Valid save (sum === 100).
+
+      // Only treat this as an adjustment when the user actually moved a slider.
+      // If nothing changed, close the panel silently — do not lock.
+      if (!_weightsChangedSinceOpen()) {
+        return;
+      }
+
+      const activeRole = (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '').trim();
+
+      // If the role is not yet locked, ask the user to confirm before locking.
+      // (Already-locked roles: sliders are disabled so values cannot change —
+      //  _weightsChangedSinceOpen() would return false and we'd have returned above.)
+      if (activeRole && !isWeightLockedForRole(activeRole)) {
+        const confirmed = confirm(
+          'Closing the Assessment Weightage will apply these weights as your final adjustment.\n\n' +
+          'Only one adjustment is allowed per role search. Are you sure you want to lock these weights?'
+        );
+        if (!confirmed) {
+          // User wants to keep adjusting — reopen the panel.
+          _reopenWeightPanel();
+          return;
+        }
+      }
+
+      // Mark weights as valid, reset attempt counter, and lock.
       _weightsEverSetTo100 = true;
       _adjAttempts = 0;
-      const activeRole = (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '').trim();
       if (activeRole && !isWeightLockedForRole(activeRole)) {
         lockWeightForRole(activeRole);
         _applyWeightLockState();
@@ -9647,6 +9702,18 @@ window.addEventListener('storage', function(e) {
       'sv_geo_cache_v1',
     ];
     SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
+    // Also clear session-storage suppression/skip flags so dialogs and bulk-info
+    // popups are not permanently silenced after the dock-out resets the DB state.
+    try {
+      var ssToRemove = [];
+      for (var _i = 0; _i < sessionStorage.length; _i++) {
+        var _sk = sessionStorage.key(_i);
+        if (_sk === 'sv_bulk_info_skip' || (_sk && _sk.startsWith('rle_suppress_'))) {
+          ssToRemove.push(_sk);
+        }
+      }
+      ssToRemove.forEach(function(k) { try { sessionStorage.removeItem(k); } catch(_) {} });
+    } catch(_) {}
     // Reload the page so the table reflects the now-empty database.
     window.location.reload();
   } catch(_) {}
