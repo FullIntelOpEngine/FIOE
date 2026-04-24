@@ -7865,6 +7865,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
           path: '/api/v1/contacts/search',
           method: 'POST',
           headers: {
+            'Cache-Control': 'no-cache',
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             'x-api-key': apolloApiKey,
