@@ -4004,6 +4004,13 @@ function CandidatesTable({
       localStorage.removeItem('orgChartManualOverrides');
       localStorage.removeItem('dismissedNewCandidateIds');
     } catch (cacheErr) { console.warn('[DB Dock Out] Failed to clear cache:', cacheErr); }
+    // Clear SourcingVerify.html session caches and signal it to reload.
+    try {
+      ['sv_namecard_cache_v1', 'sv_completed_detail_rows', 'sv_disabled_detail_rows', 'sv_last_viewed_anchor'].forEach(k => {
+        try { localStorage.removeItem(k); } catch(_) {}
+      });
+      localStorage.setItem('sv_dock_out_signal', String(Date.now()));
+    } catch (svErr) { console.warn('[DB Dock Out] Failed to clear SourcingVerify session:', svErr); }
     fetch(`http://localhost:${API_PORT}/candidates/clear-user`, {
       method: 'DELETE',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },

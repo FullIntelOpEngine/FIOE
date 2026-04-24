@@ -3343,6 +3343,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
             "Analyze the following CV text.\n"
             "Return STRICT JSON only with these keys:\n"
             "{\n"
+            "  \"name\": \"<Full Name of the candidate>\",\n"
             "  \"skillset\": [\"Skill1\", \"Skill2\", ...],\n"
             "  \"total_experience_years\": <number>,\n"
             "  \"tenure\": <number>,\n"
@@ -3357,6 +3358,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
             "  \"job_family\": \"<Job Family>\"\n"
             "}\n"
             "Rules:\n"
+            "0. Name: Extract the candidate's full name from the CV. It is typically the very first prominent line of the document. Return an empty string if not found.\n"
             "1. Skillset: Extract ONLY skills explicitly mentioned in the CV. Max 15 items. Do not infer or add skills.\n"
             "2. Total Experience: Calculate sum of all employment durations in years, EXCLUDING internships and intern positions. Only count full-time, part-time, and regular employment. Return a number rounded to 1 decimal place.\n"
             "3. Tenure: Calculate average tenure. Formula: total_experience_years / number of NON-OVERLAPPING employment windows. Rules: (a) Treat repeated employment at the same company as ONE employer. (b) When two DIFFERENT employers overlap in time (concurrent/dual employment), count them as ONE employment window in the divisor \u2014 do not count both separately. (c) Exclude internships and intern positions from both the numerator and the window count. Return a number rounded to 1 decimal place.\n"
@@ -4891,6 +4893,7 @@ def process_parse_cv_and_update():
         analyze_cv_background(linkedinurl, pdf_bytes)
         
         return jsonify({
+            "name": obj.get("name", ""),
             "skillset": obj.get("skillset", []),
             "total_years": obj.get("total_experience_years", 0),
             "tenure": obj.get("tenure", 0.0), # Includes tenure in API response

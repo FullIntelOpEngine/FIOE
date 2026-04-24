@@ -4709,6 +4709,8 @@ function buildRow(row) {
                                 if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
                                 if (newJob) { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                                 if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
+                                const newName = (analyzeData.name || '').trim();
+                                if (newName) { const nCell = tr.querySelector('td[data-field="name"]'); if(nCell) { nCell.textContent = newName; flushImmediate(value, 'name', newName, nCell); } }
                                 
                                 // All assessments use L2 (inference mode) by default
                                 const useL2 = true;
@@ -4977,10 +4979,10 @@ function buildRow(row) {
   }
 
   tr.appendChild(makeEditableCell('name', row.name, true, row.linkedinurl));
-  tr.appendChild(makeEditableCell('company', row.company, true));
-  tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, true));
+  tr.appendChild(makeEditableCell('company', row.company, false));
+  tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
-  tr.appendChild(makeEditableCell('country', urlCountry || row.country, true));
+  tr.appendChild(makeEditableCell('country', urlCountry || row.country, false));
   tr.appendChild(makeEditableCell('linkedinurl', row.linkedinurl, false));
   
   // Matching Level / Assessment Score column
@@ -6649,6 +6651,11 @@ function renderTable(){
                 if (newCountry) {
                     const cntCell = tr.querySelector('td[data-field="country"]');
                     if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(anchor, 'country', newCountry, cntCell); }
+                }
+                const _parsedName = (analyzeData.name || '').trim();
+                if (_parsedName) {
+                    const nCell = tr.querySelector('td[data-field="name"]');
+                    if (nCell) { nCell.textContent = _parsedName; flushImmediate(anchor, 'name', _parsedName, nCell); }
                 }
 
                 // Update namecard as before
@@ -9567,6 +9574,24 @@ function printDataAnalysis() {
   var PRINT_RENDER_DELAY_MS = 600;
   setTimeout(function() { printWin.print(); }, PRINT_RENDER_DELAY_MS);
 }
+
+// ── Dock-Out session clear ─────────────────────────────────────────────────
+// When App.js (DB Dock Out) sets the 'sv_dock_out_signal' localStorage key,
+// wipe all SourcingVerify local caches so the page reflects the cleared DB.
+window.addEventListener('storage', function(e) {
+  if (e.key !== 'sv_dock_out_signal') return;
+  try {
+    const SV_SESSION_KEYS = [
+      'sv_namecard_cache_v1',
+      'sv_completed_detail_rows',
+      'sv_disabled_detail_rows',
+      'sv_last_viewed_anchor',
+    ];
+    SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
+    // Reload the page so the table reflects the now-empty database.
+    window.location.reload();
+  } catch(_) {}
+});
 
 </script>
 </div><!-- /.page-main -->
