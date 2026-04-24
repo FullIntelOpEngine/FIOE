@@ -3129,6 +3129,8 @@ function renderSuggestionsAggregated(data){
 
   // ALWAYS populate autoSuggestedCompanies from the companyList so left suggestions appear on the right
   autoSuggestedCompanies = dedupe([...companyList]).filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
+  // Apply the same suppression to companyList so chips are hidden when the user dismisses them.
+  companyList = companyList.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()));
 
   try {
     const jobBox = document.getElementById('jobTitleSuggestionBox');
@@ -3198,7 +3200,20 @@ function makeChip(text,type,isExisting){
       updateAddState(); updateDynamicCompanyPreview();
     }catch(e){ console.warn('Translation error',e); } finally { trans.classList.remove('loading'); }
   });
-  chip.appendChild(trans); chip.appendChild(add); updateAddState(); return chip;
+  chip.appendChild(trans); chip.appendChild(add);
+  if(type==='company'){
+    const dismiss=document.createElement('button'); dismiss.type='button'; dismiss.textContent='×'; dismiss.style.marginLeft='4px'; dismiss.title='Remove from suggestions';
+    dismiss.addEventListener('click',()=>{
+      const span=chip.querySelector('.suggest-text');
+      const original=(span.getAttribute('data-original')||'').toLowerCase();
+      const current=span.textContent.toLowerCase();
+      if(original) suppressedAutoSuggestedCompanies.add(original);
+      if(current && current!==original) suppressedAutoSuggestedCompanies.add(current);
+      if(lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions); else chip.remove();
+    });
+    chip.appendChild(dismiss);
+  }
+  updateAddState(); return chip;
 }
 function updateTranslateButtonsState(){
   document.querySelectorAll('.translate-btn').forEach(btn=>{

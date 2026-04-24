@@ -5925,7 +5925,7 @@ async function loadRows(page=1){
     } else if (_serverSortBy) {
       url += `&sort_by=${encodeURIComponent(_serverSortBy)}&sort_dir=${encodeURIComponent(_serverSortDir || 'desc')}`;
     }
-    const res = await fetch(url);
+    const res = await fetch(url, { cache: 'no-store' });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed to load');
     rowsData = Array.isArray(data.rows) ? data.rows : [];
@@ -9689,19 +9689,15 @@ function printDataAnalysis() {
 window.addEventListener('storage', function(e) {
   if (e.key !== 'sv_dock_out_signal') return;
   try {
-    const SV_SESSION_KEYS = [
-      'sv_namecard_cache_v1',
-      'sv_completed_detail_rows',
-      'sv_disabled_detail_rows',
-      'sv_last_viewed_anchor',
-      'sv_assessment_weights',
-      'sv_assessment_weights_prev',
-      'sv_weights_locked_roles',
-      'assessmentState',
-      'sv_namecard_open_state_v1',
-      'sv_geo_cache_v1',
-    ];
-    SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
+    // Sweep all sv_* localStorage keys so any future additions are automatically cleared.
+    var svKeys = [];
+    for (var _li = 0; _li < localStorage.length; _li++) {
+      var _lk = localStorage.key(_li);
+      if (_lk && _lk.startsWith('sv_')) svKeys.push(_lk);
+    }
+    svKeys.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
+    // assessmentState is not sv_-prefixed but holds per-URL completion data
+    try { localStorage.removeItem('assessmentState'); } catch(_) {}
     // Also clear session-storage suppression/skip flags so dialogs and bulk-info
     // popups are not permanently silenced after the dock-out resets the DB state.
     // Additionally clear role-context and any SV-specific session keys so the

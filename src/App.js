@@ -4007,21 +4007,16 @@ function CandidatesTable({
     // Clear SourcingVerify.html session caches. The reload signal (sv_dock_out_signal) is sent
     // only after the DB clear below so that SourcingVerify.html reloads against an empty DB
     // and the Action column correctly resets to 'Assess' (not 'View').
+    // Use a wildcard sweep so any future sv_* keys are automatically caught.
     try {
-      [
-        'sv_namecard_cache_v1',
-        'sv_completed_detail_rows',
-        'sv_disabled_detail_rows',
-        'sv_last_viewed_anchor',
-        'sv_assessment_weights',
-        'sv_assessment_weights_prev',
-        'sv_weights_locked_roles',
-        'assessmentState',
-        'sv_namecard_open_state_v1',
-        'sv_geo_cache_v1',
-      ].forEach(k => {
-        try { localStorage.removeItem(k); } catch(_) {}
-      });
+      const svKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('sv_')) svKeys.push(k);
+      }
+      svKeys.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+      // assessmentState is not sv_-prefixed but holds per-URL completion data
+      try { localStorage.removeItem('assessmentState'); } catch(_) {}
     } catch (svErr) { console.warn('[DB Dock Out] Failed to clear SourcingVerify session:', svErr); }
     fetch(`http://localhost:${API_PORT}/candidates/clear-user`, {
       method: 'DELETE',
