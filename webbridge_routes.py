@@ -5593,13 +5593,15 @@ def contactout_download_profile():
 @app.get("/api/apollo/download-profile")
 @_require_session
 def apollo_download_profile():
-    """Fetch the full Apollo profile for a given person ID or LinkedIn URL.
+    """Fetch the Apollo contact profile for a given person ID or LinkedIn URL.
 
     Query parameters (at least one required):
-      person_id    – the Apollo person ID (preferred)
+      person_id    – the Apollo contact/person ID (preferred)
       linkedin_url – the LinkedIn profile URL (fallback lookup)
 
-    Calls the Apollo people/match endpoint to retrieve the full profile JSON.
+    Calls the Apollo contacts/search endpoint.  The response prominently
+    exposes ``email``, ``mobile_phone``, and ``office_phone``; the complete
+    contact record is included under ``_details`` for reference.
     """
     person_id = (request.args.get("person_id") or "").strip()
     linkedin_url = (request.args.get("linkedin_url") or "").strip()
@@ -5642,42 +5644,84 @@ def apollo_download_profile():
 
     try:
         if person_id:
-            # Use the people/match endpoint to get full details by Apollo ID
-            r = requests.post(
-                "https://api.apollo.io/api/v1/people/match",
-                headers={
-                    "x-api-key": ap_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={"id": person_id, "reveal_personal_emails": True, "reveal_phone_number": True},
-                timeout=30,
-            )
+            # Search contacts by ID array
+            payload = {"ids": [person_id], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] contacts/search by person_id={person_id!r}")
         else:
-            # Lookup by LinkedIn URL
-            r = requests.post(
-                "https://api.apollo.io/api/v1/people/match",
-                headers={
-                    "x-api-key": ap_key,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json={"linkedin_url": linkedin_url, "reveal_personal_emails": True, "reveal_phone_number": True},
-                timeout=30,
-            )
+            # Search contacts using the LinkedIn URL as a keyword filter
+            payload = {"q_keywords": linkedin_url, "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] contacts/search by linkedin_url={linkedin_url!r}")
+
+        r = requests.post(
+            "https://api.apollo.io/api/v1/contacts/search",
+            headers={
+                "x-api-key": ap_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
         if r.status_code == 401:
             return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
         if r.status_code == 403:
             return jsonify({"error": "Apollo returned HTTP 403 — quota may be exceeded or plan lacks access"}), 403
         r.raise_for_status()
-        profile_data = r.json()
-        return jsonify(profile_data)
+        resp_data = r.json()
+
+        contacts = resp_data.get("contacts") or []
+        if not contacts:
+            return jsonify({"error": "No matching contact found in Apollo"}), 404
+
+        contact = contacts[0]
+
+        # --- Primary contact fields ---
+        email = (contact.get("email") or "").strip()
+
+        # Extract phone numbers from the phone_numbers array by type
+        mobile_phone = ""
+        office_phone = ""
+        _mobile_types = {"mobile", "cell", "home", "personal"}
+        _office_types = {"work", "office", "direct", "direct_phone", "work_hq"}
+        for ph in (contact.get("phone_numbers") or []):
+            ph_type = (ph.get("type") or "").lower().replace(" ", "_")
+            ph_num = (ph.get("sanitized_number") or ph.get("raw_number") or "").strip()
+            if not ph_num:
+                continue
+            if ph_type in _mobile_types and not mobile_phone:
+                mobile_phone = ph_num
+            elif ph_type in _office_types and not office_phone:
+                office_phone = ph_num
+
+        # Fallback: use the account-level phone as an office number when none extracted
+        if not office_phone:
+            _acct = contact.get("account") or {}
+            office_phone = (
+                _acct.get("sanitized_phone") or _acct.get("phone") or ""
+            ).strip()
+
+        # --- Build the response ---
+        # Top-level keys hold the three key contact fields; everything else
+        # lives in _details so callers can inspect the full record.
+        result = {
+            "email": email,
+            "mobile_phone": mobile_phone,
+            "office_phone": office_phone,
+            "_details": contact,
+        }
+        logger.info(
+            f"[Apollo] contacts/search returned contact id={contact.get('id')!r} "
+            f"email={'***' if email else '(none)'} "
+            f"mobile={'***' if mobile_phone else '(none)'} "
+            f"office={'***' if office_phone else '(none)'}"
+        )
+        return jsonify(result)
     except requests.exceptions.HTTPError as http_err:
         logger.warning(f"[Apollo] download-profile HTTP error: {http_err}")
         return jsonify({"error": "Apollo API request failed"}), 502
     except Exception as exc:
         logger.warning(f"[Apollo] download-profile error: {exc}")
-        return jsonify({"error": "Failed to fetch Apollo profile"}), 500
+        return jsonify({"error": "Failed to fetch Apollo contact"}), 500
 
 
 @app.get("/api/rocketreach/download-profile")
