@@ -6792,6 +6792,8 @@ function renderTable(){
                         console.warn('[Reassess File] Assessment blocked for', anchor);
                         return; // skip the 'Analyzed' text update below
                     } else {
+                        // Ensure Download Assessment button stays visible after reassessment
+                        downloadBtn.style.display = 'block';
                         // Auto-refresh after individual assessment completion
                         setTimeout(() => {
                             const reloadBtn = document.getElementById('reloadBtn');
