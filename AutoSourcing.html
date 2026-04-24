@@ -2554,22 +2554,14 @@ function updateDynamicCompanyPreview(clear=false){
     listEl.innerHTML = '';
     const frag = document.createDocumentFragment();
     opts.forEach(o => {
-      // Wrap chip + dismiss so the × sits BESIDE (outside) the chip border
-      const wrapper = document.createElement('span');
-      wrapper.style.cssText = 'display:inline-flex;align-items:center;gap:0;vertical-align:middle;';
       const chip = document.createElement('div');
       chip.className = 'tag-chip';
-      chip.innerHTML = `<span>${escapeHtml(o)}</span>`;
-      const dismiss = document.createElement('button');
-      dismiss.type = 'button'; dismiss.textContent = '×'; dismiss.title = 'Remove from pre-search suggestions';
-      dismiss.style.cssText = 'background:none;border:none;cursor:pointer;font-size:14px;color:#888;padding:0 3px;line-height:1;margin-left:2px;flex-shrink:0;';
-      dismiss.addEventListener('click', () => {
+      chip.innerHTML = `<span>${escapeHtml(o)}</span><button type="button" aria-label="Remove ${escapeHtml(o)}">×</button>`;
+      chip.querySelector('button').addEventListener('click', () => {
         suppressedAutoSuggestedCompanies.add(o.toLowerCase());
         updateDynamicCompanyPreview();
       });
-      wrapper.appendChild(chip);
-      wrapper.appendChild(dismiss);
-      frag.appendChild(wrapper);
+      frag.appendChild(chip);
     });
     listEl.appendChild(frag);
   }
