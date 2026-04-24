@@ -7855,22 +7855,23 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         apolloUrl = 'https://' + apolloUrl;
       }
 
-      console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
-      const apolloRes = await new Promise((resolve, reject) => {
-        const bodyStr = JSON.stringify({ linkedin_url: apolloUrl });
+      // Helper: make an Apollo HTTPS POST and resolve with {_http_status, ...body}
+      const apolloPost = (path, bodyObj) => new Promise((resolve, reject) => {
+        const bodyStr = JSON.stringify(bodyObj);
         const reqOpts = {
           hostname: 'api.apollo.io',
           port: 443,
-          path: '/v1/people/match',
+          path,
           method: 'POST',
           headers: {
+            'Cache-Control': 'no-cache',
             'Content-Type': 'application/json',
             'Accept': 'application/json',
             'x-api-key': apolloApiKey,
             'Content-Length': Buffer.byteLength(bodyStr),
           },
         };
-        console.log('[Apollo] Request: POST https://api.apollo.io/v1/people/match body:', bodyStr);
+        console.log('[Apollo] Request: POST https://api.apollo.io' + path + ' body:', bodyStr);
         const r = https.request(reqOpts, (resp) => {
           let body = '';
           resp.on('data', d => body += d);
@@ -7887,10 +7888,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
             }
           });
         });
-        r.on('error', (err) => {
-          console.error('[Apollo] Network error:', err.message);
-          reject(err);
-        });
+        r.on('error', (err) => { console.error('[Apollo] Network error:', err.message); reject(err); });
         r.setTimeout(20000, () => {
           console.error('[Apollo] Request timed out');
           r.destroy();
@@ -7900,31 +7898,89 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         r.end();
       });
 
-      if (apolloRes._http_status && apolloRes._http_status !== 200) {
-        const apiMsg = apolloRes.message || apolloRes.error || `Apollo API returned status ${apolloRes._http_status}`;
-        console.error('[Apollo] API error — status:', apolloRes._http_status, '| message:', apiMsg);
-        return res.status(400).json({ error: apiMsg });
-      }
-
-      const person = apolloRes.person || {};
-      console.log('[Apollo] person fields — keys:', Object.keys(person));
-      console.log('[Apollo] person.email:', JSON.stringify(person.email));
-      console.log('[Apollo] person.phone_numbers:', JSON.stringify(person.phone_numbers));
-
-      const _first = (arrOrStr) => {
-        if (Array.isArray(arrOrStr)) return arrOrStr.find(v => v) || '';
-        return typeof arrOrStr === 'string' ? arrOrStr : '';
+      // Helper: extract phone fields from a person/contact object
+      const extractPhones = (c) => {
+        const phoneNumbers = Array.isArray(c.phone_numbers) ? c.phone_numbers : [];
+        const mobileEntry = phoneNumbers.find(p => p.type === 'mobile' || (p.type && p.type.includes('mobile')));
+        const officeEntry = phoneNumbers.find(p =>
+          p.type === 'work_hq' || p.type === 'work_direct' || p.type === 'work' ||
+          (p.type && p.type.includes('work'))
+        );
+        return {
+          mobile_phone: c.mobile_phone || (mobileEntry && (mobileEntry.sanitized_number || mobileEntry.raw_number)) || '',
+          office_phone: c.office_phone || (officeEntry && (officeEntry.sanitized_number || officeEntry.raw_number)) || '',
+          phoneNumbers,
+        };
       };
 
-      const email = person.email || '';
-      // phone_numbers is an array of objects with sanitized_number
-      const phoneObj = Array.isArray(person.phone_numbers) && person.phone_numbers.length > 0
-        ? person.phone_numbers[0]
-        : null;
-      const phone = (phoneObj && (phoneObj.sanitized_number || phoneObj.raw_number)) || '';
-      const work_email = person.work_email || _first(person.work_emails) || '';
-      const personal_email = person.personal_email || _first(person.personal_emails) || '';
-      const github = person.github_url || '';
+      console.log('[Apollo] Starting API call — linkedin_url:', apolloUrl);
+
+      // Step 1: Search global database via mixed_people/search
+      let contact = null;
+      let usedFallback = false;
+
+      try {
+        const apolloRes = await apolloPost(
+          '/api/v1/mixed_people/search',
+          { person_linkedin_urls: [apolloUrl], per_page: 1, page: 1 }
+        );
+
+        const httpStatus = apolloRes._http_status;
+        const apiMsg = (apolloRes.message || apolloRes.error || '').toLowerCase();
+        const isPlanRestricted = apiMsg.includes('not accessible') && apiMsg.includes('free plan');
+
+        if (httpStatus === 401) {
+          return res.status(401).json({ error: 'Apollo authentication failed (HTTP 401)' });
+        }
+
+        if (httpStatus === 200 && !isPlanRestricted) {
+          const people = Array.isArray(apolloRes.people) ? apolloRes.people : [];
+          if (people.length > 0) {
+            contact = people[0];
+            console.log('[Apollo] mixed_people/search found person id:', contact.id);
+          } else {
+            console.log('[Apollo] mixed_people/search returned empty people — will try people/match fallback');
+          }
+        } else {
+          console.log('[Apollo] mixed_people/search failed (status=' + httpStatus + ', plan_restricted=' + isPlanRestricted + ') — will try people/match fallback');
+        }
+      } catch (primaryErr) {
+        console.error('[Apollo] mixed_people/search error:', primaryErr.message, '— will try people/match fallback');
+      }
+
+      // Step 2: Fallback to /v1/people/match if primary search did not return a contact
+      if (!contact && apolloUrl) {
+        try {
+          console.log('[Apollo] people/match fallback for linkedin_url:', apolloUrl);
+          const matchRes = await apolloPost(
+            '/v1/people/match',
+            { linkedin_url: apolloUrl, reveal_personal_emails: true, reveal_phone_number: true }
+          );
+          if (matchRes._http_status === 401) {
+            return res.status(401).json({ error: 'Apollo authentication failed (HTTP 401)' });
+          }
+          if (matchRes._http_status === 200 && matchRes.person) {
+            contact = matchRes.person;
+            usedFallback = true;
+            console.log('[Apollo] people/match found person id:', contact.id);
+          } else {
+            console.log('[Apollo] people/match returned no person — status:', matchRes._http_status);
+          }
+        } catch (fallbackErr) {
+          console.error('[Apollo] people/match fallback error:', fallbackErr.message);
+        }
+      }
+
+      if (!contact) {
+        return res.status(404).json({ error: 'No matching contact found in Apollo' });
+      }
+
+      console.log('[Apollo] person fields — keys:', Object.keys(contact));
+      console.log('[Apollo] contact.email:', JSON.stringify(contact.email));
+      console.log('[Apollo] contact.phone_numbers:', JSON.stringify(contact.phone_numbers));
+
+      const email = contact.email || '';
+      const { mobile_phone, office_phone, phoneNumbers } = extractPhones(contact);
 
       const _toArr = (v) => {
         if (Array.isArray(v)) return v.filter(Boolean);
@@ -7932,22 +7988,31 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         return [];
       };
 
-      const allEmails = [
-        ..._toArr(email),
-        ..._toArr(work_email),
-        ..._toArr(personal_email),
-      ].filter((v, i, a) => v && a.indexOf(v) === i);
+      const allEmails = _toArr(email).filter((v, i, a) => v && a.indexOf(v) === i);
+
+      // Collect additional details for the comment section
+      const _details = {
+        name: contact.name || '',
+        title: contact.title || '',
+        organization_name: contact.organization_name || '',
+        linkedin_url: contact.linkedin_url || apolloUrl,
+        present_raw_address: contact.present_raw_address || '',
+        account_phone: (contact.account && contact.account.phone) || '',
+        sanitized_phone: contact.sanitized_phone || '',
+        phone_numbers: phoneNumbers,
+        email_status: contact.email_status || '',
+        existence_level: contact.existence_level || '',
+      };
 
       const result = {
         provider: 'apollo',
         email,
-        phone,
-        work_email,
-        github,
-        personal_email,
+        mobile_phone,
+        office_phone,
         all_emails: allEmails,
+        _details,
       };
-      console.log('[Apollo] Mapped result:', JSON.stringify(result));
+      console.log('[Apollo] Mapped result (' + (usedFallback ? 'people/match' : 'mixed_people/search') + '):', JSON.stringify(result));
       return res.json(result);
     }
 
