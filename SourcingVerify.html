@@ -3620,6 +3620,27 @@ function _countryFromLinkedInUrl(url) {
   return (_svCountryCodeMap && _svCountryCodeMap[code]) || null;
 }
 
+/**
+ * Derive a person's display name from a LinkedIn profile URL slug.
+ * e.g. https://kr.linkedin.com/in/seonghyeon-ryu-866a1b197/ko → "Seonghyeon Ryu"
+ * The trailing alphanumeric ID segment (contains digits) is stripped before
+ * converting hyphens to title-cased words.
+ * Returns null when the URL does not contain a recognisable /in/ slug.
+ */
+function _nameFromLinkedInUrl(url) {
+  if (!url) return null;
+  const m = url.trim().match(/\/in\/([^/?#]+)/i);
+  if (!m) return null;
+  const slug = m[1].replace(/\/$/, '').toLowerCase();
+  const parts = slug.split('-').filter(Boolean);
+  // Drop the trailing LinkedIn numeric/alphanumeric profile-ID segment
+  const nameParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
+    ? parts.slice(0, -1)
+    : parts;
+  if (!nameParts.length) return null;
+  return nameParts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+}
+
 // ---------------------------------------------------------------------------
 // ContactOut profile download helper
 // ---------------------------------------------------------------------------
@@ -4362,9 +4383,7 @@ function buildRow(row) {
                             if (_pCo)  { const c = tr.querySelector('td[data-field="company"]');  if (c)  { c.textContent = _pCo;  markDirty(c);  flushImmediate(value, 'company',  _pCo,  c);  } }
                             if (_pJob) { const j = tr.querySelector('td[data-field="jobtitle"]'); if (j)  { j.textContent = _pJob; markDirty(j);  flushImmediate(value, 'jobtitle', _pJob, j);  } }
                             if (_pCnt) { const ct = tr.querySelector('td[data-field="country"]'); if (ct) { ct.textContent = _pCnt; markDirty(ct); flushImmediate(value, 'country',  _pCnt, ct); } }
-                            const _pName = (_pJob && _pCo)
-                                ? `${_pJob.trim()} at ${_pCo.trim()}`
-                                : (_parseData.name || '').trim();
+                            const _pName = _nameFromLinkedInUrl(value) || (_parseData.name || '').trim();
                             if (_pName) { const n = tr.querySelector('td[data-field="name"]'); if (n) { n.textContent = _pName; flushImmediate(value, 'name', _pName, n); } }
                         }
                     } catch (_parseErr) {
@@ -5005,10 +5024,7 @@ function buildRow(row) {
     return td;
   }
 
-  const _rowDisplayName = (row.jobtitle && row.company)
-      ? `${(row.jobtitle || '').trim()} at ${(row.company || '').trim()}`
-      : (row.name || '');
-  tr.appendChild(makeEditableCell('name', _rowDisplayName, false, row.linkedinurl));
+  tr.appendChild(makeEditableCell('name', row.name || '', false, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, false));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
@@ -6682,9 +6698,7 @@ function renderTable(){
                     const cntCell = tr.querySelector('td[data-field="country"]');
                     if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(anchor, 'country', newCountry, cntCell); }
                 }
-                const _parsedName = (newJob && newCompany)
-                    ? `${newJob.trim()} at ${newCompany.trim()}`
-                    : (analyzeData.name || '').trim();
+                const _parsedName = _nameFromLinkedInUrl(anchor) || (analyzeData.name || '').trim();
                 if (_parsedName) {
                     const nCell = tr.querySelector('td[data-field="name"]');
                     if (nCell) { nCell.textContent = _parsedName; flushImmediate(anchor, 'name', _parsedName, nCell); }
