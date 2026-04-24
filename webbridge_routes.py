@@ -5642,44 +5642,9 @@ def apollo_download_profile():
     if not ap_key:
         return jsonify({"error": "Apollo API key is not configured or not enabled"}), 503
 
-    try:
-        if person_id:
-            # Search global database by person ID array
-            payload = {"ids": [person_id], "per_page": 1, "page": 1}
-            logger.debug(f"[Apollo] mixed_people/search by person_id={person_id!r}")
-        else:
-            # Search global database using the LinkedIn URL
-            payload = {"person_linkedin_urls": [linkedin_url], "per_page": 1, "page": 1}
-            logger.debug(f"[Apollo] mixed_people/search by linkedin_url={linkedin_url!r}")
-
-        r = requests.post(
-            "https://api.apollo.io/api/v1/mixed_people/search",
-            headers={
-                "Cache-Control": "no-cache",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "x-api-key": ap_key,
-            },
-            json=payload,
-            timeout=30,
-        )
-        if r.status_code == 401:
-            return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
-        if r.status_code == 403:
-            return jsonify({"error": "Apollo returned HTTP 403 — quota may be exceeded or plan lacks access"}), 403
-        r.raise_for_status()
-        resp_data = r.json()
-
-        people = resp_data.get("people") or []
-        if not people:
-            return jsonify({"error": "No matching contact found in Apollo"}), 404
-
-        contact = people[0]
-
-        # --- Primary contact fields ---
+    def _extract_contact_fields(contact):
+        """Extract email, mobile_phone, office_phone from an Apollo person/contact dict."""
         email = (contact.get("email") or "").strip()
-
-        # Extract phone numbers from the phone_numbers array by type
         mobile_phone = ""
         office_phone = ""
         _mobile_types = {"mobile", "cell", "home", "personal"}
@@ -5693,17 +5658,109 @@ def apollo_download_profile():
                 mobile_phone = ph_num
             elif ph_type in _office_types and not office_phone:
                 office_phone = ph_num
-
-        # Fallback: use the account-level phone as an office number when none extracted
         if not office_phone:
             _acct = contact.get("account") or {}
             office_phone = (
                 _acct.get("sanitized_phone") or _acct.get("phone") or ""
             ).strip()
+        return email, mobile_phone, office_phone
+
+    def _apollo_people_match_fallback(ap_key, linkedin_url):
+        """Fallback enrichment via POST /v1/people/match. Returns person dict or None."""
+        logger.debug(f"[Apollo] people/match fallback for linkedin_url={linkedin_url!r}")
+        try:
+            r2 = requests.post(
+                "https://api.apollo.io/v1/people/match",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "x-api-key": ap_key,
+                },
+                json={
+                    "linkedin_url": linkedin_url,
+                    "reveal_personal_emails": True,
+                    "reveal_phone_number": True,
+                },
+                timeout=30,
+            )
+            if r2.status_code == 401:
+                logger.warning("[Apollo] people/match returned HTTP 401")
+                return None
+            r2.raise_for_status()
+            return r2.json().get("person")
+        except Exception as exc2:
+            logger.warning(f"[Apollo] people/match fallback error: {exc2}")
+            return None
+
+    try:
+        if person_id:
+            # Search global database by person ID array
+            payload = {"ids": [person_id], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] mixed_people/search by person_id={person_id!r}")
+        else:
+            # Search global database using the LinkedIn URL
+            payload = {"person_linkedin_urls": [linkedin_url], "per_page": 1, "page": 1}
+            logger.debug(f"[Apollo] mixed_people/search by linkedin_url={linkedin_url!r}")
+
+        contact = None
+        used_fallback = False
+
+        try:
+            r = requests.post(
+                "https://api.apollo.io/api/v1/mixed_people/search",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "x-api-key": ap_key,
+                },
+                json=payload,
+                timeout=30,
+            )
+            if r.status_code == 401:
+                return jsonify({"error": "Apollo authentication failed (HTTP 401)"}), 401
+
+            # Check for free-plan restriction message before raising for status
+            _mixed_body = {}
+            try:
+                _mixed_body = r.json()
+            except Exception:
+                pass
+            _mixed_msg = (_mixed_body.get("message") or _mixed_body.get("error") or "").lower()
+            _is_plan_restricted = "not accessible" in _mixed_msg and "free plan" in _mixed_msg
+
+            if r.status_code == 200 and not _is_plan_restricted:
+                r.raise_for_status()
+                people = _mixed_body.get("people") or []
+                if people:
+                    contact = people[0]
+                    logger.debug(f"[Apollo] mixed_people/search found person id={contact.get('id')!r}")
+                else:
+                    logger.info("[Apollo] mixed_people/search returned empty people — trying people/match fallback")
+            else:
+                logger.info(
+                    f"[Apollo] mixed_people/search failed (status={r.status_code}, "
+                    f"plan_restricted={_is_plan_restricted}) — trying people/match fallback"
+                )
+        except requests.exceptions.HTTPError as primary_err:
+            logger.info(f"[Apollo] mixed_people/search HTTP error ({primary_err}) — trying people/match fallback")
+        except Exception as primary_exc:
+            logger.info(f"[Apollo] mixed_people/search error ({primary_exc}) — trying people/match fallback")
+
+        # Fallback to people/match when primary search did not return a contact
+        if contact is None and linkedin_url:
+            contact = _apollo_people_match_fallback(ap_key, linkedin_url)
+            if contact:
+                used_fallback = True
+
+        if not contact:
+            return jsonify({"error": "No matching contact found in Apollo"}), 404
+
+        # --- Extract contact fields ---
+        email, mobile_phone, office_phone = _extract_contact_fields(contact)
 
         # --- Build the response ---
-        # Top-level keys hold the three key contact fields; everything else
-        # lives in _details so callers can inspect the full record.
         result = {
             "email": email,
             "mobile_phone": mobile_phone,
@@ -5711,15 +5768,13 @@ def apollo_download_profile():
             "_details": contact,
         }
         logger.info(
-            f"[Apollo] mixed_people/search returned person id={contact.get('id')!r} "
+            f"[Apollo] {'people/match' if used_fallback else 'mixed_people/search'} "
+            f"returned person id={contact.get('id')!r} "
             f"email={'***' if email else '(none)'} "
             f"mobile={'***' if mobile_phone else '(none)'} "
             f"office={'***' if office_phone else '(none)'}"
         )
         return jsonify(result)
-    except requests.exceptions.HTTPError as http_err:
-        logger.warning(f"[Apollo] download-profile HTTP error: {http_err}")
-        return jsonify({"error": "Apollo API request failed"}), 502
     except Exception as exc:
         logger.warning(f"[Apollo] download-profile error: {exc}")
         return jsonify({"error": "Failed to fetch Apollo contact"}), 500
