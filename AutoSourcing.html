@@ -2129,6 +2129,7 @@ const lockedPreviewCompanies=new Map(); // lowercased display text → original 
 const lockedLanguageTags=new Map();    // canonical key → display text; locked language chips
 const lockedSkillTags=new Map();       // canonical key → display text; locked skill chips
 const lockedSectorTags=new Set();      // sector label strings; locked sector chips in sector-based selection
+const lockedSectorCompanyTags=new Set(); // lowercase company names; locked chips in "Sector-based Selections" display
 const userSkills = []; const userSkillIndex = new Set();
 const estimateValueEl = document.getElementById('estimateValue');
 const estimateSpinnerEl = document.getElementById('estimateSpinner');
@@ -2334,7 +2335,7 @@ function addCompany(){
 }
 function removeCompany(i){
   const v=companies.splice(i,1)[0];
-  if(v){ lockedCompanyTags.delete(canonicalKey(v)); companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
+  if(v){ lockedCompanyTags.delete(canonicalKey(v)); lockedSectorCompanyTags.delete(v.toLowerCase()); companyIndex.delete(canonicalKey(v)); renderCompanyChips(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); scheduleSuggestionsUpdate(); scheduleSectorSuggestionsUpdate(); scheduleEstimateUpdate(); updateDynamicCompanyPreview(); }
 }
 function renderCompanyChips(){
   const wrap=document.getElementById('companyAggregator'); const box=document.getElementById('companyChips');
@@ -2476,7 +2477,7 @@ function addManualSector(){
 
 function renderEffectiveCompaniesDisplay(){
   if(!selectedSectors.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
-  const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()))]);
+  const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedSectorCompanyTags.has(c.toLowerCase()))]);
   if(!effective.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   show(sectorCompanyDisplay); sectorCompanyList.innerHTML='';
   const dynamicSet = new Set((lastDynamicPreviewCompanies || []).map(x => x.toLowerCase()));
@@ -2484,9 +2485,20 @@ function renderEffectiveCompaniesDisplay(){
   effective.forEach(name=>{
     if(dynamicSet.has(name.toLowerCase())) return;
     const isUser=companyIndex.has(name.toLowerCase());
+    const isLocked=lockedSectorCompanyTags.has(name.toLowerCase());
     const div=document.createElement('div'); div.className='tag-chip';
-    div.innerHTML=`<span>${name}</span><button type="button" aria-label="Remove ${name}">×</button>`;
-    div.querySelector('button').addEventListener('click',()=>{
+    if(isLocked) div.classList.add('tag-locked');
+    div.innerHTML=`<span>${name}</span><button type="button" aria-label="Remove ${name}" style="margin-left:4px;">×</button>`;
+    const removeBtn=div.querySelector('button');
+    if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
+    div.addEventListener('click', e=>{
+      if(e.target===removeBtn) return;
+      const key=name.toLowerCase();
+      if(lockedSectorCompanyTags.has(key)){ lockedSectorCompanyTags.delete(key); } else { lockedSectorCompanyTags.add(key); }
+      renderEffectiveCompaniesDisplay();
+    });
+    removeBtn.addEventListener('click',()=>{
+      if(lockedSectorCompanyTags.has(name.toLowerCase())) return;
       if(isUser){
         const idx=companies.findIndex(c=>c.toLowerCase()===name.toLowerCase());
         if(idx>-1) removeCompany(idx);
