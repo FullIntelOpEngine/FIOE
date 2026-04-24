@@ -4015,6 +4015,8 @@ function CandidatesTable({
         'sv_assessment_weights_prev',
         'sv_weights_locked_roles',
         'assessmentState',
+        'sv_namecard_open_state_v1',
+        'sv_geo_cache_v1',
       ].forEach(k => {
         try { localStorage.removeItem(k); } catch(_) {}
       });

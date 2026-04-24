@@ -5005,7 +5005,10 @@ function buildRow(row) {
     return td;
   }
 
-  tr.appendChild(makeEditableCell('name', row.name, false, row.linkedinurl));
+  const _rowDisplayName = (row.jobtitle && row.company)
+      ? `${(row.jobtitle || '').trim()} at ${(row.company || '').trim()}`
+      : (row.name || '');
+  tr.appendChild(makeEditableCell('name', _rowDisplayName, false, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, false));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
@@ -9626,6 +9629,8 @@ window.addEventListener('storage', function(e) {
       'sv_assessment_weights_prev',
       'sv_weights_locked_roles',
       'assessmentState',
+      'sv_namecard_open_state_v1',
+      'sv_geo_cache_v1',
     ];
     SV_SESSION_KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch(_) {} });
     // Reload the page so the table reflects the now-empty database.
