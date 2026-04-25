@@ -8616,7 +8616,7 @@ function loadVerifiedEmail() {
       const companyData = data[companyKey];
       if (Array.isArray(companyData.Domain)) {
         for (const entry of companyData.Domain) {
-          if (entry.count == null) entry.count = 1;
+          if (entry.count === null || entry.count === undefined) entry.count = 1;
         }
       }
     }
@@ -8637,7 +8637,7 @@ function recalculateConfidences(companyData) {
   let sumSoFar = 0;
   entries.forEach((e, i) => {
     if (i === entries.length - 1) {
-      e.confidence = parseFloat(Math.max(0, parseFloat((1 - sumSoFar).toFixed(2))).toFixed(2));
+      e.confidence = parseFloat(Math.max(0, 1 - sumSoFar).toFixed(2));
     } else {
       e.confidence = parseFloat(((e.count || 1) / totalCount).toFixed(2));
       sumSoFar += e.confidence;
