@@ -3042,9 +3042,9 @@ function CandidatesTable({
                 </select>
               : f.key === 'compensation'
               ? <div style={{ position: 'relative', width: '100%' }}>
-                  <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(34,197,94,0.07)' : '#ffffff', cursor: 'pointer' }} />
+                  <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(0,180,216,0.07)' : '#ffffff', cursor: 'pointer' }} />
                   {compVerifiedIds.has(String(c.id)) && (
-                    <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#16a34a', pointerEvents: 'none' }}>✓</span>
+                    <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
                   )}
                 </div>
               : f.key === 'geographic'

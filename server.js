@@ -4252,18 +4252,63 @@ app.post('/candidates/ml-summary', requireLogin, dashboardRateLimit, async (req,
         compensation: { last_updated: new Date().toISOString().split('T')[0], username: String(username), useraccess, compensation_by_job_title: {} },
       };
 
+      // Build Verified Compensation block: query verified candidates for this user and group by country.
+      let verifiedCompensationBlock = null;
+      try {
+        const compVerifiedData = loadCompensationVerified();
+        const verifiedIds = Object.keys(compVerifiedData).filter(id => compVerifiedData[id] && compVerifiedData[id].verified);
+        if (verifiedIds.length > 0) {
+          const vcNums = verifiedIds.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+          if (vcNums.length > 0) {
+            const vcResult = await pool.query(
+              `SELECT id, compensation, country FROM "process" WHERE userid = $1 AND id = ANY($2::int[])`,
+              [userid, vcNums]
+            );
+            if (vcResult.rows.length > 0) {
+              const today = new Date().toISOString().split('T')[0];
+              const byCountry = {};
+              const COMP_NO_COUNTRY_VC = '__no_country__';
+              for (const r of vcResult.rows) {
+                if (!r.compensation) continue;
+                const numMatch = String(r.compensation).replace(/[,\s]/g, '').match(/[\d]+(?:\.\d+)?/);
+                if (!numMatch) continue;
+                const compNum = parseFloat(numMatch[0]);
+                const countryKey = (r.country || '').trim() || COMP_NO_COUNTRY_VC;
+                if (!byCountry[countryKey]) byCountry[countryKey] = [];
+                byCountry[countryKey].push(compNum);
+              }
+              const vcArray = Object.entries(byCountry)
+                .filter(([, nums]) => nums.length > 0)
+                .map(([country, nums]) => ({
+                  ...(country !== COMP_NO_COUNTRY_VC ? { country } : {}),
+                  min: String(Math.min(...nums)),
+                  max: String(Math.max(...nums)),
+                  count: nums.length,
+                  _users: [username],
+                  last_updated: today,
+                }));
+              if (vcArray.length > 0) verifiedCompensationBlock = vcArray;
+            }
+          }
+        }
+      } catch (vcErr) {
+        console.warn('[ml-summary] Could not build verified compensation (non-fatal):', vcErr.message);
+      }
+
       // Always write to ML_Holding.json (all users, all access levels)
       const holdingFp = path.join(ML_OUTPUT_DIR, 'ML_Holding.json');
       let holding = {};
       if (fs.existsSync(holdingFp)) {
         try { holding = JSON.parse(fs.readFileSync(holdingFp, 'utf8')); } catch (_) { holding = {}; }
       }
+      const holdingUserSections = { company: holdingSections.company, job_title: holdingSections.job_title, compensation: holdingSections.compensation };
+      if (verifiedCompensationBlock) holdingUserSections.verified_compensation = verifiedCompensationBlock;
       holding[String(username)] = {
         last_updated: new Date().toISOString().split('T')[0],
         username: String(username),
         useraccess,
         confidence_score: Math.round(topSeniorityScore * 100) / 100,
-        sections: { company: holdingSections.company, job_title: holdingSections.job_title, compensation: holdingSections.compensation },
+        sections: holdingUserSections,
       };
       fs.writeFileSync(holdingFp, JSON.stringify(holding, null, 2), 'utf8');
       console.info(`[ml-summary] Written to ML_Holding.json for ${username} (confidence=${Number(topSeniorityScore).toFixed(2)}, access=${useraccess || 'null'}) — awaiting admin integration`);
