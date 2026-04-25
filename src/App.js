@@ -2277,6 +2277,8 @@ function CandidatesTable({
   // AI Comp State
   const [aiCompLoading, setAiCompLoading] = useState(false);
   const [aiCompMessage, setAiCompMessage] = useState('');
+  // Crowd consensus tags: { [id]: { count, avg } } — populated when crowd comp is available
+  const [compConsensus, setCompConsensus] = useState({});
   
   // Checkbox Rename Workflow State
   const [renameCheckboxId, setRenameCheckboxId] = useState(null);
@@ -2289,6 +2291,7 @@ function CandidatesTable({
   const [compModalOpen, setCompModalOpen] = useState(false);
   const [compModalCandidateId, setCompModalCandidateId] = useState(null);
   const [compModalInitialValue, setCompModalInitialValue] = useState('');
+  const [compVerifiedIds, setCompVerifiedIds] = useState(new Set());
 
   // Email modal & SMTP state
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -2381,6 +2384,14 @@ function CandidatesTable({
   }, [candidates, type, setEditRows]);
 
   useEffect(() => { setSelectedIds([]); }, [page]);
+
+  // Load compensation verified IDs on mount
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/compensation-verified`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+      .catch(() => {});
+  }, []); // on mount only
 
   // Helper: remove a set of IDs from the newCandidateIds Set and persist to localStorage
   const dismissNewBadges = ids => {
@@ -2645,39 +2656,69 @@ function CandidatesTable({
         ? { selectAll: true }
         : { ids: selectedIds };
 
-      const res = await fetch(`http://localhost:${API_PORT}/ai-comp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify(body),
-        credentials: 'include'
-      });
-
-      const payload = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(payload?.error || 'AI Comp request failed.');
-      }
-
-      const updatedRows = Array.isArray(payload?.rows) ? payload.rows : [];
-      if (updatedRows.length > 0) {
-        setEditRows(prev => {
-          const next = { ...prev };
-          updatedRows.forEach(row => {
-            if (row?.id == null) return;
-            const entry = { ...(next[row.id] ?? {}) };
-            if (row.compensation != null) {
-              entry.compensation = row.compensation;
-            }
-            next[row.id] = entry;
-          });
-          return next;
+      // ── Step 1: try crowd compensation (Verified Compensation in ML_Master_Compensation) ──
+      let crowdMatchedIds = new Set();
+      try {
+        const crowdRes = await fetch(`http://localhost:${API_PORT}/crowd-comp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(body),
+          credentials: 'include'
         });
+        const crowdPayload = await crowdRes.json().catch(() => ({}));
+        const crowdRows = Array.isArray(crowdPayload?.rows) ? crowdPayload.rows : [];
+        if (crowdRows.length > 0) {
+          crowdMatchedIds = new Set(crowdRows.map(r => r.id));
+          setEditRows(prev => {
+            const next = { ...prev };
+            crowdRows.forEach(row => {
+              if (row?.id == null) return;
+              next[row.id] = { ...(next[row.id] ?? {}), compensation: row.compensation };
+            });
+            return next;
+          });
+          setCompConsensus(prev => {
+            const next = { ...prev };
+            crowdRows.forEach(row => { next[String(row.id)] = { count: row.count, avg: row.compensation }; });
+            return next;
+          });
+        }
+      } catch (_) { /* crowd lookup failure is non-fatal; fall through to AI */ }
+
+      // ── Step 2: fall back to Gemini AI for records not matched by crowd ──
+      const unmatchedIds = selectedIds.filter(id => !crowdMatchedIds.has(id) && !crowdMatchedIds.has(Number(id)));
+      let aiMsg = '';
+      if (unmatchedIds.length > 0) {
+        const aiBody = allSelected && unmatchedIds.length === selectedIds.length ? body : { ids: unmatchedIds };
+        const res = await fetch(`http://localhost:${API_PORT}/ai-comp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(aiBody),
+          credentials: 'include'
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload?.error || 'AI Comp request failed.');
+        const updatedRows = Array.isArray(payload?.rows) ? payload.rows : [];
+        if (updatedRows.length > 0) {
+          setEditRows(prev => {
+            const next = { ...prev };
+            updatedRows.forEach(row => {
+              if (row?.id == null) return;
+              const entry = { ...(next[row.id] ?? {}) };
+              if (row.compensation != null) entry.compensation = row.compensation;
+              next[row.id] = entry;
+            });
+            return next;
+          });
+        }
+        aiMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
       }
 
-      const msg = payload?.message || `AI Comp updated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
-      setAiCompMessage(msg);
+      const crowdMsg = crowdMatchedIds.size > 0 ? `${crowdMatchedIds.size} crowd-sourced` : '';
+      const combined = [crowdMsg, aiMsg].filter(Boolean).join(' · ');
+      setAiCompMessage(combined || 'Compensation updated.');
     } catch (err) {
-      setAiCompMessage(err.message || 'AI Comp failed.');
+      setAiCompMessage(err.message || 'Comp failed.');
     } finally {
       setAiCompLoading(false);
     }
@@ -3032,7 +3073,17 @@ function CandidatesTable({
                   <option value="Executive">Executive</option>
                 </select>
               : f.key === 'compensation'
-              ? <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', cursor: 'pointer' }} />
+              ? <div style={{ position: 'relative', width: '100%' }}>
+                  <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(0,180,216,0.07)' : '#ffffff', cursor: 'pointer' }} />
+                  {compVerifiedIds.has(String(c.id)) && (
+                    <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
+                  )}
+                  {compConsensus[String(c.id)] && (
+                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'block', fontSize: 10, fontWeight: 600, color: '#2e7d32', marginTop: 2, lineHeight: 1.2 }}>
+                      {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} consensus` : 'crowd'}
+                    </span>
+                  )}
+                </div>
               : f.key === 'geographic'
               ? <select value={displayValue || ''} onChange={e => handleEditChange(c.id, f.key, e.target.value)} onFocus={() => dismissNewBadges([String(c.id)])} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', border: '1px solid var(--desired-dawn)', borderRadius: 6 }}>
                   <option value="">-- Select Region --</option>
@@ -4809,11 +4860,11 @@ criteriaSheets.map((cf, idx) => {
             <button
               onClick={handleAiComp}
               disabled={aiCompLoading || dockInUploading || dockOutClearing}
-              title="Forecast compensation in USD based on individual background. This is an AI prediction — please cross‑check before use."
+              title="Compensation in USD, generated via AI or Crowd. Crowd data shows a consensus tag; AI data is reference only and must be cross‑checked."
               className="btn-primary"
               style={{ padding: '8px 16px' }}
             >
-              {aiCompLoading ? 'Estimating...' : 'AI Comp'}
+              {aiCompLoading ? 'Estimating...' : 'Comp'}
             </button>
           )}
 
@@ -5251,7 +5302,19 @@ criteriaSheets.map((cf, idx) => {
         onClose={() => setCompModalOpen(false)}
         initialValue={compModalInitialValue}
         onSave={(total) => {
-          if (compModalCandidateId != null) handleEditChange(compModalCandidateId, 'compensation', total);
+          if (compModalCandidateId != null) {
+            handleEditChange(compModalCandidateId, 'compensation', total);
+            // Tag the saved compensation as verified
+            fetch(`http://localhost:${API_PORT}/save-compensation-verified`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              credentials: 'include',
+              body: JSON.stringify({ candidateId: compModalCandidateId }),
+            })
+              .then(r => r.ok ? r.json() : null)
+              .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+              .catch(() => {});
+          }
         }}
       />
 
@@ -8668,7 +8731,7 @@ export default function App() {
       return _ok;
     }
 
-    // Gemini / LLM path – requires name + company
+    // FIOE / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
       return;
@@ -8747,11 +8810,11 @@ export default function App() {
         const remaining = Math.max(0, curBalance - deductAmt);
         const doFallback = window.confirm(
           `Your ${emailGenProvider.charAt(0).toUpperCase() + emailGenProvider.slice(1)} API service failed.\n\n` +
-          `Falling back to Gemini will deduct tokens:\n` +
+          `Falling back to FIOE will deduct tokens:\n` +
           `  • Tokens to be deducted: ${deductAmt}\n` +
           `  • Account Token balance: ${curBalance}\n` +
           `  • Tokens Left after deduction: ${remaining}\n\n` +
-          `Proceed with Gemini?`
+          `Proceed with FIOE?`
         );
         if (doFallback) {
           if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); return; }
@@ -9004,6 +9067,21 @@ export default function App() {
 
     // Trigger save to backend
     saveCandidateDebounced(id, { email: newEmail });
+
+    // Persist email structure to verified_email.json via Gemini analysis
+    const checkedEmails = resumeEmailList.filter(item => item.checked).map(item => item.value);
+    if (checkedEmails.length > 0) {
+      const candidateName = resumeCandidate.name || '';
+      const candidateCompany = resumeCandidate.organisation || resumeCandidate.company || '';
+      if (candidateName && candidateCompany) {
+        fetch(`http://localhost:${API_PORT}/save-verified-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({ emails: checkedEmails, name: candidateName, company: candidateCompany, candidateId: id }),
+        }).catch(() => {});
+      }
+    }
 
     alert('Email updated in candidate list.');
   };
@@ -9633,7 +9711,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'Gemini'}`
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'FIOE'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}
@@ -9701,9 +9779,9 @@ export default function App() {
                                                             className="email-verif-bar__select"
                                                             value={emailGenProvider}
                                                             onChange={e => setEmailGenProvider(e.target.value)}
-                                                            title="Select email generation provider"
+                                                            title={emailGenProvider === 'gemini' ? 'Email probability based on user confirmations. If consensus is lacking, Gemini will assist.' : undefined}
                                                         >
-                                                            <option value="gemini">Gemini</option>
+                                                            <option value="gemini">FIOE</option>
                                                             {availableContactGenServices.includes('contactout') && (
                                                                 <option value="contactout">ContactOut</option>
                                                             )}
