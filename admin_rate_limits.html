@@ -8661,8 +8661,9 @@ function renderMLCard() {
   const MASTER_SECTIONS = [
     { key: 'company',      label: '🏢 ML_Master_Company',              sectionKey: 'company' },
     { key: 'job_title',    label: '🎓 ML_Master_Jobfamily_Seniority',  sectionKey: 'job_title' },
-    { key: 'compensation', label: '💰 ML_Master_Compensation',         sectionKey: 'compensation' },
-    { key: 'holding',      label: '🔄 ML_Holding',                     sectionKey: 'holding' },
+    { key: 'compensation',       label: '💰 ML_Master_Compensation',    sectionKey: 'compensation' },
+    { key: 'crowd_compensation', label: '📊 ML_Crowd_Compensation',     sectionKey: 'crowd_compensation' },
+    { key: 'holding',            label: '🔄 ML_Holding',                sectionKey: 'holding' },
   ];
 
   // Panel state
@@ -8713,7 +8714,9 @@ function renderMLCard() {
     panel.innerHTML = '';
     if (sectionKey === 'holding') { loadHoldingPanel(); return; }
     if (!masterData) { panel.innerHTML = '<p style="font-size:12px;color:var(--muted);">Loading…</p>'; return; }
-    const sectionData = masterData[sectionKey] || {};
+    // crowd_compensation reads from and saves to the compensation section
+    const actualSectionKey = sectionKey === 'crowd_compensation' ? 'compensation' : sectionKey;
+    const sectionData = masterData[actualSectionKey] || {};
 
     // Filter out internal meta keys
     const entries = Object.entries(sectionData).filter(([k]) => !['_meta'].includes(k));
@@ -8725,6 +8728,8 @@ function renderMLCard() {
       renderJobTitleTable(panel, sectionData, sectionKey);
     } else if (sectionKey === 'compensation') {
       renderCompensationTable(panel, sectionData, sectionKey);
+    } else if (sectionKey === 'crowd_compensation') {
+      renderCrowdCompensationTable(panel, sectionData, actualSectionKey);
     }
 
     // Save button
@@ -8740,13 +8745,13 @@ function renderMLCard() {
       saveBtn.disabled = true;
       saveMsg.textContent = 'Saving…';
       saveMsg.style.color = 'var(--muted)';
-      // Collect edits back into masterData
-      collectEdits(panel, sectionKey);
+      // Collect edits back into masterData (always target the actual underlying section)
+      collectEdits(panel, actualSectionKey);
       try {
-        const r = await fetch('/admin/ml-master-files/' + encodeURIComponent(sectionKey), {
+        const r = await fetch('/admin/ml-master-files/' + encodeURIComponent(actualSectionKey), {
           method: 'PUT', headers: { ...csrfHeaders(), 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify(masterData[sectionKey])
+          body: JSON.stringify(masterData[actualSectionKey])
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error || r.statusText);
@@ -8768,9 +8773,9 @@ function renderMLCard() {
     dlBtn.style.cssText = 'font-size:13px;margin-left:auto;';
     dlBtn.textContent = '⬇️ Download JSON';
     dlBtn.addEventListener('click', () => {
-      const sectionLabels = { company: 'ML_Master_Company', job_title: 'ML_Master_Jobfamily_Seniority', compensation: 'ML_Master_Compensation' };
+      const sectionLabels = { company: 'ML_Master_Company', job_title: 'ML_Master_Jobfamily_Seniority', compensation: 'ML_Master_Compensation', crowd_compensation: 'ML_Crowd_Compensation' };
       const filename = (sectionLabels[sectionKey] || sectionKey) + '.json';
-      const blob = new Blob([JSON.stringify(masterData[sectionKey], null, 2)], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify(masterData[actualSectionKey], null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = filename; a.click();
@@ -10016,6 +10021,158 @@ function renderMLCard() {
     panel.appendChild(tbl);
   }
 
+  // ── ML_Crowd_Compensation table — identical structure to ML_Master_Compensation ──
+  // Range Min / Range Max values are sourced from "Verified Compensation" instead of "Compensation".
+  // All other columns (User, Job Title, Job Family, Country, Count, Last Update, Delete) remain unchanged.
+  // sk is always 'compensation' (the underlying section being written to).
+  function renderCrowdCompensationTable(panel, sectionData, sk) {
+    function renderCrowdCompRows(tbody, userLabel, compByJobTitle) {
+      const jobTitles = Object.entries(compByJobTitle);
+      if (jobTitles.length === 0) {
+        const tr = document.createElement('tr');
+        const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);'; userTd.textContent = userLabel; tr.appendChild(userTd);
+        const emptyTd = document.createElement('td'); emptyTd.colSpan = 9; emptyTd.style.cssText = 'padding:5px 8px;color:var(--muted);font-size:11px;'; emptyTd.textContent = '(no verified compensation records)'; tr.appendChild(emptyTd);
+        tbody.appendChild(tr);
+        return;
+      }
+      let firstRow = true;
+      for (let i = 0; i < jobTitles.length; i++) {
+        const [jobTitle, jobData] = jobTitles[i];
+        if (!jobData || typeof jobData !== 'object') continue;
+
+        const jobFamilyVal = jobData.job_family || '';
+
+        // Use Verified Compensation entries; fall back to empty array when absent
+        const vcEntries = Array.isArray(jobData['Verified Compensation']) && jobData['Verified Compensation'].length > 0
+          ? jobData['Verified Compensation']
+          : [{}];
+
+        // Also obtain the regular Compensation entries to display Country and Count from them
+        // (per spec: only Range Min / Range Max come from Verified Compensation; other columns unchanged)
+        const compEntries = Array.isArray(jobData.Compensation) ? jobData.Compensation : [];
+
+        for (let ci = 0; ci < vcEntries.length; ci++) {
+          const vcEntry = vcEntries[ci] || {};
+          // For Country and Count columns, prefer the matching Compensation entry by country,
+          // then fall back to the Verified Compensation entry's own values.
+          const matchedComp = compEntries.find(c => (c.country || '') === (vcEntry.country || '')) || vcEntry;
+          const tr = document.createElement('tr');
+
+          // User label (only on first row across all job titles for this user group)
+          const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);vertical-align:top;';
+          if (firstRow && userLabel) userTd.textContent = userLabel;
+          tr.appendChild(userTd);
+
+          // Job Title — editable, shown only on first country row for each job title
+          const jtTd = document.createElement('td'); jtTd.style.cssText = 'padding:5px 8px;vertical-align:top;';
+          if (ci === 0) {
+            const jtInput = document.createElement('input'); jtInput.type = 'text'; jtInput.value = jobTitle;
+            jtInput.dataset.masterSection = sk; jtInput.dataset.user = userLabel; jtInput.dataset.compjob = jobTitle;
+            jtInput.dataset.compfield = '_jobkey'; jtInput.dataset.comptype = 'verified';
+            jtInput.style.cssText = 'width:150px;font-size:12px;'; jtInput.title = 'Edit job title';
+            jtTd.appendChild(jtInput);
+          }
+          tr.appendChild(jtTd);
+
+          // Job Family — display only
+          const jfTd = document.createElement('td'); jfTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);vertical-align:top;';
+          if (ci === 0) jfTd.textContent = jobFamilyVal;
+          tr.appendChild(jfTd);
+
+          // Country — editable (from Verified Compensation entry)
+          const ctryTd = document.createElement('td'); ctryTd.style.cssText = 'padding:5px 8px;';
+          const ctryInput = document.createElement('input'); ctryInput.type = 'text'; ctryInput.value = vcEntry.country || '';
+          ctryInput.dataset.masterSection = sk; ctryInput.dataset.user = userLabel; ctryInput.dataset.compjob = jobTitle;
+          ctryInput.dataset.compfield = 'country'; ctryInput.dataset.compindex = String(ci); ctryInput.dataset.comptype = 'verified';
+          ctryInput.style.cssText = 'width:90px;font-size:12px;'; ctryInput.title = 'Edit country';
+          ctryTd.appendChild(ctryInput); tr.appendChild(ctryTd);
+
+          // Range Min — sourced from Verified Compensation
+          const minTd = document.createElement('td'); minTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const minInput = document.createElement('input'); minInput.type = 'number'; minInput.step = '1000'; minInput.min = '0';
+          minInput.dataset.masterSection = sk; minInput.dataset.user = userLabel; minInput.dataset.compjob = jobTitle;
+          minInput.dataset.compfield = 'min'; minInput.dataset.compindex = String(ci); minInput.dataset.comptype = 'verified';
+          minInput.value = String(vcEntry.min || ''); minInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
+          minTd.appendChild(minInput); tr.appendChild(minTd);
+
+          // Range Max — sourced from Verified Compensation
+          const maxTd = document.createElement('td'); maxTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const maxInput = document.createElement('input'); maxInput.type = 'number'; maxInput.step = '1000'; maxInput.min = '0';
+          maxInput.dataset.masterSection = sk; maxInput.dataset.user = userLabel; maxInput.dataset.compjob = jobTitle;
+          maxInput.dataset.compfield = 'max'; maxInput.dataset.compindex = String(ci); maxInput.dataset.comptype = 'verified';
+          maxInput.value = String(vcEntry.max || ''); maxInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
+          maxTd.appendChild(maxInput); tr.appendChild(maxTd);
+
+          // Count — editable (from Verified Compensation entry)
+          const cntTd = document.createElement('td'); cntTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const cntInput = document.createElement('input'); cntInput.type = 'number'; cntInput.step = '1'; cntInput.min = '0';
+          cntInput.dataset.masterSection = sk; cntInput.dataset.user = userLabel; cntInput.dataset.compjob = jobTitle;
+          cntInput.dataset.compfield = 'count'; cntInput.dataset.compindex = String(ci); cntInput.dataset.comptype = 'verified';
+          cntInput.value = String(vcEntry.count || matchedComp.count || 0); cntInput.style.cssText = 'width:60px;text-align:center;font-size:12px;';
+          cntTd.appendChild(cntInput); tr.appendChild(cntTd);
+
+          // Last Update — display only (from Verified Compensation entry)
+          const luTd = document.createElement('td'); luTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
+          luTd.textContent = vcEntry.last_updated || '';
+          tr.appendChild(luTd);
+
+          // Delete button — only on first country row for each job title
+          const delTd = document.createElement('td'); delTd.style.cssText = 'text-align:center;padding:5px 8px;vertical-align:top;';
+          if (ci === 0) {
+            const delBtn = document.createElement('button'); delBtn.textContent = '🗑️'; delBtn.title = `Delete verified compensation for ${jobTitle}`;
+            delBtn.style.cssText = 'font-size:12px;padding:2px 6px;background:#fff;border:1px solid #dc3545;color:#dc3545;border-radius:4px;cursor:pointer;';
+            delBtn.addEventListener('click', () => {
+              if (!userLabel && masterData[sk] && masterData[sk].compensation_by_job_title &&
+                  masterData[sk].compensation_by_job_title[jobTitle]) {
+                delete masterData[sk].compensation_by_job_title[jobTitle]['Verified Compensation'];
+              } else if (userLabel && masterData[sk] && masterData[sk][userLabel] &&
+                         masterData[sk][userLabel].compensation_by_job_title &&
+                         masterData[sk][userLabel].compensation_by_job_title[jobTitle]) {
+                delete masterData[sk][userLabel].compensation_by_job_title[jobTitle]['Verified Compensation'];
+              }
+              renderMasterPanel('crowd_compensation');
+            });
+            delTd.appendChild(delBtn);
+          }
+          tr.appendChild(delTd);
+          tbody.appendChild(tr);
+          firstRow = false;
+        }
+      }
+    }
+
+    const tbl = document.createElement('table');
+    tbl.className = 'users-table';
+    tbl.style.cssText = 'width:100%;font-size:12px;';
+    tbl.innerHTML = `<thead><tr>
+      <th style="text-align:left;padding:6px 8px;">User</th>
+      <th style="text-align:left;padding:6px 8px;">Job Title</th>
+      <th style="text-align:left;padding:6px 8px;">Job Family</th>
+      <th style="text-align:left;padding:6px 8px;">Country</th>
+      <th style="text-align:center;padding:6px 8px;">Range Min</th>
+      <th style="text-align:center;padding:6px 8px;">Range Max</th>
+      <th style="text-align:center;padding:6px 8px;">Count</th>
+      <th style="text-align:left;padding:6px 8px;">Last Update</th>
+      <th style="text-align:center;padding:6px 8px;" aria-label="Actions"></th>
+    </tr></thead>`;
+    const tbody = document.createElement('tbody');
+
+    if (sectionData.compensation_by_job_title && typeof sectionData.compensation_by_job_title === 'object') {
+      renderCrowdCompRows(tbody, '', sectionData.compensation_by_job_title);
+    } else {
+      const entries = Object.entries(sectionData).filter(([k]) => !['_meta', 'last_updated'].includes(k));
+      for (const [userKey, entry] of entries) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        if (entry.compensation_by_job_title && typeof entry.compensation_by_job_title === 'object') {
+          renderCrowdCompRows(tbody, userKey, entry.compensation_by_job_title);
+        }
+      }
+    }
+
+    tbl.appendChild(tbody);
+    panel.appendChild(tbl);
+  }
+
   // ── Collect edits from inputs back into masterData ────────────────────────
   function collectEdits(panel, sectionKey) {
     // Company edits — username-keyed format (has data-user): sector[sector][company] = count
@@ -10069,6 +10226,7 @@ function renderMLCard() {
       const jobTitle  = inp.dataset.compjob;
       const field     = inp.dataset.compfield;
       const compIndex = inp.dataset.compindex !== undefined ? Number(inp.dataset.compindex) : null;
+      const compType  = inp.dataset.comptype || '';  // 'verified' for ML_Crowd_Compensation edits
       if (field === '_jobkey') return; // job key renames handled separately
       const val = field === 'count' ? Number(inp.value) : inp.value.trim();
       if (!masterData[sectionKey]) return;
@@ -10080,8 +10238,13 @@ function renderMLCard() {
         jtEntry = masterData[sectionKey][user].compensation_by_job_title[jobTitle];
       }
       if (!jtEntry) return;
-      // New array format: update the specific Compensation entry by index
-      if (compIndex !== null && Array.isArray(jtEntry.Compensation) && compIndex < jtEntry.Compensation.length) {
+      if (compType === 'verified') {
+        // ML_Crowd_Compensation edits target the "Verified Compensation" array
+        if (compIndex !== null && Array.isArray(jtEntry['Verified Compensation']) && compIndex < jtEntry['Verified Compensation'].length) {
+          jtEntry['Verified Compensation'][compIndex][field] = val;
+        }
+      } else if (compIndex !== null && Array.isArray(jtEntry.Compensation) && compIndex < jtEntry.Compensation.length) {
+        // New array format: update the specific Compensation entry by index
         jtEntry.Compensation[compIndex][field] = val;
       } else if (compIndex === null) {
         // Legacy flat format: set field directly on the entry
