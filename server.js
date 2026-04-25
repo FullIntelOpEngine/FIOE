@@ -8597,10 +8597,6 @@ app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, 
 
 // ── Verified Email JSON helpers ───────────────────────────────────────────────
 const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
-// Confidence scoring constants for verified email entries
-const EMAIL_CONFIDENCE_FIRST  = 1;    // confidence assigned to the first (primary) domain entry for a company
-const EMAIL_CONFIDENCE_EXTRA  = 0.2;  // confidence assigned to each additional domain/format entry
-const EMAIL_CONFIDENCE_DECREMENT = 0.2; // amount by which the primary entry's confidence decreases per additional entry
 
 function loadVerifiedEmail() {
   try {
@@ -8611,14 +8607,42 @@ function loadVerifiedEmail() {
       for (const entry of data) {
         const companyKey = (entry.company || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '_');
         if (!converted[companyKey]) converted[companyKey] = { Domain: [], Confidence_threshold: 1 };
-        converted[companyKey].Domain.push({ ...entry, company: companyKey, confidence: entry.confidence != null ? entry.confidence : 1 });
+        converted[companyKey].Domain.push({ ...entry, company: companyKey, count: entry.count || 1, confidence: entry.confidence != null ? entry.confidence : 1 });
       }
       return converted;
+    }
+    // Ensure every entry has a count field (handles data saved before count was introduced)
+    for (const companyKey of Object.keys(data)) {
+      const companyData = data[companyKey];
+      if (Array.isArray(companyData.Domain)) {
+        for (const entry of companyData.Domain) {
+          if (entry.count == null) entry.count = 1;
+        }
+      }
     }
     return data;
   } catch (_) {
     return {};
   }
+}
+
+// Redistribute confidence values across all domain entries for a company
+// proportionally based on each entry's count (confidence = count / totalCount).
+// The last entry receives the remainder to ensure the sum is exactly 1.
+function recalculateConfidences(companyData) {
+  const entries = companyData.Domain;
+  if (!entries || entries.length === 0) return;
+  const totalCount = entries.reduce((sum, e) => sum + (e.count || 1), 0);
+  if (totalCount === 0) return;
+  let sumSoFar = 0;
+  entries.forEach((e, i) => {
+    if (i === entries.length - 1) {
+      e.confidence = parseFloat(Math.max(0, parseFloat((1 - sumSoFar).toFixed(2))).toFixed(2));
+    } else {
+      e.confidence = parseFloat(((e.count || 1) / totalCount).toFixed(2));
+      sumSoFar += e.confidence;
+    }
+  });
 }
 
 function saveVerifiedEmail(data) {
@@ -8652,8 +8676,16 @@ app.post('/save-verified-email', requireLogin, dashboardRateLimit, async (req, r
       const localPart = email.slice(0, atIdx);
       const domain = email.slice(atIdx + 1).toLowerCase();
 
-      // Skip if this domain is already stored for this company
-      if (companyData.Domain.some(e => e.domain === domain)) continue;
+      // Check if this domain is already stored for this company
+      const existingEntry = companyData.Domain.find(e => e.domain === domain);
+      if (existingEntry) {
+        // Increment count to reflect recruiter re-confirmation of this domain
+        existingEntry.count = (existingEntry.count || 1) + 1;
+        existingEntry.saved_at = new Date().toISOString();
+        if (candidateId != null) existingEntry.candidateId = String(candidateId);
+        newEntries.push(existingEntry);
+        continue;
+      }
 
       // Use Gemini to infer the format pattern and produce a fake normalized entry
       const normPrompt = `You are an email format analyst. Given:
@@ -8692,19 +8724,6 @@ No markdown, no explanation.`;
         fake_local_part = '';
       }
 
-      // Assign confidence: first entry for company = EMAIL_CONFIDENCE_FIRST;
-      // each additional entry = EMAIL_CONFIDENCE_EXTRA, reduce primary entry by EMAIL_CONFIDENCE_DECREMENT.
-      let entryConfidence;
-      if (companyData.Domain.length === 0) {
-        entryConfidence = EMAIL_CONFIDENCE_FIRST;
-      } else {
-        entryConfidence = EMAIL_CONFIDENCE_EXTRA;
-        // Reduce the primary (first) entry's confidence to reflect reduced certainty
-        if (companyData.Domain[0]) {
-          companyData.Domain[0].confidence = Math.max(0, parseFloat(((companyData.Domain[0].confidence || EMAIL_CONFIDENCE_FIRST) - EMAIL_CONFIDENCE_DECREMENT).toFixed(2)));
-        }
-      }
-
       const newEntry = {
         company: companyKey,
         domain,
@@ -8713,12 +8732,16 @@ No markdown, no explanation.`;
         fake_local_part,
         saved_at: new Date().toISOString(),
         candidateId: candidateId != null ? String(candidateId) : undefined,
-        confidence: entryConfidence,
+        count: 1,
+        confidence: 1, // placeholder; recalculated below
       };
 
       companyData.Domain.push(newEntry);
       newEntries.push(newEntry);
     }
+
+    // Recalculate all confidences proportionally based on counts
+    recalculateConfidences(companyData);
 
     if (newEntries.length > 0) {
       saveVerifiedEmail(existing);
