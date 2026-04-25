@@ -8597,6 +8597,10 @@ app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, 
 
 // ── Verified Email JSON helpers ───────────────────────────────────────────────
 const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
+// Confidence scoring constants for verified email entries
+const EMAIL_CONFIDENCE_FIRST  = 1;    // confidence assigned to the first (primary) domain entry for a company
+const EMAIL_CONFIDENCE_EXTRA  = 0.2;  // confidence assigned to each additional domain/format entry
+const EMAIL_CONFIDENCE_DECREMENT = 0.2; // amount by which the primary entry's confidence decreases per additional entry
 
 function loadVerifiedEmail() {
   try {
@@ -8688,16 +8692,16 @@ No markdown, no explanation.`;
         fake_local_part = '';
       }
 
-      // Assign confidence: first entry for company = 1.0;
-      // each additional entry = 0.2, reduce primary entry by 0.2 per additional entry.
+      // Assign confidence: first entry for company = EMAIL_CONFIDENCE_FIRST;
+      // each additional entry = EMAIL_CONFIDENCE_EXTRA, reduce primary entry by EMAIL_CONFIDENCE_DECREMENT.
       let entryConfidence;
       if (companyData.Domain.length === 0) {
-        entryConfidence = 1;
+        entryConfidence = EMAIL_CONFIDENCE_FIRST;
       } else {
-        entryConfidence = 0.2;
+        entryConfidence = EMAIL_CONFIDENCE_EXTRA;
         // Reduce the primary (first) entry's confidence to reflect reduced certainty
         if (companyData.Domain[0]) {
-          companyData.Domain[0].confidence = Math.max(0, parseFloat(((companyData.Domain[0].confidence || 1) - 0.2).toFixed(2)));
+          companyData.Domain[0].confidence = Math.max(0, parseFloat(((companyData.Domain[0].confidence || EMAIL_CONFIDENCE_FIRST) - EMAIL_CONFIDENCE_DECREMENT).toFixed(2)));
         }
       }
 
