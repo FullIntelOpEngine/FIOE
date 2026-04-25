@@ -9849,7 +9849,7 @@ function renderMLCard() {
       if (jobTitles.length === 0) {
         const tr = document.createElement('tr');
         const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);'; userTd.textContent = userLabel; tr.appendChild(userTd);
-        const emptyTd = document.createElement('td'); emptyTd.colSpan = 8; emptyTd.style.cssText = 'padding:5px 8px;color:var(--muted);font-size:11px;'; emptyTd.textContent = '(no compensation records)'; tr.appendChild(emptyTd);
+        const emptyTd = document.createElement('td'); emptyTd.colSpan = 9; emptyTd.style.cssText = 'padding:5px 8px;color:var(--muted);font-size:11px;'; emptyTd.textContent = '(no compensation records)'; tr.appendChild(emptyTd);
         tbody.appendChild(tr);
         return;
       }
