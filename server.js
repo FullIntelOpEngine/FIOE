@@ -3794,6 +3794,39 @@ async function _buildMLProfileData(userid, username, useraccess) {
     }
   }
 
+  // ── Per-job-title verified compensation (country-grouped, verified records only) ──
+  // Query the process table for records whose IDs are flagged in compensation_verified.json,
+  // then group by job title and country so each Jobtitle entry can embed "Verified Compensation"
+  // directly below its regular "Compensation" block.
+  const perJobTitleVerifiedCompByCountry = {};  // { jobTitle: { country: [num, ...] } }
+  try {
+    const compVerifiedData = loadCompensationVerified();
+    const verifiedIds = Object.keys(compVerifiedData).filter(id => compVerifiedData[id] && compVerifiedData[id].verified);
+    if (verifiedIds.length > 0) {
+      const vcNums = verifiedIds.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+      if (vcNums.length > 0) {
+        const vcResult = await pool.query(
+          `SELECT id, compensation, country, jobtitle, role_tag FROM "process" WHERE userid = $1 AND id = ANY($2::int[])`,
+          [userid, vcNums]
+        );
+        for (const r of vcResult.rows) {
+          if (!r.compensation) continue;
+          const numMatch = String(r.compensation).replace(/[,\s]/g, '').match(/[\d]+(?:\.\d+)?/);
+          if (!numMatch) continue;
+          const compNum = parseFloat(numMatch[0]);
+          const jtRaw = (r.jobtitle || r.role_tag || '').trim();
+          if (!jtRaw) continue;
+          const countryKey = (r.country || '').trim() || COMP_NO_COUNTRY;
+          if (!perJobTitleVerifiedCompByCountry[jtRaw]) perJobTitleVerifiedCompByCountry[jtRaw] = {};
+          if (!perJobTitleVerifiedCompByCountry[jtRaw][countryKey]) perJobTitleVerifiedCompByCountry[jtRaw][countryKey] = [];
+          perJobTitleVerifiedCompByCountry[jtRaw][countryKey].push(compNum);
+        }
+      }
+    }
+  } catch (vcErr) {
+    console.warn('[_buildMLProfileData] Could not build per-title verified compensation (non-fatal):', vcErr.message);
+  }
+
   // Build sector: sector-first format with record-count based confidence.
   // confidence(company, sector) = count(company in sector) / count(company in all sectors).
   // Companies that only appear in one sector get confidence 1.0.
@@ -4040,6 +4073,24 @@ async function _buildMLProfileData(userid, username, useraccess) {
         }
         entry.Compensation = compensationArray;
       }
+      // Embed "Verified Compensation" directly below "Compensation" for records tagged as verified.
+      // Grouped per country — same shape as Compensation — so verified data stays tied to this title.
+      const verifiedCompByCountry = perJobTitleVerifiedCompByCountry[jt];
+      if (verifiedCompByCountry && Object.keys(verifiedCompByCountry).length > 0) {
+        const verifiedCompensationArray = [];
+        for (const [countryKey, nums] of Object.entries(verifiedCompByCountry)) {
+          const countryVal = countryKey === COMP_NO_COUNTRY ? null : countryKey;
+          verifiedCompensationArray.push({
+            ...(countryVal ? { country: countryVal } : {}),
+            min: String(Math.min(...nums)),
+            max: String(Math.max(...nums)),
+            count: nums.length,
+            _users: [username],
+            last_updated: today,
+          });
+        }
+        if (verifiedCompensationArray.length > 0) entry['Verified Compensation'] = verifiedCompensationArray;
+      }
       familyJobtitle[jt] = entry;
     }
 
@@ -4059,20 +4110,55 @@ async function _buildMLProfileData(userid, username, useraccess) {
   // Company section: sector-first with confidence splitting (confidence = 1/n per sector per company)
   const companySection = { last_updated: today, username, useraccess: ua, sector };
 
-  // Compensation section: per-job-title breakdown (unchanged, for ML_Holding compatibility)
+  // Compensation section: per-job-title breakdown with Compensation and Verified Compensation arrays.
+  // Each job title entry holds a Compensation array (one element per country) and, when available,
+  // a "Verified Compensation" array sourced from perJobTitleVerifiedCompByCountry.
   const compensationByJobTitle = {};
   for (const [jt, byCountry] of Object.entries(perJobTitleCompByCountry)) {
     if (!byCountry || Object.keys(byCountry).length === 0) continue;
-    // Flatten all country buckets to get global min/max/count for the master rollup
-    const allNums = Object.values(byCountry).flat();
-    // Top country = the one with the most records
-    const topCountryEntry = Object.entries(byCountry).sort((a, b) => b[1].length - a[1].length)[0];
-    compensationByJobTitle[jt] = {
-      ...(topCountryEntry && topCountryEntry[0] !== COMP_NO_COUNTRY ? { country: topCountryEntry[0] } : {}),
-      min: String(Math.min(...allNums)),
-      max: String(Math.max(...allNums)),
-      count: allNums.length,
-    };
+    // Dominant job family for this title (most frequent value in perJobTitleJobFamily)
+    const jfArr = perJobTitleJobFamily[jt] || [];
+    let jfDominant;
+    if (jfArr.length > 0) {
+      const freq = {};
+      for (const jf of jfArr) { if (jf) freq[jf] = (freq[jf] || 0) + 1; }
+      const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+      if (sorted.length > 0) jfDominant = sorted[0][0];
+    }
+    // Build per-country Compensation array
+    const compensationArray = [];
+    for (const [countryKey, nums] of Object.entries(byCountry)) {
+      if (!nums || nums.length === 0) continue;
+      compensationArray.push({
+        ...(countryKey !== COMP_NO_COUNTRY ? { country: countryKey } : {}),
+        min: String(Math.min(...nums)),
+        max: String(Math.max(...nums)),
+        count: nums.length,
+        _users: [username],
+        last_updated: today,
+      });
+    }
+    const jtEntry = {};
+    if (jfDominant) jtEntry.job_family = jfDominant;
+    if (compensationArray.length > 0) jtEntry.Compensation = compensationArray;
+    // Embed Verified Compensation for this job title if available
+    const vcByCountry = perJobTitleVerifiedCompByCountry[jt];
+    if (vcByCountry && Object.keys(vcByCountry).length > 0) {
+      const vcArray = [];
+      for (const [ck, nums] of Object.entries(vcByCountry)) {
+        if (!nums || nums.length === 0) continue;
+        vcArray.push({
+          ...(ck !== COMP_NO_COUNTRY ? { country: ck } : {}),
+          min: String(Math.min(...nums)),
+          max: String(Math.max(...nums)),
+          count: nums.length,
+          _users: [username],
+          last_updated: today,
+        });
+      }
+      if (vcArray.length > 0) jtEntry['Verified Compensation'] = vcArray;
+    }
+    if (jtEntry.Compensation || jtEntry['Verified Compensation']) compensationByJobTitle[jt] = jtEntry;
   }
   const compensationSection = { last_updated: today, username, useraccess: ua, compensation_by_job_title: compensationByJobTitle };
 
@@ -4252,18 +4338,63 @@ app.post('/candidates/ml-summary', requireLogin, dashboardRateLimit, async (req,
         compensation: { last_updated: new Date().toISOString().split('T')[0], username: String(username), useraccess, compensation_by_job_title: {} },
       };
 
+      // Build Verified Compensation block: query verified candidates for this user and group by country.
+      let verifiedCompensationBlock = null;
+      try {
+        const compVerifiedData = loadCompensationVerified();
+        const verifiedIds = Object.keys(compVerifiedData).filter(id => compVerifiedData[id] && compVerifiedData[id].verified);
+        if (verifiedIds.length > 0) {
+          const vcNums = verifiedIds.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+          if (vcNums.length > 0) {
+            const vcResult = await pool.query(
+              `SELECT id, compensation, country FROM "process" WHERE userid = $1 AND id = ANY($2::int[])`,
+              [userid, vcNums]
+            );
+            if (vcResult.rows.length > 0) {
+              const today = new Date().toISOString().split('T')[0];
+              const byCountry = {};
+              const COMP_NO_COUNTRY_VC = '__no_country__';
+              for (const r of vcResult.rows) {
+                if (!r.compensation) continue;
+                const numMatch = String(r.compensation).replace(/[,\s]/g, '').match(/[\d]+(?:\.\d+)?/);
+                if (!numMatch) continue;
+                const compNum = parseFloat(numMatch[0]);
+                const countryKey = (r.country || '').trim() || COMP_NO_COUNTRY_VC;
+                if (!byCountry[countryKey]) byCountry[countryKey] = [];
+                byCountry[countryKey].push(compNum);
+              }
+              const vcArray = Object.entries(byCountry)
+                .filter(([, nums]) => nums.length > 0)
+                .map(([country, nums]) => ({
+                  ...(country !== COMP_NO_COUNTRY_VC ? { country } : {}),
+                  min: String(Math.min(...nums)),
+                  max: String(Math.max(...nums)),
+                  count: nums.length,
+                  _users: [username],
+                  last_updated: today,
+                }));
+              if (vcArray.length > 0) verifiedCompensationBlock = vcArray;
+            }
+          }
+        }
+      } catch (vcErr) {
+        console.warn('[ml-summary] Could not build verified compensation (non-fatal):', vcErr.message);
+      }
+
       // Always write to ML_Holding.json (all users, all access levels)
       const holdingFp = path.join(ML_OUTPUT_DIR, 'ML_Holding.json');
       let holding = {};
       if (fs.existsSync(holdingFp)) {
         try { holding = JSON.parse(fs.readFileSync(holdingFp, 'utf8')); } catch (_) { holding = {}; }
       }
+      const holdingUserSections = { company: holdingSections.company, job_title: holdingSections.job_title, compensation: holdingSections.compensation };
+      // Verified Compensation is now embedded per job title in the compensation section (no separate block).
       holding[String(username)] = {
         last_updated: new Date().toISOString().split('T')[0],
         username: String(username),
         useraccess,
         confidence_score: Math.round(topSeniorityScore * 100) / 100,
-        sections: { company: holdingSections.company, job_title: holdingSections.job_title, compensation: holdingSections.compensation },
+        sections: holdingUserSections,
       };
       fs.writeFileSync(holdingFp, JSON.stringify(holding, null, 2), 'utf8');
       console.info(`[ml-summary] Written to ML_Holding.json for ${username} (confidence=${Number(topSeniorityScore).toFixed(2)}, access=${useraccess || 'null'}) — awaiting admin integration`);
@@ -4863,75 +4994,135 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       }
 
       // ── Compensation: merge per-job-title entries from all users ──
-      // New format: entry has compensation_by_job_title: { jobTitle: { country, min, max, count } }
-      // Old format (backward compat): entry has by_job_title/by_job_family/range — treated as single entry
+      // Supports two formats:
+      //   New array format (ML_Holding after restructuring):
+      //     compensation_by_job_title[jt] = { job_family, Compensation: [...], "Verified Compensation": [...] }
+      //   Old flat format (backward compat):
+      //     compensation_by_job_title[jt] = { country, min, max, count, job_family, last_updated }
+      // Internal accumulator per job title:
+      //   { _jfFreq, _compByCountry, _vcByCountry }
+      // Converted to output format at the end of this block.
+      const COMP_ACC_NO_COUNTRY = '__no_country__';
+
+      function getOrInitCompAcc(jobTitle) {
+        if (!consolidated.compensation.compensation_by_job_title[jobTitle]) {
+          consolidated.compensation.compensation_by_job_title[jobTitle] = {
+            _jfFreq: {},
+            _compByCountry: {},  // { countryKey: { min, max, count, users, last_updated } }
+            _vcByCountry: {},    // verified comp
+          };
+        }
+        return consolidated.compensation.compensation_by_job_title[jobTitle];
+      }
+
+      function mergeIntoCountryBucket(byCountry, countryKey, minStr, maxStr, cnt, users, lastUpdated) {
+        const key = countryKey || COMP_ACC_NO_COUNTRY;
+        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, users: [], last_updated: lastUpdated || today };
+        const bucket = byCountry[key];
+        const inMin = parseFloat(minStr), inMax = parseFloat(maxStr);
+        if (!isNaN(inMin)) bucket.min = Math.min(bucket.min, inMin);
+        if (!isNaN(inMax)) bucket.max = Math.max(bucket.max, inMax);
+        bucket.count += (cnt || 1);
+        for (const u of users) { if (!bucket.users.includes(u)) bucket.users.push(u); }
+        if (lastUpdated) bucket.last_updated = lastUpdated;
+      }
+
+      function mergeCompArrayIntoAccum(byCountry, compArray, fallbackUsers) {
+        if (!Array.isArray(compArray)) return;
+        for (const cEntry of compArray) {
+          if (!cEntry || typeof cEntry !== 'object') continue;
+          const entryUsers = Array.isArray(cEntry._users) && cEntry._users.length > 0 ? cEntry._users : fallbackUsers;
+          mergeIntoCountryBucket(byCountry, cEntry.country || null, cEntry.min, cEntry.max, cEntry.count || 1, entryUsers, cEntry.last_updated);
+        }
+      }
+
       for (const [keyName, entry] of Object.entries(masterFiles.compensation)) {
         if (!entry || typeof entry !== 'object') continue;
+
+        // ── Flat consolidated format: previously-integrated master file ──
+        // The root key "compensation_by_job_title" holds the already-merged dict directly.
+        if (keyName === 'compensation_by_job_title') {
+          for (const [jobTitle, compEntry] of Object.entries(entry)) {
+            if (!compEntry || typeof compEntry !== 'object') continue;
+            const acc = getOrInitCompAcc(jobTitle);
+            if (Array.isArray(compEntry.Compensation)) {
+              // New array format
+              const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
+              mergeCompArrayIntoAccum(acc._compByCountry, compEntry.Compensation, existingUsers);
+              if (Array.isArray(compEntry['Verified Compensation'])) {
+                mergeCompArrayIntoAccum(acc._vcByCountry, compEntry['Verified Compensation'], existingUsers);
+              }
+            } else {
+              // Old flat format: single country entry
+              const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
+              const titleCount = typeof compEntry.count === 'number' ? compEntry.count : 1;
+              mergeIntoCountryBucket(acc._compByCountry, compEntry.country || null, compEntry.min, compEntry.max, titleCount, existingUsers, compEntry.last_updated);
+            }
+            if (compEntry.job_family) acc._jfFreq[compEntry.job_family] = (acc._jfFreq[compEntry.job_family] || 0) + 1;
+          }
+          continue;
+        }
+
         const { users, count } = entryMeta(keyName, entry);
 
         if (entry.compensation_by_job_title && typeof entry.compensation_by_job_title === 'object') {
-          // New format: iterate each job title
+          // Per-user format: iterate each job title
           for (const [jobTitle, compEntry] of Object.entries(entry.compensation_by_job_title)) {
             if (!compEntry || typeof compEntry !== 'object') continue;
-            const titleCount = compEntry.count || count;
-            const existing = consolidated.compensation.compensation_by_job_title[jobTitle];
-            if (existing) {
-              const existingCount = existing.count || 1;
-              const inMin = parseFloat(compEntry.min), inMax = parseFloat(compEntry.max);
-              const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-              if (!isNaN(inMin) && !isNaN(exMin)) existing.min = String(Math.round((exMin * existingCount + inMin * titleCount) / (existingCount + titleCount)));
-              if (!isNaN(inMax) && !isNaN(exMax)) existing.max = String(Math.round((exMax * existingCount + inMax * titleCount) / (existingCount + titleCount)));
-              existing.count = existingCount + titleCount;
-              // Track country frequency; resolve dominant country
-              if (compEntry.country) {
-                if (!existing._countryFreq) existing._countryFreq = {};
-                existing._countryFreq[compEntry.country] = (existing._countryFreq[compEntry.country] || 0) + titleCount;
-                existing.country = Object.entries(existing._countryFreq).sort((a, b) => b[1] - a[1])[0][0];
+            const acc = getOrInitCompAcc(jobTitle);
+            if (Array.isArray(compEntry.Compensation)) {
+              // New array format
+              mergeCompArrayIntoAccum(acc._compByCountry, compEntry.Compensation, users);
+              if (Array.isArray(compEntry['Verified Compensation'])) {
+                mergeCompArrayIntoAccum(acc._vcByCountry, compEntry['Verified Compensation'], users);
               }
-              if (!existing._users) existing._users = [];
-              for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
-              existing.last_updated = today;
             } else {
-              const initFreq = compEntry.country ? { [compEntry.country]: titleCount } : undefined;
-              consolidated.compensation.compensation_by_job_title[jobTitle] = {
-                ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
-                min: compEntry.min,
-                max: compEntry.max,
-                count: titleCount,
-                _users: [...users],
-                last_updated: today,
-              };
+              // Old flat format
+              const titleCount = compEntry.count || count;
+              mergeIntoCountryBucket(acc._compByCountry, compEntry.country || null, compEntry.min, compEntry.max, titleCount, users, compEntry.last_updated);
             }
+            if (compEntry.job_family) acc._jfFreq[compEntry.job_family] = (acc._jfFreq[compEntry.job_family] || 0) + 1;
           }
         } else if (entry.by_job_title) {
           // Old format backward compat: treat as a single job title entry
           const jobTitle = entry.by_job_title;
           const range = entry.range || {};
-          const existing = consolidated.compensation.compensation_by_job_title[jobTitle];
-          if (existing) {
-            const existingCount = existing.count || 1;
-            const inMin = parseFloat(range.min), inMax = parseFloat(range.max);
-            const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-            if (!isNaN(inMin) && !isNaN(exMin)) existing.min = String(Math.round((exMin * existingCount + inMin * count) / (existingCount + count)));
-            if (!isNaN(inMax) && !isNaN(exMax)) existing.max = String(Math.round((exMax * existingCount + inMax * count) / (existingCount + count)));
-            existing.count = existingCount + count;
-            if (!existing._users) existing._users = [];
-            for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
-            existing.last_updated = today;
-          } else {
-            consolidated.compensation.compensation_by_job_title[jobTitle] = {
-              min: range.min || '0',
-              max: range.max || '0',
-              count,
-              _users: [...users],
-              last_updated: today,
-            };
-          }
+          const acc = getOrInitCompAcc(jobTitle);
+          mergeIntoCountryBucket(acc._compByCountry, null, range.min, range.max, count, users, today);
         }
       }
-      // Remove internal _countryFreq tracking keys from output
-      for (const entry of Object.values(consolidated.compensation.compensation_by_job_title)) {
-        delete entry._countryFreq;
+      // Convert internal accumulators to output format
+      for (const [jt, acc] of Object.entries(consolidated.compensation.compensation_by_job_title)) {
+        const outputEntry = {};
+        // Dominant job family
+        if (Object.keys(acc._jfFreq).length > 0) {
+          outputEntry.job_family = Object.entries(acc._jfFreq).sort((a, b) => b[1] - a[1])[0][0];
+        }
+        // Compensation array
+        const compArray = Object.entries(acc._compByCountry)
+          .filter(([, b]) => b.count > 0)
+          .map(([ck, b]) => ({
+            ...(ck !== COMP_ACC_NO_COUNTRY ? { country: ck } : {}),
+            min: String(b.min === Infinity ? 0 : Math.round(b.min)),
+            max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
+            count: b.count,
+            _users: b.users,
+            last_updated: b.last_updated,
+          }));
+        if (compArray.length > 0) outputEntry.Compensation = compArray;
+        // Verified Compensation array
+        const vcArray = Object.entries(acc._vcByCountry)
+          .filter(([, b]) => b.count > 0)
+          .map(([ck, b]) => ({
+            ...(ck !== COMP_ACC_NO_COUNTRY ? { country: ck } : {}),
+            min: String(b.min === Infinity ? 0 : Math.round(b.min)),
+            max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
+            count: b.count,
+            _users: b.users,
+            last_updated: b.last_updated,
+          }));
+        if (vcArray.length > 0) outputEntry['Verified Compensation'] = vcArray;
+        consolidated.compensation.compensation_by_job_title[jt] = outputEntry;
       }
 
       return consolidated;
@@ -6776,6 +6967,127 @@ Input:
   }
 });
 
+// ========== Crowd Compensation Lookup ==========
+
+/**
+ * Endpoint: POST /crowd-comp
+ * Body: { ids: [number, ...], selectAll: boolean }
+ * Looks up each candidate's compensation in ML_Master_Compensation.json by matching
+ * Job Title, Job Family (optional), and Country against the "Verified Compensation" entries.
+ * Matched records are updated in the DB (average of Range Min / Range Max).
+ * Response: { rows: [{ id, min, max, avg, count, compensation }] }
+ */
+app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res) => {
+  const { ids, selectAll } = req.body;
+  try {
+    let rows;
+    if (selectAll) {
+      const result = await pool.query(
+        'SELECT id, jobtitle, jobfamily, country FROM "process" WHERE userid = $1',
+        [String(req.user.id)]
+      );
+      rows = result.rows;
+    } else {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No ids provided.' });
+      }
+      const safeIds = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+      if (!safeIds.length) return res.status(400).json({ error: 'No valid ids provided.' });
+      const placeholders = safeIds.map((_, i) => `$${i + 2}`).join(', ');
+      const result = await pool.query(
+        `SELECT id, jobtitle, jobfamily, country FROM "process" WHERE userid = $1 AND id IN (${placeholders})`,
+        [String(req.user.id), ...safeIds]
+      );
+      rows = result.rows;
+    }
+
+    // Load ML_Master_Compensation.json
+    const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
+    let compData = {};
+    try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
+    const compByJobTitle = compData.compensation_by_job_title || {};
+
+    const norm = s => (s || '').trim().toLowerCase();
+
+    // Match each row against Verified Compensation data
+    const matched = [];
+    for (const row of rows) {
+      const jtNorm = norm(row.jobtitle);
+      const jfNorm = norm(row.jobfamily);
+      const ctryNorm = norm(row.country);
+      if (!jtNorm) continue;
+
+      // Find job title entry (case-insensitive)
+      let jtEntry = null;
+      for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
+        if (norm(jtKey) === jtNorm) { jtEntry = jtVal; break; }
+      }
+      if (!jtEntry || typeof jtEntry !== 'object') continue;
+
+      // Job family must match when both candidate and entry have values
+      if (jfNorm && jtEntry.job_family && norm(jtEntry.job_family) !== jfNorm) continue;
+
+      // Find matching country in Verified Compensation
+      const vcEntries = Array.isArray(jtEntry['Verified Compensation']) ? jtEntry['Verified Compensation'] : [];
+      const vcMatch = vcEntries.find(e => norm(e.country) === ctryNorm);
+      if (!vcMatch) continue;
+
+      const min = Number(vcMatch.min) || 0;
+      const max = Number(vcMatch.max) || 0;
+      if (!min && !max) continue;
+      const avg = Math.round((min + max) / 2);
+
+      matched.push({ id: row.id, min, max, avg, count: Number(vcMatch.count) || 0, compensation: avg });
+    }
+
+    if (matched.length === 0) {
+      return res.json({ rows: [] });
+    }
+
+    // Update compensation in DB for matched records
+    const updatedRows = [];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const item of matched) {
+        const result = await client.query(
+          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
+          [item.avg, item.id, String(req.user.id)]
+        );
+        if (result.rowCount === 1) {
+          const r = result.rows[0];
+          updatedRows.push({
+            ...item,
+            compensation: r.compensation ?? item.avg,
+            pic: picToDataUri(r.pic),
+            role: r.role ?? r.jobtitle ?? null,
+            organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
+            jobtitle: r.jobtitle ?? null,
+            company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
+          });
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    try {
+      broadcastSSE('candidates_changed', { action: 'crowd_comp', count: updatedRows.length });
+      for (const u of updatedRows) broadcastSSE('candidate_updated', u);
+    } catch (_) { /* ignore */ }
+
+    _writeApprovalLog({ action: 'crowd_comp', username: req.user.username, userid: req.user.id, detail: `Crowd Comp updated ${updatedRows.length} records`, source: 'server.js' });
+    res.json({ rows: updatedRows });
+  } catch (err) {
+    console.error('/crowd-comp error:', err);
+    res.status(500).json({ error: 'Crowd compensation lookup failed.', detail: err.message });
+  }
+});
+
 // ========== NEW: Calendar & Google Meet Integration ==========
 
 // Helper to create an OAuth2 client for Google using googleapis and persisted tokens for a username.
@@ -8211,20 +8523,45 @@ Phone: ...`;
       return res.json(result);
     }
 
-    // ── Default Gemini/LLM path needs name + company ─────────────────────
+    // ── Default FIOE/LLM path needs name + company ───────────────────────
     if (!name || !company) {
       return res.status(400).json({ error: 'Name and Company are required.' });
     }
 
-    // ── Default Gemini/LLM path ──────────────────────────────────────────
-    // Request strictly 3 ranked emails
-    const genPrompt = `
-      Generate a list of exactly 3 most likely business email address permutations for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
-      Infer the likely domain name based on the company.
-      Sort the list strictly by highest probability of being the correct active email to lowest probability.
-      Return strictly a JSON object: { "emails": ["email1", "email2", "email3"] }
-      Do not include markdown formatting.
-    `;
+    // ── FIOE path: check verified_email.json first ────────────────────────
+    // Normalise the company key the same way as the save handler does.
+    const companyKey = company.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const verifiedEmailData = loadVerifiedEmail();
+    const companyEntry = verifiedEmailData[companyKey];
+
+    let genPrompt;
+    if (companyEntry && Array.isArray(companyEntry.Domain) && companyEntry.Domain.length > 0) {
+      // Find the entry with the highest confidence value
+      const topEntry = companyEntry.Domain.reduce((best, e) =>
+        (e.confidence || 0) > (best.confidence || 0) ? e : best,
+        companyEntry.Domain[0]
+      );
+      // Ask Gemini to generate 3 variations using the verified domain structure
+      genPrompt = `
+        You are an email address generator. The following verified email domain structure has been confirmed for the company "${company}":
+        - Domain: ${topEntry.domain}
+        - Format: ${topEntry.format}
+        - Example: ${topEntry.fake_example || '(not available)'}
+
+        Using exactly this domain and format, generate 3 realistic email address variations for a person named "${name}"${country ? ` (located in ${country})` : ''}.
+        Sort the list by highest probability of being the correct active email to lowest probability.
+        Return strictly a JSON object: { "emails": ["email1", "email2", "email3"] }
+        Do not include markdown formatting.
+      `;
+    } else {
+      // No verified data — fall back to Gemini's own LLM knowledge, 1 email only
+      genPrompt = `
+        Generate the single most likely business email address for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
+        Infer the likely domain name based on the company name.
+        Return strictly a JSON object: { "emails": ["email1"] }
+        Do not include markdown formatting.
+      `;
+    }
 
     const genText = await llmGenerateText(genPrompt, { username: req.user && req.user.username, label: 'llm/email-gen' });
     incrementGeminiQueryCount(req.user.username).catch(() => {});
@@ -8249,6 +8586,196 @@ Phone: ...`;
     console.error('[generate-email] Unhandled error:', err.message || err);
     if (err.stack) console.error('[generate-email] Stack:', err.stack);
     res.status(500).json({ error: 'Generation failed. Check server logs for details.' });
+  }
+});
+
+// ── Compensation Verified JSON helpers ───────────────────────────────────────
+const COMP_VERIFIED_PATH = path.join(__dirname, 'compensation_verified.json');
+
+function loadCompensationVerified() {
+  try {
+    return JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveCompensationVerified(data) {
+  const tmp = COMP_VERIFIED_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, COMP_VERIFIED_PATH);
+}
+
+app.post('/save-compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
+  const { candidateId } = req.body || {};
+  if (!candidateId) return res.status(400).json({ error: 'candidateId is required.' });
+  const data = loadCompensationVerified();
+  data[String(candidateId)] = { verified: true, saved_at: new Date().toISOString() };
+  saveCompensationVerified(data);
+  res.json({ ok: true, verifiedIds: Object.keys(data) });
+});
+
+app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
+  const data = loadCompensationVerified();
+  res.json({ verifiedIds: Object.keys(data) });
+});
+
+// ── Verified Email JSON helpers ───────────────────────────────────────────────
+const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
+
+function loadVerifiedEmail() {
+  try {
+    const data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+    // Migrate legacy flat-array format to new company-keyed structure
+    if (Array.isArray(data)) {
+      const converted = {};
+      for (const entry of data) {
+        const companyKey = (entry.company || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '_');
+        if (!converted[companyKey]) converted[companyKey] = { Domain: [], Confidence_threshold: 1 };
+        converted[companyKey].Domain.push({ ...entry, company: companyKey, count: entry.count || 1, confidence: entry.confidence != null ? entry.confidence : 1 });
+      }
+      return converted;
+    }
+    // Ensure every entry has a count field (handles data saved before count was introduced)
+    for (const companyKey of Object.keys(data)) {
+      const companyData = data[companyKey];
+      if (Array.isArray(companyData.Domain)) {
+        for (const entry of companyData.Domain) {
+          if (entry.count === null || entry.count === undefined) entry.count = 1;
+        }
+      }
+    }
+    return data;
+  } catch (_) {
+    return {};
+  }
+}
+
+// Redistribute confidence values across all domain entries for a company
+// proportionally based on each entry's count (confidence = count / totalCount).
+// The last entry receives the remainder to ensure the sum is exactly 1.
+function recalculateConfidences(companyData) {
+  const entries = companyData.Domain;
+  if (!entries || entries.length === 0) return;
+  const totalCount = entries.reduce((sum, e) => sum + (e.count || 1), 0);
+  if (totalCount === 0) return;
+  let sumSoFar = 0;
+  entries.forEach((e, i) => {
+    if (i === entries.length - 1) {
+      e.confidence = parseFloat(Math.max(0, 1 - sumSoFar).toFixed(2));
+    } else {
+      e.confidence = parseFloat(((e.count || 1) / totalCount).toFixed(2));
+      sumSoFar += e.confidence;
+    }
+  });
+}
+
+function saveVerifiedEmail(data) {
+  const tmp = VERIFIED_EMAIL_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, VERIFIED_EMAIL_PATH);
+}
+
+// Gemini-powered email normalization: derive format pattern + fake example for a domain
+app.post('/save-verified-email', requireLogin, dashboardRateLimit, async (req, res) => {
+  try {
+    const { emails, name, company, candidateId } = req.body || {};
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ error: 'emails array is required.' });
+    }
+    if (!name || !company) {
+      return res.status(400).json({ error: 'name and company are required.' });
+    }
+
+    const existing = loadVerifiedEmail();
+    const companyKey = company.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    if (!existing[companyKey]) existing[companyKey] = { Domain: [], Confidence_threshold: 1 };
+    const companyData = existing[companyKey];
+
+    const newEntries = [];
+
+    for (const email of emails) {
+      if (!email || typeof email !== 'string') continue;
+      const atIdx = email.lastIndexOf('@');
+      if (atIdx < 0) continue;
+      const localPart = email.slice(0, atIdx);
+      const domain = email.slice(atIdx + 1).toLowerCase();
+
+      // Check if this domain is already stored for this company
+      const existingEntry = companyData.Domain.find(e => e.domain === domain);
+      if (existingEntry) {
+        // Increment count to reflect recruiter re-confirmation of this domain
+        existingEntry.count = (existingEntry.count || 1) + 1;
+        existingEntry.saved_at = new Date().toISOString();
+        if (candidateId != null) existingEntry.candidateId = String(candidateId);
+        newEntries.push(existingEntry);
+        continue;
+      }
+
+      // Use Gemini to infer the format pattern and produce a fake normalized entry
+      const normPrompt = `You are an email format analyst. Given:
+- Real name: "${name}"
+- Company: "${company}"
+- Observed email local part: "${localPart}"
+- Domain: "${domain}"
+
+Analyze the format used for the local part of the email. Then:
+1. Identify the format pattern (e.g. "first_name.last_name", "firstnamelastname", "f.lastname", "firstlastname" etc.)
+2. Generate a completely fake example email using a generic made-up name (NOT the real name) that follows the same format.
+   The fake name must be realistic-sounding but entirely fictional (e.g. "John Tan", "Oliver Chan").
+3. Return ONLY a JSON object with these fields:
+   {
+     "format": "<pattern string>",
+     "fake_example": "<fake_local_part>@${domain}",
+     "fake_local_part": "<fake_local_part_only>"
+   }
+No markdown, no explanation.`;
+
+      let format = localPart;
+      let fake_example = '';
+      let fake_local_part = '';
+      try {
+        const llmText = await llmGenerateText(normPrompt, { username: req.user && req.user.username, label: 'llm/email-norm' });
+        const jsonStr = llmText.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(jsonStr);
+        format = parsed.format || localPart;
+        fake_example = parsed.fake_example || '';
+        fake_local_part = parsed.fake_local_part || '';
+      } catch (e) {
+        console.warn('[save-verified-email] LLM normalization failed (non-fatal):', e.message);
+        // Fallback: store the format as-is without a fake example
+        format = localPart;
+        fake_example = '';
+        fake_local_part = '';
+      }
+
+      const newEntry = {
+        company: companyKey,
+        domain,
+        format,
+        fake_example,
+        fake_local_part,
+        saved_at: new Date().toISOString(),
+        candidateId: candidateId != null ? String(candidateId) : undefined,
+        count: 1,
+        confidence: 1, // placeholder; recalculated below
+      };
+
+      companyData.Domain.push(newEntry);
+      newEntries.push(newEntry);
+    }
+
+    // Recalculate all confidences proportionally based on counts
+    recalculateConfidences(companyData);
+
+    if (newEntries.length > 0) {
+      saveVerifiedEmail(existing);
+    }
+
+    res.json({ ok: true, added: newEntries.length, entries: newEntries });
+  } catch (err) {
+    console.error('[save-verified-email] error:', err.message || err);
+    res.status(500).json({ error: 'Failed to save verified email.' });
   }
 });
 
