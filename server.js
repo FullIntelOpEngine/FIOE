@@ -8523,20 +8523,45 @@ Phone: ...`;
       return res.json(result);
     }
 
-    // ── Default Gemini/LLM path needs name + company ─────────────────────
+    // ── Default FIOE/LLM path needs name + company ───────────────────────
     if (!name || !company) {
       return res.status(400).json({ error: 'Name and Company are required.' });
     }
 
-    // ── Default Gemini/LLM path ──────────────────────────────────────────
-    // Request strictly 3 ranked emails
-    const genPrompt = `
-      Generate a list of exactly 3 most likely business email address permutations for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
-      Infer the likely domain name based on the company.
-      Sort the list strictly by highest probability of being the correct active email to lowest probability.
-      Return strictly a JSON object: { "emails": ["email1", "email2", "email3"] }
-      Do not include markdown formatting.
-    `;
+    // ── FIOE path: check verified_email.json first ────────────────────────
+    // Normalise the company key the same way as the save handler does.
+    const companyKey = company.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const verifiedEmailData = loadVerifiedEmail();
+    const companyEntry = verifiedEmailData[companyKey];
+
+    let genPrompt;
+    if (companyEntry && Array.isArray(companyEntry.Domain) && companyEntry.Domain.length > 0) {
+      // Find the entry with the highest confidence value
+      const topEntry = companyEntry.Domain.reduce((best, e) =>
+        (e.confidence || 0) > (best.confidence || 0) ? e : best,
+        companyEntry.Domain[0]
+      );
+      // Ask Gemini to generate 3 variations using the verified domain structure
+      genPrompt = `
+        You are an email address generator. The following verified email domain structure has been confirmed for the company "${company}":
+        - Domain: ${topEntry.domain}
+        - Format: ${topEntry.format}
+        - Example: ${topEntry.fake_example || '(not available)'}
+
+        Using exactly this domain and format, generate 3 realistic email address variations for a person named "${name}"${country ? ` (located in ${country})` : ''}.
+        Sort the list by highest probability of being the correct active email to lowest probability.
+        Return strictly a JSON object: { "emails": ["email1", "email2", "email3"] }
+        Do not include markdown formatting.
+      `;
+    } else {
+      // No verified data — fall back to Gemini's own LLM knowledge, 1 email only
+      genPrompt = `
+        Generate the single most likely business email address for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
+        Infer the likely domain name based on the company name.
+        Return strictly a JSON object: { "emails": ["email1"] }
+        Do not include markdown formatting.
+      `;
+    }
 
     const genText = await llmGenerateText(genPrompt, { username: req.user && req.user.username, label: 'llm/email-gen' });
     incrementGeminiQueryCount(req.user.username).catch(() => {});

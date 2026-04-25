@@ -8731,7 +8731,7 @@ export default function App() {
       return _ok;
     }
 
-    // Gemini / LLM path – requires name + company
+    // FIOE / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
       return;
@@ -8810,11 +8810,11 @@ export default function App() {
         const remaining = Math.max(0, curBalance - deductAmt);
         const doFallback = window.confirm(
           `Your ${emailGenProvider.charAt(0).toUpperCase() + emailGenProvider.slice(1)} API service failed.\n\n` +
-          `Falling back to Gemini will deduct tokens:\n` +
+          `Falling back to FIOE will deduct tokens:\n` +
           `  • Tokens to be deducted: ${deductAmt}\n` +
           `  • Account Token balance: ${curBalance}\n` +
           `  • Tokens Left after deduction: ${remaining}\n\n` +
-          `Proceed with Gemini?`
+          `Proceed with FIOE?`
         );
         if (doFallback) {
           if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); return; }
@@ -9711,7 +9711,7 @@ export default function App() {
                                                     {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
                                                             {verifEngineMode === 'generate'
-                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'Gemini'}`
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'FIOE'}`
                                                                 : emailVerifService !== 'default'
                                                                     ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
                                                                     : ' · Verify Selected'}
@@ -9779,9 +9779,9 @@ export default function App() {
                                                             className="email-verif-bar__select"
                                                             value={emailGenProvider}
                                                             onChange={e => setEmailGenProvider(e.target.value)}
-                                                            title="Select email generation provider"
+                                                            title={emailGenProvider === 'gemini' ? 'Email probability based on user confirmations. If consensus is lacking, Gemini will assist.' : undefined}
                                                         >
-                                                            <option value="gemini">Gemini</option>
+                                                            <option value="gemini">FIOE</option>
                                                             {availableContactGenServices.includes('contactout') && (
                                                                 <option value="contactout">ContactOut</option>
                                                             )}
