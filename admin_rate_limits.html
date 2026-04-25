@@ -9842,6 +9842,8 @@ function renderMLCard() {
   function renderCompensationTable(panel, sectionData, sk) {
     // Helper: render a set of compensation_by_job_title entries into tbody
     // userLabel is shown in the User column (empty string for consolidated/flat format)
+    // Supports both the new array format { job_family, Compensation: [...], "Verified Compensation": [...] }
+    // and the legacy flat format { country, min, max, count, job_family, last_updated }.
     function renderCompRows(tbody, userLabel, compByJobTitle) {
       const jobTitles = Object.entries(compByJobTitle);
       if (jobTitles.length === 0) {
@@ -9851,68 +9853,94 @@ function renderMLCard() {
         tbody.appendChild(tr);
         return;
       }
+      let firstRow = true;
       for (let i = 0; i < jobTitles.length; i++) {
         const [jobTitle, jobData] = jobTitles[i];
         if (!jobData || typeof jobData !== 'object') continue;
-        const tr = document.createElement('tr');
-        // User label (only on first row for this user group)
-        const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);vertical-align:top;';
-        if (i === 0 && userLabel) userTd.textContent = userLabel;
-        tr.appendChild(userTd);
-        // Job Title — editable
-        const jtTd = document.createElement('td'); jtTd.style.cssText = 'padding:5px 8px;';
-        const jtInput = document.createElement('input'); jtInput.type = 'text'; jtInput.value = jobTitle;
-        jtInput.dataset.masterSection = sk; jtInput.dataset.user = userLabel; jtInput.dataset.compjob = jobTitle; jtInput.dataset.compfield = '_jobkey';
-        jtInput.style.cssText = 'width:150px;font-size:12px;'; jtInput.title = 'Edit job title';
-        jtTd.appendChild(jtInput); tr.appendChild(jtTd);
-        // Job Family — display only
-        const jfTd = document.createElement('td'); jfTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
-        jfTd.textContent = jobData.job_family || '';
-        tr.appendChild(jfTd);
-        // Country — editable
-        const ctryTd = document.createElement('td'); ctryTd.style.cssText = 'padding:5px 8px;';
-        const ctryInput = document.createElement('input'); ctryInput.type = 'text'; ctryInput.value = jobData.country || '';
-        ctryInput.dataset.masterSection = sk; ctryInput.dataset.user = userLabel; ctryInput.dataset.compjob = jobTitle; ctryInput.dataset.compfield = 'country';
-        ctryInput.style.cssText = 'width:90px;font-size:12px;'; ctryInput.title = 'Edit country';
-        ctryTd.appendChild(ctryInput); tr.appendChild(ctryTd);
-        // Range Min
-        const minTd = document.createElement('td'); minTd.style.cssText = 'text-align:center;padding:5px 8px;';
-        const minInput = document.createElement('input'); minInput.type = 'number'; minInput.step = '1000'; minInput.min = '0';
-        minInput.dataset.masterSection = sk; minInput.dataset.user = userLabel; minInput.dataset.compjob = jobTitle; minInput.dataset.compfield = 'min';
-        minInput.value = String(jobData.min || ''); minInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
-        minTd.appendChild(minInput); tr.appendChild(minTd);
-        // Range Max
-        const maxTd = document.createElement('td'); maxTd.style.cssText = 'text-align:center;padding:5px 8px;';
-        const maxInput = document.createElement('input'); maxInput.type = 'number'; maxInput.step = '1000'; maxInput.min = '0';
-        maxInput.dataset.masterSection = sk; maxInput.dataset.user = userLabel; maxInput.dataset.compjob = jobTitle; maxInput.dataset.compfield = 'max';
-        maxInput.value = String(jobData.max || ''); maxInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
-        maxTd.appendChild(maxInput); tr.appendChild(maxTd);
-        // Count — editable
-        const cntTd = document.createElement('td'); cntTd.style.cssText = 'text-align:center;padding:5px 8px;';
-        const cntInput = document.createElement('input'); cntInput.type = 'number'; cntInput.step = '1'; cntInput.min = '0';
-        cntInput.dataset.masterSection = sk; cntInput.dataset.user = userLabel; cntInput.dataset.compjob = jobTitle; cntInput.dataset.compfield = 'count';
-        cntInput.value = String(jobData.count || 0); cntInput.style.cssText = 'width:60px;text-align:center;font-size:12px;';
-        cntTd.appendChild(cntInput); tr.appendChild(cntTd);
-        // Last Update — display only
-        const luTd = document.createElement('td'); luTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
-        luTd.textContent = jobData.last_updated || '';
-        tr.appendChild(luTd);
-        // Delete button
-        const delTd = document.createElement('td'); delTd.style.cssText = 'text-align:center;padding:5px 8px;';
-        const delBtn = document.createElement('button'); delBtn.textContent = '🗑️'; delBtn.title = `Delete ${jobTitle}`;
-        delBtn.style.cssText = 'font-size:12px;padding:2px 6px;background:#fff;border:1px solid #dc3545;color:#dc3545;border-radius:4px;cursor:pointer;';
-        delBtn.addEventListener('click', () => {
-          // Flat consolidated format: sectionData.compensation_by_job_title[jobTitle]
-          // Per-user format: sectionData[userLabel].compensation_by_job_title[jobTitle]
-          if (!userLabel && masterData[sk] && masterData[sk].compensation_by_job_title) {
-            delete masterData[sk].compensation_by_job_title[jobTitle];
-          } else if (userLabel && masterData[sk] && masterData[sk][userLabel] && masterData[sk][userLabel].compensation_by_job_title) {
-            delete masterData[sk][userLabel].compensation_by_job_title[jobTitle];
+
+        // Detect new array format vs legacy flat format
+        const isArrayFormat = Array.isArray(jobData.Compensation);
+        const jobFamilyVal = jobData.job_family || '';
+
+        // Determine the list of per-country rows to render for this job title
+        // New format: one row per Compensation entry; legacy: single row
+        const compEntries = isArrayFormat
+          ? (jobData.Compensation.length > 0 ? jobData.Compensation : [{}])
+          : [{ country: jobData.country || '', min: jobData.min || '', max: jobData.max || '', count: jobData.count || 0, last_updated: jobData.last_updated || '' }];
+
+        for (let ci = 0; ci < compEntries.length; ci++) {
+          const compEntry = compEntries[ci] || {};
+          const tr = document.createElement('tr');
+          // User label (only on first row across all job titles for this user group)
+          const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);vertical-align:top;';
+          if (firstRow && userLabel) userTd.textContent = userLabel;
+          tr.appendChild(userTd);
+          // Job Title — editable, shown only on first country row for each job title
+          const jtTd = document.createElement('td'); jtTd.style.cssText = 'padding:5px 8px;vertical-align:top;';
+          if (ci === 0) {
+            const jtInput = document.createElement('input'); jtInput.type = 'text'; jtInput.value = jobTitle;
+            jtInput.dataset.masterSection = sk; jtInput.dataset.user = userLabel; jtInput.dataset.compjob = jobTitle; jtInput.dataset.compfield = '_jobkey';
+            jtInput.style.cssText = 'width:150px;font-size:12px;'; jtInput.title = 'Edit job title';
+            jtTd.appendChild(jtInput);
           }
-          renderMasterPanel(sk);
-        });
-        delTd.appendChild(delBtn); tr.appendChild(delTd);
-        tbody.appendChild(tr);
+          tr.appendChild(jtTd);
+          // Job Family — display only, shown on first country row for each job title
+          const jfTd = document.createElement('td'); jfTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);vertical-align:top;';
+          if (ci === 0) jfTd.textContent = jobFamilyVal;
+          tr.appendChild(jfTd);
+          // Country — editable
+          const ctryTd = document.createElement('td'); ctryTd.style.cssText = 'padding:5px 8px;';
+          const ctryInput = document.createElement('input'); ctryInput.type = 'text'; ctryInput.value = compEntry.country || '';
+          ctryInput.dataset.masterSection = sk; ctryInput.dataset.user = userLabel; ctryInput.dataset.compjob = jobTitle; ctryInput.dataset.compfield = 'country';
+          if (isArrayFormat) ctryInput.dataset.compindex = String(ci);
+          ctryInput.style.cssText = 'width:90px;font-size:12px;'; ctryInput.title = 'Edit country';
+          ctryTd.appendChild(ctryInput); tr.appendChild(ctryTd);
+          // Range Min
+          const minTd = document.createElement('td'); minTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const minInput = document.createElement('input'); minInput.type = 'number'; minInput.step = '1000'; minInput.min = '0';
+          minInput.dataset.masterSection = sk; minInput.dataset.user = userLabel; minInput.dataset.compjob = jobTitle; minInput.dataset.compfield = 'min';
+          if (isArrayFormat) minInput.dataset.compindex = String(ci);
+          minInput.value = String(compEntry.min || ''); minInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
+          minTd.appendChild(minInput); tr.appendChild(minTd);
+          // Range Max
+          const maxTd = document.createElement('td'); maxTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const maxInput = document.createElement('input'); maxInput.type = 'number'; maxInput.step = '1000'; maxInput.min = '0';
+          maxInput.dataset.masterSection = sk; maxInput.dataset.user = userLabel; maxInput.dataset.compjob = jobTitle; maxInput.dataset.compfield = 'max';
+          if (isArrayFormat) maxInput.dataset.compindex = String(ci);
+          maxInput.value = String(compEntry.max || ''); maxInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
+          maxTd.appendChild(maxInput); tr.appendChild(maxTd);
+          // Count — editable
+          const cntTd = document.createElement('td'); cntTd.style.cssText = 'text-align:center;padding:5px 8px;';
+          const cntInput = document.createElement('input'); cntInput.type = 'number'; cntInput.step = '1'; cntInput.min = '0';
+          cntInput.dataset.masterSection = sk; cntInput.dataset.user = userLabel; cntInput.dataset.compjob = jobTitle; cntInput.dataset.compfield = 'count';
+          if (isArrayFormat) cntInput.dataset.compindex = String(ci);
+          cntInput.value = String(compEntry.count || 0); cntInput.style.cssText = 'width:60px;text-align:center;font-size:12px;';
+          cntTd.appendChild(cntInput); tr.appendChild(cntTd);
+          // Last Update — display only (from per-country entry)
+          const luTd = document.createElement('td'); luTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
+          luTd.textContent = compEntry.last_updated || '';
+          tr.appendChild(luTd);
+          // Delete button — only on first country row for each job title
+          const delTd = document.createElement('td'); delTd.style.cssText = 'text-align:center;padding:5px 8px;vertical-align:top;';
+          if (ci === 0) {
+            const delBtn = document.createElement('button'); delBtn.textContent = '🗑️'; delBtn.title = `Delete ${jobTitle}`;
+            delBtn.style.cssText = 'font-size:12px;padding:2px 6px;background:#fff;border:1px solid #dc3545;color:#dc3545;border-radius:4px;cursor:pointer;';
+            delBtn.addEventListener('click', () => {
+              // Flat consolidated format: sectionData.compensation_by_job_title[jobTitle]
+              // Per-user format: sectionData[userLabel].compensation_by_job_title[jobTitle]
+              if (!userLabel && masterData[sk] && masterData[sk].compensation_by_job_title) {
+                delete masterData[sk].compensation_by_job_title[jobTitle];
+              } else if (userLabel && masterData[sk] && masterData[sk][userLabel] && masterData[sk][userLabel].compensation_by_job_title) {
+                delete masterData[sk][userLabel].compensation_by_job_title[jobTitle];
+              }
+              renderMasterPanel(sk);
+            });
+            delTd.appendChild(delBtn);
+          }
+          tr.appendChild(delTd);
+          tbody.appendChild(tr);
+          firstRow = false;
+        }
       }
     }
 
@@ -10040,15 +10068,24 @@ function renderMLCard() {
       const user      = inp.dataset.user;
       const jobTitle  = inp.dataset.compjob;
       const field     = inp.dataset.compfield;
+      const compIndex = inp.dataset.compindex !== undefined ? Number(inp.dataset.compindex) : null;
       if (field === '_jobkey') return; // job key renames handled separately
       const val = field === 'count' ? Number(inp.value) : inp.value.trim();
       if (!masterData[sectionKey]) return;
-      // Flat consolidated format (user is ""): masterData[sectionKey].compensation_by_job_title[jobTitle]
-      if (!user && masterData[sectionKey].compensation_by_job_title && masterData[sectionKey].compensation_by_job_title[jobTitle]) {
-        masterData[sectionKey].compensation_by_job_title[jobTitle][field] = val;
-      } else if (user && masterData[sectionKey][user] && masterData[sectionKey][user].compensation_by_job_title &&
-          masterData[sectionKey][user].compensation_by_job_title[jobTitle]) {
-        masterData[sectionKey][user].compensation_by_job_title[jobTitle][field] = val;
+      // Resolve the job title entry
+      let jtEntry = null;
+      if (!user && masterData[sectionKey].compensation_by_job_title) {
+        jtEntry = masterData[sectionKey].compensation_by_job_title[jobTitle];
+      } else if (user && masterData[sectionKey][user] && masterData[sectionKey][user].compensation_by_job_title) {
+        jtEntry = masterData[sectionKey][user].compensation_by_job_title[jobTitle];
+      }
+      if (!jtEntry) return;
+      // New array format: update the specific Compensation entry by index
+      if (compIndex !== null && Array.isArray(jtEntry.Compensation) && compIndex < jtEntry.Compensation.length) {
+        jtEntry.Compensation[compIndex][field] = val;
+      } else if (compIndex === null) {
+        // Legacy flat format: set field directly on the entry
+        jtEntry[field] = val;
       }
     });
     // Compensation text field edits (by_job_title, by_job_family, by_country) — backward compat old format

@@ -4110,14 +4110,12 @@ async function _buildMLProfileData(userid, username, useraccess) {
   // Company section: sector-first with confidence splitting (confidence = 1/n per sector per company)
   const companySection = { last_updated: today, username, useraccess: ua, sector };
 
-  // Compensation section: per-job-title breakdown (unchanged, for ML_Holding compatibility)
+  // Compensation section: per-job-title breakdown with Compensation and Verified Compensation arrays.
+  // Each job title entry holds a Compensation array (one element per country) and, when available,
+  // a "Verified Compensation" array sourced from perJobTitleVerifiedCompByCountry.
   const compensationByJobTitle = {};
   for (const [jt, byCountry] of Object.entries(perJobTitleCompByCountry)) {
     if (!byCountry || Object.keys(byCountry).length === 0) continue;
-    // Flatten all country buckets to get global min/max/count for the master rollup
-    const allNums = Object.values(byCountry).flat();
-    // Top country = the one with the most records
-    const topCountryEntry = Object.entries(byCountry).sort((a, b) => b[1].length - a[1].length)[0];
     // Dominant job family for this title (most frequent value in perJobTitleJobFamily)
     const jfArr = perJobTitleJobFamily[jt] || [];
     let jfDominant;
@@ -4127,14 +4125,40 @@ async function _buildMLProfileData(userid, username, useraccess) {
       const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
       if (sorted.length > 0) jfDominant = sorted[0][0];
     }
-    compensationByJobTitle[jt] = {
-      ...(topCountryEntry && topCountryEntry[0] !== COMP_NO_COUNTRY ? { country: topCountryEntry[0] } : {}),
-      ...(jfDominant ? { job_family: jfDominant } : {}),
-      min: String(Math.min(...allNums)),
-      max: String(Math.max(...allNums)),
-      count: allNums.length,
-      last_updated: today,
-    };
+    // Build per-country Compensation array
+    const compensationArray = [];
+    for (const [countryKey, nums] of Object.entries(byCountry)) {
+      if (!nums || nums.length === 0) continue;
+      compensationArray.push({
+        ...(countryKey !== COMP_NO_COUNTRY ? { country: countryKey } : {}),
+        min: String(Math.min(...nums)),
+        max: String(Math.max(...nums)),
+        count: nums.length,
+        _users: [username],
+        last_updated: today,
+      });
+    }
+    const jtEntry = {};
+    if (jfDominant) jtEntry.job_family = jfDominant;
+    if (compensationArray.length > 0) jtEntry.Compensation = compensationArray;
+    // Embed Verified Compensation for this job title if available
+    const vcByCountry = perJobTitleVerifiedCompByCountry[jt];
+    if (vcByCountry && Object.keys(vcByCountry).length > 0) {
+      const vcArray = [];
+      for (const [ck, nums] of Object.entries(vcByCountry)) {
+        if (!nums || nums.length === 0) continue;
+        vcArray.push({
+          ...(ck !== COMP_NO_COUNTRY ? { country: ck } : {}),
+          min: String(Math.min(...nums)),
+          max: String(Math.max(...nums)),
+          count: nums.length,
+          _users: [username],
+          last_updated: today,
+        });
+      }
+      if (vcArray.length > 0) jtEntry['Verified Compensation'] = vcArray;
+    }
+    if (jtEntry.Compensation || jtEntry['Verified Compensation']) compensationByJobTitle[jt] = jtEntry;
   }
   const compensationSection = { last_updated: today, username, useraccess: ua, compensation_by_job_title: compensationByJobTitle };
 
@@ -4364,7 +4388,7 @@ app.post('/candidates/ml-summary', requireLogin, dashboardRateLimit, async (req,
         try { holding = JSON.parse(fs.readFileSync(holdingFp, 'utf8')); } catch (_) { holding = {}; }
       }
       const holdingUserSections = { company: holdingSections.company, job_title: holdingSections.job_title, compensation: holdingSections.compensation };
-      if (verifiedCompensationBlock) holdingUserSections.verified_compensation = verifiedCompensationBlock;
+      // Verified Compensation is now embedded per job title in the compensation section (no separate block).
       holding[String(username)] = {
         last_updated: new Date().toISOString().split('T')[0],
         username: String(username),
@@ -4970,34 +4994,71 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       }
 
       // ── Compensation: merge per-job-title entries from all users ──
-      // New format: entry has compensation_by_job_title: { jobTitle: { country, min, max, count } }
-      // Old format (backward compat): entry has by_job_title/by_job_family/range — treated as single entry
-      // Flat consolidated format: ML_Master_Compensation.json already integrated — root key IS
-      // "compensation_by_job_title"; seed the accumulator first so existing entries are preserved.
+      // Supports two formats:
+      //   New array format (ML_Holding after restructuring):
+      //     compensation_by_job_title[jt] = { job_family, Compensation: [...], "Verified Compensation": [...] }
+      //   Old flat format (backward compat):
+      //     compensation_by_job_title[jt] = { country, min, max, count, job_family, last_updated }
+      // Internal accumulator per job title:
+      //   { _jfFreq, _compByCountry, _vcByCountry }
+      // Converted to output format at the end of this block.
+      const COMP_ACC_NO_COUNTRY = '__no_country__';
+
+      function getOrInitCompAcc(jobTitle) {
+        if (!consolidated.compensation.compensation_by_job_title[jobTitle]) {
+          consolidated.compensation.compensation_by_job_title[jobTitle] = {
+            _jfFreq: {},
+            _compByCountry: {},  // { countryKey: { min, max, count, users, last_updated } }
+            _vcByCountry: {},    // verified comp
+          };
+        }
+        return consolidated.compensation.compensation_by_job_title[jobTitle];
+      }
+
+      function mergeIntoCountryBucket(byCountry, countryKey, minStr, maxStr, cnt, users, lastUpdated) {
+        const key = countryKey || COMP_ACC_NO_COUNTRY;
+        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, users: [], last_updated: lastUpdated || today };
+        const bucket = byCountry[key];
+        const inMin = parseFloat(minStr), inMax = parseFloat(maxStr);
+        if (!isNaN(inMin)) bucket.min = Math.min(bucket.min, inMin);
+        if (!isNaN(inMax)) bucket.max = Math.max(bucket.max, inMax);
+        bucket.count += (cnt || 1);
+        for (const u of users) { if (!bucket.users.includes(u)) bucket.users.push(u); }
+        if (lastUpdated) bucket.last_updated = lastUpdated;
+      }
+
+      function mergeCompArrayIntoAccum(byCountry, compArray, fallbackUsers) {
+        if (!Array.isArray(compArray)) return;
+        for (const cEntry of compArray) {
+          if (!cEntry || typeof cEntry !== 'object') continue;
+          const entryUsers = Array.isArray(cEntry._users) && cEntry._users.length > 0 ? cEntry._users : fallbackUsers;
+          mergeIntoCountryBucket(byCountry, cEntry.country || null, cEntry.min, cEntry.max, cEntry.count || 1, entryUsers, cEntry.last_updated);
+        }
+      }
+
       for (const [keyName, entry] of Object.entries(masterFiles.compensation)) {
         if (!entry || typeof entry !== 'object') continue;
 
         // ── Flat consolidated format: previously-integrated master file ──
         // The root key "compensation_by_job_title" holds the already-merged dict directly.
-        // Seed the accumulator so subsequent per-user entries merge *on top* of these existing values
-        // rather than replacing them.
         if (keyName === 'compensation_by_job_title') {
           for (const [jobTitle, compEntry] of Object.entries(entry)) {
             if (!compEntry || typeof compEntry !== 'object') continue;
-            const titleCount = typeof compEntry.count === 'number' ? compEntry.count : 1;
-            const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
-            const initFreq = compEntry.country ? { [compEntry.country]: titleCount } : undefined;
-            const seedMin = !isNaN(parseFloat(compEntry.min)) ? compEntry.min : undefined;
-            const seedMax = !isNaN(parseFloat(compEntry.max)) ? compEntry.max : undefined;
-            consolidated.compensation.compensation_by_job_title[jobTitle] = {
-              ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
-              ...(compEntry.job_family ? { job_family: compEntry.job_family } : {}),
-              ...(seedMin !== undefined ? { min: seedMin } : {}),
-              ...(seedMax !== undefined ? { max: seedMax } : {}),
-              count: titleCount,
-              _users: [...existingUsers],
-              last_updated: compEntry.last_updated || today,
-            };
+            const acc = getOrInitCompAcc(jobTitle);
+            if (Array.isArray(compEntry.Compensation)) {
+              // New array format
+              const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
+              mergeCompArrayIntoAccum(acc._compByCountry, compEntry.Compensation, existingUsers);
+              if (Array.isArray(compEntry['Verified Compensation'])) {
+                mergeCompArrayIntoAccum(acc._vcByCountry, compEntry['Verified Compensation'], existingUsers);
+              }
+            } else {
+              // Old flat format: single country entry
+              const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
+              const titleCount = typeof compEntry.count === 'number' ? compEntry.count : 1;
+              mergeIntoCountryBucket(acc._compByCountry, compEntry.country || null, compEntry.min, compEntry.max, titleCount, existingUsers, compEntry.last_updated);
+            }
+            if (compEntry.job_family) acc._jfFreq[compEntry.job_family] = (acc._jfFreq[compEntry.job_family] || 0) + 1;
           }
           continue;
         }
@@ -5005,72 +5066,63 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
         const { users, count } = entryMeta(keyName, entry);
 
         if (entry.compensation_by_job_title && typeof entry.compensation_by_job_title === 'object') {
-          // New format: iterate each job title
+          // Per-user format: iterate each job title
           for (const [jobTitle, compEntry] of Object.entries(entry.compensation_by_job_title)) {
             if (!compEntry || typeof compEntry !== 'object') continue;
-            const titleCount = compEntry.count || count;
-            const existing = consolidated.compensation.compensation_by_job_title[jobTitle];
-            if (existing) {
-              const existingCount = existing.count || 1;
-              const inMin = parseFloat(compEntry.min), inMax = parseFloat(compEntry.max);
-              const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-              // Expand the range: take the lower of the two minimums and the higher of the two maximums.
-              if (!isNaN(inMin)) existing.min = String(Math.round(isNaN(exMin) ? inMin : Math.min(exMin, inMin)));
-              if (!isNaN(inMax)) existing.max = String(Math.round(isNaN(exMax) ? inMax : Math.max(exMax, inMax)));
-              existing.count = existingCount + titleCount;
-              // Track country frequency; resolve dominant country
-              if (compEntry.country) {
-                if (!existing._countryFreq) existing._countryFreq = {};
-                existing._countryFreq[compEntry.country] = (existing._countryFreq[compEntry.country] || 0) + titleCount;
-                existing.country = Object.entries(existing._countryFreq).sort((a, b) => b[1] - a[1])[0][0];
+            const acc = getOrInitCompAcc(jobTitle);
+            if (Array.isArray(compEntry.Compensation)) {
+              // New array format
+              mergeCompArrayIntoAccum(acc._compByCountry, compEntry.Compensation, users);
+              if (Array.isArray(compEntry['Verified Compensation'])) {
+                mergeCompArrayIntoAccum(acc._vcByCountry, compEntry['Verified Compensation'], users);
               }
-              if (!existing._users) existing._users = [];
-              for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
-              if (compEntry.job_family && !existing.job_family) existing.job_family = compEntry.job_family;
-              existing.last_updated = compEntry.last_updated || today;
             } else {
-              const initFreq = compEntry.country ? { [compEntry.country]: titleCount } : undefined;
-              consolidated.compensation.compensation_by_job_title[jobTitle] = {
-                ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
-                ...(compEntry.job_family ? { job_family: compEntry.job_family } : {}),
-                min: compEntry.min,
-                max: compEntry.max,
-                count: titleCount,
-                _users: [...users],
-                last_updated: compEntry.last_updated || today,
-              };
+              // Old flat format
+              const titleCount = compEntry.count || count;
+              mergeIntoCountryBucket(acc._compByCountry, compEntry.country || null, compEntry.min, compEntry.max, titleCount, users, compEntry.last_updated);
             }
+            if (compEntry.job_family) acc._jfFreq[compEntry.job_family] = (acc._jfFreq[compEntry.job_family] || 0) + 1;
           }
         } else if (entry.by_job_title) {
           // Old format backward compat: treat as a single job title entry
           const jobTitle = entry.by_job_title;
           const range = entry.range || {};
-          const existing = consolidated.compensation.compensation_by_job_title[jobTitle];
-          if (existing) {
-            const existingCount = existing.count || 1;
-            const inMin = parseFloat(range.min), inMax = parseFloat(range.max);
-            const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-            // Expand the range: take the lower of the two minimums and the higher of the two maximums.
-            if (!isNaN(inMin)) existing.min = String(Math.round(isNaN(exMin) ? inMin : Math.min(exMin, inMin)));
-            if (!isNaN(inMax)) existing.max = String(Math.round(isNaN(exMax) ? inMax : Math.max(exMax, inMax)));
-            existing.count = existingCount + count;
-            if (!existing._users) existing._users = [];
-            for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
-            existing.last_updated = today;
-          } else {
-            consolidated.compensation.compensation_by_job_title[jobTitle] = {
-              min: range.min || '0',
-              max: range.max || '0',
-              count,
-              _users: [...users],
-              last_updated: today,
-            };
-          }
+          const acc = getOrInitCompAcc(jobTitle);
+          mergeIntoCountryBucket(acc._compByCountry, null, range.min, range.max, count, users, today);
         }
       }
-      // Remove internal _countryFreq tracking keys from output
-      for (const entry of Object.values(consolidated.compensation.compensation_by_job_title)) {
-        delete entry._countryFreq;
+      // Convert internal accumulators to output format
+      for (const [jt, acc] of Object.entries(consolidated.compensation.compensation_by_job_title)) {
+        const outputEntry = {};
+        // Dominant job family
+        if (Object.keys(acc._jfFreq).length > 0) {
+          outputEntry.job_family = Object.entries(acc._jfFreq).sort((a, b) => b[1] - a[1])[0][0];
+        }
+        // Compensation array
+        const compArray = Object.entries(acc._compByCountry)
+          .filter(([, b]) => b.count > 0)
+          .map(([ck, b]) => ({
+            ...(ck !== COMP_ACC_NO_COUNTRY ? { country: ck } : {}),
+            min: String(b.min === Infinity ? 0 : Math.round(b.min)),
+            max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
+            count: b.count,
+            _users: b.users,
+            last_updated: b.last_updated,
+          }));
+        if (compArray.length > 0) outputEntry.Compensation = compArray;
+        // Verified Compensation array
+        const vcArray = Object.entries(acc._vcByCountry)
+          .filter(([, b]) => b.count > 0)
+          .map(([ck, b]) => ({
+            ...(ck !== COMP_ACC_NO_COUNTRY ? { country: ck } : {}),
+            min: String(b.min === Infinity ? 0 : Math.round(b.min)),
+            max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
+            count: b.count,
+            _users: b.users,
+            last_updated: b.last_updated,
+          }));
+        if (vcArray.length > 0) outputEntry['Verified Compensation'] = vcArray;
+        consolidated.compensation.compensation_by_job_title[jt] = outputEntry;
       }
 
       return consolidated;
