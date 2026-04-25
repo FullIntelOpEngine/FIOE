@@ -4865,8 +4865,35 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       // ── Compensation: merge per-job-title entries from all users ──
       // New format: entry has compensation_by_job_title: { jobTitle: { country, min, max, count } }
       // Old format (backward compat): entry has by_job_title/by_job_family/range — treated as single entry
+      // Flat consolidated format: ML_Master_Compensation.json already integrated — root key IS
+      // "compensation_by_job_title"; seed the accumulator first so existing entries are preserved.
       for (const [keyName, entry] of Object.entries(masterFiles.compensation)) {
         if (!entry || typeof entry !== 'object') continue;
+
+        // ── Flat consolidated format: previously-integrated master file ──
+        // The root key "compensation_by_job_title" holds the already-merged dict directly.
+        // Seed the accumulator so subsequent per-user entries merge *on top* of these existing values
+        // rather than replacing them.
+        if (keyName === 'compensation_by_job_title') {
+          for (const [jobTitle, compEntry] of Object.entries(entry)) {
+            if (!compEntry || typeof compEntry !== 'object') continue;
+            const titleCount = typeof compEntry.count === 'number' ? compEntry.count : 1;
+            const existingUsers = Array.isArray(compEntry._users) ? compEntry._users : [];
+            const initFreq = compEntry.country ? { [compEntry.country]: titleCount } : undefined;
+            const seedMin = !isNaN(parseFloat(compEntry.min)) ? compEntry.min : undefined;
+            const seedMax = !isNaN(parseFloat(compEntry.max)) ? compEntry.max : undefined;
+            consolidated.compensation.compensation_by_job_title[jobTitle] = {
+              ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
+              ...(seedMin !== undefined ? { min: seedMin } : {}),
+              ...(seedMax !== undefined ? { max: seedMax } : {}),
+              count: titleCount,
+              _users: [...existingUsers],
+              last_updated: compEntry.last_updated || today,
+            };
+          }
+          continue;
+        }
+
         const { users, count } = entryMeta(keyName, entry);
 
         if (entry.compensation_by_job_title && typeof entry.compensation_by_job_title === 'object') {
@@ -4879,8 +4906,9 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
               const existingCount = existing.count || 1;
               const inMin = parseFloat(compEntry.min), inMax = parseFloat(compEntry.max);
               const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-              if (!isNaN(inMin) && !isNaN(exMin)) existing.min = String(Math.round((exMin * existingCount + inMin * titleCount) / (existingCount + titleCount)));
-              if (!isNaN(inMax) && !isNaN(exMax)) existing.max = String(Math.round((exMax * existingCount + inMax * titleCount) / (existingCount + titleCount)));
+              // Expand the range: take the lower of the two minimums and the higher of the two maximums.
+              if (!isNaN(inMin)) existing.min = String(Math.round(isNaN(exMin) ? inMin : Math.min(exMin, inMin)));
+              if (!isNaN(inMax)) existing.max = String(Math.round(isNaN(exMax) ? inMax : Math.max(exMax, inMax)));
               existing.count = existingCount + titleCount;
               // Track country frequency; resolve dominant country
               if (compEntry.country) {
@@ -4912,8 +4940,9 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             const existingCount = existing.count || 1;
             const inMin = parseFloat(range.min), inMax = parseFloat(range.max);
             const exMin = parseFloat(existing.min), exMax = parseFloat(existing.max);
-            if (!isNaN(inMin) && !isNaN(exMin)) existing.min = String(Math.round((exMin * existingCount + inMin * count) / (existingCount + count)));
-            if (!isNaN(inMax) && !isNaN(exMax)) existing.max = String(Math.round((exMax * existingCount + inMax * count) / (existingCount + count)));
+            // Expand the range: take the lower of the two minimums and the higher of the two maximums.
+            if (!isNaN(inMin)) existing.min = String(Math.round(isNaN(exMin) ? inMin : Math.min(exMin, inMin)));
+            if (!isNaN(inMax)) existing.max = String(Math.round(isNaN(exMax) ? inMax : Math.max(exMax, inMax)));
             existing.count = existingCount + count;
             if (!existing._users) existing._users = [];
             for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
