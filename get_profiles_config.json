@@ -1,16 +1,16 @@
 {
   "linkdapi": {
-    "api_key": "li-tcRkYr2Q1XvVr7ZRdLgkARL4kNZ-shTCEKJkY-HqDm9OEsKADQSMWIWoZTdISbMswQBonTpsXDrsptRFZ8JRx5L15n1vew",
-    "enabled": "enabled"
+    "api_key": "",
+    "enabled": "disabled"
   },
   "scrapingdog": {
     "api_key": "",
     "enabled": "disabled"
   },
   "brightdata": {
-    "api_key": "ee21fc44-4383-4654-a445-c2c1b7370f90",
+    "api_key": "",
     "zone": "serp_api1",
-    "enabled": "enabled",
+    "enabled": "disabled",
     "collector_id": ""
   },
   "rate_limit_per_minute": 0
