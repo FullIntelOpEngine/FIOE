@@ -9847,7 +9847,7 @@ function renderMLCard() {
       if (jobTitles.length === 0) {
         const tr = document.createElement('tr');
         const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);'; userTd.textContent = userLabel; tr.appendChild(userTd);
-        const emptyTd = document.createElement('td'); emptyTd.colSpan = 6; emptyTd.style.cssText = 'padding:5px 8px;color:var(--muted);font-size:11px;'; emptyTd.textContent = '(no compensation records)'; tr.appendChild(emptyTd);
+        const emptyTd = document.createElement('td'); emptyTd.colSpan = 8; emptyTd.style.cssText = 'padding:5px 8px;color:var(--muted);font-size:11px;'; emptyTd.textContent = '(no compensation records)'; tr.appendChild(emptyTd);
         tbody.appendChild(tr);
         return;
       }
@@ -9865,6 +9865,10 @@ function renderMLCard() {
         jtInput.dataset.masterSection = sk; jtInput.dataset.user = userLabel; jtInput.dataset.compjob = jobTitle; jtInput.dataset.compfield = '_jobkey';
         jtInput.style.cssText = 'width:150px;font-size:12px;'; jtInput.title = 'Edit job title';
         jtTd.appendChild(jtInput); tr.appendChild(jtTd);
+        // Job Family — display only
+        const jfTd = document.createElement('td'); jfTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
+        jfTd.textContent = jobData.job_family || '';
+        tr.appendChild(jfTd);
         // Country — editable
         const ctryTd = document.createElement('td'); ctryTd.style.cssText = 'padding:5px 8px;';
         const ctryInput = document.createElement('input'); ctryInput.type = 'text'; ctryInput.value = jobData.country || '';
@@ -9889,6 +9893,10 @@ function renderMLCard() {
         cntInput.dataset.masterSection = sk; cntInput.dataset.user = userLabel; cntInput.dataset.compjob = jobTitle; cntInput.dataset.compfield = 'count';
         cntInput.value = String(jobData.count || 0); cntInput.style.cssText = 'width:60px;text-align:center;font-size:12px;';
         cntTd.appendChild(cntInput); tr.appendChild(cntTd);
+        // Last Update — display only
+        const luTd = document.createElement('td'); luTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);';
+        luTd.textContent = jobData.last_updated || '';
+        tr.appendChild(luTd);
         // Delete button
         const delTd = document.createElement('td'); delTd.style.cssText = 'text-align:center;padding:5px 8px;';
         const delBtn = document.createElement('button'); delBtn.textContent = '🗑️'; delBtn.title = `Delete ${jobTitle}`;
@@ -9914,10 +9922,12 @@ function renderMLCard() {
     tbl.innerHTML = `<thead><tr>
       <th style="text-align:left;padding:6px 8px;">User</th>
       <th style="text-align:left;padding:6px 8px;">Job Title</th>
+      <th style="text-align:left;padding:6px 8px;">Job Family</th>
       <th style="text-align:left;padding:6px 8px;">Country</th>
       <th style="text-align:center;padding:6px 8px;">Range Min</th>
       <th style="text-align:center;padding:6px 8px;">Range Max</th>
       <th style="text-align:center;padding:6px 8px;">Count</th>
+      <th style="text-align:left;padding:6px 8px;">Last Update</th>
       <th style="text-align:center;padding:6px 8px;" aria-label="Actions"></th>
     </tr></thead>`;
     const tbody = document.createElement('tbody');
@@ -9946,6 +9956,7 @@ function renderMLCard() {
           jtInput.dataset.masterSection = sk; jtInput.dataset.user = userKey; jtInput.dataset.textfield = 'by_job_title';
           jtInput.style.cssText = 'width:150px;font-size:12px;'; jtInput.title = 'Edit job title';
           jtTd.appendChild(jtInput); tr.appendChild(jtTd);
+          const jfOldTd = document.createElement('td'); jfOldTd.style.cssText = 'padding:5px 8px;'; tr.appendChild(jfOldTd);
           const ctryTd = document.createElement('td'); ctryTd.style.cssText = 'padding:5px 8px;';
           const ctryInput = document.createElement('input'); ctryInput.type = 'text'; ctryInput.value = entry.by_country || '';
           ctryInput.dataset.masterSection = sk; ctryInput.dataset.user = userKey; ctryInput.dataset.textfield = 'by_country';
@@ -9962,6 +9973,7 @@ function renderMLCard() {
           maxInput.value = String(rangeMax); maxInput.style.cssText = 'width:90px;text-align:center;font-size:12px;';
           maxTd.appendChild(maxInput); tr.appendChild(maxTd);
           const cntTd = document.createElement('td'); cntTd.style.cssText = 'text-align:center;padding:5px 8px;color:var(--muted);font-size:11px;'; cntTd.textContent = '—'; tr.appendChild(cntTd);
+          const luOldTd = document.createElement('td'); luOldTd.style.cssText = 'padding:5px 8px;'; tr.appendChild(luOldTd);
           const delTd = document.createElement('td'); delTd.style.cssText = 'text-align:center;padding:5px 8px;';
           const delBtn = document.createElement('button'); delBtn.textContent = '🗑️'; delBtn.title = `Delete ${userKey}`;
           delBtn.style.cssText = 'font-size:12px;padding:2px 6px;background:#fff;border:1px solid #dc3545;color:#dc3545;border-radius:4px;cursor:pointer;';

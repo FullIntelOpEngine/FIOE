@@ -4118,11 +4118,22 @@ async function _buildMLProfileData(userid, username, useraccess) {
     const allNums = Object.values(byCountry).flat();
     // Top country = the one with the most records
     const topCountryEntry = Object.entries(byCountry).sort((a, b) => b[1].length - a[1].length)[0];
+    // Dominant job family for this title (most frequent value in perJobTitleJobFamily)
+    const jfArr = perJobTitleJobFamily[jt] || [];
+    let jfDominant;
+    if (jfArr.length > 0) {
+      const freq = {};
+      for (const jf of jfArr) { if (jf) freq[jf] = (freq[jf] || 0) + 1; }
+      const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
+      if (sorted.length > 0) jfDominant = sorted[0][0];
+    }
     compensationByJobTitle[jt] = {
       ...(topCountryEntry && topCountryEntry[0] !== COMP_NO_COUNTRY ? { country: topCountryEntry[0] } : {}),
+      ...(jfDominant ? { job_family: jfDominant } : {}),
       min: String(Math.min(...allNums)),
       max: String(Math.max(...allNums)),
       count: allNums.length,
+      last_updated: today,
     };
   }
   const compensationSection = { last_updated: today, username, useraccess: ua, compensation_by_job_title: compensationByJobTitle };
@@ -4980,6 +4991,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             const seedMax = !isNaN(parseFloat(compEntry.max)) ? compEntry.max : undefined;
             consolidated.compensation.compensation_by_job_title[jobTitle] = {
               ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
+              ...(compEntry.job_family ? { job_family: compEntry.job_family } : {}),
               ...(seedMin !== undefined ? { min: seedMin } : {}),
               ...(seedMax !== undefined ? { max: seedMax } : {}),
               count: titleCount,
@@ -5014,16 +5026,18 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
               }
               if (!existing._users) existing._users = [];
               for (const u of users) { if (!existing._users.includes(u)) existing._users.push(u); }
-              existing.last_updated = today;
+              if (compEntry.job_family && !existing.job_family) existing.job_family = compEntry.job_family;
+              existing.last_updated = compEntry.last_updated || today;
             } else {
               const initFreq = compEntry.country ? { [compEntry.country]: titleCount } : undefined;
               consolidated.compensation.compensation_by_job_title[jobTitle] = {
                 ...(compEntry.country ? { country: compEntry.country, _countryFreq: initFreq } : {}),
+                ...(compEntry.job_family ? { job_family: compEntry.job_family } : {}),
                 min: compEntry.min,
                 max: compEntry.max,
                 count: titleCount,
                 _users: [...users],
-                last_updated: today,
+                last_updated: compEntry.last_updated || today,
               };
             }
           }
