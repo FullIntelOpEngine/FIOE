@@ -6967,6 +6967,127 @@ Input:
   }
 });
 
+// ========== Crowd Compensation Lookup ==========
+
+/**
+ * Endpoint: POST /crowd-comp
+ * Body: { ids: [number, ...], selectAll: boolean }
+ * Looks up each candidate's compensation in ML_Master_Compensation.json by matching
+ * Job Title, Job Family (optional), and Country against the "Verified Compensation" entries.
+ * Matched records are updated in the DB (average of Range Min / Range Max).
+ * Response: { rows: [{ id, min, max, avg, count, compensation }] }
+ */
+app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res) => {
+  const { ids, selectAll } = req.body;
+  try {
+    let rows;
+    if (selectAll) {
+      const result = await pool.query(
+        'SELECT id, jobtitle, jobfamily, country FROM "process" WHERE userid = $1',
+        [String(req.user.id)]
+      );
+      rows = result.rows;
+    } else {
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No ids provided.' });
+      }
+      const safeIds = ids.map(Number).filter(n => Number.isInteger(n) && n > 0);
+      if (!safeIds.length) return res.status(400).json({ error: 'No valid ids provided.' });
+      const placeholders = safeIds.map((_, i) => `$${i + 2}`).join(', ');
+      const result = await pool.query(
+        `SELECT id, jobtitle, jobfamily, country FROM "process" WHERE userid = $1 AND id IN (${placeholders})`,
+        [String(req.user.id), ...safeIds]
+      );
+      rows = result.rows;
+    }
+
+    // Load ML_Master_Compensation.json
+    const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
+    let compData = {};
+    try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
+    const compByJobTitle = compData.compensation_by_job_title || {};
+
+    const norm = s => (s || '').trim().toLowerCase();
+
+    // Match each row against Verified Compensation data
+    const matched = [];
+    for (const row of rows) {
+      const jtNorm = norm(row.jobtitle);
+      const jfNorm = norm(row.jobfamily);
+      const ctryNorm = norm(row.country);
+      if (!jtNorm) continue;
+
+      // Find job title entry (case-insensitive)
+      let jtEntry = null;
+      for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
+        if (norm(jtKey) === jtNorm) { jtEntry = jtVal; break; }
+      }
+      if (!jtEntry || typeof jtEntry !== 'object') continue;
+
+      // Job family must match when both candidate and entry have values
+      if (jfNorm && jtEntry.job_family && norm(jtEntry.job_family) !== jfNorm) continue;
+
+      // Find matching country in Verified Compensation
+      const vcEntries = Array.isArray(jtEntry['Verified Compensation']) ? jtEntry['Verified Compensation'] : [];
+      const vcMatch = vcEntries.find(e => norm(e.country) === ctryNorm);
+      if (!vcMatch) continue;
+
+      const min = Number(vcMatch.min) || 0;
+      const max = Number(vcMatch.max) || 0;
+      if (!min && !max) continue;
+      const avg = Math.round((min + max) / 2);
+
+      matched.push({ id: row.id, min, max, avg, count: Number(vcMatch.count) || 0, compensation: avg });
+    }
+
+    if (matched.length === 0) {
+      return res.json({ rows: [] });
+    }
+
+    // Update compensation in DB for matched records
+    const updatedRows = [];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const item of matched) {
+        const result = await client.query(
+          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
+          [item.avg, item.id, String(req.user.id)]
+        );
+        if (result.rowCount === 1) {
+          const r = result.rows[0];
+          updatedRows.push({
+            ...item,
+            compensation: r.compensation ?? item.avg,
+            pic: picToDataUri(r.pic),
+            role: r.role ?? r.jobtitle ?? null,
+            organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
+            jobtitle: r.jobtitle ?? null,
+            company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
+          });
+        }
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    try {
+      broadcastSSE('candidates_changed', { action: 'crowd_comp', count: updatedRows.length });
+      for (const u of updatedRows) broadcastSSE('candidate_updated', u);
+    } catch (_) { /* ignore */ }
+
+    _writeApprovalLog({ action: 'crowd_comp', username: req.user.username, userid: req.user.id, detail: `Crowd Comp updated ${updatedRows.length} records`, source: 'server.js' });
+    res.json({ rows: updatedRows });
+  } catch (err) {
+    console.error('/crowd-comp error:', err);
+    res.status(500).json({ error: 'Crowd compensation lookup failed.', detail: err.message });
+  }
+});
+
 // ========== NEW: Calendar & Google Meet Integration ==========
 
 // Helper to create an OAuth2 client for Google using googleapis and persisted tokens for a username.

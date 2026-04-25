@@ -8782,6 +8782,46 @@ function renderMLCard() {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     saveDiv.appendChild(dlBtn);
+
+    // Download CSV button — available for compensation and crowd_compensation tabs
+    if (sectionKey === 'compensation' || sectionKey === 'crowd_compensation') {
+      const csvBtn = document.createElement('button');
+      csvBtn.className = 'btn btn-secondary';
+      csvBtn.style.cssText = 'font-size:13px;';
+      csvBtn.textContent = '⬇️ Download CSV';
+      csvBtn.addEventListener('click', () => {
+        const sectionLabels = { compensation: 'ML_Master_Compensation', crowd_compensation: 'ML_Crowd_Compensation' };
+        const filename = (sectionLabels[sectionKey] || sectionKey) + '.csv';
+        const isVerified = sectionKey === 'crowd_compensation';
+        const data = masterData[actualSectionKey] || {};
+        const compByJobTitle = data.compensation_by_job_title || {};
+        const headers = ['Job Title', 'Job Family', 'Country', 'Range Min', 'Range Max', 'Count', 'Last Update'];
+        const csvRows = [headers.map(h => `"${h}"`).join(',')];
+        const esc = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+        for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
+          if (!jtVal || typeof jtVal !== 'object') continue;
+          const jf = jtVal.job_family || '';
+          let entries;
+          if (isVerified) {
+            entries = Array.isArray(jtVal['Verified Compensation']) ? jtVal['Verified Compensation'] : [];
+          } else if (Array.isArray(jtVal.Compensation)) {
+            entries = jtVal.Compensation;
+          } else {
+            entries = [{ country: jtVal.country || '', min: jtVal.min || '', max: jtVal.max || '', count: jtVal.count || 0, last_updated: jtVal.last_updated || '' }];
+          }
+          for (const e of entries) {
+            csvRows.push([jtKey, jf, e.country || '', e.min || '', e.max || '', e.count || 0, e.last_updated || ''].map(esc).join(','));
+          }
+        }
+        const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+      saveDiv.appendChild(csvBtn);
+    }
+
     panel.appendChild(saveDiv);
   }
 
@@ -10027,7 +10067,11 @@ function renderMLCard() {
   // sk is always 'compensation' (the underlying section being written to).
   function renderCrowdCompensationTable(panel, sectionData, sk) {
     function renderCrowdCompRows(tbody, userLabel, compByJobTitle) {
-      const jobTitles = Object.entries(compByJobTitle);
+      // Only include job titles that have at least one Verified Compensation entry
+      const jobTitles = Object.entries(compByJobTitle).filter(([, jd]) =>
+        jd && typeof jd === 'object' &&
+        Array.isArray(jd['Verified Compensation']) && jd['Verified Compensation'].length > 0
+      );
       if (jobTitles.length === 0) {
         const tr = document.createElement('tr');
         const userTd = document.createElement('td'); userTd.style.cssText = 'padding:5px 8px;font-size:11px;color:var(--muted);'; userTd.textContent = userLabel; tr.appendChild(userTd);
@@ -10038,14 +10082,11 @@ function renderMLCard() {
       let firstRow = true;
       for (let i = 0; i < jobTitles.length; i++) {
         const [jobTitle, jobData] = jobTitles[i];
-        if (!jobData || typeof jobData !== 'object') continue;
 
         const jobFamilyVal = jobData.job_family || '';
 
-        // Use Verified Compensation entries; fall back to empty array when absent
-        const vcEntries = Array.isArray(jobData['Verified Compensation']) && jobData['Verified Compensation'].length > 0
-          ? jobData['Verified Compensation']
-          : [{}];
+        // Verified Compensation entries (guaranteed non-empty by filter above)
+        const vcEntries = jobData['Verified Compensation'];
 
         // Also obtain the regular Compensation entries to display Country and Count from them
         // (per spec: only Range Min / Range Max come from Verified Compensation; other columns unchanged)
