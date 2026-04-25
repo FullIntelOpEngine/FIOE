@@ -3794,6 +3794,39 @@ async function _buildMLProfileData(userid, username, useraccess) {
     }
   }
 
+  // ── Per-job-title verified compensation (country-grouped, verified records only) ──
+  // Query the process table for records whose IDs are flagged in compensation_verified.json,
+  // then group by job title and country so each Jobtitle entry can embed "Verified Compensation"
+  // directly below its regular "Compensation" block.
+  const perJobTitleVerifiedCompByCountry = {};  // { jobTitle: { country: [num, ...] } }
+  try {
+    const compVerifiedData = loadCompensationVerified();
+    const verifiedIds = Object.keys(compVerifiedData).filter(id => compVerifiedData[id] && compVerifiedData[id].verified);
+    if (verifiedIds.length > 0) {
+      const vcNums = verifiedIds.map(id => parseInt(id, 10)).filter(n => !isNaN(n));
+      if (vcNums.length > 0) {
+        const vcResult = await pool.query(
+          `SELECT id, compensation, country, jobtitle, role_tag FROM "process" WHERE userid = $1 AND id = ANY($2::int[])`,
+          [userid, vcNums]
+        );
+        for (const r of vcResult.rows) {
+          if (!r.compensation) continue;
+          const numMatch = String(r.compensation).replace(/[,\s]/g, '').match(/[\d]+(?:\.\d+)?/);
+          if (!numMatch) continue;
+          const compNum = parseFloat(numMatch[0]);
+          const jtRaw = (r.jobtitle || r.role_tag || '').trim();
+          if (!jtRaw) continue;
+          const countryKey = (r.country || '').trim() || COMP_NO_COUNTRY;
+          if (!perJobTitleVerifiedCompByCountry[jtRaw]) perJobTitleVerifiedCompByCountry[jtRaw] = {};
+          if (!perJobTitleVerifiedCompByCountry[jtRaw][countryKey]) perJobTitleVerifiedCompByCountry[jtRaw][countryKey] = [];
+          perJobTitleVerifiedCompByCountry[jtRaw][countryKey].push(compNum);
+        }
+      }
+    }
+  } catch (vcErr) {
+    console.warn('[_buildMLProfileData] Could not build per-title verified compensation (non-fatal):', vcErr.message);
+  }
+
   // Build sector: sector-first format with record-count based confidence.
   // confidence(company, sector) = count(company in sector) / count(company in all sectors).
   // Companies that only appear in one sector get confidence 1.0.
@@ -4039,6 +4072,24 @@ async function _buildMLProfileData(userid, username, useraccess) {
           compensationArray.push(compEntry);
         }
         entry.Compensation = compensationArray;
+      }
+      // Embed "Verified Compensation" directly below "Compensation" for records tagged as verified.
+      // Grouped per country — same shape as Compensation — so verified data stays tied to this title.
+      const verifiedCompByCountry = perJobTitleVerifiedCompByCountry[jt];
+      if (verifiedCompByCountry && Object.keys(verifiedCompByCountry).length > 0) {
+        const verifiedCompensationArray = [];
+        for (const [countryKey, nums] of Object.entries(verifiedCompByCountry)) {
+          const countryVal = countryKey === COMP_NO_COUNTRY ? null : countryKey;
+          verifiedCompensationArray.push({
+            ...(countryVal ? { country: countryVal } : {}),
+            min: String(Math.min(...nums)),
+            max: String(Math.max(...nums)),
+            count: nums.length,
+            _users: [username],
+            last_updated: today,
+          });
+        }
+        if (verifiedCompensationArray.length > 0) entry['Verified Compensation'] = verifiedCompensationArray;
       }
       familyJobtitle[jt] = entry;
     }
