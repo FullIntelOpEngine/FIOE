@@ -8600,9 +8600,20 @@ const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
 
 function loadVerifiedEmail() {
   try {
-    return JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+    // Migrate legacy flat-array format to new company-keyed structure
+    if (Array.isArray(data)) {
+      const converted = {};
+      for (const entry of data) {
+        const companyKey = (entry.company || 'unknown').toLowerCase().replace(/[^a-z0-9]/g, '_');
+        if (!converted[companyKey]) converted[companyKey] = { Domain: [], Confidence_threshold: 1 };
+        converted[companyKey].Domain.push({ ...entry, company: companyKey, confidence: entry.confidence != null ? entry.confidence : 1 });
+      }
+      return converted;
+    }
+    return data;
   } catch (_) {
-    return [];
+    return {};
   }
 }
 
@@ -8624,6 +8635,9 @@ app.post('/save-verified-email', requireLogin, dashboardRateLimit, async (req, r
     }
 
     const existing = loadVerifiedEmail();
+    const companyKey = company.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    if (!existing[companyKey]) existing[companyKey] = { Domain: [], Confidence_threshold: 1 };
+    const companyData = existing[companyKey];
 
     const newEntries = [];
 
@@ -8634,8 +8648,8 @@ app.post('/save-verified-email', requireLogin, dashboardRateLimit, async (req, r
       const localPart = email.slice(0, atIdx);
       const domain = email.slice(atIdx + 1).toLowerCase();
 
-      // Skip if this domain+format is already stored
-      if (existing.some(e => e.domain === domain)) continue;
+      // Skip if this domain is already stored for this company
+      if (companyData.Domain.some(e => e.domain === domain)) continue;
 
       // Use Gemini to infer the format pattern and produce a fake normalized entry
       const normPrompt = `You are an email format analyst. Given:
@@ -8674,19 +8688,36 @@ No markdown, no explanation.`;
         fake_local_part = '';
       }
 
-      newEntries.push({
+      // Assign confidence: first entry for company = 1.0;
+      // each additional entry = 0.2, reduce primary entry by 0.2 per additional entry.
+      let entryConfidence;
+      if (companyData.Domain.length === 0) {
+        entryConfidence = 1;
+      } else {
+        entryConfidence = 0.2;
+        // Reduce the primary (first) entry's confidence to reflect reduced certainty
+        if (companyData.Domain[0]) {
+          companyData.Domain[0].confidence = Math.max(0, parseFloat(((companyData.Domain[0].confidence || 1) - 0.2).toFixed(2)));
+        }
+      }
+
+      const newEntry = {
+        company: companyKey,
         domain,
         format,
         fake_example,
         fake_local_part,
         saved_at: new Date().toISOString(),
         candidateId: candidateId != null ? String(candidateId) : undefined,
-      });
+        confidence: entryConfidence,
+      };
+
+      companyData.Domain.push(newEntry);
+      newEntries.push(newEntry);
     }
 
     if (newEntries.length > 0) {
-      const merged = [...existing, ...newEntries];
-      saveVerifiedEmail(merged);
+      saveVerifiedEmail(existing);
     }
 
     res.json({ ok: true, added: newEntries.length, entries: newEntries });
