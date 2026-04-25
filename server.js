@@ -8281,6 +8281,138 @@ Phone: ...`;
   }
 });
 
+// ── Compensation Verified JSON helpers ───────────────────────────────────────
+const COMP_VERIFIED_PATH = path.join(__dirname, 'compensation_verified.json');
+
+function loadCompensationVerified() {
+  try {
+    return JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveCompensationVerified(data) {
+  const tmp = COMP_VERIFIED_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, COMP_VERIFIED_PATH);
+}
+
+app.post('/save-compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
+  const { candidateId } = req.body || {};
+  if (!candidateId) return res.status(400).json({ error: 'candidateId is required.' });
+  const data = loadCompensationVerified();
+  data[String(candidateId)] = { verified: true, saved_at: new Date().toISOString() };
+  saveCompensationVerified(data);
+  res.json({ ok: true, verifiedIds: Object.keys(data) });
+});
+
+app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
+  const data = loadCompensationVerified();
+  res.json({ verifiedIds: Object.keys(data) });
+});
+
+// ── Verified Email JSON helpers ───────────────────────────────────────────────
+const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
+
+function loadVerifiedEmail() {
+  try {
+    return JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveVerifiedEmail(data) {
+  const tmp = VERIFIED_EMAIL_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, VERIFIED_EMAIL_PATH);
+}
+
+// Gemini-powered email normalization: derive format pattern + fake example for a domain
+app.post('/save-verified-email', requireLogin, dashboardRateLimit, async (req, res) => {
+  try {
+    const { emails, name, company, candidateId } = req.body || {};
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ error: 'emails array is required.' });
+    }
+    if (!name || !company) {
+      return res.status(400).json({ error: 'name and company are required.' });
+    }
+
+    const existing = loadVerifiedEmail();
+
+    const newEntries = [];
+
+    for (const email of emails) {
+      if (!email || typeof email !== 'string') continue;
+      const atIdx = email.lastIndexOf('@');
+      if (atIdx < 0) continue;
+      const localPart = email.slice(0, atIdx);
+      const domain = email.slice(atIdx + 1).toLowerCase();
+
+      // Skip if this domain+format is already stored
+      if (existing.some(e => e.domain === domain)) continue;
+
+      // Use Gemini to infer the format pattern and produce a fake normalized entry
+      const normPrompt = `You are an email format analyst. Given:
+- Real name: "${name}"
+- Company: "${company}"
+- Observed email local part: "${localPart}"
+- Domain: "${domain}"
+
+Analyze the format used for the local part of the email. Then:
+1. Identify the format pattern (e.g. "first_name.last_name", "firstnamelastname", "f.lastname", "firstlastname" etc.)
+2. Generate a completely fake example email using a generic made-up name (NOT the real name) that follows the same format.
+   The fake name must be realistic-sounding but entirely fictional (e.g. "John Tan", "Oliver Chan").
+3. Return ONLY a JSON object with these fields:
+   {
+     "format": "<pattern string>",
+     "fake_example": "<fake_local_part>@${domain}",
+     "fake_local_part": "<fake_local_part_only>"
+   }
+No markdown, no explanation.`;
+
+      let format = localPart;
+      let fake_example = '';
+      let fake_local_part = '';
+      try {
+        const llmText = await llmGenerateText(normPrompt, { username: req.user && req.user.username, label: 'llm/email-norm' });
+        const jsonStr = llmText.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(jsonStr);
+        format = parsed.format || localPart;
+        fake_example = parsed.fake_example || '';
+        fake_local_part = parsed.fake_local_part || '';
+      } catch (e) {
+        console.warn('[save-verified-email] LLM normalization failed (non-fatal):', e.message);
+        // Fallback: store the format as-is without a fake example
+        format = localPart;
+        fake_example = '';
+        fake_local_part = '';
+      }
+
+      newEntries.push({
+        domain,
+        format,
+        fake_example,
+        fake_local_part,
+        saved_at: new Date().toISOString(),
+        candidateId: candidateId != null ? String(candidateId) : undefined,
+      });
+    }
+
+    if (newEntries.length > 0) {
+      const merged = [...existing, ...newEntries];
+      saveVerifiedEmail(merged);
+    }
+
+    res.json({ ok: true, added: newEntries.length, entries: newEntries });
+  } catch (err) {
+    console.error('[save-verified-email] error:', err.message || err);
+    res.status(500).json({ error: 'Failed to save verified email.' });
+  }
+});
+
 // ── Helper: normalise external verification API responses ────────────────────
 function _httpsGet(url, headers = {}) {
   return new Promise((resolve, reject) => {

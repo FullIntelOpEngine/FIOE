@@ -2289,6 +2289,7 @@ function CandidatesTable({
   const [compModalOpen, setCompModalOpen] = useState(false);
   const [compModalCandidateId, setCompModalCandidateId] = useState(null);
   const [compModalInitialValue, setCompModalInitialValue] = useState('');
+  const [compVerifiedIds, setCompVerifiedIds] = useState(new Set());
 
   // Email modal & SMTP state
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -2381,6 +2382,14 @@ function CandidatesTable({
   }, [candidates, type, setEditRows]);
 
   useEffect(() => { setSelectedIds([]); }, [page]);
+
+  // Load compensation verified IDs on mount
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/compensation-verified`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+      .catch(() => {});
+  }, []); // on mount only
 
   // Helper: remove a set of IDs from the newCandidateIds Set and persist to localStorage
   const dismissNewBadges = ids => {
@@ -3032,7 +3041,12 @@ function CandidatesTable({
                   <option value="Executive">Executive</option>
                 </select>
               : f.key === 'compensation'
-              ? <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', cursor: 'pointer' }} />
+              ? <div style={{ position: 'relative', width: '100%' }}>
+                  <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(34,197,94,0.07)' : '#ffffff', cursor: 'pointer' }} />
+                  {compVerifiedIds.has(String(c.id)) && (
+                    <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#16a34a', pointerEvents: 'none' }}>✓</span>
+                  )}
+                </div>
               : f.key === 'geographic'
               ? <select value={displayValue || ''} onChange={e => handleEditChange(c.id, f.key, e.target.value)} onFocus={() => dismissNewBadges([String(c.id)])} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', border: '1px solid var(--desired-dawn)', borderRadius: 6 }}>
                   <option value="">-- Select Region --</option>
@@ -5251,7 +5265,19 @@ criteriaSheets.map((cf, idx) => {
         onClose={() => setCompModalOpen(false)}
         initialValue={compModalInitialValue}
         onSave={(total) => {
-          if (compModalCandidateId != null) handleEditChange(compModalCandidateId, 'compensation', total);
+          if (compModalCandidateId != null) {
+            handleEditChange(compModalCandidateId, 'compensation', total);
+            // Tag the saved compensation as verified
+            fetch(`http://localhost:${API_PORT}/save-compensation-verified`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              credentials: 'include',
+              body: JSON.stringify({ candidateId: compModalCandidateId }),
+            })
+              .then(r => r.ok ? r.json() : null)
+              .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+              .catch(() => {});
+          }
         }}
       />
 
@@ -9004,6 +9030,21 @@ export default function App() {
 
     // Trigger save to backend
     saveCandidateDebounced(id, { email: newEmail });
+
+    // Persist email structure to verified_email.json via Gemini analysis
+    const checkedEmails = resumeEmailList.filter(item => item.checked).map(item => item.value);
+    if (checkedEmails.length > 0) {
+      const candidateName = resumeCandidate.name || '';
+      const candidateCompany = resumeCandidate.organisation || resumeCandidate.company || '';
+      if (candidateName && candidateCompany) {
+        fetch(`http://localhost:${API_PORT}/save-verified-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({ emails: checkedEmails, name: candidateName, company: candidateCompany, candidateId: id }),
+        }).catch(() => {});
+      }
+    }
 
     alert('Email updated in candidate list.');
   };
