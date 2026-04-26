@@ -348,6 +348,13 @@ app.use((req, res, next) => {
 app.use('/image', express.static(path.join(__dirname, 'image')));
 // Serve client-side UI modules (admin_ai_fix_snippet.js etc.)
 app.use('/ui', express.static(path.join(__dirname, 'ui')));
+// Serve jsPDF from local node_modules so the PDF export works without a CDN connection.
+app.get('/vendor/jspdf.umd.min.js', (req, res) => {
+  const jspdfPath = path.join(__dirname, 'node_modules', 'jspdf', 'dist', 'jspdf.umd.min.js');
+  res.sendFile(jspdfPath, err => {
+    if (err) res.status(404).end();
+  });
+});
 
 // Serve LookerDashboard.html directly so it is same-origin as the API (avoids cross-origin cookie issues).
 // When backend and frontend live in separate directories, set LOOKER_DASHBOARD_PATH in .env to the

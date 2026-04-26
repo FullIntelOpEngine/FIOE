@@ -15,8 +15,21 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- html2canvas for PNG export of slides -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <!-- jsPDF for multi-page PDF export (SRI omitted; loaded from jsDelivr for reliability) -->
-    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <!-- jsPDF for multi-page PDF export — loaded from local node_modules via /vendor route;
+         falls back to jsDelivr CDN if the local file is unavailable. -->
+    <script>
+      (function() {
+        function loadJsPDF(src) {
+          var s = document.createElement('script'); s.src = src; document.head.appendChild(s);
+        }
+        var local = '/vendor/jspdf.umd.min.js';
+        var cdn   = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
+        var req = new XMLHttpRequest();
+        req.open('HEAD', local, false);
+        try { req.send(); } catch(e) {}
+        loadJsPDF(req.status === 200 ? local : cdn);
+      })();
+    </script>
     <!-- PptxGenJS for PPTX export of slides -->
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <!-- Left Column Navigation -->
@@ -1024,6 +1037,19 @@
             animation: spin 1s linear infinite;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* PDF export spinner — inline indicator on the Export PDF button */
+        .pdf-btn-spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255,255,255,0.35);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
 
         /* ============ NEW: Resizable + Draggable tiles ============ */
         /* Map number-of-columns to data-span */
@@ -2713,70 +2739,84 @@
 
     // ================= PDF EXPORT LOGIC =================
     async function exportToPDF() {
-        const cards = Array.from(document.querySelectorAll('#dashboardGrid .card'));
-        if (!cards.length) { alert('No tiles to export.'); return; }
+        const grid = document.getElementById('dashboardGrid');
+        if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
         if (typeof html2canvas === 'undefined') { alert('html2canvas not loaded — please check your connection.'); return; }
 
         const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
         if (!jsPDFCtor) { alert('jsPDF not available — please check your connection.'); return; }
 
-        // Letter landscape: 279.4 × 215.9 mm
-        const PAGE_W = 279.4, PAGE_H = 215.9;
-        const MARGIN = 12, GAP = 6, COLS = 2;
-        const cellW = (PAGE_W - 2 * MARGIN - GAP) / COLS;
-        const maxImgH = PAGE_H - 2 * MARGIN; // maximum height a single card may occupy
-
-        const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
-
-        let col = 0, rowY = MARGIN, rowMaxH = 0, firstItem = true;
-
-        for (const card of cards) {
-            let cvs;
-            try {
-                cvs = await html2canvas(card, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false });
-            } catch (e) {
-                console.warn('[PDF] html2canvas failed for a tile, skipping:', e);
-                continue;
-            }
-            // Scale proportionally to cell width; cap to page height so no card ever spills
-            let imgH = cellW * cvs.height / cvs.width;
-            if (imgH > maxImgH) imgH = maxImgH;
-
-            // Overflow check: ensure the card fits on the current page.
-            // Checked for both the first (col=0) and second (col=1) card of each row.
-            if (!firstItem && rowY + imgH > PAGE_H - MARGIN) {
-                if (col === 0) {
-                    // First card of a new row would overflow → start a fresh page
-                    pdf.addPage();
-                    rowY = MARGIN;
-                    rowMaxH = 0;
-                } else {
-                    // Second card of the current row would overflow → close the row first,
-                    // then start a new page if still no room
-                    rowY += rowMaxH + GAP;
-                    rowMaxH = 0;
-                    col = 0;
-                    if (rowY + imgH > PAGE_H - MARGIN) {
-                        pdf.addPage();
-                        rowY = MARGIN;
-                    }
-                }
-            }
-
-            const imgX = MARGIN + col * (cellW + GAP);
-            pdf.addImage(cvs.toDataURL('image/jpeg', 0.92), 'JPEG', imgX, rowY, cellW, imgH);
-            rowMaxH = Math.max(rowMaxH, imgH);
-            firstItem = false;
-
-            col++;
-            if (col >= COLS) {
-                col = 0;
-                rowY += rowMaxH + GAP;
-                rowMaxH = 0;
-            }
+        // Disable button and show rotational spinner while generating
+        const btn = document.querySelector('button[onclick="exportToPDF()"]');
+        const origHTML = btn ? btn.innerHTML : null;
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="pdf-btn-spinner"></span>Generating…';
         }
 
-        pdf.save('dashboard_export.pdf');
+        try {
+            // Capture the entire dashboard grid as one screenshot so the PDF layout
+            // exactly mirrors the on-screen arrangement (column spans, card sizes, gaps).
+            const cvs = await html2canvas(grid, {
+                scale: 2,
+                useCORS: true,
+                backgroundColor: getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa',
+                logging: false,
+                scrollX: 0,
+                scrollY: 0,
+                windowWidth:  grid.scrollWidth,
+                windowHeight: grid.scrollHeight
+            });
+
+            // Letter landscape: 279.4 × 215.9 mm
+            const PAGE_W = 279.4, PAGE_H = 215.9;
+            const MARGIN = 8;
+            const contentW = PAGE_W - 2 * MARGIN; // printable width in mm
+            const contentH = PAGE_H - 2 * MARGIN; // printable height in mm
+
+            // Map canvas pixels → mm using the printable width
+            const mmPerPx = contentW / cvs.width;
+
+            // How many canvas pixels fit on one PDF page (height)
+            const pxPerPage = Math.floor(contentH / mmPerPx);
+
+            const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+
+            let pxOffset = 0;
+            let firstPage = true;
+
+            while (pxOffset < cvs.height) {
+                if (!firstPage) pdf.addPage();
+                firstPage = false;
+
+                const slicePx = Math.min(pxPerPage, cvs.height - pxOffset);
+
+                // Draw only the current page's slice onto a temporary canvas
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width  = cvs.width;
+                pageCanvas.height = slicePx;
+                pageCanvas.getContext('2d').drawImage(
+                    cvs,
+                    0, pxOffset, cvs.width, slicePx,
+                    0, 0,        cvs.width, slicePx
+                );
+
+                const sliceH = slicePx * mmPerPx; // height of this slice in mm
+                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH);
+
+                pxOffset += pxPerPage;
+            }
+
+            pdf.save('dashboard_export.pdf');
+        } catch (e) {
+            console.error('[PDF] Export failed:', e);
+            alert('PDF export failed: ' + e.message);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHTML || 'Export PDF';
+            }
+        }
     }
 
     // ================= FILTERS LOGIC =================
@@ -3808,6 +3848,7 @@
                 item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};margin-right:6px;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
                 tileLegend.appendChild(item);
             });
+            tileLegend.style.display = 'block';
         }
     }
 
