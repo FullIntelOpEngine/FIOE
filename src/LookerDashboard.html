@@ -15,6 +15,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- html2canvas for PNG export of slides -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- jsPDF for multi-page PDF export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha384-dFJQ4y7YQU1CEV4VpWw2X2gYdEx+kt1/3uzMdGII4XESyqCCpt5TR1+t0NenE2no" crossorigin="anonymous"></script>
     <!-- PptxGenJS for PPTX export of slides -->
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <!-- Left Column Navigation -->
@@ -2606,6 +2608,9 @@
         // Init map (using saved position if present)
         initMap();
 
+        // Load org chart manual overrides from server before first render
+        await loadOrgChartOverrides();
+
         await refreshDashboard();
         
         // Layout restore
@@ -2634,6 +2639,16 @@
                 if (e.data.type === 'dock-in-restored') loadDashboardState(true);
             });
         } catch (bcErr) { console.warn('[Dashboard] BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
+
+        // Listen for org chart layout saves from App.js so the tile stays in sync.
+        try {
+            const _orgChartChannel = new BroadcastChannel('fioe_orgchart_state');
+            _orgChartChannel.addEventListener('message', async e => {
+                if (!e || !e.data || e.data.type !== 'orgchart-saved') return;
+                await loadOrgChartOverrides();
+                buildOrgChart();
+            });
+        } catch (bcErr) { console.warn('[Dashboard] orgchart BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
     }
 
     // ================= THEME LOGIC =================
@@ -2697,24 +2712,54 @@
     }
 
     // ================= PDF EXPORT LOGIC =================
-    function exportToPDF() {
-        const element = document.getElementById('dashboardGrid');
-        const opt = {
-            margin: 1,
-            filename: 'dashboard_export.pdf',
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true },
-            jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
-        };
-        
-        // Hide scrollbars for cleaner PDF
-        const originalOverflow = element.style.overflow;
-        element.style.overflow = 'visible';
-        
-        // Temporarily adjust grid to ensure everything fits or flows
-        html2pdf().set(opt).from(element).save().then(() => {
-            element.style.overflow = originalOverflow;
-        });
+    async function exportToPDF() {
+        const cards = Array.from(document.querySelectorAll('#dashboardGrid .card'));
+        if (!cards.length) { alert('No tiles to export.'); return; }
+        if (typeof html2canvas === 'undefined') { alert('html2canvas not loaded — please check your connection.'); return; }
+
+        const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+        if (!jsPDFCtor) { alert('jsPDF not available — please check your connection.'); return; }
+
+        // Letter landscape: 279.4 × 215.9 mm
+        const PAGE_W = 279.4, PAGE_H = 215.9;
+        const MARGIN = 12, GAP = 6, COLS = 2;
+        const cellW = (PAGE_W - 2 * MARGIN - GAP) / COLS;
+
+        const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+
+        let col = 0, rowY = MARGIN, rowMaxH = 0, firstItem = true;
+
+        for (const card of cards) {
+            let cvs;
+            try {
+                cvs = await html2canvas(card, { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false });
+            } catch (e) {
+                console.warn('[PDF] html2canvas failed for a tile, skipping:', e);
+                continue;
+            }
+            const imgH = cellW * cvs.height / cvs.width;
+
+            // Start a new page when the current row would overflow the printable area
+            if (col === 0 && !firstItem && rowY + imgH > PAGE_H - MARGIN) {
+                pdf.addPage();
+                rowY = MARGIN;
+                rowMaxH = 0;
+            }
+
+            const imgX = MARGIN + col * (cellW + GAP);
+            pdf.addImage(cvs.toDataURL('image/jpeg', 0.92), 'JPEG', imgX, rowY, cellW, imgH);
+            rowMaxH = Math.max(rowMaxH, imgH);
+            firstItem = false;
+
+            col++;
+            if (col >= COLS) {
+                col = 0;
+                rowY += rowMaxH + GAP;
+                rowMaxH = 0;
+            }
+        }
+
+        pdf.save('dashboard_export.pdf');
     }
 
     // ================= FILTERS LOGIC =================
@@ -4368,6 +4413,28 @@ stateXml +
         URL.revokeObjectURL(url);
     }
 
+    // ================= ORG CHART MANUAL OVERRIDES (from App.js Save Layout) =================
+    // Keyed by candidate id (string) → parent candidate id (number) or null for root.
+    let _orgChartManualOverrides = {};
+
+    async function loadOrgChartOverrides() {
+        try {
+            const res = await fetch(`${API_BASE}/orgchart/load-state`, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.found && data.data && data.data.overrides) {
+                _orgChartManualOverrides = data.data.overrides;
+            } else {
+                _orgChartManualOverrides = {};
+            }
+        } catch (e) {
+            console.warn('[Dashboard] Could not load org chart overrides (non-fatal):', e && e.message);
+        }
+    }
+
     // ================= ORG CHART LOGIC (Advanced Hierarchy) =================
     const LAYERS = ['Executive', 'Sr Director', 'Director', 'Sr Manager', 'Manager', 'Lead', 'Expert', 'Senior', 'Mid', 'Junior'];
     const ALLOWED_PARENTS = {
@@ -4496,6 +4563,41 @@ stateXml +
                         childrenMap.get(bestParent.id).push(child);
                     } else {
                         roots.push(child);
+                    }
+                });
+
+                // Apply manual parent overrides saved from App.js "Save Layout"
+                Object.entries(_orgChartManualOverrides).forEach(([childIdStr, newParentId]) => {
+                    const childId = +childIdStr;
+                    const childNode = byId.get(childId);
+                    if (!childNode) return; // not in this org/family group
+
+                    // Remove child from wherever it currently sits (parent's childrenMap or roots)
+                    let removedFromParent = false;
+                    byId.forEach(parentNode => {
+                        if (removedFromParent) return;
+                        const arr = childrenMap.get(parentNode.id);
+                        if (!arr) return;
+                        const idx = arr.indexOf(childNode);
+                        if (idx >= 0) { arr.splice(idx, 1); removedFromParent = true; }
+                    });
+                    if (!removedFromParent) {
+                        const ri = roots.indexOf(childNode);
+                        if (ri >= 0) roots.splice(ri, 1);
+                    }
+
+                    // Place under new parent (or promote to root)
+                    if (newParentId == null) {
+                        if (!roots.includes(childNode)) roots.push(childNode);
+                    } else {
+                        const newParentNode = byId.get(Number(newParentId));
+                        if (newParentNode) {
+                            const parr = childrenMap.get(newParentNode.id);
+                            if (parr && !parr.includes(childNode)) parr.push(childNode);
+                        } else {
+                            // Overridden parent not in this group — fall back to root
+                            if (!roots.includes(childNode)) roots.push(childNode);
+                        }
                     }
                 });
 

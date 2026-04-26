@@ -7001,7 +7001,15 @@ function OrgChartDisplay({
       body: JSON.stringify({ overrides: cleaned, candidates: candidateSnapshot })
     })
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(d)))
-      .then(d => console.info('[Org Chart] State saved to server:', d.file))
+      .then(d => {
+        console.info('[Org Chart] State saved to server:', d.file);
+        // Notify LookerDashboard.html (if open) so its org hierarchy tile re-renders
+        try {
+          const _bc = new BroadcastChannel('fioe_orgchart_state');
+          _bc.postMessage({ type: 'orgchart-saved' });
+          _bc.close();
+        } catch (_) {}
+      })
       .catch(err => console.error('[Org Chart] Failed to save state to server:', err));
   };
   const handleCancelLayout=()=>{ setManualParentOverrides(lastSavedOverrides||{}); };
