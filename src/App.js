@@ -2142,6 +2142,7 @@ function CandidatesTable({
   hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
   accountTokens = 0, // Total account token balance from parent App
   manualParentOverrides = {}, // Current org chart manual parent overrides (for auto-save before dock-out)
+  setManualParentOverrides, // Setter to update manualParentOverrides (used by dock-in restore)
   lastSavedOverrides = {}, // Last persisted overrides (to detect unsaved changes before dock-out)
   setLastSavedOverrides, // Setter to update lastSavedOverrides after auto-save
 }) {
@@ -3478,10 +3479,22 @@ function CandidatesTable({
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               credentials: 'include',
               body: JSON.stringify(body),
-            }).then(r => r.ok
-              ? console.info(`[Dock In] Restored ${stateSheetName} state`)
-              : console.warn(`[Dock In] ${stateSheetName} restore returned`, r.status)
-            ).catch(err => console.warn(`[Dock In] ${stateSheetName} restore failed (non-fatal):`, err && err.message));
+            }).then(r => {
+              if (r.ok) {
+                console.info(`[Dock In] Restored ${stateSheetName} state`);
+                if (stateSheetName === 'orgchart') {
+                  // Sync restored overrides into localStorage and React state so the
+                  // Org Chart tab immediately shows the previously saved layout without
+                  // requiring a page reload.
+                  const restoredOverrides = content.overrides || {};
+                  try { localStorage.setItem('orgChartManualOverrides', JSON.stringify(restoredOverrides)); } catch (lsErr) { console.warn('[Dock In] Could not update orgChartManualOverrides in localStorage:', lsErr && lsErr.message); }
+                  if (setManualParentOverrides) setManualParentOverrides(restoredOverrides);
+                  if (setLastSavedOverrides) setLastSavedOverrides(restoredOverrides);
+                }
+              } else {
+                console.warn(`[Dock In] ${stateSheetName} restore returned`, r.status);
+              }
+            }).catch(err => console.warn(`[Dock In] ${stateSheetName} restore failed (non-fatal):`, err && err.message));
           }
         } catch (stateErr) {
           console.warn('[Dock In] State sheet restoration failed (non-fatal):', stateErr && stateErr.message);
@@ -9476,6 +9489,7 @@ export default function App() {
                 hasCustomEmailVerif={hasCustomEmailVerif}
                 accountTokens={accountTokens}
                 manualParentOverrides={manualParentOverrides}
+                setManualParentOverrides={setManualParentOverrides}
                 lastSavedOverrides={lastSavedOverrides}
                 setLastSavedOverrides={setLastSavedOverrides}
               />
