@@ -2617,6 +2617,23 @@
 
         // Restore saved slides from localStorage (keeps them in Slides tab, not dashboard)
         loadSavedSlides();
+
+        // Auto-save current state before the page is closed so dock-out always
+        // reads a current dashboard_username.json even if the user never clicked
+        // "Save State" explicitly.
+        window.addEventListener('beforeunload', () => { _autoSaveDashboard(); });
+
+        // Listen for cross-tab signals sent by App.js during DB Dock Out / Dock In.
+        // 'save-now'        → dock-out is about to read the file; flush current state immediately.
+        // 'dock-in-restored'→ dock-in just regenerated dashboard_username.json; reload from it.
+        try {
+            const _dashboardChannel = new BroadcastChannel('fioe_dashboard_state');
+            _dashboardChannel.addEventListener('message', e => {
+                if (!e || !e.data) return;
+                if (e.data.type === 'save-now') _autoSaveDashboard();
+                if (e.data.type === 'dock-in-restored') loadDashboardState(true);
+            });
+        } catch (bcErr) { console.warn('[Dashboard] BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
     }
 
     // ================= THEME LOGIC =================
@@ -5660,6 +5677,7 @@ stateXml +
             });
         localStorage.setItem(DASHBOARD_ORDER_KEY, JSON.stringify(order));
         persistConfig(); // Also save chart configs whenever order is saved
+        _scheduleDashboardAutoSave();
     }
     
     function persistConfig() {
@@ -5817,6 +5835,7 @@ stateXml +
             }
         });
         localStorage.setItem(DASHBOARD_SIZE_KEY, JSON.stringify(sizes));
+        _scheduleDashboardAutoSave();
     }
 
     function applySavedSizes() {
@@ -5861,6 +5880,32 @@ stateXml +
             map:       localStorage.getItem('dashboard:map'),
             orgFilter: localStorage.getItem('dashboard:orgFilter')
         };
+    }
+
+    // Silent auto-save: persists the full current dashboard+slides state to server
+    // without blocking alerts. Reads slides from localStorage so it is safe to call
+    // even before the in-memory `slides` array is populated.
+    function _autoSaveDashboard() {
+        const dashboardPayload = _assembleDashboardPayload();
+        let slidePayload = null;
+        try {
+            const slidesRaw = localStorage.getItem('dashboard:slides');
+            if (slidesRaw) slidePayload = JSON.parse(slidesRaw);
+        } catch (_) {}
+        fetch(`${API_BASE}/dashboard/save-state`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'include',
+            keepalive: true, // ensures the request completes even when called from beforeunload
+            body: JSON.stringify({ dashboard: dashboardPayload, slide: slidePayload })
+        }).catch(e => console.warn('[Dashboard] Auto-save failed (non-fatal):', e && e.message));
+    }
+
+    // Debounced scheduler: coalesces rapid state-change calls into one server write.
+    let _dashboardAutoSaveTimer = null;
+    function _scheduleDashboardAutoSave() {
+        clearTimeout(_dashboardAutoSaveTimer);
+        _dashboardAutoSaveTimer = setTimeout(_autoSaveDashboard, 1500);
     }
 
     function saveDashboardState() {

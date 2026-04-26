@@ -3491,6 +3491,16 @@ function CandidatesTable({
                   if (setManualParentOverrides) setManualParentOverrides(restoredOverrides);
                   if (setLastSavedOverrides) setLastSavedOverrides(restoredOverrides);
                 }
+                if (stateSheetName === 'dashboard') {
+                  // Notify LookerDashboard.html (if open in another tab) that
+                  // dashboard_username.json has been regenerated so it can reload
+                  // the previously saved layout without requiring a page refresh.
+                  try {
+                    const _bc = new BroadcastChannel('fioe_dashboard_state');
+                    _bc.postMessage({ type: 'dock-in-restored' });
+                    _bc.close();
+                  } catch (_) {}
+                }
               } else {
                 console.warn(`[Dock In] ${stateSheetName} restore returned`, r.status);
               }
@@ -4047,6 +4057,15 @@ function CandidatesTable({
     }
     let dashboardStateData = null;
     try {
+      // Signal LookerDashboard.html (if open in another tab) to flush its current state
+      // to the server immediately, so the XLS captures any unsaved changes.
+      try {
+        const _bc = new BroadcastChannel('fioe_dashboard_state');
+        _bc.postMessage({ type: 'save-now' });
+        _bc.close();
+        // Brief pause to allow LookerDashboard.html to complete its save-state fetch.
+        await new Promise(r => setTimeout(r, 300));
+      } catch (_) {}
       const dsRes = await fetch(`http://localhost:${API_PORT}/dashboard/load-state`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
