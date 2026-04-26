@@ -15,6 +15,9 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <!-- html2canvas for PNG export of slides -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- jsPDF for multi-page PDF export — loaded from local node_modules via /vendor route;
+         falls back to jsDelivr CDN if the local file is unavailable. -->
+    <script src="/vendor/jspdf.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';document.head.appendChild(s);"></script>
     <!-- PptxGenJS for PPTX export of slides -->
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <!-- Left Column Navigation -->
@@ -1022,6 +1025,19 @@
             animation: spin 1s linear infinite;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* PDF export spinner — inline indicator on the Export PDF button */
+        .pdf-btn-spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255,255,255,0.35);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
 
         /* ============ NEW: Resizable + Draggable tiles ============ */
         /* Map number-of-columns to data-span */
@@ -2606,6 +2622,9 @@
         // Init map (using saved position if present)
         initMap();
 
+        // Load org chart manual overrides from server before first render
+        await loadOrgChartOverrides();
+
         await refreshDashboard();
         
         // Layout restore
@@ -2617,6 +2636,33 @@
 
         // Restore saved slides from localStorage (keeps them in Slides tab, not dashboard)
         loadSavedSlides();
+
+        // Auto-save current state before the page is closed so dock-out always
+        // reads a current dashboard_username.json even if the user never clicked
+        // "Save State" explicitly.
+        window.addEventListener('beforeunload', () => { _autoSaveDashboard(); });
+
+        // Listen for cross-tab signals sent by App.js during DB Dock Out / Dock In.
+        // 'save-now'        → dock-out is about to read the file; flush current state immediately.
+        // 'dock-in-restored'→ dock-in just regenerated dashboard_username.json; reload from it.
+        try {
+            const _dashboardChannel = new BroadcastChannel('fioe_dashboard_state');
+            _dashboardChannel.addEventListener('message', e => {
+                if (!e || !e.data) return;
+                if (e.data.type === 'save-now') _autoSaveDashboard();
+                if (e.data.type === 'dock-in-restored') loadDashboardState(true);
+            });
+        } catch (bcErr) { console.warn('[Dashboard] BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
+
+        // Listen for org chart layout saves from App.js so the tile stays in sync.
+        try {
+            const _orgChartChannel = new BroadcastChannel('fioe_orgchart_state');
+            _orgChartChannel.addEventListener('message', async e => {
+                if (!e || !e.data || e.data.type !== 'orgchart-saved') return;
+                await loadOrgChartOverrides();
+                buildOrgChart();
+            });
+        } catch (bcErr) { console.warn('[Dashboard] orgchart BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
     }
 
     // ================= THEME LOGIC =================
@@ -2680,24 +2726,88 @@
     }
 
     // ================= PDF EXPORT LOGIC =================
-    function exportToPDF() {
-        const element = document.getElementById('dashboardGrid');
-        const opt = {
-            margin: 1,
-            filename: 'dashboard_export.pdf',
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true },
-            jsPDF: { unit: 'in', format: 'letter', orientation: 'landscape' }
-        };
-        
-        // Hide scrollbars for cleaner PDF
-        const originalOverflow = element.style.overflow;
-        element.style.overflow = 'visible';
-        
-        // Temporarily adjust grid to ensure everything fits or flows
-        html2pdf().set(opt).from(element).save().then(() => {
-            element.style.overflow = originalOverflow;
-        });
+    async function exportToPDF() {
+        const grid = document.getElementById('dashboardGrid');
+        if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
+        if (typeof html2canvas === 'undefined') { alert('html2canvas not loaded — please check your connection.'); return; }
+
+        const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+        if (!jsPDFCtor) { alert('jsPDF not available — please check your connection.'); return; }
+
+        // Disable button and show rotational spinner while generating
+        const btn = document.querySelector('button[onclick="exportToPDF()"]');
+        const origHTML = btn ? btn.innerHTML : null;
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="pdf-btn-spinner"></span>Generating…';
+        }
+
+        // Cache the background colour before the async html2canvas call
+        const bgColor = getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa';
+
+        try {
+            // Capture the entire dashboard grid as one screenshot so the PDF layout
+            // exactly mirrors the on-screen arrangement (column spans, card sizes, gaps).
+            const cvs = await html2canvas(grid, {
+                scale: 2,
+                useCORS: true,
+                backgroundColor: bgColor,
+                logging: false,
+                scrollX: 0,
+                scrollY: 0,
+                windowWidth:  grid.scrollWidth,
+                windowHeight: grid.scrollHeight
+            });
+
+            // Letter landscape: 279.4 × 215.9 mm
+            const PAGE_W = 279.4, PAGE_H = 215.9;
+            const MARGIN = 8;
+            const contentW = PAGE_W - 2 * MARGIN; // printable width in mm
+            const contentH = PAGE_H - 2 * MARGIN; // printable height in mm
+
+            // Map canvas pixels → mm using the printable width
+            const mmPerPx = contentW / cvs.width;
+
+            // How many canvas pixels fit on one PDF page (height)
+            const pxPerPage = Math.floor(contentH / mmPerPx);
+
+            const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+
+            let pxOffset = 0;
+            let firstPage = true;
+
+            while (pxOffset < cvs.height) {
+                if (!firstPage) pdf.addPage();
+                firstPage = false;
+
+                const slicePx = Math.min(pxPerPage, cvs.height - pxOffset);
+
+                // Draw only the current page's slice onto a temporary canvas
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width  = cvs.width;
+                pageCanvas.height = slicePx;
+                pageCanvas.getContext('2d').drawImage(
+                    cvs,
+                    0, pxOffset, cvs.width, slicePx,
+                    0, 0,        cvs.width, slicePx
+                );
+
+                const sliceH = slicePx * mmPerPx; // height of this slice in mm
+                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH);
+
+                pxOffset += pxPerPage;
+            }
+
+            pdf.save('dashboard_export.pdf');
+        } catch (e) {
+            console.error('[PDF] Export failed:', e);
+            alert('PDF export failed: ' + e.message);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = origHTML || 'Export PDF';
+            }
+        }
     }
 
     // ================= FILTERS LOGIC =================
@@ -3245,7 +3355,101 @@
         });
     }
 
-    // ================= DASHBOARD DATA LOGIC =================
+    // Renders a skill-frequency map (country-based hotspots) into an arbitrary container
+    // element.  Used for slide-tile clones so each gets its own independent Leaflet instance.
+    function renderSkillMapForTile(mapDiv, legendDiv) {
+        if (!mapDiv) return;
+        // Destroy any previous Leaflet map in this div
+        if (mapDiv._leafletRO) { mapDiv._leafletRO.disconnect(); delete mapDiv._leafletRO; }
+        if (mapDiv._leafletMap) { mapDiv._leafletMap.remove(); }
+        if (mapDiv._leaflet_id) delete mapDiv._leaflet_id;
+        mapDiv.innerHTML = '';
+
+        // Compute skill-frequency data from the current filtered dataset
+        const filtered = getFilteredData();
+        const countrySkills = {};
+        filtered.forEach(r => {
+            let c = (r.country || '').trim();
+            if (!c) return;
+            if (c.toLowerCase() === 'usa') c = 'United States';
+            if (c.toLowerCase() === 'uk') c = 'United Kingdom';
+            const val = r.skillset;
+            if (!val) return;
+            if (!countrySkills[c]) countrySkills[c] = {};
+            String(val).replace(/[\[\]"]/g, '').split(/[,;]/).forEach(s => {
+                const clean = s.trim();
+                if (clean) countrySkills[c][clean] = (countrySkills[c][clean] || 0) + 1;
+            });
+        });
+        const globalSkillCounts = {};
+        let globalMaxCount = 0;
+        Object.values(countrySkills).forEach(skills => {
+            Object.entries(skills).forEach(([s, cnt]) => {
+                globalSkillCounts[s] = (globalSkillCounts[s] || 0) + cnt;
+                if (cnt > globalMaxCount) globalMaxCount = cnt;
+            });
+        });
+        const chartColors = [
+            '#1a73e8','#e37400','#1e8e3e','#d93025','#9334e6','#00acc1','#f09300','#188038',
+            '#3c4043','#7b1fa2','#129eaf','#c2185b'
+        ];
+        const top10Skills = Object.entries(globalSkillCounts)
+            .sort((a, b) => b[1] - a[1]).slice(0, 10).map(e => e[0]);
+        const skillColorMap = {};
+        top10Skills.forEach((s, i) => { skillColorMap[s] = chartColors[i % chartColors.length]; });
+
+        // Build Leaflet map
+        const map = L.map(mapDiv, { dragging: true, scrollWheelZoom: true, zoomControl: true })
+            .setView([20, 0], 1);
+        mapDiv._leafletMap = map;
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap', maxZoom: 18, minZoom: 1, noWrap: true
+        }).addTo(map);
+
+        // Add one marker per country using the dominant (top) skill colour
+        const bounds = [];
+        Object.entries(countrySkills).forEach(([country, skills]) => {
+            const coords = COUNTRY_COORDS[country];
+            if (!coords) return;
+            const totalCount = Object.values(skills).reduce((a, b) => a + b, 0);
+            const topSkill = Object.entries(skills).sort((a, b) => b[1] - a[1])[0];
+            const topSkillName = topSkill ? topSkill[0] : '';
+            const topSkillColor = skillColorMap[topSkillName] || '#64748b';
+            const radius = 6 + Math.log(totalCount || 1) * 3;
+            L.circleMarker(coords, {
+                radius, fillColor: topSkillColor, color: '#fff', weight: 1, opacity: 1, fillOpacity: 0.8
+            }).addTo(map)
+                .bindTooltip(String(totalCount), { permanent: true, direction: 'center', className: 'map-count-label' })
+                .bindPopup(`<b>${country}</b><br>Top Skill: <span style="color:${topSkillColor};font-weight:bold;">${topSkillName}</span>`);
+            bounds.push(coords);
+        });
+        if (bounds.length > 0) map.fitBounds(bounds, { padding: [20, 20] });
+        setTimeout(() => map.invalidateSize(), 120);
+        if (window.ResizeObserver) {
+            const ro = new ResizeObserver(() => {
+                if (mapDiv._leafletMap) { try { mapDiv._leafletMap.invalidateSize(); } catch (_) {} }
+            });
+            ro.observe(mapDiv);
+            mapDiv._leafletRO = ro;
+        }
+
+        // Build legend
+        if (legendDiv && top10Skills.length > 0) {
+            legendDiv.innerHTML = '';
+            const heading = document.createElement('strong');
+            heading.style.cssText = 'display:block;margin-bottom:6px;';
+            heading.textContent = 'Top Skills';
+            legendDiv.appendChild(heading);
+            top10Skills.forEach(skill => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${skillColorMap[skill]};margin-right:6px;border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${skill}</strong>`;
+                legendDiv.appendChild(item);
+            });
+            legendDiv.style.display = 'block';
+        }
+    }
+
     async function refreshDashboard() {
         const loader = document.getElementById('globalLoader');
         loader.classList.add('active');
@@ -3611,6 +3815,31 @@
             });
             ro.observe(mapDiv);
             mapDiv._leafletRO = ro;
+        }
+
+        // Build a legend inside the tile so slide tiles show it too.
+        // Only add when there are top-10 labels and the container isn't the main dashboard
+        // fixed-id tiles (those have their own #geoMapLegend / #skillMapLegend elements).
+        const card = canvas.closest('.card');
+        if (card && top10Labels.length > 0) {
+            let tileLegend = card.querySelector('.tile-map-legend');
+            if (!tileLegend) {
+                tileLegend = document.createElement('div');
+                tileLegend.className = 'tile-map-legend skill-legend';
+                container.appendChild(tileLegend);
+            }
+            tileLegend.innerHTML = '';
+            const heading = document.createElement('strong');
+            heading.style.cssText = 'display:block;margin-bottom:6px;';
+            heading.textContent = 'Top Locations';
+            tileLegend.appendChild(heading);
+            top10Labels.forEach((label, i) => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};margin-right:6px;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
+                tileLegend.appendChild(item);
+            });
+            tileLegend.style.display = 'block';
         }
     }
 
@@ -4351,6 +4580,28 @@ stateXml +
         URL.revokeObjectURL(url);
     }
 
+    // ================= ORG CHART MANUAL OVERRIDES (from App.js Save Layout) =================
+    // Keyed by candidate id (string) → parent candidate id (number) or null for root.
+    let _orgChartManualOverrides = {};
+
+    async function loadOrgChartOverrides() {
+        try {
+            const res = await fetch(`${API_BASE}/orgchart/load-state`, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                credentials: 'include',
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.found && data.data && data.data.overrides) {
+                _orgChartManualOverrides = data.data.overrides;
+            } else {
+                _orgChartManualOverrides = {};
+            }
+        } catch (e) {
+            console.warn('[Dashboard] Could not load org chart overrides (non-fatal):', e && e.message);
+        }
+    }
+
     // ================= ORG CHART LOGIC (Advanced Hierarchy) =================
     const LAYERS = ['Executive', 'Sr Director', 'Director', 'Sr Manager', 'Manager', 'Lead', 'Expert', 'Senior', 'Mid', 'Junior'];
     const ALLOWED_PARENTS = {
@@ -4479,6 +4730,41 @@ stateXml +
                         childrenMap.get(bestParent.id).push(child);
                     } else {
                         roots.push(child);
+                    }
+                });
+
+                // Apply manual parent overrides saved from App.js "Save Layout"
+                Object.entries(_orgChartManualOverrides).forEach(([childIdStr, newParentId]) => {
+                    const childId = +childIdStr;
+                    const childNode = byId.get(childId);
+                    if (!childNode) return; // not in this org/family group
+
+                    // Remove child from wherever it currently sits (parent's childrenMap or roots)
+                    let removedFromParent = false;
+                    byId.forEach(parentNode => {
+                        if (removedFromParent) return;
+                        const arr = childrenMap.get(parentNode.id);
+                        if (!arr) return;
+                        const idx = arr.indexOf(childNode);
+                        if (idx >= 0) { arr.splice(idx, 1); removedFromParent = true; }
+                    });
+                    if (!removedFromParent) {
+                        const ri = roots.indexOf(childNode);
+                        if (ri >= 0) roots.splice(ri, 1);
+                    }
+
+                    // Place under new parent (or promote to root)
+                    if (newParentId == null) {
+                        if (!roots.includes(childNode)) roots.push(childNode);
+                    } else {
+                        const newParentNode = byId.get(Number(newParentId));
+                        if (newParentNode) {
+                            const parr = childrenMap.get(newParentNode.id);
+                            if (parr && !parr.includes(childNode)) parr.push(childNode);
+                        } else {
+                            // Overridden parent not in this group — fall back to root
+                            if (!roots.includes(childNode)) roots.push(childNode);
+                        }
                     }
                 });
 
@@ -5660,6 +5946,7 @@ stateXml +
             });
         localStorage.setItem(DASHBOARD_ORDER_KEY, JSON.stringify(order));
         persistConfig(); // Also save chart configs whenever order is saved
+        _scheduleDashboardAutoSave();
     }
     
     function persistConfig() {
@@ -5817,6 +6104,7 @@ stateXml +
             }
         });
         localStorage.setItem(DASHBOARD_SIZE_KEY, JSON.stringify(sizes));
+        _scheduleDashboardAutoSave();
     }
 
     function applySavedSizes() {
@@ -5861,6 +6149,32 @@ stateXml +
             map:       localStorage.getItem('dashboard:map'),
             orgFilter: localStorage.getItem('dashboard:orgFilter')
         };
+    }
+
+    // Silent auto-save: persists the full current dashboard+slides state to server
+    // without blocking alerts. Reads slides from localStorage so it is safe to call
+    // even before the in-memory `slides` array is populated.
+    function _autoSaveDashboard() {
+        const dashboardPayload = _assembleDashboardPayload();
+        let slidePayload = null;
+        try {
+            const slidesRaw = localStorage.getItem('dashboard:slides');
+            if (slidesRaw) slidePayload = JSON.parse(slidesRaw);
+        } catch (_) {}
+        fetch(`${API_BASE}/dashboard/save-state`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'include',
+            keepalive: true, // ensures the request completes even when called from beforeunload
+            body: JSON.stringify({ dashboard: dashboardPayload, slide: slidePayload })
+        }).catch(e => console.warn('[Dashboard] Auto-save failed (non-fatal):', e && e.message));
+    }
+
+    // Debounced scheduler: coalesces rapid state-change calls into one server write.
+    let _dashboardAutoSaveTimer = null;
+    function _scheduleDashboardAutoSave() {
+        clearTimeout(_dashboardAutoSaveTimer);
+        _dashboardAutoSaveTimer = setTimeout(_autoSaveDashboard, 1500);
     }
 
     function saveDashboardState() {
@@ -6137,11 +6451,13 @@ stateXml +
         }
 
         // Non-geographic dimensions (e.g. 'skillset', 'jobfamily') cannot render as a Leaflet map
-        // because their values don't correspond to country coordinates. Fall back to 'bar' so the
-        // slide tile shows real data instead of an empty basemap.
+        // via renderLeafletMapForTile (which looks up country coords by label).
+        // 'skillset' is special: we render a dedicated country-based skill-frequency map instead.
+        // All other non-geographic dims fall back to 'bar'.
         const GEOGRAPHIC_DIMS = ['country', 'city', 'location', 'region'];
         const lastDimension = fields[fields.length - 1] || '';
-        if (chartType === 'map' && !GEOGRAPHIC_DIMS.includes(lastDimension)) {
+        const isSkillMap = chartType === 'map' && lastDimension === 'skillset';
+        if (chartType === 'map' && !GEOGRAPHIC_DIMS.includes(lastDimension) && !isSkillMap) {
             chartType = 'bar';
         }
 
@@ -6160,6 +6476,46 @@ stateXml +
             tile.dataset.baseHeight = '200';
             const srcText = srcCard.querySelector('.text-tile-editor');
             tile.innerHTML = `<textarea class="text-tile-editor" placeholder="Type your note or description here" spellcheck="false">${srcText ? srcText.value : ''}</textarea>`;
+        } else if (isSkillMap) {
+            // Skillset Frequency map tile: render an independent skill-frequency Leaflet map
+            // with its own hotspot markers and legend.
+            tile.className = 'card chart-card custom-metric-tile';
+            tile.dataset.chartType = 'skill-map';
+            tile.dataset.fields = JSON.stringify(fields);
+            tile.dataset.tileMetric = tileMetric;
+            tile.dataset.baseHeight = '500';
+            const srcH3 = srcCard.querySelector('h3');
+            const tileTitle = srcH3 ? srcH3.textContent.trim() : 'Skillset Frequency (Top 10)';
+            const mapDivId = `skillmap-slide-${tileId}`;
+            // Build DOM nodes directly to avoid XSS from tile title content
+            const header = document.createElement('div');
+            header.className = 'card-header';
+            const h3El = document.createElement('h3');
+            h3El.contentEditable = 'true';
+            h3El.spellcheck = false;
+            h3El.textContent = tileTitle;
+            header.appendChild(h3El);
+            const chartContainer = document.createElement('div');
+            chartContainer.className = 'chart-container';
+            chartContainer.style.cssText = 'position:relative;width:100%;height:100%;';
+            const mapDiv = document.createElement('div');
+            mapDiv.id = mapDivId;
+            mapDiv.style.cssText = 'width:100%;height:100%;min-height:250px;';
+            const legendDiv = document.createElement('div');
+            legendDiv.className = 'tile-skill-map-legend skill-legend';
+            chartContainer.appendChild(mapDiv);
+            chartContainer.appendChild(legendDiv);
+            tile.appendChild(header);
+            tile.appendChild(chartContainer);
+            slideGrid.appendChild(tile);
+            _initSlideTile(tile);
+            // Defer render until the tile is visible in the DOM
+            setTimeout(() => {
+                const md = tile.querySelector(`#${mapDivId}`);
+                const ld = tile.querySelector('.tile-skill-map-legend');
+                if (md) renderSkillMapForTile(md, ld);
+            }, 0);
+            return tileId;
         } else if (isChart) {
             const dimension = fields[fields.length - 1];
             const canvasId = `slideChart-${tileId}`;
@@ -6442,6 +6798,11 @@ stateXml +
                     if (canvas && canvas.id && dimension) {
                         renderLeafletMapForTile(canvas.id, dimension, card.dataset.tileMetric || 'count');
                     }
+                } else if (card.dataset.chartType === 'skill-map') {
+                    // Re-render skill-frequency map now that the container is visible
+                    const mapDiv = card.querySelector('[id^="skillmap-slide-"]');
+                    const legendDiv = card.querySelector('.tile-skill-map-legend');
+                    if (mapDiv) renderSkillMapForTile(mapDiv, legendDiv);
                 } else {
                     card.querySelectorAll('[id^="tilemap-"]').forEach(md => {
                         if (md._leafletMap) { try { md._leafletMap.invalidateSize(); } catch (_) {} }
