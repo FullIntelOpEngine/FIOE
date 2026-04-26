@@ -4,15 +4,15 @@
     "enabled": "enabled"
   },
   "zerobounce": {
-    "api_key": "",
-    "enabled": "disabled"
+    "api_key": "0496f3f44a964c2f8c1d3cb03c523ff7",
+    "enabled": "enabled"
   },
   "bouncer": {
     "api_key": "",
     "enabled": "disabled"
   },
   "contactout": {
-    "api_key": "zozjIvgpFcy2LF21ycl0lKc",
+    "api_key": "zozjIvgpFcy2LF21ycl0lKcF",
     "enabled": "enabled"
   },
   "apollo": {

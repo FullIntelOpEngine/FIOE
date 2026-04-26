@@ -8,9 +8,9 @@
     "enabled": "disabled"
   },
   "brightdata": {
-    "api_key": "",
+    "api_key": "ee21fc44-4383-4654-a445-c2c1b7370f90",
     "zone": "serp_api1",
-    "enabled": "disabled",
+    "enabled": "enabled",
     "collector_id": ""
   },
   "rate_limit_per_minute": 0
