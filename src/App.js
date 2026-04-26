@@ -2757,28 +2757,37 @@ function CandidatesTable({
         return;
       }
 
-      // Update the edit rows state
-      setEditRows(prev => ({
-        ...prev,
-        [renameCheckboxId]: {
-          ...(prev[renameCheckboxId] || {}),
-          [dbField]: renameValue.trim()
-        }
-      }));
+      // Apply to all selected IDs if multiple are selected, otherwise just the checked one
+      const idsToUpdate = selectedIds.length > 1 ? selectedIds : [renameCheckboxId];
 
-      // Save to database via onSave callback
+      // Update the edit rows state for all targeted IDs
+      setEditRows(prev => {
+        const updates = {};
+        for (const id of idsToUpdate) {
+          updates[id] = {
+            ...(prev[id] || {}),
+            [dbField]: renameValue.trim()
+          };
+        }
+        return { ...prev, ...updates };
+      });
+
+      // Save to database via onSave callback for all targeted IDs
       if (typeof onSave === 'function') {
-        const candidate = candidates.find(c => c.id === renameCheckboxId);
-        const payload = {
-          ...(candidate || {}),
-          ...(editRows[renameCheckboxId] || {}),
-          [dbField]: renameValue.trim()
-        };
-        await onSave(renameCheckboxId, payload);
+        for (const id of idsToUpdate) {
+          const candidate = candidates.find(c => c.id === id);
+          const payload = {
+            ...(candidate || {}),
+            ...(editRows[id] || {}),
+            [dbField]: renameValue.trim()
+          };
+          await onSave(id, payload);
+        }
       }
 
       // Show success message and clear rename UI after successful update
-      setRenameMessage(`Successfully updated ${renameCategory} to "${renameValue.trim()}"`);
+      const countMsg = idsToUpdate.length > 1 ? ` for ${idsToUpdate.length} records` : '';
+      setRenameMessage(`Successfully updated ${renameCategory} to "${renameValue.trim()}"${countMsg}`);
       setTimeout(() => {
         resetRenameState();
       }, 2000);
@@ -3079,7 +3088,7 @@ function CandidatesTable({
                     <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
                   )}
                   {compConsensus[String(c.id)] && (
-                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'block', fontSize: 10, fontWeight: 600, color: '#2e7d32', marginTop: 2, lineHeight: 1.2 }}>
+                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', marginTop: 2, userSelect: 'none' }}>
                       {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} consensus` : 'crowd'}
                     </span>
                   )}
@@ -5002,7 +5011,7 @@ criteriaSheets.map((cf, idx) => {
             flexWrap: 'wrap'
           }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--black-beauty)' }}>
-              Rename field for selected record:
+              Rename field for {selectedIds.length > 1 ? `${selectedIds.length} selected records` : 'selected record'}:
             </span>
             
             <select
