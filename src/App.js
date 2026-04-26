@@ -3993,6 +3993,28 @@ function CandidatesTable({
     } catch (cErr) {
       console.warn('[Dock Out] Could not load criteria files:', cErr);
     }
+    // Auto-save org chart manual overrides so DB Dock Out XLS captures any unsaved drag-and-drop changes
+    if (JSON.stringify(manualParentOverrides) !== JSON.stringify(lastSavedOverrides)) {
+      try {
+        const candidateSnapshot = (candidates || []).map(c => ({
+          id: c.id, name: c.name, jobtitle: c.jobtitle, company: c.company,
+          seniority: c.seniority, jobfamily: c.jobfamily
+        }));
+        const cleaned = Object.fromEntries(
+          Object.entries(manualParentOverrides || {}).filter(([, v]) => v != null)
+        );
+        await fetch(`http://localhost:${API_PORT}/orgchart/save-state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({ overrides: cleaned, candidates: candidateSnapshot })
+        });
+        setLastSavedOverrides(cleaned);
+        localStorage.setItem('orgChartManualOverrides', JSON.stringify(cleaned));
+      } catch (ocSaveErr) {
+        console.warn('[Dock Out] Could not auto-save org chart state:', ocSaveErr);
+      }
+    }
     // Fetch orgchart + dashboard save-state so they can be embedded in the XLS
     let orgchartStateData = null;
     try {
@@ -4993,13 +5015,13 @@ criteriaSheets.map((cf, idx) => {
           </div>
         </div>
 
-        {/* Status Toolbar — modeled after SourcingVerify metrics bar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap', padding: '10px 14px', background: 'var(--gradient-toolbar)', border: '1px solid var(--neutral-border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)' }}>
+        {/* Status Toolbar — styled to match SourcingVerify metrics bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap', padding: '10px 14px', background: '#ffffff', border: '1px solid var(--desired-dawn, #d8d8d8)', borderRadius: 'var(--radius)', boxShadow: '0 2px 8px rgba(7,54,121,0.06)' }}>
           {/* Token metrics box */}
           {!hasCustomEmailVerif && (
-            <div className="metrics">
-              <span className="metric"><strong>Account Token:</strong> {accountTokens}</span>
-              <span className="metric"><strong>Token Left:</strong> <span style={{ color: tokensLeft < 5 ? 'var(--danger)' : 'inherit' }}>{tokensLeft}</span></span>
+            <div className="metrics" style={{ background: 'rgba(109,234,249,0.08)', border: '1px solid var(--robins-egg, #6deaf9)' }}>
+              <span className="metric"><strong style={{ color: 'var(--azure-dragon, #073679)' }}>Account Token:</strong> {accountTokens}</span>
+              <span className="metric"><strong style={{ color: 'var(--azure-dragon, #073679)' }}>Token Left:</strong> <span style={{ color: tokensLeft < 5 ? 'var(--danger)' : 'inherit' }}>{tokensLeft}</span></span>
             </div>
           )}
           {/* Status messages */}
