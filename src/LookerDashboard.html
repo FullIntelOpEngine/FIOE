@@ -17,19 +17,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <!-- jsPDF for multi-page PDF export — loaded from local node_modules via /vendor route;
          falls back to jsDelivr CDN if the local file is unavailable. -->
-    <script>
-      (function() {
-        function loadJsPDF(src) {
-          var s = document.createElement('script'); s.src = src; document.head.appendChild(s);
-        }
-        var local = '/vendor/jspdf.umd.min.js';
-        var cdn   = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';
-        var req = new XMLHttpRequest();
-        req.open('HEAD', local, false);
-        try { req.send(); } catch(e) {}
-        loadJsPDF(req.status === 200 ? local : cdn);
-      })();
-    </script>
+    <script src="/vendor/jspdf.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';document.head.appendChild(s);"></script>
     <!-- PptxGenJS for PPTX export of slides -->
     <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
     <!-- Left Column Navigation -->
@@ -2754,13 +2742,16 @@
             btn.innerHTML = '<span class="pdf-btn-spinner"></span>Generating…';
         }
 
+        // Cache the background colour before the async html2canvas call
+        const bgColor = getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa';
+
         try {
             // Capture the entire dashboard grid as one screenshot so the PDF layout
             // exactly mirrors the on-screen arrangement (column spans, card sizes, gaps).
             const cvs = await html2canvas(grid, {
                 scale: 2,
                 useCORS: true,
-                backgroundColor: getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa',
+                backgroundColor: bgColor,
                 logging: false,
                 scrollX: 0,
                 scrollY: 0,

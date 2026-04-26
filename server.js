@@ -349,7 +349,7 @@ app.use('/image', express.static(path.join(__dirname, 'image')));
 // Serve client-side UI modules (admin_ai_fix_snippet.js etc.)
 app.use('/ui', express.static(path.join(__dirname, 'ui')));
 // Serve jsPDF from local node_modules so the PDF export works without a CDN connection.
-app.get('/vendor/jspdf.umd.min.js', (req, res) => {
+app.get('/vendor/jspdf.umd.min.js', dashboardRateLimit, (req, res) => {
   const jspdfPath = path.join(__dirname, 'node_modules', 'jspdf', 'dist', 'jspdf.umd.min.js');
   res.sendFile(jspdfPath, err => {
     if (err) res.status(404).end();
