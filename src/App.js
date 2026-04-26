@@ -2140,6 +2140,7 @@ function CandidatesTable({
   onRefresh, // callback to refresh candidate list from server
   hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
   hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
+  accountTokens = 0, // Total account token balance from parent App
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -3082,13 +3083,15 @@ function CandidatesTable({
                   <option value="Executive">Executive</option>
                 </select>
               : f.key === 'compensation'
-              ? <div style={{ position: 'relative', width: '100%' }}>
-                  <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(0,180,216,0.07)' : '#ffffff', cursor: 'pointer' }} />
-                  {compVerifiedIds.has(String(c.id)) && (
-                    <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
-                  )}
+              ? <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
+                  <div style={{ position: 'relative', width: '100%' }}>
+                    <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(0,180,216,0.07)' : '#ffffff', cursor: 'pointer' }} />
+                    {compVerifiedIds.has(String(c.id)) && (
+                      <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
+                    )}
+                  </div>
                   {compConsensus[String(c.id)] && (
-                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', marginTop: 2, userSelect: 'none' }}>
+                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', alignSelf: 'flex-start', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', userSelect: 'none' }}>
                       {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} consensus` : 'crowd'}
                     </span>
                   )}
@@ -4988,13 +4991,27 @@ criteriaSheets.map((cf, idx) => {
               </button>
             )}
           </div>
-          {dockInError && <div style={{ color: 'var(--danger)', fontSize: 13, marginLeft: 4 }}>{dockInError}</div>}
-          
-          {deleteError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{deleteError}</div>}
-          {saveError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{saveError}</div>}
-          {saveMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{saveMessage}</div>}
-          {syncMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{syncMessage}</div>}
-          {aiCompMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{aiCompMessage}</div>}
+        </div>
+
+        {/* Status Toolbar — modeled after SourcingVerify metrics bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap', padding: '10px 14px', background: 'var(--gradient-toolbar)', border: '1px solid var(--neutral-border)', borderRadius: 'var(--radius)', boxShadow: 'var(--shadow)' }}>
+          {/* Token metrics box */}
+          {!hasCustomEmailVerif && (
+            <div className="metrics">
+              <span className="metric"><strong>Account Token:</strong> {accountTokens}</span>
+              <span className="metric"><strong>Token Left:</strong> <span style={{ color: tokensLeft < 5 ? 'var(--danger)' : 'inherit' }}>{tokensLeft}</span></span>
+            </div>
+          )}
+          {/* Status messages */}
+          {dockInError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{dockInError}</span>}
+          {deleteError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{deleteError}</span>}
+          {saveError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{saveError}</span>}
+          {saveMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{saveMessage}</span>}
+          {syncMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{syncMessage}</span>}
+          {aiCompMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{aiCompMessage}</span>}
+          {!dockInError && !deleteError && !saveError && !saveMessage && !syncMessage && !aiCompMessage && (
+            <span style={{ fontSize: 13, color: 'var(--argent)' }}>Ready</span>
+          )}
         </div>
 
         {/* Checkbox Rename Workflow UI */}
@@ -9342,47 +9359,7 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif keys are active via api_porting.html) */}
-      {!hasCustomEmailVerif && <div style={{
-        width: '100%',
-        margin: '0 0 24px 0',
-        padding: '12px 18px',
-        background: 'var(--bg)',
-        border: '1px solid var(--neutral-border)',
-        borderRadius: 8,
-        display: 'flex',
-        gap: 16,
-        alignItems: 'center',
-        flexWrap: 'wrap'
-      }}>
-        <div style={{ 
-          display: 'inline-flex', 
-          alignItems: 'center', 
-          gap: 6,
-          padding: '6px 12px',
-          background: 'rgba(7,54,121,0.08)',
-          border: '1px solid var(--cool-blue)',
-          borderRadius: 6,
-          fontSize: 13
-        }}>
-          <strong style={{ color: 'var(--azure-dragon)' }}>Account Tokens:</strong>
-          <span style={{ fontWeight: 600, color: 'var(--azure-dragon)' }}>{accountTokens}</span>
-        </div>
-        
-        <div style={{ 
-          display: 'inline-flex', 
-          alignItems: 'center', 
-          gap: 6,
-          padding: '6px 12px',
-          background: 'rgba(109,234,249,0.15)',
-          border: '1px solid var(--robins-egg)',
-          borderRadius: 6,
-          fontSize: 13
-        }}>
-          <strong style={{ color: 'var(--azure-dragon)' }}>Tokens Left:</strong>
-          <span style={{ fontWeight: 600 }}>{tokensLeft}</span>
-        </div>
-      </div>}
+      {/* Token Metrics UI removed from here — now displayed in the Status Toolbar inside CandidateTable */}
       
       {/* Title only visible below banner now */}
       <h1 className="cms-page-title">Candidate Management System</h1>
@@ -9472,6 +9449,7 @@ export default function App() {
                 onRefresh={() => { isRefreshingRef.current = true; window.location.reload(); }}
                 hasCustomLlm={hasCustomLlm}
                 hasCustomEmailVerif={hasCustomEmailVerif}
+                accountTokens={accountTokens}
               />
           }
         </div>
