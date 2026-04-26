@@ -2141,6 +2141,9 @@ function CandidatesTable({
   hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
   hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
   accountTokens = 0, // Total account token balance from parent App
+  manualParentOverrides = {}, // Current org chart manual parent overrides (for auto-save before dock-out)
+  lastSavedOverrides = {}, // Last persisted overrides (to detect unsaved changes before dock-out)
+  setLastSavedOverrides, // Setter to update lastSavedOverrides after auto-save
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -9472,6 +9475,9 @@ export default function App() {
                 hasCustomLlm={hasCustomLlm}
                 hasCustomEmailVerif={hasCustomEmailVerif}
                 accountTokens={accountTokens}
+                manualParentOverrides={manualParentOverrides}
+                lastSavedOverrides={lastSavedOverrides}
+                setLastSavedOverrides={setLastSavedOverrides}
               />
           }
         </div>
