@@ -3433,34 +3433,64 @@ function renderAppealsTable(card) {
       <td class="td-jd-btn"></td>
       <td></td>`;
 
-    // Job Description download button (probed asynchronously)
+    // Job Description dropdown (populated asynchronously from /admin/list-jd)
     const tdJd = tr.querySelector('.td-jd-btn');
-    if (ap.username && ap.role_tag) {
+    if (ap.username) {
+      const jdWrap = document.createElement('div');
+      jdWrap.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap;';
+
+      const sel = document.createElement('select');
+      sel.className = 'form-select form-select-sm';
+      sel.style.cssText = 'min-width:160px;max-width:220px;font-size:12px;';
+      sel.innerHTML = '<option value="">⏳ Loading…</option>';
+      sel.disabled = true;
+
       const dlBtn = document.createElement('button');
       dlBtn.className = 'btn btn-sm';
-      dlBtn.style.cssText = 'background:#e9ecef;color:#495057;cursor:not-allowed;';
-      dlBtn.textContent = '⏳ Checking…';
+      dlBtn.style.cssText = 'background:#e9ecef;color:#495057;cursor:not-allowed;white-space:nowrap;';
+      dlBtn.textContent = '⬇ Download';
       dlBtn.disabled = true;
-      tdJd.appendChild(dlBtn);
-      fetch(`${API}/admin/check-jd?username=${encodeURIComponent(ap.username)}&role_tag=${encodeURIComponent(ap.role_tag)}`, { credentials: 'same-origin' })
+
+      jdWrap.appendChild(sel);
+      jdWrap.appendChild(dlBtn);
+      tdJd.appendChild(jdWrap);
+
+      fetch(`${API}/admin/list-jd?username=${encodeURIComponent(ap.username)}`, { credentials: 'same-origin' })
         .then(r => r.json())
         .then(data => {
-          if (data.exists) {
-            dlBtn.textContent = '📄 Download JD';
-            dlBtn.style.cssText = 'background:#0d6efd;color:#fff;cursor:pointer;';
-            dlBtn.disabled = false;
+          sel.innerHTML = '';
+          if (data.files && data.files.length) {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '— Select JD —';
+            sel.appendChild(placeholder);
+            data.files.forEach(f => {
+              const opt = document.createElement('option');
+              opt.value = f;
+              opt.textContent = f;
+              sel.appendChild(opt);
+            });
+            sel.disabled = false;
+            const syncBtn = () => {
+              const hasVal = !!sel.value;
+              dlBtn.disabled = !hasVal;
+              dlBtn.style.cssText = hasVal
+                ? 'background:#0d6efd;color:#fff;cursor:pointer;white-space:nowrap;'
+                : 'background:#e9ecef;color:#495057;cursor:not-allowed;white-space:nowrap;';
+            };
+            sel.addEventListener('change', syncBtn);
             dlBtn.addEventListener('click', () => {
-              window.location.href = `${API}/admin/download-jd?username=${encodeURIComponent(ap.username)}&role_tag=${encodeURIComponent(ap.role_tag)}`;
+              if (!sel.value) return;
+              window.location.href = `${API}/admin/download-jd-file?username=${encodeURIComponent(ap.username)}&filename=${encodeURIComponent(sel.value)}`;
             });
           } else {
-            dlBtn.textContent = '—';
-            dlBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:default;';
-            dlBtn.title = 'No JD file on record for this user';
+            sel.innerHTML = '<option value="">No JD on record</option>';
+            sel.disabled = true;
           }
         })
         .catch(() => {
-          dlBtn.textContent = '—';
-          dlBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:default;';
+          sel.innerHTML = '<option value="">Error loading</option>';
+          sel.disabled = true;
         });
     } else {
       tdJd.textContent = '—';

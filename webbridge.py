@@ -2052,6 +2052,78 @@ def admin_check_jd():
     return jsonify({"exists": False}), 200
 
 
+@app.get("/admin/list-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_list_jd():
+    """List all JD archive files for a given username.
+
+    Query params:
+      username – required
+
+    Response: { "files": ["JD_RoleTag_username.pdf", ...] }
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+    username = (request.args.get("username") or "").strip()
+    if not username:
+        return jsonify({"files": []}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    archive_abs = os.path.abspath(_JD_ARCHIVE_DIR)
+    results = []
+    for ext in ('pdf', 'docx', 'doc'):
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        for path in _glob.glob(pattern):
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(archive_abs + os.sep) or abs_path == archive_abs:
+                results.append(os.path.basename(abs_path))
+    return jsonify({"files": sorted(results)}), 200
+
+
+@app.get("/admin/download-jd-file")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_download_jd_file():
+    """Serve a specific JD archive file by filename.
+
+    Query params:
+      username – required; used to verify the file belongs to this user
+      filename – required; bare filename (no path separators)
+
+    Security checks:
+      - filename must be a pure basename with no directory components
+      - filename must end with _{safe_username}.{ext}
+      - resolved path must stay inside _JD_ARCHIVE_DIR
+      - extension must be pdf, doc, or docx
+    """
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+    username = (request.args.get("username") or "").strip()
+    filename = (request.args.get("filename") or "").strip()
+    if not username or not filename:
+        return jsonify({"error": "username and filename required"}), 400
+    # filename must be a pure basename – no path separators allowed
+    if os.path.basename(filename) != filename or filename.startswith('.'):
+        return jsonify({"error": "Invalid filename"}), 400
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in ('pdf', 'doc', 'docx'):
+        return jsonify({"error": "Invalid file type"}), 400
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    # The file must belong to the requested user (suffix check)
+    if not filename.endswith(f'_{safe_username}.{ext}'):
+        return jsonify({"error": "File does not belong to this user"}), 403
+    archive_abs = os.path.abspath(_JD_ARCHIVE_DIR)
+    abs_file = os.path.abspath(os.path.join(_JD_ARCHIVE_DIR, filename))
+    if not abs_file.startswith(archive_abs + os.sep) and abs_file != archive_abs:
+        return jsonify({"error": "Invalid path"}), 400
+    if not os.path.isfile(abs_file):
+        return jsonify({"error": "File not found"}), 404
+    try:
+        return send_from_directory(archive_abs, filename, as_attachment=True)
+    except Exception as e:
+        logging.getLogger(__name__).warning("[admin_download_jd_file] %s", e)
+        return jsonify({"error": "Failed to retrieve file"}), 500
+
+
 @app.get("/admin/logs")
 @_rate(_make_flask_limit("admin_endpoints"))
 @_require_admin
