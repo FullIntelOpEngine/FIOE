@@ -1247,12 +1247,12 @@ app.post('/admin/appeal-action', dashboardRateLimit, requireAdmin, async (req, r
       const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
       const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
       const r = await pool.query(
-        'UPDATE login SET token = COALESCE(token, 0) + $2 WHERE username = $1 RETURNING token, id',
+        'UPDATE login SET token = COALESCE(token, 0) + $2 WHERE username = $1 RETURNING token, userid',
         [username, _APPEAL_APPROVE_CREDIT]
       );
       if (r.rows.length) {
         newToken = r.rows[0].token;
-        const creditedUserid = r.rows[0].id != null ? String(r.rows[0].id) : '';
+        const creditedUserid = r.rows[0].userid != null ? String(r.rows[0].userid) : '';
         _writeFinancialLog({
           username, userid: creditedUserid, feature: 'appeal_approval',
           transaction_type: 'credit', transaction_amount: _APPEAL_APPROVE_CREDIT,
