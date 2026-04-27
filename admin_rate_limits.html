@@ -3540,7 +3540,7 @@ function renderAppealsTable(card) {
   card.appendChild(wrap);
 }
 
-function showAppealMessageModal(label, recipientName, action, username) {
+function showAppealMessageModal(label, recipientName, action, username, appealData) {
   return new Promise(async resolve => {
     const old = document.getElementById('appealMsgModal');
     if (old) old.remove();
@@ -3612,6 +3612,15 @@ function showAppealMessageModal(label, recipientName, action, username) {
               <b class="appeal-tag-chip" data-tag="[Token]" style="color:#86efac;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Token]</b>
               <span style="color:rgba(255,255,255,.6);font-size:11px;">– User's token balance (${escHtml(String(tagData.token ?? '?'))})</span>
             </div>
+            <div style="font-weight:700;font-size:10px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;margin-top:6px;">Appeal</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Search Title]" style="color:#fde68a;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Search Title]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– Role/search title (${escHtml(appealData?.role_tag ? appealData.role_tag.split(',')[0].trim() : '—')})</span>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Candidate Name]" style="color:#fde68a;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Candidate Name]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– Candidate's name (${escHtml(appealData?.name || '—')})</span>
+            </div>
             <div style="margin-top:5px;font-size:10px;color:rgba(255,255,255,.4);border-top:1px solid rgba(255,255,255,.1);padding-top:4px;">Click a tag to insert it at the cursor · Tags are resolved when the email is sent</div>
           </div>
         </div>
@@ -3626,6 +3635,13 @@ function showAppealMessageModal(label, recipientName, action, username) {
           </div>
           <div id="aiDraftStatus" style="display:none;font-size:11px;color:#7c3aed;"></div>
         </div>
+
+        <!-- Subject field -->
+        <label style="display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:12px;">
+          Subject
+          <input id="appealMsgSubject" type="text" placeholder="Email subject…"
+            style="padding:8px;border:1px solid #cdd;border-radius:5px;font-size:13px;margin-top:4px;">
+        </label>
 
         <!-- Message textarea -->
         <label style="display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:12px;">
@@ -3763,6 +3779,8 @@ function showAppealMessageModal(label, recipientName, action, username) {
         if (!res.ok) throw new Error(data.error || 'Draft failed');
         const ta = document.getElementById('appealMsgText');
         ta.value = (data.body || '').trim();
+        const subjEl = document.getElementById('appealMsgSubject');
+        if (subjEl && data.subject) subjEl.value = data.subject.trim();
         status.textContent = '✓ Draft generated.';
       } catch (err) {
         status.style.color = '#c00';
@@ -3775,13 +3793,14 @@ function showAppealMessageModal(label, recipientName, action, username) {
 
     document.getElementById('appealMsgSubmit').addEventListener('click', () => {
       const msg = document.getElementById('appealMsgText').value.trim();
+      const subj = document.getElementById('appealMsgSubject').value.trim();
       if (!msg) {
         const errEl = document.getElementById('appealMsgError');
         errEl.textContent = 'Please enter a message for the user.';
         errEl.style.display = 'block';
         return;
       }
-      close(msg);
+      close({ message: msg, subject: subj });
     });
 
     setTimeout(() => { const ta = document.getElementById('appealMsgText'); if (ta) ta.focus(); }, 50);
@@ -3790,14 +3809,15 @@ function showAppealMessageModal(label, recipientName, action, username) {
 
 async function handleAppeal(ap, action, tr) {
   const label = action === 'approve' ? 'Approve (+1 token)' : 'Reject';
-  const message = await showAppealMessageModal(label, ap.username || ap.linkedinurl, action, ap.username);
-  if (message === null) return; // Admin cancelled
+  const result = await showAppealMessageModal(label, ap.username || ap.linkedinurl, action, ap.username, ap);
+  if (result === null) return; // Admin cancelled
+  const { message, subject } = result;
   try {
     const r = await fetch(`${API}/admin/appeal-action`, {
       method: 'POST',
       headers: csrfHeaders(),
       credentials: 'same-origin',
-      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action, message, smtpConfig: _appealSmtpConfig || undefined }),
+      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action, message, subject: subject || undefined, smtpConfig: _appealSmtpConfig || undefined }),
     });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Action failed', 'error'); return; }

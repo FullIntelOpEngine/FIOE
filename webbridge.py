@@ -177,15 +177,19 @@ _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credi
 _APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
 
 
-def _resolve_appeal_tags(msg: str, fullname: str, token) -> str:
-    """Replace glossary placeholders in *msg* with values from the login table.
+def _resolve_appeal_tags(msg: str, fullname: str, token, role_tag: str = "", candidate_name: str = "") -> str:
+    """Replace glossary placeholders in *msg* with values.
 
     Supported tags:
-      [Username] → the user's full name (login.fullname)
-      [Token]    → the user's current token balance (login.token)
+      [Username]       → the user's full name (login.fullname)
+      [Token]          → the user's current token balance (login.token)
+      [Search Title]   → the role/search title from the appeal record (sourcing.role_tag)
+      [Candidate Name] → the candidate's name from the appeal record (sourcing.name)
     """
     msg = msg.replace("[Username]", fullname or "")
     msg = msg.replace("[Token]", str(token) if token is not None else "")
+    msg = msg.replace("[Search Title]", role_tag or "")
+    msg = msg.replace("[Candidate Name]", candidate_name or "")
     return msg
 
 
@@ -1968,6 +1972,7 @@ def admin_appeal_action():
     username = (body.get("username") or "").strip()
     action = (body.get("action") or "").strip().lower()
     message = (body.get("message") or "").strip()
+    subject = (body.get("subject") or "").strip()
     smtp_config = body.get("smtpConfig") if isinstance(body.get("smtpConfig"), dict) else None
     if not linkedinurl or action not in ("approve", "reject"):
         return jsonify({"error": "linkedinurl and action ('approve'|'reject') required"}), 400
@@ -2048,17 +2053,23 @@ def admin_appeal_action():
                 )
                 er = cur.fetchone()
                 cemail = (er[0] or "").strip() if er else ""
-                # Resolve glossary tags: [Username] → fullname, [Token] → token balance
-                resolved_message = _resolve_appeal_tags(
-                    message,
+                # Resolve glossary tags: [Username]→fullname, [Token]→token, [Search Title]→role_tag, [Candidate Name]→name
+                _tag_kwargs = dict(
                     fullname=er[1] if er else "",
                     token=er[2] if er else 0,
+                    role_tag=appeal_record.get("role_tag", ""),
+                    candidate_name=appeal_record.get("name", ""),
+                )
+                resolved_message = _resolve_appeal_tags(message, **_tag_kwargs)
+                label_str = "Approved" if action == "approve" else "Rejected"
+                resolved_subject = _resolve_appeal_tags(
+                    subject if subject else f"Your Appeal has been {label_str}",
+                    **_tag_kwargs,
                 )
                 if cemail:
-                    label_str = "Approved" if action == "approve" else "Rejected"
                     _send_appeal_email(
                         to_email=cemail,
-                        subject=f"Your Appeal has been {label_str}",
+                        subject=resolved_subject,
                         body=resolved_message,
                         smtp_config=smtp_config,
                     )
