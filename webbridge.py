@@ -173,6 +173,44 @@ def _cfg_num(env_var: str, tok_key: str, default: "Union[int, float]"):
 
 _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credit", 1)
 
+# Directory where appeal records are archived as JSON before DB deletion.
+_APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
+
+
+def _send_appeal_email(to_email: str, subject: str, body: str) -> None:
+    """Send an appeal decision email via SMTP.
+
+    Configuration is read from environment variables:
+      SMTP_HOST  – SMTP server hostname (required)
+      SMTP_PORT  – SMTP port, default 587
+      SMTP_USER  – SMTP login username (required)
+      SMTP_PASS  – SMTP login password
+      SMTP_FROM  – From address (defaults to SMTP_USER)
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    smtp_host = os.getenv("SMTP_HOST", "").strip()
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "").strip()
+    smtp_pass = os.getenv("SMTP_PASS", "")
+    smtp_from = os.getenv("SMTP_FROM", smtp_user).strip() or smtp_user
+
+    if not smtp_host or not smtp_user:
+        raise RuntimeError("SMTP_HOST and SMTP_USER must be configured to send appeal emails")
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
+        srv.ehlo()
+        srv.starttls()
+        srv.login(smtp_user, smtp_pass)
+        srv.sendmail(smtp_from, [to_email], msg.as_string())
+
+
 # Rate limiting (requires flask-limiter: pip install flask-limiter)
 if _LIMITER_AVAILABLE:
     _limiter = Limiter(
@@ -1899,19 +1937,58 @@ def admin_get_appeals():
 def admin_appeal_action():
     """Approve or reject a user appeal.
 
-    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject" }
-    Approve: adds 1 token to the user's login record, then deletes the sourcing row.
-    Reject: deletes the sourcing row without adding a token.
+    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject", "message": "..." }
+    Approve: adds 1 token to the user's login record, then archives the appeal record to
+      <_APPEAL_ARCHIVE_DIR>/appeal_<username>.json and deletes the sourcing row.
+    Reject: archives and deletes the sourcing row without adding a token.
+    In both cases the admin's message is emailed to the user's cemail address (login table).
     """
     body = request.get_json(force=True, silent=True) or {}
     linkedinurl = (body.get("linkedinurl") or "").strip()
     username = (body.get("username") or "").strip()
     action = (body.get("action") or "").strip().lower()
+    message = (body.get("message") or "").strip()
     if not linkedinurl or action not in ("approve", "reject"):
         return jsonify({"error": "linkedinurl and action ('approve'|'reject') required"}), 400
     try:
         conn = _pg_connect()
         cur = conn.cursor()
+
+        # ── Fetch full sourcing record before deletion ─────────────────────────
+        cur.execute("""
+            SELECT linkedinurl,
+                   COALESCE(name, '') AS name,
+                   COALESCE(jobtitle, '') AS jobtitle,
+                   COALESCE(company, '') AS company,
+                   COALESCE(appeal, '') AS appeal,
+                   COALESCE(username, '') AS username,
+                   COALESCE(userid, '') AS userid,
+                   COALESCE(role_tag, '') AS role_tag
+            FROM sourcing WHERE linkedinurl = %s
+        """, (linkedinurl,))
+        rec_cols = [d[0] for d in cur.description]
+        rec_row = cur.fetchone()
+        appeal_record = dict(zip(rec_cols, rec_row)) if rec_row else {}
+
+        # ── Archive appeal record to JSON (DB Dock Out) ────────────────────────
+        if username:
+            try:
+                os.makedirs(_APPEAL_ARCHIVE_DIR, exist_ok=True)
+                safe_uname = re.sub(r'[^\w\-]', '_', username)
+                archive_path = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{safe_uname}.json")
+                # Validate the resolved path stays inside the archive directory
+                if os.path.abspath(archive_path).startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR)):
+                    archive_data = {
+                        "action": action,
+                        "message": message,
+                        "timestamp": datetime.utcnow().isoformat() + "Z",
+                        "record": appeal_record,
+                    }
+                    with open(archive_path, "w", encoding="utf-8") as fh:
+                        json.dump(archive_data, fh, ensure_ascii=False, indent=2, default=str)
+            except Exception as _exc:
+                logging.warning("Failed to archive appeal record: %s", _exc)
+
         new_token = None
         if action == "approve" and username:
             cur.execute("SELECT COALESCE(token, 0) AS t FROM login WHERE username = %s", (username,))
@@ -1938,11 +2015,42 @@ def admin_appeal_action():
                     token_cost_sgd=float((_load_rate_limits().get("tokens") or {}).get("token_cost_sgd", 0.10)),
                     revenue_sgd=0.0,
                 )
+
+        # ── Send decision email to user ────────────────────────────────────────
+        email_sent = False
+        email_error = ""
+        if username and message:
+            try:
+                cur.execute(
+                    "SELECT cemail FROM login WHERE username = %s LIMIT 1",
+                    (username,)
+                )
+                er = cur.fetchone()
+                cemail = (er[0] or "").strip() if er else ""
+                if cemail:
+                    label_str = "Approved" if action == "approve" else "Rejected"
+                    _send_appeal_email(
+                        to_email=cemail,
+                        subject=f"Your Appeal has been {label_str}",
+                        body=message,
+                    )
+                    email_sent = True
+            except Exception as _exc:
+                email_error = str(_exc)
+                logging.warning("Appeal email failed for %s: %s", username, _exc)
+
         # Delete the sourcing row (appeal handled)
         cur.execute("DELETE FROM sourcing WHERE linkedinurl = %s", (linkedinurl,))
         deleted = cur.rowcount
         conn.commit(); cur.close(); conn.close()
-        return jsonify({"ok": True, "action": action, "deleted": deleted, "new_token": new_token}), 200
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "deleted": deleted,
+            "new_token": new_token,
+            "email_sent": email_sent,
+            "email_error": email_error,
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
