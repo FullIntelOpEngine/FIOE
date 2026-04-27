@@ -1948,6 +1948,29 @@ def admin_get_appeals():
                 except Exception:
                     pass
         cur.close(); conn.close()
+        # Merge with archived JSON records (saved during DB Dock Out) so pending
+        # appeals remain visible even after the sourcing table has been cleared.
+        try:
+            import glob as _glob
+            existing_urls = {row["linkedinurl"] for row in rows}
+            abs_archive_dir = os.path.abspath(_APPEAL_ARCHIVE_DIR)
+            if os.path.isdir(_APPEAL_ARCHIVE_DIR):
+                for _jf in _glob.glob(os.path.join(_APPEAL_ARCHIVE_DIR, "appeal_*.json")):
+                    if not os.path.abspath(_jf).startswith(abs_archive_dir + os.sep):
+                        continue
+                    try:
+                        with open(_jf, "r", encoding="utf-8") as _fh:
+                            _archived = json.load(_fh)
+                        if isinstance(_archived, list):
+                            for _rec in _archived:
+                                if (isinstance(_rec, dict) and _rec.get("linkedinurl")
+                                        and _rec["linkedinurl"] not in existing_urls):
+                                    rows.append(_rec)
+                                    existing_urls.add(_rec["linkedinurl"])
+                    except Exception:
+                        pass
+        except Exception as _exc:
+            logging.warning("Failed to read appeal archive files: %s", _exc)
         return jsonify({"appeals": rows}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1996,24 +2019,27 @@ def admin_appeal_action():
         rec_row = cur.fetchone()
         appeal_record = dict(zip(rec_cols, rec_row)) if rec_row else {}
 
-        # ── Archive appeal record to JSON (DB Dock Out) ────────────────────────
-        if username:
+        # ── Fallback: read record from JSON archive if not in DB ──────────────
+        # Happens when the user ran DB Dock Out (clear-user) before the admin
+        # processed this appeal.  The dock-out archive endpoint wrote the pending
+        # records to appeal_<username>.json; we look up the record there.
+        if not rec_row and username:
             try:
-                os.makedirs(_APPEAL_ARCHIVE_DIR, exist_ok=True)
-                safe_uname = re.sub(r'[^\w\-]', '_', username)
-                archive_path = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{safe_uname}.json")
-                # Validate the resolved path stays inside the archive directory
-                if os.path.abspath(archive_path).startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR)):
-                    archive_data = {
-                        "action": action,
-                        "message": message,
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "record": appeal_record,
-                    }
-                    with open(archive_path, "w", encoding="utf-8") as fh:
-                        json.dump(archive_data, fh, ensure_ascii=False, indent=2, default=str)
+                _safe_lu = re.sub(r'[^\w\-]', '_', username)
+                _jf = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{_safe_lu}.json")
+                _abs_jf = os.path.abspath(_jf)
+                if (_abs_jf.startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR) + os.sep)
+                        and os.path.isfile(_abs_jf)):
+                    with open(_abs_jf, "r", encoding="utf-8") as _fh:
+                        _archived_list = json.load(_fh)
+                    if isinstance(_archived_list, list):
+                        for _arch_rec in _archived_list:
+                            if (isinstance(_arch_rec, dict)
+                                    and _arch_rec.get("linkedinurl") == linkedinurl):
+                                appeal_record = {k: (v or '') for k, v in _arch_rec.items()}
+                                break
             except Exception as _exc:
-                logging.warning("Failed to archive appeal record: %s", _exc)
+                logging.warning("Failed to read appeal archive for %s: %s", username, _exc)
 
         new_token = None
         if action == "approve" and username:
@@ -2092,7 +2118,10 @@ def admin_appeal_action():
         conn.commit(); cur.close(); conn.close()
 
         # ── Post-commit file cleanup ───────────────────────────────────────────
-        # 1. Remove the appeal archive JSON now that the action has been processed.
+        # 1. Remove the processed record from the appeal archive JSON.
+        #    The JSON may contain multiple records (written by the dock-out archive
+        #    endpoint) so we remove only the entry matching this linkedinurl.
+        #    Delete the file only when no records remain.
         if username:
             try:
                 safe_uname = re.sub(r'[^\w\-]', '_', username)
@@ -2100,9 +2129,23 @@ def admin_appeal_action():
                 abs_appeal = os.path.abspath(appeal_file)
                 if (abs_appeal.startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR) + os.sep)
                         and os.path.isfile(abs_appeal)):
-                    os.remove(abs_appeal)
+                    try:
+                        with open(abs_appeal, "r", encoding="utf-8") as _fh:
+                            _archived = json.load(_fh)
+                    except Exception:
+                        _archived = None
+                    if isinstance(_archived, list):
+                        _remaining = [r for r in _archived if r.get("linkedinurl") != linkedinurl]
+                        if _remaining:
+                            with open(abs_appeal, "w", encoding="utf-8") as _fh:
+                                json.dump(_remaining, _fh, ensure_ascii=False, indent=2, default=str)
+                        else:
+                            os.remove(abs_appeal)
+                    else:
+                        # Unexpected format — remove the file
+                        os.remove(abs_appeal)
             except Exception as _exc:
-                logging.warning("Failed to remove appeal archive file for %s: %s", username, _exc)
+                logging.warning("Failed to update appeal archive file for %s: %s", username, _exc)
 
         # 2. Remove JD archive file(s) only when no more sourcing rows remain for
         #    this user (all appeals resolved and no active records).
