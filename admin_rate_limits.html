@@ -3414,6 +3414,7 @@ function renderAppealsTable(card) {
         <th>Company</th>
         <th>LinkedIn URL</th>
         <th>Appeal Text</th>
+        <th>Job Description</th>
         <th>Actions</th>
       </tr>
     </thead>`;
@@ -3429,7 +3430,43 @@ function renderAppealsTable(card) {
       <td><a href="${escHtml(ap.linkedinurl)}" target="_blank" rel="noopener" title="${escHtml(ap.linkedinurl)}"
              class="appeal-url">${escHtml(ap.linkedinurl)}</a></td>
       <td class="appeal-text">${escHtml(ap.appeal)}</td>
+      <td class="td-jd-btn"></td>
       <td></td>`;
+
+    // Job Description download button (probed asynchronously)
+    const tdJd = tr.querySelector('.td-jd-btn');
+    if (ap.username && ap.role_tag) {
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn btn-sm';
+      dlBtn.style.cssText = 'background:#e9ecef;color:#495057;cursor:not-allowed;';
+      dlBtn.textContent = '⏳ Checking…';
+      dlBtn.disabled = true;
+      tdJd.appendChild(dlBtn);
+      fetch(`${API}/admin/check-jd?username=${encodeURIComponent(ap.username)}&role_tag=${encodeURIComponent(ap.role_tag)}`, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(data => {
+          if (data.exists) {
+            dlBtn.textContent = '📄 Download JD';
+            dlBtn.style.cssText = 'background:#0d6efd;color:#fff;cursor:pointer;';
+            dlBtn.disabled = false;
+            dlBtn.addEventListener('click', () => {
+              window.location.href = `${API}/admin/download-jd?username=${encodeURIComponent(ap.username)}&role_tag=${encodeURIComponent(ap.role_tag)}`;
+            });
+          } else {
+            dlBtn.textContent = '—';
+            dlBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:default;';
+            dlBtn.title = 'No JD file on record for this user';
+          }
+        })
+        .catch(() => {
+          dlBtn.textContent = '—';
+          dlBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:default;';
+        });
+    } else {
+      tdJd.textContent = '—';
+      tdJd.style.color = '#aaa';
+    }
+
     const tdAct = tr.querySelector('td:last-child');
 
     const approveBtn = document.createElement('button');

@@ -1843,7 +1843,7 @@ def admin_users_daily_stats():
 @_rate(_make_flask_limit("admin_endpoints"))
 @_require_admin
 def admin_get_appeals():
-    """Return sourcing rows that have a non-empty appeal value."""
+    """Return sourcing rows that have a non-empty appeal value, including role_tag."""
     try:
         conn = _pg_connect()
         cur = conn.cursor()
@@ -1857,13 +1857,36 @@ def admin_get_appeals():
                    COALESCE(s.company, '') AS company,
                    s.appeal,
                    COALESCE(s.username, '') AS username,
-                   COALESCE(s.userid, '') AS userid
+                   COALESCE(s.userid, '') AS userid,
+                   COALESCE(s.role_tag, '') AS role_tag
             FROM sourcing s
             WHERE s.appeal IS NOT NULL AND s.appeal != ''
             ORDER BY s.linkedinurl
         """)
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        # For rows missing role_tag, fall back to process then login tables
+        for row in rows:
+            if not row.get("role_tag") and row.get("username"):
+                uname = row["username"]
+                try:
+                    cur.execute(
+                        "SELECT role_tag FROM process WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                        (uname,)
+                    )
+                    pr = cur.fetchone()
+                    if pr:
+                        row["role_tag"] = pr[0]
+                    else:
+                        cur.execute(
+                            "SELECT role_tag FROM login WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                            (uname,)
+                        )
+                        lr = cur.fetchone()
+                        if lr:
+                            row["role_tag"] = lr[0]
+                except Exception:
+                    pass
         cur.close(); conn.close()
         return jsonify({"appeals": rows}), 200
     except Exception as e:
@@ -1922,6 +1945,111 @@ def admin_appeal_action():
         return jsonify({"ok": True, "action": action, "deleted": deleted, "new_token": new_token}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.get("/admin/download-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_download_jd():
+    """Serve the archived JD file for a user, validating role_tag against the process table.
+
+    Query params:
+      username  – required
+      role_tag  – required; must match the role_tag stored in the process table for that user
+
+    The file is expected at:
+      <_JD_ARCHIVE_DIR>/JD_<role_tag>_<username>.<ext>
+    where ext is pdf, doc, or docx.
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE, _sanitize_jd_name_part
+    username = (request.args.get("username") or "").strip()
+    role_tag = (request.args.get("role_tag") or "").strip()
+    if not username or not role_tag:
+        return jsonify({"error": "username and role_tag required"}), 400
+    try:
+        conn = _pg_connect()
+        cur = conn.cursor()
+        # Validate role_tag against process table (authoritative), then sourcing, then login
+        db_role_tag = None
+        cur.execute(
+            "SELECT role_tag FROM process WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+            (username,)
+        )
+        pr = cur.fetchone()
+        if pr:
+            db_role_tag = pr[0]
+        if not db_role_tag:
+            cur.execute(
+                "SELECT role_tag FROM sourcing WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                (username,)
+            )
+            sr = cur.fetchone()
+            if sr:
+                db_role_tag = sr[0]
+        if not db_role_tag:
+            cur.execute(
+                "SELECT role_tag FROM login WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                (username,)
+            )
+            lr = cur.fetchone()
+            if lr:
+                db_role_tag = lr[0]
+        cur.close(); conn.close()
+        if not db_role_tag:
+            return jsonify({"error": "No role_tag on record for this user"}), 404
+        # Compare the first role_tag value (comma-separated list possible)
+        first_db_tag = db_role_tag.split(",")[0].strip()
+        first_req_tag = role_tag.split(",")[0].strip()
+        if first_db_tag.lower() != first_req_tag.lower():
+            return jsonify({"error": "role_tag mismatch"}), 403
+        safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+        safe_tag = _sanitize_jd_name_part(first_db_tag)
+        # Search for the file with any supported extension
+        for ext in ('pdf', 'docx', 'doc'):
+            candidate = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_tag}_{safe_username}.{ext}")
+            abs_candidate = os.path.abspath(candidate)
+            if not abs_candidate.startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+                continue
+            if os.path.isfile(abs_candidate):
+                return send_from_directory(
+                    os.path.abspath(_JD_ARCHIVE_DIR),
+                    f"JD_{safe_tag}_{safe_username}.{ext}",
+                    as_attachment=True,
+                )
+        return jsonify({"error": "JD file not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.get("/admin/check-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_check_jd():
+    """Check whether a JD archive file exists for the given username and role_tag.
+
+    Query params:
+      username, role_tag
+
+    Response: { "exists": true|false }
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE, _sanitize_jd_name_part
+    username = (request.args.get("username") or "").strip()
+    role_tag = (request.args.get("role_tag") or "").strip()
+    if not username or not role_tag:
+        return jsonify({"exists": False}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    first_tag = role_tag.split(",")[0].strip()
+    safe_tag = _sanitize_jd_name_part(first_tag)
+    for ext in ('pdf', 'docx', 'doc'):
+        candidate = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_tag}_{safe_username}.{ext}")
+        abs_candidate = os.path.abspath(candidate)
+        if not abs_candidate.startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            continue
+        if os.path.isfile(abs_candidate):
+            return jsonify({"exists": True, "ext": ext}), 200
+    return jsonify({"exists": False}), 200
+
 
 @app.get("/admin/logs")
 @_rate(_make_flask_limit("admin_endpoints"))
