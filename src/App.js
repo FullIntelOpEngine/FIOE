@@ -2282,8 +2282,8 @@ function CandidatesTable({
   // AI Comp State
   const [aiCompLoading, setAiCompLoading] = useState(false);
   const [aiCompMessage, setAiCompMessage] = useState('');
-  // Crowd consensus tags: { [id]: { count, avg } } — populated when crowd comp is available
-  const [compConsensus, setCompConsensus] = useState({});
+  // Crowd verified tags: { [id]: { count, avg } } — populated when crowd comp is available
+  const [compVerified, setCompVerified] = useState({});
   
   // Checkbox Rename Workflow State
   const [renameCheckboxId, setRenameCheckboxId] = useState(null);
@@ -2682,7 +2682,7 @@ function CandidatesTable({
             });
             return next;
           });
-          setCompConsensus(prev => {
+          setCompVerified(prev => {
             const next = { ...prev };
             crowdRows.forEach(row => { next[String(row.id)] = { count: row.count, avg: row.compensation }; });
             return next;
@@ -3094,9 +3094,9 @@ function CandidatesTable({
                       <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
                     )}
                   </div>
-                  {compConsensus[String(c.id)] && (
+                  {compVerified[String(c.id)] && (
                     <span title={`Verified: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', alignSelf: 'flex-start', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', userSelect: 'none' }}>
-                      {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} verified` : 'verified'}
+                      {compVerified[String(c.id)].count > 0 ? `${compVerified[String(c.id)].count} verified` : 'verified'}
                     </span>
                   )}
                 </div>
