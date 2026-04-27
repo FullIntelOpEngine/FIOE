@@ -176,11 +176,6 @@ _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credi
 # Directory where appeal records are archived as JSON before DB deletion.
 _APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
 
-# File where appeal email templates are persisted on disk.
-_APPEAL_TEMPLATES_FILE = os.path.join(
-    REPORT_TEMPLATES_DIR, "appeal_email_templates.json"
-)
-
 
 def _resolve_appeal_tags(msg: str, fullname: str, token) -> str:
     """Replace glossary placeholders in *msg* with values from the login table.
@@ -3230,6 +3225,11 @@ REPORT_TEMPLATES_DIR = os.getenv(
     r"F:\Recruiting Tools\Autosourcing\templates"
 )
 os.makedirs(REPORT_TEMPLATES_DIR, exist_ok=True)
+
+# File where appeal email templates are persisted on disk.
+_APPEAL_TEMPLATES_FILE = os.path.join(
+    REPORT_TEMPLATES_DIR, "appeal_email_templates.json"
+)
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
 GOOGLE_CSE_CX = os.getenv("GOOGLE_CSE_CX") or os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
