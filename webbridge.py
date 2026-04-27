@@ -2004,7 +2004,7 @@ def admin_appeal_action():
             before_row = cur.fetchone()
             token_before = int(before_row[0]) if before_row else 0
             cur.execute(
-                "UPDATE login SET token = COALESCE(token, 0) + %s WHERE username = %s RETURNING token, id",
+                "UPDATE login SET token = COALESCE(token, 0) + %s WHERE username = %s RETURNING token, userid",
                 (int(_APPEAL_APPROVE_CREDIT), username)
             )
             row = cur.fetchone()
