@@ -2081,7 +2081,47 @@ def admin_appeal_action():
         # Delete the sourcing row (appeal handled)
         cur.execute("DELETE FROM sourcing WHERE linkedinurl = %s", (linkedinurl,))
         deleted = cur.rowcount
+
+        # Check remaining sourcing records for this user *before* commit so the
+        # count reflects the post-delete state (same transaction).
+        remaining_sourcing = 0
+        if username:
+            cur.execute("SELECT COUNT(*) FROM sourcing WHERE username = %s", (username,))
+            remaining_sourcing = (cur.fetchone() or [0])[0]
+
         conn.commit(); cur.close(); conn.close()
+
+        # ── Post-commit file cleanup ───────────────────────────────────────────
+        # 1. Remove the appeal archive JSON now that the action has been processed.
+        if username:
+            try:
+                safe_uname = re.sub(r'[^\w\-]', '_', username)
+                appeal_file = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{safe_uname}.json")
+                abs_appeal = os.path.abspath(appeal_file)
+                if (abs_appeal.startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR) + os.sep)
+                        and os.path.isfile(abs_appeal)):
+                    os.remove(abs_appeal)
+            except Exception as _exc:
+                logging.warning("Failed to remove appeal archive file for %s: %s", username, _exc)
+
+        # 2. Remove JD archive file(s) only when no more sourcing rows remain for
+        #    this user (all appeals resolved and no active records).
+        if username and remaining_sourcing == 0:
+            try:
+                import glob as _glob
+                from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+                safe_uname_jd = _CV_USERNAME_SAFE_RE.sub('_', username)
+                abs_jd_dir = os.path.abspath(_JD_ARCHIVE_DIR)
+                for _ext in ('pdf', 'docx', 'doc'):
+                    _pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_uname_jd}.{_ext}")
+                    for _jd_path in _glob.glob(_pattern):
+                        _abs_jd = os.path.abspath(_jd_path)
+                        if (_abs_jd.startswith(abs_jd_dir + os.sep)
+                                and os.path.isfile(_abs_jd)):
+                            os.remove(_abs_jd)
+            except Exception as _exc:
+                logging.warning("Failed to remove JD archive file for %s: %s", username, _exc)
+
         return jsonify({
             "ok": True,
             "action": action,

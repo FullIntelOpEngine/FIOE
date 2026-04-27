@@ -6571,6 +6571,30 @@ def user_tag_jd():
         return jsonify({"error": "Failed to tag JD file"}), 500
 
 
+@app.get("/user/has-jd")
+def user_has_jd():
+    """Check whether a JD archive file exists for the requesting user.
+
+    Query params:
+      username – required (or provided via cookie 'username')
+
+    Response: { "exists": true|false }
+    """
+    import glob as _glob
+    username = (request.args.get("username") or request.cookies.get("username") or "").strip()
+    if not username:
+        return jsonify({"exists": False}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    abs_jd_dir = os.path.abspath(_JD_ARCHIVE_DIR)
+    for ext in ('pdf', 'docx', 'doc'):
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        for path in _glob.glob(pattern):
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(abs_jd_dir + os.sep) and os.path.isfile(abs_path):
+                return jsonify({"exists": True}), 200
+    return jsonify({"exists": False}), 200
+
+
 @_rate(_make_flask_limit("gemini"))
 @_check_user_rate("gemini")
 def gemini_jd_analyze():
