@@ -177,38 +177,44 @@ _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credi
 _APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
 
 
-def _send_appeal_email(to_email: str, subject: str, body: str) -> None:
+def _send_appeal_email(to_email: str, subject: str, body: str, smtp_config: dict = None) -> None:
     """Send an appeal decision email via SMTP.
 
-    Configuration is read from environment variables:
-      SMTP_HOST  – SMTP server hostname (required)
-      SMTP_PORT  – SMTP port, default 587
-      SMTP_USER  – SMTP login username (required)
-      SMTP_PASS  – SMTP login password
-      SMTP_FROM  – From address (defaults to SMTP_USER)
+    Configuration priority:
+      1. smtp_config dict (passed from the UI's per-session Configure SMTP settings)
+      2. Environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
     """
     import smtplib
     from email.mime.text import MIMEText
 
-    smtp_host = os.getenv("SMTP_HOST", "").strip()
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER", "").strip()
-    smtp_pass = os.getenv("SMTP_PASS", "")
-    smtp_from = os.getenv("SMTP_FROM", smtp_user).strip() or smtp_user
+    cfg = smtp_config or {}
+    smtp_host = (cfg.get("host") or os.getenv("SMTP_HOST", "")).strip()
+    smtp_port = int(cfg.get("port") or os.getenv("SMTP_PORT", "587"))
+    smtp_user = (cfg.get("user") or os.getenv("SMTP_USER", "")).strip()
+    smtp_pass = cfg.get("pass") or os.getenv("SMTP_PASS", "")
+    smtp_secure = cfg.get("secure", False)
+    smtp_from = (cfg.get("user") or os.getenv("SMTP_FROM", smtp_user)).strip() or smtp_user
 
     if not smtp_host or not smtp_user:
-        raise RuntimeError("SMTP_HOST and SMTP_USER must be configured to send appeal emails")
+        raise RuntimeError("SMTP host and user must be configured to send appeal emails")
 
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = smtp_from
     msg["To"] = to_email
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
-        srv.ehlo()
-        srv.starttls()
-        srv.login(smtp_user, smtp_pass)
-        srv.sendmail(smtp_from, [to_email], msg.as_string())
+    if smtp_secure:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15, context=ctx) as srv:
+            srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, [to_email], msg.as_string())
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
+            srv.ehlo()
+            srv.starttls()
+            srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, [to_email], msg.as_string())
 
 
 # Rate limiting (requires flask-limiter: pip install flask-limiter)
@@ -1937,17 +1943,20 @@ def admin_get_appeals():
 def admin_appeal_action():
     """Approve or reject a user appeal.
 
-    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject", "message": "..." }
+    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject", "message": "...",
+            "smtpConfig": { "host": "...", "port": "587", "user": "...", "pass": "...", "secure": false } }
     Approve: adds 1 token to the user's login record, then archives the appeal record to
       <_APPEAL_ARCHIVE_DIR>/appeal_<username>.json and deletes the sourcing row.
     Reject: archives and deletes the sourcing row without adding a token.
     In both cases the admin's message is emailed to the user's cemail address (login table).
+    smtpConfig (optional): if provided, overrides the server env-var SMTP settings.
     """
     body = request.get_json(force=True, silent=True) or {}
     linkedinurl = (body.get("linkedinurl") or "").strip()
     username = (body.get("username") or "").strip()
     action = (body.get("action") or "").strip().lower()
     message = (body.get("message") or "").strip()
+    smtp_config = body.get("smtpConfig") if isinstance(body.get("smtpConfig"), dict) else None
     if not linkedinurl or action not in ("approve", "reject"):
         return jsonify({"error": "linkedinurl and action ('approve'|'reject') required"}), 400
     try:
@@ -2033,6 +2042,7 @@ def admin_appeal_action():
                         to_email=cemail,
                         subject=f"Your Appeal has been {label_str}",
                         body=message,
+                        smtp_config=smtp_config,
                     )
                     email_sent = True
             except Exception as _exc:
@@ -2053,6 +2063,20 @@ def admin_appeal_action():
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.post("/admin/draft-email")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_csrf_required
+@_require_admin
+def admin_draft_email():
+    """Proxy an AI email-draft request to the Node.js server.
+
+    Body: { "prompt": "...", "context": { "candidateName": "...", "myEmail": "..." } }
+    Returns the Node.js /draft-email response: { "subject": "...", "body": "..." }
+    """
+    return _proxy_to_node_admin("draft-email")
+
 
 @app.get("/admin/download-jd")
 @_rate(_make_flask_limit("admin_endpoints"))

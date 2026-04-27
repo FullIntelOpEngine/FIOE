@@ -3384,7 +3384,25 @@ function renderAppealsCard() {
   const card = document.createElement('div');
   card.className = 'card';
   card.id = 'appealsCard';
-  card.innerHTML = '<h2>Pending Appeals</h2>';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;';
+
+  const title = document.createElement('h2');
+  title.style.margin = '0';
+  title.textContent = 'Pending Appeals';
+
+  const smtpBtn = document.createElement('button');
+  smtpBtn.className = 'btn btn-sm';
+  smtpBtn.style.cssText = 'background:#0d6efd;color:#fff;font-size:12px;display:flex;align-items:center;gap:5px;';
+  smtpBtn.innerHTML = '⚙ Configure SMTP';
+  smtpBtn.title = 'Set up the email account used to send appeal decision messages to users';
+  smtpBtn.addEventListener('click', () => showAppealSmtpModal());
+
+  header.appendChild(title);
+  header.appendChild(smtpBtn);
+  card.appendChild(header);
+
   renderAppealsTable(card);
   return card;
 }
@@ -3528,25 +3546,55 @@ function showAppealMessageModal(label, recipientName, action) {
     if (old) old.remove();
 
     const accentColor = action === 'approve' ? '#198754' : '#dc3545';
+    const templates = _loadAppealTemplates();
 
     const overlay = document.createElement('div');
     overlay.id = 'appealMsgModal';
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
 
     const modal = document.createElement('div');
-    modal.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(7,54,121,.22);width:100%;max-width:500px;overflow:hidden;font-size:13px;';
+    modal.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(7,54,121,.22);width:100%;max-width:540px;overflow:hidden;font-size:13px;';
+
+    // Build template options
+    const tmplOptions = templates.map(t => `<option value="${escHtml(t.name)}">${escHtml(t.name)}</option>`).join('');
 
     modal.innerHTML = `
       <div style="background:${accentColor};color:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">
         <span style="font-weight:700;font-size:14px;">⚖️ ${escHtml(label)} — ${escHtml(recipientName)}</span>
         <button id="appealMsgClose" style="background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;">✕</button>
       </div>
-      <div style="padding:18px;display:flex;flex-direction:column;gap:12px;">
+      <div style="padding:18px;display:flex;flex-direction:column;gap:10px;">
+
+        <!-- Template row -->
+        <div style="display:flex;gap:6px;align-items:center;">
+          <select id="appealTmplSel" style="flex:1;padding:6px 8px;font-size:12px;border:1px solid #ccd;border-radius:4px;">
+            <option value="">— Load template —</option>
+            ${tmplOptions}
+          </select>
+          <button id="appealTmplSave" title="Save current text as a template"
+            style="padding:6px 10px;background:#e8eef7;border:1px solid #4c82b8;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#073679;">💾 Save</button>
+          <button id="appealTmplDel" title="Delete selected template"
+            style="padding:6px 10px;background:#fde;border:1px solid #f99;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#c00;">🗑 Del</button>
+        </div>
+
+        <!-- AI draft row -->
+        <div id="aiDraftArea" style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="aiDraftPrompt" type="text" placeholder="AI: describe what to write…"
+              style="flex:1;padding:6px 8px;border:1px solid #ccd;border-radius:4px;font-size:12px;">
+            <button id="aiDraftBtn"
+              style="padding:6px 12px;background:#7c3aed;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">✨ Draft</button>
+          </div>
+          <div id="aiDraftStatus" style="display:none;font-size:11px;color:#7c3aed;"></div>
+        </div>
+
+        <!-- Message textarea -->
         <label style="display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:12px;">
           Message to user <span style="font-weight:400;color:#666;">(will be sent by email)</span>
-          <textarea id="appealMsgText" rows="5" placeholder="Type your response to the user here…"
+          <textarea id="appealMsgText" rows="6" placeholder="Type your response to the user here…"
             style="padding:8px;border:1px solid #cdd;border-radius:5px;font-size:13px;resize:vertical;margin-top:4px;"></textarea>
         </label>
+
         <div id="appealMsgError" style="display:none;padding:8px 12px;background:#fde;border:1px solid #f99;border-radius:5px;color:#c00;font-size:12px;"></div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
           <button id="appealMsgCancel" style="padding:8px 18px;background:#e8eef7;border:1px solid #4c82b8;border-radius:5px;cursor:pointer;font-size:12px;color:#073679;">Cancel</button>
@@ -3562,6 +3610,87 @@ function showAppealMessageModal(label, recipientName, action) {
     document.getElementById('appealMsgClose').addEventListener('click', () => close(null));
     document.getElementById('appealMsgCancel').addEventListener('click', () => close(null));
     overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+
+    // Load template into textarea
+    document.getElementById('appealTmplSel').addEventListener('change', e => {
+      const name = e.target.value;
+      if (!name) return;
+      const tmpl = _loadAppealTemplates().find(t => t.name === name);
+      if (tmpl) document.getElementById('appealMsgText').value = tmpl.body || '';
+    });
+
+    // Save current text as a template
+    document.getElementById('appealTmplSave').addEventListener('click', () => {
+      const body = document.getElementById('appealMsgText').value.trim();
+      if (!body) { alert('Nothing to save — write a message first.'); return; }
+      const name = prompt('Template name:');
+      if (!name) return;
+      const list = _loadAppealTemplates();
+      const idx = list.findIndex(t => t.name === name);
+      if (idx >= 0) {
+        if (!confirm(`Overwrite template "${name}"?`)) return;
+        list[idx].body = body;
+      } else {
+        list.push({ id: Date.now(), name, body });
+      }
+      _saveAppealTemplates(list);
+      // Refresh dropdown
+      const sel = document.getElementById('appealTmplSel');
+      const existing = sel.querySelector(`option[value="${CSS.escape(name)}"]`);
+      if (!existing) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      sel.value = name;
+    });
+
+    // Delete selected template
+    document.getElementById('appealTmplDel').addEventListener('click', () => {
+      const sel = document.getElementById('appealTmplSel');
+      const name = sel.value;
+      if (!name) return;
+      if (!confirm(`Delete template "${name}"?`)) return;
+      const list = _loadAppealTemplates().filter(t => t.name !== name);
+      _saveAppealTemplates(list);
+      sel.querySelector(`option[value="${CSS.escape(name)}"]`)?.remove();
+      sel.value = '';
+    });
+
+    // AI draft
+    document.getElementById('aiDraftBtn').addEventListener('click', async () => {
+      const prompt = document.getElementById('aiDraftPrompt').value.trim();
+      if (!prompt) return;
+      const btn = document.getElementById('aiDraftBtn');
+      const status = document.getElementById('aiDraftStatus');
+      btn.disabled = true;
+      btn.textContent = '…';
+      status.style.display = 'block';
+      status.textContent = '✨ Generating draft…';
+      try {
+        const res = await fetch(`${API}/admin/draft-email`, {
+          method: 'POST',
+          headers: csrfHeaders(),
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            prompt,
+            context: { candidateName: recipientName, myEmail: _appealSmtpConfig?.user || '' },
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Draft failed');
+        const ta = document.getElementById('appealMsgText');
+        ta.value = (data.body || '').trim();
+        status.textContent = '✓ Draft generated.';
+      } catch (err) {
+        status.style.color = '#c00';
+        status.textContent = '✗ ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '✨ Draft';
+      }
+    });
 
     document.getElementById('appealMsgSubmit').addEventListener('click', () => {
       const msg = document.getElementById('appealMsgText').value.trim();
@@ -3587,7 +3716,7 @@ async function handleAppeal(ap, action, tr) {
       method: 'POST',
       headers: csrfHeaders(),
       credentials: 'same-origin',
-      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action, message }),
+      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action, message, smtpConfig: _appealSmtpConfig || undefined }),
     });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Action failed', 'error'); return; }
@@ -3619,6 +3748,103 @@ async function handleAppeal(ap, action, tr) {
   } catch (err) {
     toast('Network error: ' + err.message, 'error');
   }
+}
+
+// ── Appeal SMTP configuration (stored in localStorage) ────────────────────────
+let _appealSmtpConfig = null;
+(function _loadAppealSmtp() {
+  try {
+    const raw = localStorage.getItem('rl_appeal_smtp_config');
+    if (raw) _appealSmtpConfig = JSON.parse(raw);
+  } catch (_e) { /* ignore */ }
+})();
+
+function _saveAppealSmtp(cfg) {
+  _appealSmtpConfig = cfg;
+  try { localStorage.setItem('rl_appeal_smtp_config', JSON.stringify(cfg)); } catch (_e) {}
+}
+
+function showAppealSmtpModal() {
+  const old = document.getElementById('appealSmtpModal');
+  if (old) old.remove();
+
+  const cfg = _appealSmtpConfig || {};
+  const overlay = document.createElement('div');
+  overlay.id = 'appealSmtpModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const inp = (id, type, placeholder, value) =>
+    `<input id="${id}" type="${type}" placeholder="${escHtml(placeholder)}" value="${escHtml(value || '')}"
+      style="width:100%;padding:8px;margin-bottom:12px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">`;
+
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(7,54,121,.22);width:100%;max-width:420px;overflow:hidden;font-size:13px;">
+      <div style="background:#0d6efd;color:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-weight:700;font-size:14px;">⚙ SMTP Configuration — Appeals</span>
+        <button id="smtpModalClose" style="background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="padding:18px;display:flex;flex-direction:column;">
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Host</label>
+        ${inp('smtpHost','text','smtp.gmail.com', cfg.host)}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Port</label>
+        ${inp('smtpPort','text','587', cfg.port || '587')}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">User (email address)</label>
+        ${inp('smtpUser','text','user@example.com', cfg.user)}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Password</label>
+        <input id="smtpPass" type="password" value="${escHtml(cfg.pass || '')}"
+          style="width:100%;padding:8px;margin-bottom:12px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:16px;cursor:pointer;">
+          <input id="smtpSecure" type="checkbox" ${cfg.secure ? 'checked' : ''}>
+          Use Secure Connection (SSL/TLS on port 465)
+        </label>
+        <div id="smtpSaveMsg" style="display:none;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button id="smtpCancelBtn" style="padding:8px 18px;background:#e8eef7;border:1px solid #4c82b8;border-radius:5px;cursor:pointer;font-size:12px;color:#073679;">Cancel</button>
+          <button id="smtpSaveBtn" style="padding:8px 18px;background:#0d6efd;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600;">Save Config</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById('smtpModalClose').addEventListener('click', close);
+  document.getElementById('smtpCancelBtn').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  document.getElementById('smtpSaveBtn').addEventListener('click', () => {
+    const host = document.getElementById('smtpHost').value.trim();
+    const user = document.getElementById('smtpUser').value.trim();
+    if (!host || !user) {
+      const msg = document.getElementById('smtpSaveMsg');
+      msg.style.cssText = 'display:block;background:#fde;border:1px solid #f99;color:#c00;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;';
+      msg.textContent = 'Host and user (email) are required.';
+      return;
+    }
+    _saveAppealSmtp({
+      host,
+      port: document.getElementById('smtpPort').value.trim() || '587',
+      user,
+      pass: document.getElementById('smtpPass').value,
+      secure: document.getElementById('smtpSecure').checked,
+    });
+    const msg = document.getElementById('smtpSaveMsg');
+    msg.style.cssText = 'display:block;background:#d1fae5;border:1px solid #34d399;color:#065f46;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;';
+    msg.textContent = '✓ SMTP config saved.';
+    setTimeout(close, 800);
+  });
+}
+
+// ── Appeal email templates (stored in localStorage) ───────────────────────────
+function _loadAppealTemplates() {
+  try {
+    const raw = localStorage.getItem('rl_appeal_email_templates');
+    return raw ? JSON.parse(raw) : [];
+  } catch (_e) { return []; }
+}
+
+function _saveAppealTemplates(list) {
+  try { localStorage.setItem('rl_appeal_email_templates', JSON.stringify(list)); } catch (_e) {}
 }
 
 // ── Porting tab ──────────────────────────────────────────────────────────────
