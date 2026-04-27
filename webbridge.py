@@ -2117,7 +2117,8 @@ def admin_get_appeal_templates():
             data = []
         return jsonify(data), 200
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        logging.warning("admin_get_appeal_templates error: %s", exc)
+        return jsonify({"error": "Failed to load templates"}), 500
 
 
 @app.post("/admin/appeal-templates")
@@ -2139,7 +2140,8 @@ def admin_save_appeal_templates():
             json.dump(templates, fh, ensure_ascii=False, indent=2)
         return jsonify({"ok": True}), 200
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        logging.warning("admin_save_appeal_templates error: %s", exc)
+        return jsonify({"error": "Failed to save templates"}), 500
 
 
 @app.get("/admin/resolve-appeal-tags")
@@ -2169,7 +2171,8 @@ def admin_resolve_appeal_tags():
             return jsonify({"error": "user not found"}), 404
         return jsonify({"fullname": row[0], "token": int(row[1])}), 200
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        logging.warning("admin_resolve_appeal_tags error: %s", exc)
+        return jsonify({"error": "Failed to resolve tags"}), 500
 
 
 @app.get("/admin/download-jd")
