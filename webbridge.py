@@ -176,6 +176,23 @@ _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credi
 # Directory where appeal records are archived as JSON before DB deletion.
 _APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
 
+# File where appeal email templates are persisted on disk.
+_APPEAL_TEMPLATES_FILE = os.path.join(
+    REPORT_TEMPLATES_DIR, "appeal_email_templates.json"
+)
+
+
+def _resolve_appeal_tags(msg: str, fullname: str, token) -> str:
+    """Replace glossary placeholders in *msg* with values from the login table.
+
+    Supported tags:
+      [Username] → the user's full name (login.fullname)
+      [Token]    → the user's current token balance (login.token)
+    """
+    msg = msg.replace("[Username]", fullname or "")
+    msg = msg.replace("[Token]", str(token) if token is not None else "")
+    return msg
+
 
 def _send_appeal_email(to_email: str, subject: str, body: str, smtp_config: dict = None) -> None:
     """Send an appeal decision email via SMTP.
@@ -2031,17 +2048,23 @@ def admin_appeal_action():
         if username and message:
             try:
                 cur.execute(
-                    "SELECT cemail FROM login WHERE username = %s LIMIT 1",
+                    "SELECT cemail, COALESCE(fullname, ''), COALESCE(token, 0) FROM login WHERE username = %s LIMIT 1",
                     (username,)
                 )
                 er = cur.fetchone()
                 cemail = (er[0] or "").strip() if er else ""
+                # Resolve glossary tags: [Username] → fullname, [Token] → token balance
+                resolved_message = _resolve_appeal_tags(
+                    message,
+                    fullname=er[1] if er else "",
+                    token=er[2] if er else 0,
+                )
                 if cemail:
                     label_str = "Approved" if action == "approve" else "Rejected"
                     _send_appeal_email(
                         to_email=cemail,
                         subject=f"Your Appeal has been {label_str}",
-                        body=message,
+                        body=resolved_message,
                         smtp_config=smtp_config,
                     )
                     email_sent = True
@@ -2076,6 +2099,77 @@ def admin_draft_email():
     Returns the Node.js /draft-email response: { "subject": "...", "body": "..." }
     """
     return _proxy_to_node_admin("draft-email")
+
+
+@app.get("/admin/appeal-templates")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_get_appeal_templates():
+    """Return the list of saved appeal email templates from disk.
+
+    Returns: [ { "id": ..., "name": "...", "body": "..." }, ... ]
+    """
+    try:
+        if os.path.exists(_APPEAL_TEMPLATES_FILE):
+            with open(_APPEAL_TEMPLATES_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        else:
+            data = []
+        return jsonify(data), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/admin/appeal-templates")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_csrf_required
+@_require_admin
+def admin_save_appeal_templates():
+    """Persist the full list of appeal email templates to disk.
+
+    Body: { "templates": [ { "id": ..., "name": "...", "body": "..." }, ... ] }
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    templates = body.get("templates")
+    if not isinstance(templates, list):
+        return jsonify({"error": "templates list required"}), 400
+    try:
+        os.makedirs(REPORT_TEMPLATES_DIR, exist_ok=True)
+        with open(_APPEAL_TEMPLATES_FILE, "w", encoding="utf-8") as fh:
+            json.dump(templates, fh, ensure_ascii=False, indent=2)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.get("/admin/resolve-appeal-tags")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_resolve_appeal_tags():
+    """Resolve appeal glossary tags for a given username.
+
+    Query params:
+      username – required; the appeal target username
+
+    Returns: { "fullname": "...", "token": N }
+    """
+    username = (request.args.get("username") or "").strip()
+    if not username:
+        return jsonify({"error": "username required"}), 400
+    try:
+        conn = _pg_connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(fullname, ''), COALESCE(token, 0) FROM login WHERE username = %s LIMIT 1",
+            (username,),
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "user not found"}), 404
+        return jsonify({"fullname": row[0], "token": int(row[1])}), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.get("/admin/download-jd")
@@ -2529,12 +2623,16 @@ def _proxy_to_node_admin(path: str):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     else:
-        # No shared API token configured — forward the browser's username cookie so
-        # Node.js requireAdminOrToken can verify admin access via its own DB check.
-        # (webbridge.py has already confirmed admin via @_require_admin above.)
-        username_cookie = request.cookies.get("username", "")
-        if username_cookie:
-            headers["Cookie"] = f"username={username_cookie}"
+        # No shared API token configured — forward the browser's session cookies so
+        # Node.js requireLogin / requireAdminOrToken can verify access via its own DB
+        # check.  (webbridge.py has already confirmed admin via @_require_admin above.)
+        cookie_parts = []
+        for _ck in ("username", "userid", "session_id"):
+            _cv = request.cookies.get(_ck, "")
+            if _cv:
+                cookie_parts.append(f"{_ck}={_cv}")
+        if cookie_parts:
+            headers["Cookie"] = "; ".join(cookie_parts)
     try:
         resp = requests.post(
             f"{_NODE_SERVER_URL}/{path}",

@@ -3540,13 +3540,30 @@ function renderAppealsTable(card) {
   card.appendChild(wrap);
 }
 
-function showAppealMessageModal(label, recipientName, action) {
-  return new Promise(resolve => {
+function showAppealMessageModal(label, recipientName, action, username) {
+  return new Promise(async resolve => {
     const old = document.getElementById('appealMsgModal');
     if (old) old.remove();
 
     const accentColor = action === 'approve' ? '#198754' : '#dc3545';
-    const templates = _loadAppealTemplates();
+
+    // Load templates from backend (fall back to empty list on error)
+    let templates = [];
+    try {
+      const tr = await fetch(`${API}/admin/appeal-templates`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (tr.ok) templates = await tr.json();
+    } catch (_e) {}
+
+    // Pre-fetch tag values for this user so the glossary can show resolved values
+    let tagData = { fullname: username || '', token: '?' };
+    if (username) {
+      try {
+        const tagR = await fetch(`${API}/admin/resolve-appeal-tags?username=${encodeURIComponent(username)}`, {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (tagR.ok) tagData = await tagR.json();
+      } catch (_e) {}
+    }
 
     const overlay = document.createElement('div');
     overlay.id = 'appealMsgModal';
@@ -3575,6 +3592,28 @@ function showAppealMessageModal(label, recipientName, action) {
             style="padding:6px 10px;background:#e8eef7;border:1px solid #4c82b8;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#073679;">💾 Save</button>
           <button id="appealTmplDel" title="Delete selected template"
             style="padding:6px 10px;background:#fde;border:1px solid #f99;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#c00;">🗑 Del</button>
+        </div>
+
+        <!-- Glossary tag row -->
+        <div style="position:relative;display:inline-flex;align-items:center;gap:5px;">
+          <button id="appealTagGlossaryBtn" type="button"
+            style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;background:#f0f4ff;border:1px solid #4c82b8;border-radius:4px;font-size:11px;cursor:pointer;color:#073679;font-weight:600;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#073679;color:#fff;font-size:10px;font-weight:700;">?</span>
+            Tag Glossary
+          </button>
+          <div id="appealTagGlossary" style="display:none;position:absolute;top:110%;left:0;z-index:10000;background:#1e2433;color:#fff;border-radius:8px;padding:10px 14px;min-width:310px;box-shadow:0 6px 24px rgba(0,0,0,.4);font-size:12px;line-height:1.7;">
+            <div style="font-weight:700;font-size:11px;border-bottom:1px solid rgba(255,255,255,.2);padding-bottom:5px;margin-bottom:6px;letter-spacing:.4px;">Available Template Tags</div>
+            <div style="font-weight:700;font-size:10px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">User</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Username]" style="color:#6deaf9;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Username]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– User's full name (${escHtml(tagData.fullname || '—')})</span>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Token]" style="color:#86efac;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Token]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– User's token balance (${escHtml(String(tagData.token ?? '?'))})</span>
+            </div>
+            <div style="margin-top:5px;font-size:10px;color:rgba(255,255,255,.4);border-top:1px solid rgba(255,255,255,.1);padding-top:4px;">Click a tag to insert it at the cursor · Tags are resolved when the email is sent</div>
+          </div>
         </div>
 
         <!-- AI draft row -->
@@ -3611,29 +3650,71 @@ function showAppealMessageModal(label, recipientName, action) {
     document.getElementById('appealMsgCancel').addEventListener('click', () => close(null));
     overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
 
+    // ── Tag Glossary toggle ───────────────────────────────────────────────────
+    const glossaryBtn = document.getElementById('appealTagGlossaryBtn');
+    const glossaryPanel = document.getElementById('appealTagGlossary');
+    let glossaryOpen = false;
+    glossaryBtn.addEventListener('click', () => {
+      glossaryOpen = !glossaryOpen;
+      glossaryPanel.style.display = glossaryOpen ? 'block' : 'none';
+    });
+    document.addEventListener('click', function outsideGlossary(e) {
+      if (glossaryOpen && !glossaryBtn.contains(e.target) && !glossaryPanel.contains(e.target)) {
+        glossaryOpen = false;
+        glossaryPanel.style.display = 'none';
+        document.removeEventListener('click', outsideGlossary);
+      }
+    });
+    // Insert tag at cursor when clicking a tag chip
+    glossaryPanel.querySelectorAll('.appeal-tag-chip').forEach(chip => {
+      chip.addEventListener('click', e => {
+        e.stopPropagation();
+        const tag = chip.dataset.tag;
+        const ta = document.getElementById('appealMsgText');
+        if (!ta) return;
+        const start = ta.selectionStart, end = ta.selectionEnd;
+        ta.value = ta.value.slice(0, start) + tag + ta.value.slice(end);
+        ta.selectionStart = ta.selectionEnd = start + tag.length;
+        ta.focus();
+        chip.style.background = 'rgba(109,234,249,0.15)';
+        setTimeout(() => { chip.style.background = ''; }, 600);
+      });
+    });
+
+    // ── Template helpers (backend-persisted) ─────────────────────────────────
+    async function _syncTemplates(list) {
+      try {
+        await fetch(`${API}/admin/appeal-templates`, {
+          method: 'POST',
+          headers: csrfHeaders(),
+          credentials: 'same-origin',
+          body: JSON.stringify({ templates: list }),
+        });
+      } catch (_e) {}
+    }
+
     // Load template into textarea
     document.getElementById('appealTmplSel').addEventListener('change', e => {
       const name = e.target.value;
       if (!name) return;
-      const tmpl = _loadAppealTemplates().find(t => t.name === name);
+      const tmpl = templates.find(t => t.name === name);
       if (tmpl) document.getElementById('appealMsgText').value = tmpl.body || '';
     });
 
     // Save current text as a template
-    document.getElementById('appealTmplSave').addEventListener('click', () => {
+    document.getElementById('appealTmplSave').addEventListener('click', async () => {
       const body = document.getElementById('appealMsgText').value.trim();
       if (!body) { alert('Nothing to save — write a message first.'); return; }
       const name = prompt('Template name:');
       if (!name) return;
-      const list = _loadAppealTemplates();
-      const idx = list.findIndex(t => t.name === name);
+      const idx = templates.findIndex(t => t.name === name);
       if (idx >= 0) {
         if (!confirm(`Overwrite template "${name}"?`)) return;
-        list[idx].body = body;
+        templates[idx].body = body;
       } else {
-        list.push({ id: Date.now(), name, body });
+        templates.push({ id: Date.now(), name, body });
       }
-      _saveAppealTemplates(list);
+      await _syncTemplates(templates);
       // Refresh dropdown
       const sel = document.getElementById('appealTmplSel');
       const existing = sel.querySelector(`option[value="${CSS.escape(name)}"]`);
@@ -3647,13 +3728,13 @@ function showAppealMessageModal(label, recipientName, action) {
     });
 
     // Delete selected template
-    document.getElementById('appealTmplDel').addEventListener('click', () => {
+    document.getElementById('appealTmplDel').addEventListener('click', async () => {
       const sel = document.getElementById('appealTmplSel');
       const name = sel.value;
       if (!name) return;
       if (!confirm(`Delete template "${name}"?`)) return;
-      const list = _loadAppealTemplates().filter(t => t.name !== name);
-      _saveAppealTemplates(list);
+      templates = templates.filter(t => t.name !== name);
+      await _syncTemplates(templates);
       sel.querySelector(`option[value="${CSS.escape(name)}"]`)?.remove();
       sel.value = '';
     });
@@ -3709,7 +3790,7 @@ function showAppealMessageModal(label, recipientName, action) {
 
 async function handleAppeal(ap, action, tr) {
   const label = action === 'approve' ? 'Approve (+1 token)' : 'Reject';
-  const message = await showAppealMessageModal(label, ap.username || ap.linkedinurl, action);
+  const message = await showAppealMessageModal(label, ap.username || ap.linkedinurl, action, ap.username);
   if (message === null) return; // Admin cancelled
   try {
     const r = await fetch(`${API}/admin/appeal-action`, {
@@ -3833,18 +3914,6 @@ function showAppealSmtpModal() {
     msg.textContent = '✓ SMTP config saved.';
     setTimeout(close, 800);
   });
-}
-
-// ── Appeal email templates (stored in localStorage) ───────────────────────────
-function _loadAppealTemplates() {
-  try {
-    const raw = localStorage.getItem('rl_appeal_email_templates');
-    return raw ? JSON.parse(raw) : [];
-  } catch (_e) { return []; }
-}
-
-function _saveAppealTemplates(list) {
-  try { localStorage.setItem('rl_appeal_email_templates', JSON.stringify(list)); } catch (_e) {}
 }
 
 // ── Porting tab ──────────────────────────────────────────────────────────────
