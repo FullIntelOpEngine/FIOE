@@ -2018,7 +2018,8 @@ def admin_download_jd():
                 )
         return jsonify({"error": "JD file not found"}), 404
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logging.getLogger(__name__).warning("[admin_download_jd] %s", e)
+        return jsonify({"error": "Failed to retrieve JD file"}), 500
 
 
 @app.get("/admin/check-jd")
