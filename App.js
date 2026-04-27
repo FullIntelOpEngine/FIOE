@@ -4045,6 +4045,18 @@ function CandidatesTable({
       localStorage.removeItem('orgChartManualOverrides');
       localStorage.removeItem('dismissedNewCandidateIds');
     } catch (cacheErr) { console.warn('[DB Dock Out] Failed to clear cache:', cacheErr); }
+    // Persist any pending appeal records to disk before clearing the DB so the
+    // admin appeals panel can still access them after the sourcing table is wiped.
+    try {
+      const aaRes = await fetch('http://localhost:4000/candidates/archive-appeals', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'include',
+      });
+      if (!aaRes.ok) console.warn('[Dock Out] archive-appeals returned', aaRes.status);
+    } catch (aaErr) {
+      console.warn('[Dock Out] archive-appeals failed (non-fatal):', aaErr);
+    }
     fetch('http://localhost:4000/candidates/clear-user', {
       method: 'DELETE',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },

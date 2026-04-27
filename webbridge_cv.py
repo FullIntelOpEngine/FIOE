@@ -1040,6 +1040,14 @@ def sourcing_list():
         has_source_col = cur.fetchone() is not None
         source_col = "COALESCE(s.source, '') AS source" if has_source_col else "'' AS source"
 
+        # Detect optional appeal column
+        cur.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='sourcing' AND column_name='appeal'
+        """)
+        has_appeal_col = cur.fetchone() is not None
+        appeal_col = "COALESCE(s.appeal, '') AS appeal" if has_appeal_col else "'' AS appeal"
+
         # ------------------------------------------------------------------
         # Build ORDER BY clause
         # ------------------------------------------------------------------
@@ -1165,7 +1173,8 @@ def sourcing_list():
                    p.rating,
                    {relevance_expr},
                    COALESCE(s.role_tag, '') AS role_tag,
-                   {source_col}
+                   {source_col},
+                   {appeal_col}
             FROM sourcing s
             LEFT JOIN process p ON s.linkedinurl = p.linkedinurl
             WHERE {where_sql}
@@ -1187,6 +1196,7 @@ def sourcing_list():
         relevance_col_idx = (rating_idx + 1)
         role_tag_col_idx = relevance_col_idx + 1
         source_col_idx = role_tag_col_idx + 1
+        appeal_col_idx = source_col_idx + 1
 
         def _strip_nim(name: str) -> str:
             """Strip the Korean honorific suffix '님' (U+B2D8) and surrounding whitespace from a name."""
@@ -1207,6 +1217,7 @@ def sourcing_list():
                 "relevance_score": float(r[relevance_col_idx]) if r[relevance_col_idx] is not None else 0.0,
                 "role_tag": r[role_tag_col_idx] or "",
                 "source": r[source_col_idx] or "",
+                "appeal": r[appeal_col_idx] or "",
             }
             if has_pic and pic_idx is not None:
                 pic_data = r[pic_idx]
