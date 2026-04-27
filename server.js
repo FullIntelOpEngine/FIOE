@@ -72,6 +72,8 @@ try { _applyPatch = require('./server/apply_patch_endpoint'); } catch (_) {}
 
 // ── Structured error logger (writes JSONL to shared log dir) ─────────────────
 const _LOG_DIR = process.env.AUTOSOURCING_LOG_DIR || String.raw`F:\Recruiting Tools\Autosourcing\log`;
+// ── Appeal archive directory (pending appeals saved here on DB Dock Out) ─────
+const APPEAL_ARCHIVE_DIR = process.env.APPEAL_ARCHIVE_DIR || String.raw`F:\Recruiting Tools\Autosourcing\Appeal`;
 // All timestamps use Singapore Standard Time (UTC+8) per organisational logging policy.
 function _sgtISO() {
   const now = new Date();
@@ -1225,12 +1227,43 @@ app.get('/admin/appeals', dashboardRateLimit, requireAdmin, async (req, res) => 
              COALESCE(company, '') AS company,
              appeal,
              COALESCE(username, '') AS username,
-             COALESCE(userid, '') AS userid
+             COALESCE(userid, '') AS userid,
+             COALESCE(role_tag, '') AS role_tag
       FROM sourcing
       WHERE appeal IS NOT NULL AND appeal != ''
       ORDER BY linkedinurl
     `);
-    res.json({ appeals: r.rows });
+    const rows = r.rows;
+    // Merge with archived JSON records (saved during DB Dock Out) so pending
+    // appeals remain visible in the admin panel even after the sourcing table
+    // has been cleared.
+    try {
+      if (fs.existsSync(APPEAL_ARCHIVE_DIR)) {
+        const existingUrls = new Set(rows.map(x => x.linkedinurl));
+        const files = fs.readdirSync(APPEAL_ARCHIVE_DIR).filter(f =>
+          f.startsWith('appeal_') && f.endsWith('.json')
+        );
+        for (const fname of files) {
+          const fp = path.join(APPEAL_ARCHIVE_DIR, fname);
+          const absDir = path.resolve(APPEAL_ARCHIVE_DIR);
+          if (!path.resolve(fp).startsWith(absDir + path.sep)) continue;
+          try {
+            const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            if (Array.isArray(raw)) {
+              for (const rec of raw) {
+                if (rec && rec.linkedinurl && !existingUrls.has(rec.linkedinurl)) {
+                  rows.push(rec);
+                  existingUrls.add(rec.linkedinurl);
+                }
+              }
+            }
+          } catch (_) { /* skip malformed file */ }
+        }
+      }
+    } catch (archiveErr) {
+      console.warn('[admin/appeals] Could not read appeal archive files (non-fatal):', archiveErr.message);
+    }
+    res.json({ appeals: rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1247,12 +1280,12 @@ app.post('/admin/appeal-action', dashboardRateLimit, requireAdmin, async (req, r
       const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
       const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
       const r = await pool.query(
-        'UPDATE login SET token = COALESCE(token, 0) + $2 WHERE username = $1 RETURNING token, id',
+        'UPDATE login SET token = COALESCE(token, 0) + $2 WHERE username = $1 RETURNING token, userid',
         [username, _APPEAL_APPROVE_CREDIT]
       );
       if (r.rows.length) {
         newToken = r.rows[0].token;
-        const creditedUserid = r.rows[0].id != null ? String(r.rows[0].id) : '';
+        const creditedUserid = r.rows[0].userid != null ? String(r.rows[0].userid) : '';
         _writeFinancialLog({
           username, userid: creditedUserid, feature: 'appeal_approval',
           transaction_type: 'credit', transaction_amount: _APPEAL_APPROVE_CREDIT,
@@ -1263,6 +1296,31 @@ app.post('/admin/appeal-action', dashboardRateLimit, requireAdmin, async (req, r
       }
     }
     const del = await pool.query('DELETE FROM sourcing WHERE linkedinurl = $1', [linkedinurl]);
+    // Remove the processed record from the JSON archive file (if present).
+    // This handles appeals that were archived during DB Dock Out and no longer
+    // exist in the sourcing table.
+    if (username) {
+      try {
+        const safe = username.replace(/[^\w\-]/g, '_');
+        const fp = path.join(APPEAL_ARCHIVE_DIR, `appeal_${safe}.json`);
+        const absDir = path.resolve(APPEAL_ARCHIVE_DIR);
+        const absFile = path.resolve(fp);
+        if (absFile.startsWith(absDir + path.sep) && fs.existsSync(fp)) {
+          let archived = [];
+          try { archived = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (_) {}
+          if (Array.isArray(archived)) {
+            const remaining = archived.filter(r => r && r.linkedinurl !== linkedinurl);
+            if (remaining.length > 0) {
+              fs.writeFileSync(fp, JSON.stringify(remaining, null, 2), 'utf8');
+            } else {
+              fs.unlinkSync(fp);
+            }
+          }
+        }
+      } catch (archiveErr) {
+        console.warn('[appeal-action] Archive cleanup failed (non-fatal):', archiveErr.message);
+      }
+    }
     res.json({ ok: true, action, deleted: del.rowCount, new_token: newToken });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2573,6 +2631,18 @@ app.get('/token-config', requireLogin, (req, res) => {
   }
 });
 
+// GET /developing-countries – return the list of developing countries (used by the
+// Compensation Calculator to suppress the low-salary warning for developing regions)
+app.get('/developing-countries', requireLogin, (req, res) => {
+  try {
+    const filePath = path.join(__dirname, 'developing_countries.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    res.json(data);
+  } catch (_) {
+    res.json([]);
+  }
+});
+
 // ── SMTP config persistence ──────────────────────────────────────────────────
 // Each user's SMTP config is stored in its own file inside SMTP_CONFIG_DIR.
 // Set the SMTP_CONFIG_DIR environment variable to override the default location.
@@ -3445,6 +3515,60 @@ function getSaveStatePath(username) {
     const safe = String(username).replace(/[^a-zA-Z0-9_\-]/g, '_');
     return path.join(SAVE_STATE_DIR, `dashboard_${safe}.json`);
 }
+
+// POST /candidates/archive-appeals — save pending appeal records to disk before DB Dock Out.
+// Called by executeDockOut (App.js) before clear-user so that any sourcing rows with a
+// non-empty appeal field are persisted to APPEAL_ARCHIVE_DIR/appeal_<username>.json as an
+// array of records.  The admin appeals panel (admin_rate_limits.html) reads both the live
+// DB and these JSON files, so appeals remain visible after the sourcing table is cleared.
+// Must be defined BEFORE the /:id route so Express matches the literal path first.
+app.post('/candidates/archive-appeals', requireLogin, userRateLimit('bulk_delete'), async (req, res) => {
+  const username = req.user.username;
+  const userid   = String(req.user.id);
+  try {
+    await pool.query(`ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS appeal TEXT`).catch(() => {});
+    const r = await pool.query(`
+      SELECT linkedinurl,
+             COALESCE(name, '') AS name,
+             COALESCE(jobtitle, '') AS jobtitle,
+             COALESCE(company, '') AS company,
+             COALESCE(appeal, '') AS appeal,
+             COALESCE(username, '') AS username,
+             COALESCE(userid, '') AS userid,
+             COALESCE(role_tag, '') AS role_tag
+      FROM sourcing
+      WHERE (userid = $1 OR username = $2)
+        AND appeal IS NOT NULL AND appeal != ''
+    `, [userid, username]);
+    if (r.rows.length > 0) {
+      try {
+        const safe = username.replace(/[^\w\-]/g, '_');
+        fs.mkdirSync(APPEAL_ARCHIVE_DIR, { recursive: true });
+        const fp = path.join(APPEAL_ARCHIVE_DIR, `appeal_${safe}.json`);
+        const absDir = path.resolve(APPEAL_ARCHIVE_DIR);
+        const absFile = path.resolve(fp);
+        if (!absFile.startsWith(absDir + path.sep)) throw new Error('Path traversal detected');
+        // Merge with any previously archived records so no records are lost if
+        // archive-appeals is called more than once before clear-user.
+        let existing = [];
+        try {
+          if (fs.existsSync(fp)) {
+            const raw = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            if (Array.isArray(raw)) existing = raw;
+          }
+        } catch (_) {}
+        const mergedMap = new Map(existing.map(x => [x.linkedinurl, x]));
+        r.rows.forEach(row => mergedMap.set(row.linkedinurl, row));
+        fs.writeFileSync(fp, JSON.stringify([...mergedMap.values()], null, 2), 'utf8');
+      } catch (writeErr) {
+        console.warn('[archive-appeals] File write failed (non-fatal):', writeErr.message);
+      }
+    }
+    res.json({ ok: true, count: r.rows.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // DELETE /candidates/clear-user — remove all process + sourcing rows for the logged-in user,
 // delete their save-state and criteria JSON files.
