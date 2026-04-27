@@ -5077,7 +5077,7 @@ function buildRow(row) {
     return td;
   }
 
-  tr.appendChild(makeEditableCell('name', row.name || '', false, row.linkedinurl));
+  tr.appendChild(makeEditableCell('name', _nameFromLinkedInUrl(row.linkedinurl) || row.name || '', false, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, false));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);

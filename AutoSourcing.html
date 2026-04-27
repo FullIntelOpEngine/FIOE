@@ -2413,9 +2413,14 @@ function buildCompanyExpression(){
   if(companies.length===1) return `"${escapeQuotes(companies[0])}"`;
   return '('+companies.map(c=>`"${escapeQuotes(c)}"`).join(' OR ')+')';
 }
+// Returns true when at least one selected sector chip is NOT locked.
+// When all sectors are locked, sector-based company suggestions are fully deactivated.
+function hasActiveSectors(){
+  return selectedSectors.some(l => !lockedSectorTags.has(l));
+}
 function buildEffectiveCompanyExpression(){
   let combined;
-  if(selectedSectors.length > 0){
+  if(selectedSectors.length > 0 && hasActiveSectors()){
     // Sector guardrail: when a sector is active, build the company expression strictly from
     // sector-derived companies (sectorCompanyRelated) only. Do NOT merge in user-typed companies
     // (companies array) or generic auto-suggested companies — they belong to a different context
@@ -2532,7 +2537,7 @@ function addManualSector(){
 }
 
 function renderEffectiveCompaniesDisplay(){
-  if(!selectedSectors.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
+  if(!selectedSectors.length || !hasActiveSectors()){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedSectorCompanyTags.has(c.toLowerCase()))]);
   if(!effective.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   show(sectorCompanyDisplay); sectorCompanyList.innerHTML='';
@@ -2638,8 +2643,7 @@ function updateDynamicCompanyPreview(clear=false){
   }
 
   let opts = [];
-  if (selectedSectors.length > 0) {
-    // Start from strict sector-derived companies
+  if (selectedSectors.length > 0 && hasActiveSectors()) {
     const sectorArr = Array.from(sectorCompanyRelated || []).map(s => s.toString());
     // autoRelated: only autoSuggested entries that match sectorCompanyRelated (case-insensitive)
     const autoRelated = (autoSuggestedCompanies || []).filter(c => {
@@ -3410,7 +3414,7 @@ function buildFullBooleanQuery(){
 // Builds the full Xray query for direct competitor companies (non-sector).
 // Returns '' when no competitor companies are available or no sector is active.
 function buildGenericFullQuery(){
-  if (!selectedSectors.length) return '';
+  if (!selectedSectors.length || !hasActiveSectors()) return '';
   const genericBlock = buildGenericCompanyExpression();
   if (!genericBlock) return '';
   const lang=buildLanguageXrayBlock();
