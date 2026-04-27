@@ -2190,6 +2190,7 @@ let jdJobSnapshot = [];             // frozen job suggestion list
 let jdCompanySnapshot = [];         // frozen company suggestion list
 let jdProducts = [];                // product/technology references extracted from JD (e.g., "Aircon", "HVAC")
 let jdDetectedCompanies = new Set(); // canonical keys of companies detected IN the JD — excluded from suggestions
+let _jdFileExt = '';                // file extension of the most recently uploaded JD ('pdf', 'doc', 'docx')
 
 function captureSuggestionSnapshot(){
   try{
@@ -4791,6 +4792,15 @@ async function generateAndStart(){
   try{
     // Client-side rate-limit check before submitting the sourcing job
     if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('start_job'))) return;
+    // Tag the archived JD copy with the first role_tag (job title) before launching the search.
+    if (jdUploaded && _jdFileExt && activeUsername && jobTitles.length > 0) {
+      fetch('/user/tag_jd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ username: activeUsername, ext: _jdFileExt, role_tag: jobTitles[0] })
+      }).catch(function() {});
+    }
     const res=await fetch('/start_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status+' '+(await res.text()));
     const data=await res.json();
@@ -5096,6 +5106,9 @@ function updateSectorEnabledState(){
     if(browseBtn) browseBtn.disabled = true;
     
     const username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || '';
+    // Track the file extension so later tag_jd calls can pass it to the server
+    const _fname = (file.name || '').toLowerCase();
+    _jdFileExt = _fname.endsWith('.pdf') ? 'pdf' : _fname.endsWith('.docx') ? 'docx' : 'doc';
     
     const formData = new FormData();
     formData.append('file', file);
@@ -5186,6 +5199,20 @@ function updateSectorEnabledState(){
 
           // Render the analysis to the JD Analysis box
           if (analyzeData) {
+            // Fire-and-forget: rename the archived JD copy using the detected job title.
+            (function _tagJdAfterAnalysis() {
+              const _jt = (analyzeData.job_titles && analyzeData.job_titles.length > 0)
+                ? analyzeData.job_titles[0]
+                : (analyzeData.job_title || '');
+              if (username && _jdFileExt) {
+                fetch('/user/tag_jd', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'same-origin',
+                  body: JSON.stringify({ username: username, ext: _jdFileExt, job_title: _jt })
+                }).catch(function() {});
+              }
+            })();
             if (summaryEl) summaryEl.innerHTML = analyzeData.summary || '';
             let tagHtml = '';
             // Display job titles (multiple if available)

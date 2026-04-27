@@ -20,6 +20,14 @@ from flask import request, send_from_directory, jsonify, abort, Response, stream
 # Sanitise username for use in filenames (allow only alphanumeric, _ and -)
 _CV_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# Directory where a copy of every uploaded JD is archived and tagged.
+_JD_ARCHIVE_DIR = r"F:\Recruiting Tools\Autosourcing\JD"
+
+def _sanitize_jd_name_part(s: str) -> str:
+    """Strip characters that are invalid in Windows filenames, then trim."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', s).strip('._').strip()
+    return cleaned[:120]  # cap length
+
 # Structured activity logger
 try:
     from app_logger import log_agentic, log_approval, log_error as _log_error_cv
@@ -6459,12 +6467,81 @@ def user_upload_jd():
             skills = parsed.get("skills", [])
             if skills: _persist_jskillset(username, skills)
         except Exception as e: logger.warning(f"Failed to auto-extract skills after upload: {e}")
-        return jsonify({"status": "ok", "message": "JD uploaded and stored", "length": len(extracted_text)}), 200
+        # Save an archive copy of the JD file for record-keeping / role tagging.
+        ext = 'pdf' if filename.endswith('.pdf') else ('docx' if filename.endswith('.docx') else 'doc')
+        try:
+            os.makedirs(_JD_ARCHIVE_DIR, exist_ok=True)
+            safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+            dest = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}")
+            with open(dest, 'wb') as _fh:
+                _fh.write(file_bytes)
+            logger.info(f"[Upload JD] Saved archive copy: {dest}")
+        except Exception as save_err:
+            logger.warning(f"[Upload JD] Failed to save archive copy: {save_err}")
+        return jsonify({"status": "ok", "message": "JD uploaded and stored", "length": len(extracted_text), "ext": ext}), 200
     except Exception as e:
         logger.error(f"[Upload JD] {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.post("/gemini/analyze_jd")
+
+@app.post("/user/tag_jd")
+def user_tag_jd():
+    """Rename the archived JD copy after analysis (job_title) or sourcing (role_tag).
+
+    JSON body:
+      username  – required
+      ext       – file extension used at upload time: 'pdf', 'doc', or 'docx'
+      job_title – (optional) rename to  JobTitle_username.ext  (or JD_username.ext if empty)
+      role_tag  – (optional) rename to  JD_RoleTag_username.ext  (takes precedence over job_title)
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        username = (data.get("username") or "").strip()
+        ext = (data.get("ext") or "").strip().lstrip('.').lower()
+        job_title = (data.get("job_title") or "").strip()
+        role_tag = (data.get("role_tag") or "").strip()
+
+        if not username:
+            return jsonify({"error": "username required"}), 400
+        if ext not in ('pdf', 'doc', 'docx'):
+            return jsonify({"error": "ext must be pdf, doc, or docx"}), 400
+
+        # Sanitize username so it is safe to embed in a filesystem path
+        safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+
+        import glob as _glob
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        matches = _glob.glob(pattern)
+        if not matches:
+            return jsonify({"status": "not_found"}), 200
+
+        existing_path = matches[0]
+        # Verify the resolved path stays inside _JD_ARCHIVE_DIR (defence in depth)
+        if not os.path.abspath(existing_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            return jsonify({"error": "invalid path"}), 400
+
+        if role_tag:
+            safe = _sanitize_jd_name_part(role_tag)
+            new_name = f"JD_{safe}_{safe_username}.{ext}" if safe else f"JD_{safe_username}.{ext}"
+        elif job_title:
+            safe = _sanitize_jd_name_part(job_title)
+            new_name = f"{safe}_{safe_username}.{ext}" if safe else f"JD_{safe_username}.{ext}"
+        else:
+            return jsonify({"status": "no_tag"}), 200
+
+        new_path = os.path.join(_JD_ARCHIVE_DIR, new_name)
+        # Verify new path also stays inside _JD_ARCHIVE_DIR
+        if not os.path.abspath(new_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            return jsonify({"error": "invalid target path"}), 400
+        # os.replace is atomic on the same filesystem and overwrites if dest exists
+        os.replace(existing_path, new_path)
+        logger.info(f"[tag_jd] Renamed '{os.path.basename(existing_path)}' → '{new_name}'")
+        return jsonify({"status": "ok", "filename": new_name}), 200
+    except Exception as e:
+        logger.warning(f"[tag_jd] {e}")
+        return jsonify({"error": "Failed to tag JD file"}), 500
+
+
 @_rate(_make_flask_limit("gemini"))
 @_check_user_rate("gemini")
 def gemini_jd_analyze():
