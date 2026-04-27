@@ -2485,6 +2485,12 @@ function populateSectorSelect(){
   const other=document.createElement('option'); other.value="__OTHER__"; other.textContent="Other (enter manually)"; sectorSelect.appendChild(other);
 }
 
+function clearSectorBasedCompanyTags(){
+  lockedSectorCompanyTags.clear();
+  sectorCompanyList.innerHTML='';
+  hide(sectorCompanyDisplay);
+}
+
 function renderSectorChips(){
   sectorChips.innerHTML=''; if(!selectedSectors.length){ sectorChipsWrap.classList.add('hidden'); hide(sectorCompanyDisplay); updateDynamicCompanyPreview(true); updateDynamicCompanyHeader(); return; }
   sectorChipsWrap.classList.remove('hidden');
@@ -2493,12 +2499,13 @@ function renderSectorChips(){
     const chip=document.createElement('div'); chip.className='tag-chip';
     const isLocked=lockedSectorTags.has(label);
     if(isLocked) chip.classList.add('tag-locked');
+    chip.title='Toggle on will deactivate sector-based company suggestions.';
     chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector" style="margin-left:4px;">&times;</button>`;
     const removeBtn=chip.querySelector('button');
     if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
     chip.addEventListener('click', e=>{
       if(e.target===removeBtn) return;
-      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); }
+      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); clearSectorBasedCompanyTags(); }
       renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
     });
     removeBtn.addEventListener('click',()=>{

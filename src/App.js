@@ -2070,7 +2070,6 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue, co
         {showLowSalaryWarning && (
           <div style={{ margin: '12px 0', padding: '10px 14px', borderRadius: 8, background: '#fff7ed', border: '1px solid #fb923c', display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: '#c2410c' }}>⚠ This looks low for annual salary. Please confirm.</div>
-            <div style={{ fontSize: 12, color: '#9a3412' }}>The entered value (<strong>{pendingSaveValue}</strong> USD) is below 20,000 USD. Are you sure this is correct?</div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={() => setShowLowSalaryWarning(false)} className="btn-secondary" style={{ padding: '5px 14px', fontSize: 12 }}>Go Back</button>
               <button onClick={handleConfirmLowSalary} className="btn-primary" style={{ padding: '5px 14px', fontSize: 12, background: '#ea580c', border: 'none' }}>Yes, Confirm</button>

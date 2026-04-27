@@ -1957,12 +1957,14 @@ function StatusManagerModal({ isOpen, onClose, statuses, onAddStatus, onRemoveSt
   );
 }
 
-function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) {
+function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue, country, developingCountries }) {
   const COMP_KEYS = ['baseSalary', 'allowances', 'bonus', 'commission', 'rsu'];
   const emptyFields = Object.fromEntries(COMP_KEYS.map(k => [k, '']));
   const [fields, setFields] = useState(emptyFields);
   const [totalOverride, setTotalOverride] = useState('');
   const [manualTotal, setManualTotal] = useState(false);
+  const [showLowSalaryWarning, setShowLowSalaryWarning] = useState(false);
+  const [pendingSaveValue, setPendingSaveValue] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -1970,6 +1972,8 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
       const existing = initialValue != null && initialValue !== '' ? String(initialValue) : '';
       setTotalOverride(existing);
       setManualTotal(existing !== '');
+      setShowLowSalaryWarning(false);
+      setPendingSaveValue(null);
     }
   }, [isOpen, initialValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1989,9 +1993,26 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
     setTotalOverride(value);
   };
 
+  const _isDevCountry = () => {
+    if (!country) return false;
+    const c = country.trim().toLowerCase();
+    return Array.isArray(developingCountries) && developingCountries.some(d => d.toLowerCase() === c);
+  };
+
   const handleSave = () => {
     const finalValue = manualTotal ? totalOverride : (autoTotal === 0 ? '' : String(autoTotal));
+    const numericValue = parseFloat(finalValue) || 0;
+    if (numericValue > 0 && numericValue < 20000 && !_isDevCountry()) {
+      setPendingSaveValue(finalValue);
+      setShowLowSalaryWarning(true);
+      return;
+    }
     onSave(finalValue);
+    onClose();
+  };
+
+  const handleConfirmLowSalary = () => {
+    onSave(pendingSaveValue);
     onClose();
   };
 
@@ -2046,6 +2067,15 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
             >Reset to auto-sum</button>
           )}
         </div>
+        {showLowSalaryWarning && (
+          <div style={{ margin: '12px 0', padding: '10px 14px', borderRadius: 8, background: '#fff7ed', border: '1px solid #fb923c', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#c2410c' }}>⚠ This looks low for annual salary. Please confirm.</div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowLowSalaryWarning(false)} className="btn-secondary" style={{ padding: '5px 14px', fontSize: 12 }}>Go Back</button>
+              <button onClick={handleConfirmLowSalary} className="btn-primary" style={{ padding: '5px 14px', fontSize: 12, background: '#ea580c', border: 'none' }}>Yes, Confirm</button>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
           <button onClick={onClose} className="btn-secondary" style={{ padding: '7px 18px', fontSize: 13 }}>Cancel</button>
           <button onClick={handleSave} className="btn-primary" style={{ padding: '7px 18px', fontSize: 13 }}>Save</button>
@@ -2287,6 +2317,8 @@ function CandidatesTable({
   const [compModalOpen, setCompModalOpen] = useState(false);
   const [compModalCandidateId, setCompModalCandidateId] = useState(null);
   const [compModalInitialValue, setCompModalInitialValue] = useState('');
+  const [compModalCountry, setCompModalCountry] = useState('');
+  const [developingCountries, setDevelopingCountries] = useState([]);
 
   // Email modal & SMTP state
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -2447,6 +2479,14 @@ function CandidatesTable({
     prevCandidateIdsRef.current = currentIds;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allCandidates]);
+
+  // Load developing countries list on mount (used by compensation calculator low-salary check)
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/developing-countries`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { if (Array.isArray(data)) setDevelopingCountries(data); })
+      .catch(() => {});
+  }, []); // on mount only
 
   // Helper to reset rename workflow state
   const resetRenameState = () => {
@@ -2950,9 +2990,10 @@ function CandidatesTable({
     return v;
   };
 
-  const openCompModal = (candidateId, value) => {
+  const openCompModal = (candidateId, value, country) => {
     setCompModalCandidateId(candidateId);
     setCompModalInitialValue(value);
+    setCompModalCountry(country || '');
     setCompModalOpen(true);
   };
 
@@ -3010,7 +3051,7 @@ function CandidatesTable({
                   <option value="Executive">Executive</option>
                 </select>
               : f.key === 'compensation'
-              ? <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', cursor: 'pointer' }} />
+              ? <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { const _country = editRows[c.id]?.country ?? c.country ?? ''; dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue, _country); }} onFocus={() => { const _country = editRows[c.id]?.country ?? c.country ?? ''; dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue, _country); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { const _country = editRows[c.id]?.country ?? c.country ?? ''; openCompModal(c.id, displayValue, _country); } }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', cursor: 'pointer' }} />
               : f.key === 'geographic'
               ? <select value={displayValue || ''} onChange={e => handleEditChange(c.id, f.key, e.target.value)} onFocus={() => dismissNewBadges([String(c.id)])} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', border: '1px solid var(--desired-dawn)', borderRadius: 6 }}>
                   <option value="">-- Select Region --</option>
@@ -5230,6 +5271,8 @@ criteriaSheets.map((cf, idx) => {
         isOpen={compModalOpen}
         onClose={() => setCompModalOpen(false)}
         initialValue={compModalInitialValue}
+        country={compModalCountry}
+        developingCountries={developingCountries}
         onSave={(total) => {
           if (compModalCandidateId != null) handleEditChange(compModalCandidateId, 'compensation', total);
         }}
