@@ -4808,9 +4808,7 @@ function buildRow(row) {
                                 if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
                                 if (newJob) { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                                 if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
-                                const newName = (newJob && newCompany)
-                                    ? `${newJob.trim()} at ${newCompany.trim()}`
-                                    : (analyzeData.name || '').trim();
+                                const newName = _nameFromLinkedInUrl(value) || (analyzeData.name || '').trim();
                                 if (newName) { const nCell = tr.querySelector('td[data-field="name"]'); if(nCell) { nCell.textContent = newName; flushImmediate(value, 'name', newName, nCell); } }
                                 
                                 // All assessments use L2 (inference mode) by default

@@ -2573,6 +2573,18 @@ app.get('/token-config', requireLogin, (req, res) => {
   }
 });
 
+// GET /developing-countries – return the list of developing countries (used by the
+// Compensation Calculator to suppress the low-salary warning for developing regions)
+app.get('/developing-countries', requireLogin, (req, res) => {
+  try {
+    const filePath = path.join(__dirname, 'developing_countries.json');
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    res.json(data);
+  } catch (_) {
+    res.json([]);
+  }
+});
+
 // ── SMTP config persistence ──────────────────────────────────────────────────
 // Each user's SMTP config is stored in its own file inside SMTP_CONFIG_DIR.
 // Set the SMTP_CONFIG_DIR environment variable to override the default location.
