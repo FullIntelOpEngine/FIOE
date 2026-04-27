@@ -3095,8 +3095,8 @@ function CandidatesTable({
                     )}
                   </div>
                   {compConsensus[String(c.id)] && (
-                    <span title={`Crowd consensus: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', alignSelf: 'flex-start', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', userSelect: 'none' }}>
-                      {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} consensus` : 'crowd'}
+                    <span title={`Verified: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', alignSelf: 'flex-start', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', userSelect: 'none' }}>
+                      {compConsensus[String(c.id)].count > 0 ? `${compConsensus[String(c.id)].count} verified` : 'verified'}
                     </span>
                   )}
                 </div>
@@ -4929,7 +4929,7 @@ criteriaSheets.map((cf, idx) => {
             <button
               onClick={handleAiComp}
               disabled={aiCompLoading || dockInUploading || dockOutClearing}
-              title="Compensation in USD, generated via AI or Crowd. Crowd data shows a consensus tag; AI data is reference only and must be cross‑checked."
+              title="Compensation in USD, generated via AI or Crowd. Crowd data shows a verified tag; AI data is reference only and must be cross‑checked."
               className="btn-primary"
               style={{ padding: '8px 16px' }}
             >

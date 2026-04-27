@@ -1221,6 +1221,54 @@ pre {
   background: #fff;
   min-width: 130px;
 }
+/* Strict Search toggle button */
+#strictSearchBtn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d8d8d8);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+  background: #fff;
+  color: var(--text-soft, #666);
+  position: relative;
+}
+#strictSearchBtn.sp-strict-on {
+  background: var(--azure-dragon, #073679);
+  color: #fff;
+  border-color: var(--azure-dragon, #073679);
+}
+#strictSearchBtn.sp-strict-on:hover {
+  box-shadow: 0 0 8px 1px rgba(7,54,121,0.3);
+}
+#strictSearchBtn:not(.sp-strict-on):hover {
+  box-shadow: 0 0 8px 1px rgba(59,130,246,0.25);
+  border-color: #aac;
+}
+/* Strict button tooltip */
+#strictSearchBtn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1b2636;
+  color: #e8edf2;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 9999;
+}
+#strictSearchBtn:hover::after {
+  opacity: 1;
+}
 
 /* Skill Adjacency button tooltip */
 #skillAdjacencyBtn {
@@ -1632,6 +1680,7 @@ pre {
           <div id="searchProviderToggle">
             <div class="sp-toggle-header">
               <button type="button" id="spToggleBtn" class="sp-toggle-btn sp-mode-cse" onclick="window._toggleSearchProviderMode()">Default CSE</button>
+              <button type="button" id="strictSearchBtn" data-tooltip="Search will only include the selected companies." onclick="window._toggleStrictMode()">Strict</button>
             </div>
             <div id="spDropdownWrap">
               <select id="spProviderSelect">
@@ -4421,6 +4470,21 @@ function _refreshTokenRates() {
   };
 })();
 
+// ── Strict Search Toggle ─────────────────────────────────────────────────────
+// When enabled, fallback queries are suppressed so only company-filtered
+// primary queries execute.
+(function _initStrictToggle(){
+  let _strictOn = false;
+
+  window._toggleStrictMode = function() {
+    _strictOn = !_strictOn;
+    const btn = document.getElementById('strictSearchBtn');
+    if (btn) btn.classList.toggle('sp-strict-on', _strictOn);
+  };
+
+  window._isStrictMode = function() { return _strictOn; };
+})();
+
 function showBestModeNotif(){
   // Guard suppression before the async fetch to avoid a flash of the suppressed popup.
   try{ if(localStorage.getItem(STORAGE_KEY_NOTIF_BEST_MODE_SUPPRESS) === 'true') return; }catch(_){}
@@ -4643,7 +4707,10 @@ async function generateAndStart(){
     return;
   }
   const qBundle=buildQueries(val('country'));
-  renderQueries([...qBundle.primary,...qBundle.fallback]);
+  const queriesToRender = (window._isStrictMode && window._isStrictMode())
+    ? qBundle.primary
+    : [...qBundle.primary, ...qBundle.fallback];
+  renderQueries(queriesToRender);
   if(btn){ btn.dataset.state='searching'; btn.disabled=true; applySearchingSpinner(btn); btn.classList.remove('ready-download'); }
   
   const currentRole = false;
@@ -4662,7 +4729,7 @@ async function generateAndStart(){
     languageQuery:buildLanguageXrayBlock(),
     currentRole:currentRole,
     queries:qBundle.primary.map(q=>q.query),
-    fallbackQueries:qBundle.fallback.map(q=>q.query),
+    fallbackQueries:(window._isStrictMode && window._isStrictMode()) ? [] : qBundle.fallback.map(q=>q.query),
     country:val('country'),
     autoExpand: autoExpand,
     manualUrls: [],
