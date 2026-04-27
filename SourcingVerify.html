@@ -3689,9 +3689,13 @@ function _nameFromLinkedInUrl(url) {
   const slug = m[1].replace(/\/$/, '').toLowerCase();
   const parts = slug.split('-').filter(Boolean);
   // Drop the trailing LinkedIn numeric/alphanumeric profile-ID segment
-  const nameParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
+  const trimmedParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
     ? parts.slice(0, -1)
     : parts;
+  // Strip any remaining digits from each name segment (e.g. jungyu0222 → jungyu)
+  const nameParts = trimmedParts
+    .map(p => p.replace(/\d+/g, ''))
+    .filter(p => p.length > 0);
   if (!nameParts.length) return null;
   return nameParts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }

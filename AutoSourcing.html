@@ -2598,6 +2598,13 @@ let sectorJobRelated=new Set(); let sectorCompanyRelated=new Set();
 
 /* Debounced fetch already declared earlier; below we update how results are stored */
 async function fetchSectorSuggestions(){
+  // When all sector chips are locked, there are no active sectors — clear stale data and bail out.
+  if (selectedSectors.length > 0 && !hasActiveSectors()) {
+    sectorJobRelated = new Set(); sectorCompanyRelated = new Set();
+    if (lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions);
+    else renderSuggestionsAggregated({ job:{related:[]}, company:{related:[]} });
+    return;
+  }
   const activeStr=getActiveSectorString();
   const sectors= selectedSectors.length ? selectedSectors.slice() : (activeStr ? [activeStr] : []);
   const userJobTitle=normalizeSpaces(val('jobTitleInput')) || (jobTitles[0]||'');
@@ -3182,11 +3189,11 @@ function renderSuggestionsAggregated(data){
 
     // Merge sector-derived suggestions into snapshot view so sector selections still show results
     try {
-      if (sectorJobRelated && sectorJobRelated.size) {
+      if (hasActiveSectors() && sectorJobRelated && sectorJobRelated.size) {
         const mergedJobs = dedupe([...jobList, ...Array.from(sectorJobRelated).map(s => normalizeSpaces(s))]);
         jobList = mergedJobs;
       }
-      if (sectorCompanyRelated && sectorCompanyRelated.size) {
+      if (hasActiveSectors() && sectorCompanyRelated && sectorCompanyRelated.size) {
         const mergedComps = dedupe([...companyList, ...Array.from(sectorCompanyRelated).map(s => normalizeSpaces(s))]);
         companyList = mergedComps;
       }
@@ -3198,8 +3205,8 @@ function renderSuggestionsAggregated(data){
     const jobSet=new Set(), companySet=new Set();
     (data.job?.related||[]).forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); });
     (data.company?.related||[]).forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); });
-    sectorJobRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); });
-    sectorCompanyRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); });
+    if(hasActiveSectors()){ sectorJobRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); }); }
+    if(hasActiveSectors()){ sectorCompanyRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); }); }
 
     jobList = Array.from(jobSet);
     companyList = Array.from(companySet);
@@ -3217,7 +3224,7 @@ function renderSuggestionsAggregated(data){
   // suggestions available in the same panel.
   // We also track genericCompetitorCompanies separately so buildQueries can generate a second
   // query for the competitor companies when a sector query already covers sector companies.
-  if (selectedSectors.length > 0 && sectorCompanyRelated && sectorCompanyRelated.size > 0) {
+  if (selectedSectors.length > 0 && hasActiveSectors() && sectorCompanyRelated && sectorCompanyRelated.size > 0) {
     const sectorKeys = new Set();
     sectorCompanyRelated.forEach(s => sectorKeys.add(canonicalKey(normalizeSpaces(s))));
     // Derive competitors ONLY from the raw /suggest response (data.company.related), never from
