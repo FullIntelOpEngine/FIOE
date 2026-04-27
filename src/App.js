@@ -18,7 +18,7 @@ const API_PORT = 4000;
 const LOGIN_PORT = 8091;
 // Central login redirect URL — used by auth check, handleLogout, performSessionExpiry, fetchCandidates
 const FIOE_LOGIN_REDIRECT =
-  `http://localhost:${LOGIN_PORT}/login.html?next=` + encodeURIComponent('http://localhost:3000/');
+  `http://localhost:${LOGIN_PORT}/login.html?next=` + encodeURIComponent(window.location.origin + '/');
 
 /** Clears all client-side auth tokens so login.html won't auto-redirect on stale credentials. */
 const clearClientAuthState = () => {
@@ -52,6 +52,7 @@ const isInternalNavigation = () => {
 // React state (appTokenCost / appVerifiedDeduct) serves App()-owned JSX so dialogs re-render live.
 let _APP_ANALYTIC_TOKEN_COST        = 1;
 let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
+let _APP_CONTACT_GEN_DEDUCT         = 2;
 (function _loadAppTokenConfig() {
   fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     .then(r => r.ok ? r.json() : null)
@@ -60,6 +61,7 @@ let _APP_VERIFIED_SELECTION_DEDUCT  = 2;
       const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
       if (typeof t.analytic_token_cost        === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
       if (typeof t.verified_selection_deduct  === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+      if (typeof t.contact_gen_deduct         === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
     })
     .catch(() => {});
 })();
@@ -209,7 +211,7 @@ function inferSeniority(candidate) {
 }
 async function fetchSkillsetMapping() {
   try {
-    const res = await fetch('http://localhost:4000/skillset-mapping');
+    const res = await fetch(`http://localhost:${API_PORT}/skillset-mapping`);
     if (!res.ok) return {};
     return await res.json();
   } catch {
@@ -230,7 +232,7 @@ function LoginScreen({ onLoginSuccess }) {
     setError('');
     
     try {
-      const res = await fetch('http://localhost:4000/login', {
+      const res = await fetch(`http://localhost:${API_PORT}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ username, password }),
@@ -715,7 +717,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     setAiLoading(true);
     try {
       // Pass 'from' context as well
-      const res = await fetch('http://localhost:4000/draft-email', {
+      const res = await fetch(`http://localhost:${API_PORT}/draft-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ 
@@ -742,7 +744,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   // Calendar helpers
   const handleConnectCalendar = () => {
     // Open Google OAuth connect in popup
-    const url = 'http://localhost:4000/auth/google/calendar/connect';
+    const url = `http://localhost:${API_PORT}/auth/google/calendar/connect`;
     const w = 600, h = 700;
     const left = (window.screen.width / 2) - (w / 2);
     const top = (window.screen.height / 2) - (h / 2);
@@ -751,7 +753,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
   const handleConnectMicrosoft = () => {
     // Open Microsoft OAuth connect in popup
-    const url = 'http://localhost:4000/auth/microsoft/calendar/connect';
+    const url = `http://localhost:${API_PORT}/auth/microsoft/calendar/connect`;
     const w = 600, h = 700;
     const left = (window.screen.width / 2) - (w / 2);
     const top = (window.screen.height / 2) - (h / 2);
@@ -785,7 +787,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       } else {
         endISO = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
       }
-      const res = await fetch('http://localhost:4000/calendar/freebusy', {
+      const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider }),
@@ -830,7 +832,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         sendUpdates: 'none',
         provider: calendarProvider
       };
-      const res = await fetch('http://localhost:4000/calendar/create-event', {
+      const res = await fetch(`http://localhost:${API_PORT}/calendar/create-event`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify(payload),
@@ -938,7 +940,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
           }
           if (attachments.length > 0) payload.attachments = attachments;
           try {
-            const res = await fetch('http://localhost:4000/send-email', {
+            const res = await fetch(`http://localhost:${API_PORT}/send-email`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify(payload),
@@ -976,7 +978,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         };
         if (icsString) payload.ics = icsString;
         if (attachments.length > 0) payload.attachments = attachments;
-        const res = await fetch('http://localhost:4000/send-email', {
+        const res = await fetch(`http://localhost:${API_PORT}/send-email`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           body: JSON.stringify(payload),
@@ -1539,7 +1541,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 // Build the scheduler booking URL using the current hostname so it works across
 // localhost, staging, and production (scheduler.html is served on port 4000).
 const getSchedulerBookingUrl = () =>
-  `${window.location.protocol}//${window.location.hostname}:4000/scheduler.html`;
+  `${window.location.protocol}//${window.location.hostname}:${API_PORT}/scheduler.html`;
 
 function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' }) {
   const [startDate, setStartDate] = useState('');
@@ -1587,7 +1589,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
     try {
       const startISO = new Date(startDate + 'T00:00:00').toISOString();
       const endISO = new Date(endDate + 'T23:59:59').toISOString();
-      const res = await fetch('http://localhost:4000/calendar/freebusy', {
+      const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider }),
@@ -1616,7 +1618,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
     setError('');
     setCleared(false);
     try {
-      const res = await fetch('http://localhost:4000/scheduler/publish-slots', {
+      const res = await fetch(`http://localhost:${API_PORT}/scheduler/publish-slots`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ slots: toPublish, durationMinutes: Number(duration) }),
@@ -1640,7 +1642,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
   const handleClear = async () => {
     if (!window.confirm('Clear all published slots? Invitees will no longer be able to book.')) return;
     try {
-      const res = await fetch('http://localhost:4000/scheduler/slots', {
+      const res = await fetch(`http://localhost:${API_PORT}/scheduler/slots`, {
         method: 'DELETE',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include'
@@ -1955,12 +1957,14 @@ function StatusManagerModal({ isOpen, onClose, statuses, onAddStatus, onRemoveSt
   );
 }
 
-function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) {
+function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue, country, developingCountries }) {
   const COMP_KEYS = ['baseSalary', 'allowances', 'bonus', 'commission', 'rsu'];
   const emptyFields = Object.fromEntries(COMP_KEYS.map(k => [k, '']));
   const [fields, setFields] = useState(emptyFields);
   const [totalOverride, setTotalOverride] = useState('');
   const [manualTotal, setManualTotal] = useState(false);
+  const [showLowSalaryWarning, setShowLowSalaryWarning] = useState(false);
+  const [pendingSaveValue, setPendingSaveValue] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -1968,6 +1972,8 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
       const existing = initialValue != null && initialValue !== '' ? String(initialValue) : '';
       setTotalOverride(existing);
       setManualTotal(existing !== '');
+      setShowLowSalaryWarning(false);
+      setPendingSaveValue(null);
     }
   }, [isOpen, initialValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1987,9 +1993,26 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
     setTotalOverride(value);
   };
 
+  const _isDevCountry = () => {
+    if (!country) return false;
+    const c = country.trim().toLowerCase();
+    return Array.isArray(developingCountries) && developingCountries.some(d => d.toLowerCase() === c);
+  };
+
   const handleSave = () => {
     const finalValue = manualTotal ? totalOverride : (autoTotal === 0 ? '' : String(autoTotal));
+    const numericValue = parseFloat(finalValue) || 0;
+    if (numericValue > 0 && numericValue < 20000 && !_isDevCountry()) {
+      setPendingSaveValue(finalValue);
+      setShowLowSalaryWarning(true);
+      return;
+    }
     onSave(finalValue);
+    onClose();
+  };
+
+  const handleConfirmLowSalary = () => {
+    onSave(pendingSaveValue);
     onClose();
   };
 
@@ -2044,6 +2067,15 @@ function CompensationCalculatorModal({ isOpen, onClose, onSave, initialValue }) 
             >Reset to auto-sum</button>
           )}
         </div>
+        {showLowSalaryWarning && (
+          <div style={{ margin: '12px 0', padding: '10px 14px', borderRadius: 8, background: '#fff7ed', border: '1px solid #fb923c', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#c2410c' }}>⚠ This looks low for annual salary. Please confirm.</div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button onClick={() => setShowLowSalaryWarning(false)} className="btn-secondary" style={{ padding: '5px 14px', fontSize: 12 }}>Go Back</button>
+              <button onClick={handleConfirmLowSalary} className="btn-primary" style={{ padding: '5px 14px', fontSize: 12, background: '#ea580c', border: 'none' }}>Yes, Confirm</button>
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
           <button onClick={onClose} className="btn-secondary" style={{ padding: '7px 18px', fontSize: 13 }}>Cancel</button>
           <button onClick={handleSave} className="btn-primary" style={{ padding: '7px 18px', fontSize: 13 }}>Save</button>
@@ -2136,6 +2168,13 @@ function CandidatesTable({
   appTokenCost = _APP_ANALYTIC_TOKEN_COST, // Dynamic analytic token cost from admin config
   dockOutRef, // ref that App sets so it can trigger executeDockOut on session timeout
   onRefresh, // callback to refresh candidate list from server
+  hasCustomLlm = false, // Skip token deduction when a custom LLM provider (Option A) is active
+  hasCustomEmailVerif = false, // Skip token deduction when custom email verif keys are active
+  accountTokens = 0, // Total account token balance from parent App
+  manualParentOverrides = {}, // Current org chart manual parent overrides (for auto-save before dock-out)
+  setManualParentOverrides, // Setter to update manualParentOverrides (used by dock-in restore)
+  lastSavedOverrides = {}, // Last persisted overrides (to detect unsaved changes before dock-out)
+  setLastSavedOverrides, // Setter to update lastSavedOverrides after auto-save
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -2198,7 +2237,7 @@ function CandidatesTable({
     if (!bulletinAiPrompt.trim()) return;
     setBulletinAiLoading(true);
     try {
-      const res = await fetch('http://localhost:4000/candidates/bulletin-draft', {
+      const res = await fetch(`http://localhost:${API_PORT}/candidates/bulletin-draft`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ prompt: bulletinAiPrompt, context }),
@@ -2273,6 +2312,8 @@ function CandidatesTable({
   // AI Comp State
   const [aiCompLoading, setAiCompLoading] = useState(false);
   const [aiCompMessage, setAiCompMessage] = useState('');
+  // Crowd verified tags: { [id]: { count, avg } } — populated when crowd comp is available
+  const [compVerified, setCompVerified] = useState({});
   
   // Checkbox Rename Workflow State
   const [renameCheckboxId, setRenameCheckboxId] = useState(null);
@@ -2285,6 +2326,9 @@ function CandidatesTable({
   const [compModalOpen, setCompModalOpen] = useState(false);
   const [compModalCandidateId, setCompModalCandidateId] = useState(null);
   const [compModalInitialValue, setCompModalInitialValue] = useState('');
+  const [compModalCountry, setCompModalCountry] = useState('');
+  const [compVerifiedIds, setCompVerifiedIds] = useState(new Set());
+  const [developingCountries, setDevelopingCountries] = useState([]);
 
   // Email modal & SMTP state
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -2310,7 +2354,7 @@ function CandidatesTable({
       setSmtpConfig(user.smtpConfig);
       return;
     }
-    fetch('http://localhost:4000/smtp-config', { credentials: 'include' })
+    fetch(`http://localhost:${API_PORT}/smtp-config`, { credentials: 'include' })
       .then(res => res.ok ? res.json() : null)
       .then(data => {
         if (data && data.ok && data.config) {
@@ -2378,6 +2422,22 @@ function CandidatesTable({
 
   useEffect(() => { setSelectedIds([]); }, [page]);
 
+  // Load compensation verified IDs on mount
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/compensation-verified`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+      .catch(() => {});
+  }, []); // on mount only
+
+  // Load developing countries list on mount (used by compensation calculator low-salary check)
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/developing-countries`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => { if (Array.isArray(data)) setDevelopingCountries(data); })
+      .catch(() => {});
+  }, []); // on mount only
+
   // Helper: remove a set of IDs from the newCandidateIds Set and persist to localStorage
   const dismissNewBadges = ids => {
     setNewCandidateIds(prev => { const n = new Set(prev); ids.forEach(id => n.delete(id)); return n; });
@@ -2392,7 +2452,7 @@ function CandidatesTable({
   // Fetch analytic rate-limit config (cv limit + batch size) whenever user opens the wizard with analytic mode
   useEffect(() => {
     if (!user) return;
-    fetch('http://localhost:4000/user/rate-limits', { credentials: 'include' })
+    fetch(`http://localhost:${API_PORT}/user/rate-limits`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data || !data.limits) return;
@@ -2401,6 +2461,26 @@ function CandidatesTable({
         setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
       })
       .catch(() => { /* keep defaults */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // Re-fetch analytic rate-limit config when admin changes it via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed' || !user) return;
+      fetch(`http://localhost:${API_PORT}/user/rate-limits`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data || !data.limits) return;
+          const cvLimit = data.limits.analytic_cv_limit ? data.limits.analytic_cv_limit.requests : 10;
+          const batchSize = data.limits.analytic_batch_size ? data.limits.analytic_batch_size.requests : 3;
+          setDockInAnalyticLimits({ cvLimit: Math.max(1, cvLimit), batchSize: Math.max(1, batchSize) });
+        })
+        .catch(() => {});
+    };
+    return () => ch.close();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -2523,7 +2603,7 @@ function CandidatesTable({
       // Load the user's ML profile from disk so Sync Entries can apply highest-confidence values
       let mlProfile = null;
       try {
-        const mlRes = await fetch('http://localhost:4000/candidates/ml-profile', {
+        const mlRes = await fetch(`http://localhost:${API_PORT}/candidates/ml-profile`, {
           credentials: 'include',
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
@@ -2533,7 +2613,7 @@ function CandidatesTable({
         }
       } catch (_) { /* non-fatal — proceed without ML profile */ }
 
-      const res = await fetch('http://localhost:4000/verify-data', {
+      const res = await fetch(`http://localhost:${API_PORT}/verify-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ rows, ...(mlProfile ? { mlProfile } : {}) }),
@@ -2596,7 +2676,7 @@ function CandidatesTable({
         })
         .filter(u => Object.keys(u).length > 1);
       if (bulkUpdatePayload.length) {
-        fetch('http://localhost:4000/candidates/bulk-update', {
+        fetch(`http://localhost:${API_PORT}/candidates/bulk-update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           body: JSON.stringify({ rows: bulkUpdatePayload }),
@@ -2621,39 +2701,69 @@ function CandidatesTable({
         ? { selectAll: true }
         : { ids: selectedIds };
 
-      const res = await fetch('http://localhost:4000/ai-comp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify(body),
-        credentials: 'include'
-      });
-
-      const payload = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        throw new Error(payload?.error || 'AI Comp request failed.');
-      }
-
-      const updatedRows = Array.isArray(payload?.rows) ? payload.rows : [];
-      if (updatedRows.length > 0) {
-        setEditRows(prev => {
-          const next = { ...prev };
-          updatedRows.forEach(row => {
-            if (row?.id == null) return;
-            const entry = { ...(next[row.id] ?? {}) };
-            if (row.compensation != null) {
-              entry.compensation = row.compensation;
-            }
-            next[row.id] = entry;
-          });
-          return next;
+      // ── Step 1: try crowd compensation (Verified Compensation in ML_Master_Compensation) ──
+      let crowdMatchedIds = new Set();
+      try {
+        const crowdRes = await fetch(`http://localhost:${API_PORT}/crowd-comp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(body),
+          credentials: 'include'
         });
+        const crowdPayload = await crowdRes.json().catch(() => ({}));
+        const crowdRows = Array.isArray(crowdPayload?.rows) ? crowdPayload.rows : [];
+        if (crowdRows.length > 0) {
+          crowdMatchedIds = new Set(crowdRows.map(r => r.id));
+          setEditRows(prev => {
+            const next = { ...prev };
+            crowdRows.forEach(row => {
+              if (row?.id == null) return;
+              next[row.id] = { ...(next[row.id] ?? {}), compensation: row.compensation };
+            });
+            return next;
+          });
+          setCompVerified(prev => {
+            const next = { ...prev };
+            crowdRows.forEach(row => { next[String(row.id)] = { count: row.count, avg: row.compensation }; });
+            return next;
+          });
+        }
+      } catch (_) { /* crowd lookup failure is non-fatal; fall through to AI */ }
+
+      // ── Step 2: fall back to Gemini AI for records not matched by crowd ──
+      const unmatchedIds = selectedIds.filter(id => !crowdMatchedIds.has(id) && !crowdMatchedIds.has(Number(id)));
+      let aiMsg = '';
+      if (unmatchedIds.length > 0) {
+        const aiBody = allSelected && unmatchedIds.length === selectedIds.length ? body : { ids: unmatchedIds };
+        const res = await fetch(`http://localhost:${API_PORT}/ai-comp`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(aiBody),
+          credentials: 'include'
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload?.error || 'AI Comp request failed.');
+        const updatedRows = Array.isArray(payload?.rows) ? payload.rows : [];
+        if (updatedRows.length > 0) {
+          setEditRows(prev => {
+            const next = { ...prev };
+            updatedRows.forEach(row => {
+              if (row?.id == null) return;
+              const entry = { ...(next[row.id] ?? {}) };
+              if (row.compensation != null) entry.compensation = row.compensation;
+              next[row.id] = entry;
+            });
+            return next;
+          });
+        }
+        aiMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
       }
 
-      const msg = payload?.message || `AI Comp updated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
-      setAiCompMessage(msg);
+      const crowdMsg = crowdMatchedIds.size > 0 ? `${crowdMatchedIds.size} crowd-sourced` : '';
+      const combined = [crowdMsg, aiMsg].filter(Boolean).join(' · ');
+      setAiCompMessage(combined || 'Compensation updated.');
     } catch (err) {
-      setAiCompMessage(err.message || 'AI Comp failed.');
+      setAiCompMessage(err.message || 'Comp failed.');
     } finally {
       setAiCompLoading(false);
     }
@@ -2692,28 +2802,37 @@ function CandidatesTable({
         return;
       }
 
-      // Update the edit rows state
-      setEditRows(prev => ({
-        ...prev,
-        [renameCheckboxId]: {
-          ...(prev[renameCheckboxId] || {}),
-          [dbField]: renameValue.trim()
-        }
-      }));
+      // Apply to all selected IDs if multiple are selected, otherwise just the checked one
+      const idsToUpdate = selectedIds.length > 1 ? selectedIds : [renameCheckboxId];
 
-      // Save to database via onSave callback
+      // Update the edit rows state for all targeted IDs
+      setEditRows(prev => {
+        const updates = {};
+        for (const id of idsToUpdate) {
+          updates[id] = {
+            ...(prev[id] || {}),
+            [dbField]: renameValue.trim()
+          };
+        }
+        return { ...prev, ...updates };
+      });
+
+      // Save to database via onSave callback for all targeted IDs
       if (typeof onSave === 'function') {
-        const candidate = candidates.find(c => c.id === renameCheckboxId);
-        const payload = {
-          ...(candidate || {}),
-          ...(editRows[renameCheckboxId] || {}),
-          [dbField]: renameValue.trim()
-        };
-        await onSave(renameCheckboxId, payload);
+        for (const id of idsToUpdate) {
+          const candidate = candidates.find(c => c.id === id);
+          const payload = {
+            ...(candidate || {}),
+            ...(editRows[id] || {}),
+            [dbField]: renameValue.trim()
+          };
+          await onSave(id, payload);
+        }
       }
 
       // Show success message and clear rename UI after successful update
-      setRenameMessage(`Successfully updated ${renameCategory} to "${renameValue.trim()}"`);
+      const countMsg = idsToUpdate.length > 1 ? ` for ${idsToUpdate.length} records` : '';
+      setRenameMessage(`Successfully updated ${renameCategory} to "${renameValue.trim()}"${countMsg}`);
       setTimeout(() => {
         resetRenameState();
       }, 2000);
@@ -2948,9 +3067,10 @@ function CandidatesTable({
     return v;
   };
 
-  const openCompModal = (candidateId, value) => {
+  const openCompModal = (candidateId, value, country) => {
     setCompModalCandidateId(candidateId);
     setCompModalInitialValue(value);
+    setCompModalCountry(country || '');
     setCompModalOpen(true);
   };
 
@@ -3008,7 +3128,19 @@ function CandidatesTable({
                   <option value="Executive">Executive</option>
                 </select>
               : f.key === 'compensation'
-              ? <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onFocus={() => { dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') openCompModal(c.id, displayValue); }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', cursor: 'pointer' }} />
+              ? <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: 2 }}>
+                  <div style={{ position: 'relative', width: '100%' }}>
+                    <input type="text" inputMode="decimal" readOnly value={displayValue} onClick={() => { const _country = editRows[c.id]?.country ?? c.country ?? ''; dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue, _country); }} onFocus={() => { const _country = editRows[c.id]?.country ?? c.country ?? ''; dismissNewBadges([String(c.id)]); openCompModal(c.id, displayValue, _country); }} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { const _country = editRows[c.id]?.country ?? c.country ?? ''; openCompModal(c.id, displayValue, _country); } }} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: compVerifiedIds.has(String(c.id)) ? 'rgba(0,180,216,0.07)' : '#ffffff', cursor: 'pointer' }} />
+                    {compVerifiedIds.has(String(c.id)) && (
+                      <span title="Compensation verified" style={{ position: 'absolute', top: 3, right: 4, fontSize: 10, fontWeight: 700, color: '#00B4D8', pointerEvents: 'none' }}>✓</span>
+                    )}
+                  </div>
+                  {compVerified[String(c.id)] && (
+                    <span title={`Verified: average of Range Min / Range Max from ML_Crowd_Compensation`} style={{ display: 'inline-block', alignSelf: 'flex-start', fontSize: 9, fontWeight: 800, letterSpacing: '0.5px', padding: '1px 5px', borderRadius: 6, background: 'var(--robins-egg, #6deaf9)', color: '#073679', textTransform: 'uppercase', lineHeight: '14px', userSelect: 'none' }}>
+                      {compVerified[String(c.id)].count > 0 ? `${compVerified[String(c.id)].count} verified` : 'verified'}
+                    </span>
+                  )}
+                </div>
               : f.key === 'geographic'
               ? <select value={displayValue || ''} onChange={e => handleEditChange(c.id, f.key, e.target.value)} onFocus={() => dismissNewBadges([String(c.id)])} style={{ width: '100%', boxSizing: 'border-box', padding: '4px 8px', font: 'inherit', fontSize: 12, background: '#ffffff', border: '1px solid var(--desired-dawn)', borderRadius: 6 }}>
                   <option value="">-- Select Region --</option>
@@ -3244,7 +3376,7 @@ function CandidatesTable({
             .filter(n => Number.isFinite(n) && n > 0)
         : [];
       if (analyticMode) { setDockInAnalyticProgress('Deploying candidates to database…'); setDockInAnalyticPct(8); }
-      fetch('http://localhost:4000/candidates/bulk', {
+      fetch(`http://localhost:${API_PORT}/candidates/bulk`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({
@@ -3274,7 +3406,7 @@ function CandidatesTable({
             if (dockInSelectedPair && dockInSelectedPair.roleTag) {
               formData.append('role_tag', dockInSelectedPair.roleTag);
             }
-            const cvUploadRes = await fetch('http://localhost:8091/process/upload_multiple_cvs', {
+            const cvUploadRes = await fetch(`http://localhost:${LOGIN_PORT}/process/upload_multiple_cvs`, {
               method: 'POST',
               credentials: 'include',
               body: formData,
@@ -3353,7 +3485,7 @@ function CandidatesTable({
                 })
               : criteriaFilesToWrite;
             if (userCriteriaFiles.length > 0) {
-              fetch('http://localhost:4000/candidates/dock-in-criteria', {
+              fetch(`http://localhost:${API_PORT}/candidates/dock-in-criteria`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3378,8 +3510,8 @@ function CandidatesTable({
             let content;
             try { content = JSON.parse(rawJson); } catch (_) { continue; }
             const endpoint = stateSheetName === 'orgchart'
-              ? 'http://localhost:4000/orgchart/save-state'
-              : 'http://localhost:4000/dashboard/save-state';
+              ? `http://localhost:${API_PORT}/orgchart/save-state`
+              : `http://localhost:${API_PORT}/dashboard/save-state`;
             const body = stateSheetName === 'orgchart'
               ? { overrides: content.overrides, candidates: content.candidates }
               : { dashboard: content.dashboard, slide: content.slide };
@@ -3391,6 +3523,15 @@ function CandidatesTable({
             }).then(r => {
               if (r.ok) {
                 console.info(`[Dock In] Restored ${stateSheetName} state`);
+                if (stateSheetName === 'orgchart') {
+                  // Sync restored overrides into localStorage and React state so the
+                  // Org Chart tab immediately shows the previously saved layout without
+                  // requiring a page reload.
+                  const restoredOverrides = content.overrides || {};
+                  try { localStorage.setItem('orgChartManualOverrides', JSON.stringify(restoredOverrides)); } catch (lsErr) { console.warn('[Dock In] Could not update orgChartManualOverrides in localStorage:', lsErr && lsErr.message); }
+                  if (setManualParentOverrides) setManualParentOverrides(restoredOverrides);
+                  if (setLastSavedOverrides) setLastSavedOverrides(restoredOverrides);
+                }
                 if (stateSheetName === 'dashboard') {
                   // Notify LookerDashboard.html (if open in another tab) that
                   // dashboard_username.json has been regenerated so it can reload
@@ -3434,7 +3575,7 @@ function CandidatesTable({
               mlContent = Object.keys(obj).length ? obj : null;
             }
             if (mlContent != null) {
-              fetch('http://localhost:4000/candidates/ml-restore', {
+              fetch(`http://localhost:${API_PORT}/candidates/ml-restore`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3482,7 +3623,7 @@ function CandidatesTable({
               setDockInAnalyticProgress(`Assessing ${batch.length} record(s)${batchLabel}…`);
               setDockInAnalyticPct(ASSESS_BASE + Math.round((totalProcessed / totalCands) * ASSESS_RANGE));
               try {
-                const bulkRes = await fetch('http://localhost:8091/process/bulk_assess', {
+                const bulkRes = await fetch(`http://localhost:${LOGIN_PORT}/process/bulk_assess`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   credentials: 'include',
@@ -3515,7 +3656,7 @@ function CandidatesTable({
                       const settle = () => { if (!completed) { completed = true; resolve(); } };
 
                       // ── SSE: real-time progress display only (no completion logic) ──
-                      const sseUrl = `http://localhost:8091/process/bulk_assess_stream/${jobId}`;
+                      const sseUrl = `http://localhost:${LOGIN_PORT}/process/bulk_assess_stream/${jobId}`;
                       let eventSource = null;
                       try {
                         eventSource = new EventSource(sseUrl);
@@ -3560,7 +3701,7 @@ function CandidatesTable({
                           return;
                         }
                         try {
-                          const statusRes = await fetch(`http://localhost:8091/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
+                          const statusRes = await fetch(`http://localhost:${LOGIN_PORT}/process/bulk_assess_status/${jobId}`, { credentials: 'include' });
                           if (statusRes.ok) {
                             const statusData = await statusRes.json();
                             const batchProcessed = statusData.processed || 0;
@@ -3599,11 +3740,11 @@ function CandidatesTable({
           // single-candidate assessments don't appear as "no loading animation".
           await new Promise(r => setTimeout(r, 2000));
           // Deduct 1 token per eligible new record once assessment is complete.
-          // Skip deduction for BYOK users (token deduction disabled except for Verify Selected).
+          // Skip deduction for BYOK users, when a custom LLM provider is active, or when custom email verif keys are present.
           const tokenCost = eligibleForAnalysis.length;
-          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok') {
+          if (tokenCost > 0 && (user?.useraccess || '').toLowerCase() !== 'byok' && !hasCustomLlm && !hasCustomEmailVerif) {
             try {
-              const tokenRes = await fetch('http://localhost:4000/candidates/token-deduct', {
+              const tokenRes = await fetch(`http://localhost:${API_PORT}/candidates/token-deduct`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
@@ -3841,7 +3982,7 @@ function CandidatesTable({
         const enrichedPairs = await Promise.all(roleTagPairs.map(async pair => {
           if (!pair.roleTag) return pair;
           try {
-            const r = await fetch(`http://localhost:8091/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
+            const r = await fetch(`http://localhost:${LOGIN_PORT}/process/role_skills?role_tag=${encodeURIComponent(pair.roleTag)}`, {
               credentials: 'include',
             });
             if (r.ok) {
@@ -3887,7 +4028,7 @@ function CandidatesTable({
     // If bulletin is ON and user has finalized selections, write bulletin JSON first
     if (dockOutBulletinOn && bulletinFinalized) {
       try {
-        const bRes = await fetch('http://localhost:4000/candidates/bulletin-export', {
+        const bRes = await fetch(`http://localhost:${API_PORT}/candidates/bulletin-export`, {
           method: 'POST',
           headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
           credentials: 'include',
@@ -3904,7 +4045,7 @@ function CandidatesTable({
     // Fetch Search Criteria files BEFORE XLS generation so they can be added as sheets
     let criteriaSheets = [];
     try {
-      const cRes = await fetch('http://localhost:4000/candidates/dock-out-criteria', {
+      const cRes = await fetch(`http://localhost:${API_PORT}/candidates/dock-out-criteria`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3919,10 +4060,32 @@ function CandidatesTable({
     } catch (cErr) {
       console.warn('[Dock Out] Could not load criteria files:', cErr);
     }
+    // Auto-save org chart manual overrides so DB Dock Out XLS captures any unsaved drag-and-drop changes
+    if (JSON.stringify(manualParentOverrides) !== JSON.stringify(lastSavedOverrides)) {
+      try {
+        const candidateSnapshot = (candidates || []).map(c => ({
+          id: c.id, name: c.name, jobtitle: c.jobtitle, company: c.company,
+          seniority: c.seniority, jobfamily: c.jobfamily
+        }));
+        const cleaned = Object.fromEntries(
+          Object.entries(manualParentOverrides || {}).filter(([, v]) => v != null)
+        );
+        await fetch(`http://localhost:${API_PORT}/orgchart/save-state`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({ overrides: cleaned, candidates: candidateSnapshot })
+        });
+        setLastSavedOverrides(cleaned);
+        localStorage.setItem('orgChartManualOverrides', JSON.stringify(cleaned));
+      } catch (ocSaveErr) {
+        console.warn('[Dock Out] Could not auto-save org chart state:', ocSaveErr);
+      }
+    }
     // Fetch orgchart + dashboard save-state so they can be embedded in the XLS
     let orgchartStateData = null;
     try {
-      const ocRes = await fetch('http://localhost:4000/orgchart/load-state', {
+      const ocRes = await fetch(`http://localhost:${API_PORT}/orgchart/load-state`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3944,7 +4107,7 @@ function CandidatesTable({
         // Brief pause to allow LookerDashboard.html to complete its save-state fetch.
         await new Promise(r => setTimeout(r, 300));
       } catch (_) {}
-      const dsRes = await fetch('http://localhost:4000/dashboard/load-state', {
+      const dsRes = await fetch(`http://localhost:${API_PORT}/dashboard/load-state`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -3962,7 +4125,7 @@ function CandidatesTable({
     // the DB Copy sheet.
     let freshExportCandidates = null;
     try {
-      const freshRes = await fetch('http://localhost:4000/candidates', { credentials: 'include' });
+      const freshRes = await fetch(`http://localhost:${API_PORT}/candidates`, { credentials: 'include' });
       if (freshRes.ok) {
         const freshRaw = await freshRes.json();
         freshExportCandidates = Array.isArray(freshRaw) ? freshRaw : null;
@@ -3974,7 +4137,7 @@ function CandidatesTable({
     // as a visible "ML" worksheet. This must happen before handleDbPortExport.
     let mlSummaryData = null;
     try {
-      const mlRes = await fetch('http://localhost:4000/candidates/ml-summary', {
+      const mlRes = await fetch(`http://localhost:${API_PORT}/candidates/ml-summary`, {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
@@ -4002,7 +4165,21 @@ function CandidatesTable({
       localStorage.removeItem('orgChartManualOverrides');
       localStorage.removeItem('dismissedNewCandidateIds');
     } catch (cacheErr) { console.warn('[DB Dock Out] Failed to clear cache:', cacheErr); }
-    fetch('http://localhost:4000/candidates/clear-user', {
+    // Clear SourcingVerify.html session caches. The reload signal (sv_dock_out_signal) is sent
+    // only after the DB clear below so that SourcingVerify.html reloads against an empty DB
+    // and the Action column correctly resets to 'Assess' (not 'View').
+    // Use a wildcard sweep so any future sv_* keys are automatically caught.
+    try {
+      const svKeys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('sv_')) svKeys.push(k);
+      }
+      svKeys.forEach(k => { try { localStorage.removeItem(k); } catch(_) {} });
+      // assessmentState is not sv_-prefixed but holds per-URL completion data
+      try { localStorage.removeItem('assessmentState'); } catch(_) {}
+    } catch (svErr) { console.warn('[DB Dock Out] Failed to clear SourcingVerify session:', svErr); }
+    fetch(`http://localhost:${API_PORT}/candidates/clear-user`, {
       method: 'DELETE',
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
       credentials: 'include',
@@ -4010,7 +4187,13 @@ function CandidatesTable({
     .then(res => res.ok ? res.json() : Promise.reject())
     .then(() => { onDockIn && onDockIn(); })
     .catch(err => { console.warn('[DB Dock Out] Clear-user failed (export completed):', err); /* non-fatal: export already happened */ })
-    .finally(() => { setDockOutClearing(false); });
+    .finally(() => {
+      // Signal SourcingVerify.html to reload now that the DB has been cleared (or the
+      // clear attempt has completed). This ordering ensures the page reloads against an
+      // empty database so the Action column shows 'Assess' instead of 'View'.
+      try { localStorage.setItem('sv_dock_out_signal', String(Date.now())); } catch(_) {}
+      setDockOutClearing(false);
+    });
   };
 
   const handleDockOut = () => {
@@ -4036,7 +4219,7 @@ function CandidatesTable({
     if (next) {
       localStorage.setItem('dockOutBulletinOn', '1');
       setBulletinLoading(true);
-      fetch('http://localhost:4000/candidates/bulletin-preview', {
+      fetch(`http://localhost:${API_PORT}/candidates/bulletin-preview`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       })
@@ -4096,7 +4279,7 @@ function CandidatesTable({
     // This key is used as the worksheet protection password for all non-candidate sheets.
     let wsProtectHash = '0000';
     try {
-      const pkRes = await fetch('http://localhost:4000/candidates/dock-protection-key', {
+      const pkRes = await fetch(`http://localhost:${API_PORT}/candidates/dock-protection-key`, {
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'include',
       });
@@ -4787,11 +4970,11 @@ criteriaSheets.map((cf, idx) => {
             <button
               onClick={handleAiComp}
               disabled={aiCompLoading || dockInUploading || dockOutClearing}
-              title="Forecast compensation in USD based on individual background. This is an AI prediction — please cross‑check before use."
+              title="Compensation in USD, generated via AI or Crowd. Crowd data shows a verified tag; AI data is reference only and must be cross‑checked."
               className="btn-primary"
               style={{ padding: '8px 16px' }}
             >
-              {aiCompLoading ? 'Estimating...' : 'AI Comp'}
+              {aiCompLoading ? 'Estimating...' : 'Comp'}
             </button>
           )}
 
@@ -4906,13 +5089,27 @@ criteriaSheets.map((cf, idx) => {
               </button>
             )}
           </div>
-          {dockInError && <div style={{ color: 'var(--danger)', fontSize: 13, marginLeft: 4 }}>{dockInError}</div>}
-          
-          {deleteError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{deleteError}</div>}
-          {saveError && <div style={{ color: 'var(--danger)', fontSize: 14 }}>{saveError}</div>}
-          {saveMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{saveMessage}</div>}
-          {syncMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{syncMessage}</div>}
-          {aiCompMessage && <div style={{ color: 'var(--success)', fontSize: 14 }}>{aiCompMessage}</div>}
+        </div>
+
+        {/* Status Toolbar — styled to match SourcingVerify metrics bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10, flexWrap: 'wrap', padding: '10px 14px', background: '#ffffff', border: '1px solid var(--desired-dawn, #d8d8d8)', borderRadius: 'var(--radius)', boxShadow: '0 2px 8px rgba(7,54,121,0.06)' }}>
+          {/* Token metrics box */}
+          {!hasCustomEmailVerif && (
+            <div className="metrics" style={{ background: 'rgba(109,234,249,0.08)', border: '1px solid var(--robins-egg, #6deaf9)' }}>
+              <span className="metric"><strong style={{ color: 'var(--azure-dragon, #073679)' }}>Account Token:</strong> {accountTokens}</span>
+              <span className="metric"><strong style={{ color: 'var(--azure-dragon, #073679)' }}>Token Left:</strong> <span style={{ color: tokensLeft < 5 ? 'var(--danger)' : 'inherit' }}>{tokensLeft}</span></span>
+            </div>
+          )}
+          {/* Status messages */}
+          {dockInError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{dockInError}</span>}
+          {deleteError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{deleteError}</span>}
+          {saveError && <span style={{ color: 'var(--danger)', fontSize: 13 }}>{saveError}</span>}
+          {saveMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{saveMessage}</span>}
+          {syncMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{syncMessage}</span>}
+          {aiCompMessage && <span style={{ color: 'var(--success)', fontSize: 13 }}>{aiCompMessage}</span>}
+          {!dockInError && !deleteError && !saveError && !saveMessage && !syncMessage && !aiCompMessage && (
+            <span style={{ fontSize: 13, color: 'var(--argent)' }}>Ready</span>
+          )}
         </div>
 
         {/* Checkbox Rename Workflow UI */}
@@ -4929,7 +5126,7 @@ criteriaSheets.map((cf, idx) => {
             flexWrap: 'wrap'
           }}>
             <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--black-beauty)' }}>
-              Rename field for selected record:
+              Rename field for {selectedIds.length > 1 ? `${selectedIds.length} selected records` : 'selected record'}:
             </span>
             
             <select
@@ -5215,7 +5412,7 @@ criteriaSheets.map((cf, idx) => {
           setSmtpConfig(cfg);
           setSmtpModalOpen(false);
           // Persist to server so config survives page reloads
-          fetch('http://localhost:4000/smtp-config', {
+          fetch(`http://localhost:${API_PORT}/smtp-config`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'include',
@@ -5228,8 +5425,22 @@ criteriaSheets.map((cf, idx) => {
         isOpen={compModalOpen}
         onClose={() => setCompModalOpen(false)}
         initialValue={compModalInitialValue}
+        country={compModalCountry}
+        developingCountries={developingCountries}
         onSave={(total) => {
-          if (compModalCandidateId != null) handleEditChange(compModalCandidateId, 'compensation', total);
+          if (compModalCandidateId != null) {
+            handleEditChange(compModalCandidateId, 'compensation', total);
+            // Tag the saved compensation as verified
+            fetch(`http://localhost:${API_PORT}/save-compensation-verified`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              credentials: 'include',
+              body: JSON.stringify({ candidateId: compModalCandidateId }),
+            })
+              .then(r => r.ok ? r.json() : null)
+              .then(data => { if (data && Array.isArray(data.verifiedIds)) setCompVerifiedIds(new Set(data.verifiedIds)); })
+              .catch(() => {});
+          }
         }}
       />
 
@@ -6080,7 +6291,7 @@ criteriaSheets.map((cf, idx) => {
                           setBulletinImageGalleryOpen(true);
                           if (bulletinImageGallery.length === 0) {
                             setBulletinImageGalleryLoading(true);
-                            fetch('http://localhost:4000/bulletin/images', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                            fetch(`http://localhost:${API_PORT}/bulletin/images`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
                               .then(r => r.json())
                               .then(d => setBulletinImageGallery(d.images || []))
                               .catch(() => setBulletinImageGallery([]))
@@ -6129,7 +6340,7 @@ criteriaSheets.map((cf, idx) => {
                                     key={fname}
                                     onClick={() => {
                                       // Fetch the image and convert to base64
-                                      fetch(`http://localhost:4000/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
+                                      fetch(`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
                                         .then(r => r.blob())
                                         .then(blob => {
                                           const reader = new FileReader();
@@ -6148,7 +6359,7 @@ criteriaSheets.map((cf, idx) => {
                                     }}
                                   >
                                     <img
-                                      src={`http://localhost:4000/bulletin/image/${encodeURIComponent(fname)}`}
+                                      src={`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`}
                                       alt={fname}
                                       style={{ width: '100%', height: 70, objectFit: 'cover', display: 'block' }}
                                       title={fname}
@@ -6826,14 +7037,22 @@ function OrgChartDisplay({
       id: c.id, name: c.name, jobtitle: c.jobtitle, company: c.company,
       seniority: c.seniority, jobfamily: c.jobfamily
     }));
-    fetch('http://localhost:4000/orgchart/save-state', {
+    fetch(`http://localhost:${API_PORT}/orgchart/save-state`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
       credentials: 'include',
       body: JSON.stringify({ overrides: cleaned, candidates: candidateSnapshot })
     })
       .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(d)))
-      .then(d => console.info('[Org Chart] State saved to server:', d.file))
+      .then(d => {
+        console.info('[Org Chart] State saved to server:', d.file);
+        // Notify LookerDashboard.html (if open) so its org hierarchy tile re-renders
+        try {
+          const _bc = new BroadcastChannel('fioe_orgchart_state');
+          _bc.postMessage({ type: 'orgchart-saved' });
+          _bc.close();
+        } catch (_) {}
+      })
       .catch(err => console.error('[Org Chart] Failed to save state to server:', err));
   };
   const handleCancelLayout=()=>{ setManualParentOverrides(lastSavedOverrides||{}); };
@@ -7197,7 +7416,7 @@ function CandidateUpload({ onUpload }) {
       });
       // ─────────────────────────────────────────────────────────────────────────
 
-      fetch('http://localhost:4000/candidates/bulk', {
+      fetch(`http://localhost:${API_PORT}/candidates/bulk`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ candidates }),
@@ -7258,7 +7477,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
 
   return (
     <nav className="nav-sidebar" aria-label="Main navigation">
-      <a href="http://localhost:3000/" className="nav-sidebar__brand">
+      <a href="/" className="nav-sidebar__brand">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 182 70" className="nav-sidebar__logo" role="img" aria-label="FIOE">
           <defs>
             <linearGradient id="fioe-cg" x1="0" y1="0" x2="1" y2="0">
@@ -7323,15 +7542,15 @@ function NavSidebar({ activePage = 'candidate-management' }) {
             </svg>
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: loginExpanded ? '300px' : undefined }}>
-            <li><a href="http://localhost:3000/" className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
-            <li><a href="http://localhost:8091/sales_rep_register.html" className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
+            <li><a href="/" className="nav-sidebar__submenu-link" role="menuitem">Subscriber</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/sales_rep_register.html`} className="nav-sidebar__submenu-link" role="menuitem">Staff</a></li>
           </ul>
         </li>
 
         <li className="nav-sidebar__divider"></li>
 
         <li className="nav-sidebar__item">
-          <a href="http://localhost:3000/" className="nav-sidebar__link">
+          <a href="/" className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
@@ -7369,10 +7588,10 @@ function NavSidebar({ activePage = 'candidate-management' }) {
             </svg>
           </span>
           <ul className="nav-sidebar__submenu" role="menu" style={{ maxHeight: servicesExpanded ? '300px' : undefined }}>
-            <li><a href="http://localhost:8091/AutoSourcing.html" className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
-            <li><a href="http://localhost:8091/SourcingVerify.html" className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
-            <li><a href="http://localhost:3000/" className={'nav-sidebar__submenu-link' + (activePage === 'candidate-management' ? ' active' : '')} role="menuitem">Candidate Management</a></li>
-            <li><a href="http://localhost:4000/LookerDashboard.html" className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/AutoSourcing.html`} className="nav-sidebar__submenu-link" role="menuitem">Autosourcing</a></li>
+            <li><a href={`http://localhost:${LOGIN_PORT}/SourcingVerify.html`} className="nav-sidebar__submenu-link" role="menuitem">Talent Evaluation</a></li>
+            <li><a href="/" className={'nav-sidebar__submenu-link' + (activePage === 'candidate-management' ? ' active' : '')} role="menuitem">Candidate Management</a></li>
+            <li><a href={`http://localhost:${API_PORT}/LookerDashboard.html`} className="nav-sidebar__submenu-link" role="menuitem">Consulting Dashboard</a></li>
           </ul>
         </li>
 
@@ -7388,7 +7607,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="http://localhost:8091/api_porting.html" className="nav-sidebar__link">
+          <a href={`http://localhost:${LOGIN_PORT}/api_porting.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/>
               <polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/>
@@ -7398,7 +7617,7 @@ function NavSidebar({ activePage = 'candidate-management' }) {
         </li>
 
         <li className="nav-sidebar__item">
-          <a href="http://localhost:4000/community.html" className="nav-sidebar__link">
+          <a href={`http://localhost:${API_PORT}/community.html`} className="nav-sidebar__link">
             <svg className="nav-sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
               <circle cx="9" cy="7" r="4"/>
@@ -7430,6 +7649,7 @@ export default function App() {
   // Dynamic token config — fetched from /token-config after login so JSX re-renders with live values.
   const [appTokenCost, setAppTokenCost] = useState(_APP_ANALYTIC_TOKEN_COST);
   const [appVerifiedDeduct, setAppVerifiedDeduct] = useState(_APP_VERIFIED_SELECTION_DEDUCT);
+  const [appContactGenDeduct, setAppContactGenDeduct] = useState(_APP_CONTACT_GEN_DEDUCT);
 
   // Candidates & main state
   const [candidates, setCandidates] = useState([]);
@@ -7475,9 +7695,15 @@ export default function App() {
   const [verifyModalEmail, setVerifyModalEmail] = useState('');
   const [tokenConfirmOpen, setTokenConfirmOpen] = useState(false);
   const [pendingVerifyEmail, setPendingVerifyEmail] = useState(null);
+  const [tokenContactGenConfirmOpen, setTokenContactGenConfirmOpen] = useState(false);
   // Email verification service selection
   const [emailVerifService, setEmailVerifService] = useState('default');
   const [availableEmailServices, setAvailableEmailServices] = useState([]);
+  // Verif Engine toggle: 'verify' = Verify Selected, 'generate' = Generate Email
+  const [verifEngineMode, setVerifEngineMode] = useState('verify');
+  // Generate Email provider selection
+  const [emailGenProvider, setEmailGenProvider] = useState('gemini');
+  const [availableContactGenServices, setAvailableContactGenServices] = useState([]);
   // State for calculating unmatched skills
   const [calculatingUnmatched, setCalculatingUnmatched] = useState(false);
   const [unmatchedCalculated, setUnmatchedCalculated] = useState({});  // Store by candidate ID
@@ -7503,21 +7729,54 @@ export default function App() {
   // Load available email verification services configured by admin.
   // Re-fetch whenever the Verif. Engine bar is expanded so freshly-configured
   // services (Neverbounce / ZeroBounce / Bouncer) appear without a page reload.
+  // Fetch admin-configured email verif services AND per-user service config so that
+  // api_porting.html Option A keys always appear in the Verif Engine dropdown.
+  // Using Promise.all ensures both sources are merged in one definitive list update,
+  // preventing the per-user service from being wiped when only admin services are fetched.
   const _fetchEmailVerifServices = () => {
-    fetch('http://localhost:4000/email-verif-services', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data && Array.isArray(data.services)) {
-          setAvailableEmailServices(data.services);
-          // Auto-select the first configured service when the user hasn't
-          // explicitly chosen one yet, so a newly-saved key is immediately active.
-          setEmailVerifService(prev => (prev === 'default' && data.services.length > 0) ? data.services[0] : prev);
+    Promise.all([
+      fetch(`http://localhost:${API_PORT}/email-verif-services`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`http://localhost:${API_PORT}/api/user-service-config/status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user email verif service (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        if (['neverbounce', 'zerobounce', 'bouncer'].includes(ep) && !svcs.includes(ep)) {
+          svcs.push(ep);
         }
-      })
-      .catch(() => {});
+      }
+      setAvailableEmailServices(svcs);
+      // Auto-select the first configured service when the user hasn't explicitly chosen one yet.
+      setEmailVerifService(prev => (prev === 'default' && svcs.length > 0) ? svcs[0] : prev);
+    }).catch(() => {});
   };
   useEffect(() => { _fetchEmailVerifServices(); }, []); // on mount
   useEffect(() => { if (verifBarExpanded) _fetchEmailVerifServices(); }, [verifBarExpanded]); // on bar open
+
+  // Load available contact generation services configured by admin AND per-user config.
+  // Same pattern as _fetchEmailVerifServices — merges both sources into one definitive list.
+  const _fetchContactGenServices = () => {
+    Promise.all([
+      fetch(`http://localhost:${API_PORT}/contact-gen-services`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`http://localhost:${API_PORT}/api/user-service-config/status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([adminData, svcData]) => {
+      const adminSvcs = (adminData && Array.isArray(adminData.services)) ? adminData.services : [];
+      const svcs = [...adminSvcs];
+      // Merge per-user contact gen provider (from api_porting.html Option A) if active
+      if (svcData && svcData.active && svcData.providers) {
+        const cgp = (svcData.providers.contact_gen || '').toLowerCase();
+        if (['contactout', 'apollo', 'rocketreach'].includes(cgp) && !svcs.includes(cgp)) {
+          svcs.push(cgp);
+          setEmailGenProvider(prev => prev === 'gemini' ? cgp : prev);
+        }
+      }
+      setAvailableContactGenServices(svcs);
+    }).catch(() => {});
+  };
+  useEffect(() => { _fetchContactGenServices(); }, []); // on mount
+  useEffect(() => { if (verifBarExpanded) _fetchContactGenServices(); }, [verifBarExpanded]); // on bar open
 
   // Refresh token cost/deduction config when user logs in so JSX renders live values.
   useEffect(() => {
@@ -7531,9 +7790,11 @@ export default function App() {
         // on the re-render triggered by the state setters below.
         if (typeof t.analytic_token_cost       === 'number') _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;
         if (typeof t.verified_selection_deduct === 'number') _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct;
+        if (typeof t.contact_gen_deduct        === 'number') _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;
         // Update React state so App()-owned JSX (verified selection popup etc.) re-renders.
         if (typeof t.analytic_token_cost       === 'number') setAppTokenCost(t.analytic_token_cost);
         if (typeof t.verified_selection_deduct === 'number') setAppVerifiedDeduct(t.verified_selection_deduct);
+        if (typeof t.contact_gen_deduct        === 'number') setAppContactGenDeduct(t.contact_gen_deduct);
       })
       .catch(() => {});
   }, [user]);
@@ -7604,6 +7865,11 @@ export default function App() {
   const [tokensLeft, setTokensLeft] = useState(0);
   const [hasCustomEmailVerif, setHasCustomEmailVerif] = useState(false);
   const [hasCustomLlm, setHasCustomLlm] = useState(false);
+  const [hasCustomContactGen, setHasCustomContactGen] = useState(false);
+  // Track the specific provider names so deduction bypass only applies when the
+  // currently selected service matches the user's own api_porting.html key.
+  const [customEmailVerifProvider, setCustomEmailVerifProvider] = useState('');
+  const [customContactGenProvider, setCustomContactGenProvider] = useState('');
 
   // Status Management State
   const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
@@ -7641,7 +7907,7 @@ export default function App() {
   // Fetch account tokens from login table when user logs in
   useEffect(() => {
     if (user && user.username) {
-      fetch('http://localhost:4000/user-tokens', { credentials: 'include' })
+      fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include' })
         .then(res => res.json())
         .then(data => {
           if (data.accountTokens !== undefined) {
@@ -7655,24 +7921,93 @@ export default function App() {
     }
   }, [user]);
 
-  // Fetch per-user service config to detect custom email verification activation
+  // Fetch per-user service config AND admin platform-level config to detect custom providers.
+  // Dropdown population (availableEmailServices / availableContactGenServices) is now handled
+  // by _fetchEmailVerifServices / _fetchContactGenServices which merge both admin and per-user
+  // sources atomically.  _refreshSvcConfig only updates the token deduction flags.
+  const _refreshSvcConfig = useCallback(() => {
+    if (!user || !user.username) return;
+    Promise.all([
+      fetch(`http://localhost:${API_PORT}/api/user-service-config/status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`http://localhost:${API_PORT}/api/platform-provider-status`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([svcData, platformData]) => {
+      // Per-user flags (from api_porting.html) — these control token deduction & visibility.
+      let userEmailVerif = false, userLlm = false, userContactGen = false;
+      if (svcData && svcData.active && svcData.providers) {
+        const ep = (svcData.providers.email_verif || '').toLowerCase();
+        userEmailVerif = ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer';
+        const lp = (svcData.providers.llm || '').toLowerCase();
+        userLlm = lp === 'openai' || lp === 'anthropic';
+        const cp = (svcData.providers.contact_gen || '').toLowerCase();
+        userContactGen = cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach';
+      }
+      // Admin platform flags (from admin_rate_limits.html) — detected so App.js
+      // can confirm it reads both config sources, but intentionally excluded from
+      // token logic.  Only per-user keys (api_porting.html) suppress deduction / hide UI.
+      const platEmailVerif = !!(platformData && platformData.email_verif_custom);
+      const platLlm = !!(platformData && platformData.llm_custom);
+      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s contactGen=%s | admin emailVerif=%s llm=%s',
+        userEmailVerif, userLlm, userContactGen, platEmailVerif, platLlm);
+      // Only per-user flags control token deduction and visibility
+      setHasCustomEmailVerif(userEmailVerif);
+      setHasCustomLlm(userLlm);
+      setHasCustomContactGen(userContactGen);
+      // Track specific provider names — deduction bypass only applies when the
+      // currently selected service matches the user's own provider.
+      if (svcData && svcData.active && svcData.providers) {
+        setCustomEmailVerifProvider((svcData.providers.email_verif || '').toLowerCase());
+        setCustomContactGenProvider((svcData.providers.contact_gen || '').toLowerCase());
+      } else {
+        setCustomEmailVerifProvider('');
+        setCustomContactGenProvider('');
+      }
+    }).catch(err => console.error('[ServiceConfig] refresh failed:', err));
+  }, [user]);
+
   useEffect(() => {
-    if (user && user.username) {
-      fetch('http://localhost:4000/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-        .then(res => res.ok ? res.json() : null)
-        .then(svcData => {
-          if (svcData && svcData.active && svcData.providers) {
-            const ep = (svcData.providers.email_verif || '').toLowerCase();
-            setHasCustomEmailVerif(ep === 'neverbounce' || ep === 'zerobounce' || ep === 'bouncer');
-            const lp = (svcData.providers.llm || '').toLowerCase();
-            setHasCustomLlm(lp === 'openai' || lp === 'anthropic');
-          } else {
-            setHasCustomEmailVerif(false);
-            setHasCustomLlm(false);
-          }
+    _refreshSvcConfig();
+    _fetchEmailVerifServices();
+    _fetchContactGenServices();
+    const onFocus = () => { _refreshSvcConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') { _refreshSvcConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); } };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    // Poll every 30 s so dynamic key changes in api_porting.html / admin_rate_limits.html
+    // propagate even when BroadcastChannel cannot cross origins (port 4000 → 3000).
+    const poll = setInterval(() => { _refreshSvcConfig(); _fetchEmailVerifServices(); _fetchContactGenServices(); }, 30000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(poll);
+    };
+  }, [_refreshSvcConfig]);
+
+  // Listen for config changes from admin_rate_limits.html / api_porting.html via BroadcastChannel
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const ch = new BroadcastChannel('fioe_api_config');
+    ch.onmessage = (evt) => {
+      if (!evt.data || evt.data.type !== 'api-config-changed') return;
+      // Re-fetch service config (custom email verif & LLM flags)
+      _refreshSvcConfig();
+      // Re-fetch email verification services list
+      if (typeof _fetchEmailVerifServices === 'function') _fetchEmailVerifServices();
+      // Re-fetch contact generation services list (ContactOut)
+      if (typeof _fetchContactGenServices === 'function') _fetchContactGenServices();
+      // Re-fetch token config
+      fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(r => r.ok ? r.json() : null)
+        .then(cfg => {
+          if (!cfg) return;
+          const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+          if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+          if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+          if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
         })
         .catch(() => {});
-    }
+    };
+    return () => ch.close();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const handleAddStatus = (newStat) => {
@@ -7724,7 +8059,7 @@ export default function App() {
         });
     };
 
-    fetch('http://localhost:4000/user/resolve', { credentials: 'include' })
+    fetch(`http://localhost:${API_PORT}/user/resolve`, { credentials: 'include' })
       .then(res => res.json())
       .then(data => {
         if (data.ok) {
@@ -7981,7 +8316,7 @@ export default function App() {
         const isExisting = Number.isInteger(numId) && numId > 0;
         if (isExisting) {
           // existing row -> update
-          const res = await fetch(`http://localhost:4000/candidates/${numId}`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates/${numId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify(partialData),
@@ -7996,7 +8331,7 @@ export default function App() {
           setEditRows(prev => ({ ...(prev||{}), [updated.id]: { ...updated, ...(prev?.[updated.id]||{}) } }));
         } else {
           // no numeric id -> create new process row
-          const res = await fetch(`http://localhost:4000/candidates`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             body: JSON.stringify(partialData),
@@ -8041,7 +8376,7 @@ export default function App() {
     if (!user) return;
     if (!silent) setLoading(true);
     try{
-      const res=await fetch('http://localhost:4000/candidates', { credentials: 'include' });
+      const res=await fetch(`http://localhost:${API_PORT}/candidates`, { credentials: 'include' });
       if (res.status === 401) {
         // Session cookie is missing or expired — clear stale client-side auth so
         clearClientAuthState();
@@ -8182,7 +8517,7 @@ export default function App() {
       return;
     }
     try{
-      const res=await fetch('http://localhost:4000/candidates/bulk-delete',{
+      const res=await fetch(`http://localhost:${API_PORT}/candidates/bulk-delete`,{
         method:'POST',
         headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
         body: JSON.stringify({ ids:numericIds }),
@@ -8209,7 +8544,7 @@ export default function App() {
     const isExisting = Number.isInteger(numId) && numId > 0;
     try{
       if (isExisting) {
-        const res=await fetch(`http://localhost:4000/candidates/${numId}`,{
+        const res=await fetch(`http://localhost:${API_PORT}/candidates/${numId}`,{
           method:'PUT',
           headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
           body: JSON.stringify(data),
@@ -8221,7 +8556,7 @@ export default function App() {
         setEditRows(prev => ({ ...(prev || {}), [updated.id]: { ...updated, ...(prev[updated.id] || {}) } }));
       } else {
         // Create new
-        const res=await fetch('http://localhost:4000/candidates',{
+        const res=await fetch(`http://localhost:${API_PORT}/candidates`,{
           method:'POST',
           headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
           body: JSON.stringify(data),
@@ -8268,10 +8603,269 @@ export default function App() {
 
   // Handler for generating emails for resume candidate
   const handleGenerateResumeEmails = async () => {
-    if (!resumeCandidate) return;
-    const { name, organisation, company, country, id } = resumeCandidate;
+    if (!resumeCandidate) return false;
+    const { name, organisation, company, country, id, linkedinurl } = resumeCandidate;
     const org = organisation || company;
-    
+
+    // ContactOut path – requires LinkedIn URL
+    if (emailGenProvider === 'contactout') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for ContactOut lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'contactout', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'ContactOut request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        // Map ContactOut fields into candidate
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        // Comment: combine github + personal_email
+        const commentParts = [];
+        if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+        if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          const newComment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          updates.comment = newComment;
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        // Add all returned emails (including work_email, personal_email) to the email list
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'ContactOut' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        // Summary message box
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ ContactOut API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('ContactOut error:', e);
+        alert('Failed to generate contacts via ContactOut.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    // Apollo path – requires LinkedIn URL
+    if (emailGenProvider === 'apollo') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for Apollo lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'apollo', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'Apollo request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        const updates = {};
+        if (data.email)         updates.email  = data.email;
+        if (data.mobile_phone)  updates.mobile = data.mobile_phone;
+        if (data.office_phone)  updates.office = data.office_phone;
+
+        // Put additional details from _details into the comment section
+        const commentParts = [];
+        const det = data._details || {};
+        if (det.name)                commentParts.push(`Name: ${det.name}`);
+        if (det.title)               commentParts.push(`Title: ${det.title}`);
+        if (det.organization_name)   commentParts.push(`Organization: ${det.organization_name}`);
+        if (det.linkedin_url)        commentParts.push(`LinkedIn: ${det.linkedin_url}`);
+        if (det.present_raw_address) commentParts.push(`Address: ${det.present_raw_address}`);
+        if (det.account_phone)       commentParts.push(`Account Phone: ${det.account_phone}`);
+        if (det.sanitized_phone)     commentParts.push(`Sanitized Phone: ${det.sanitized_phone}`);
+        if (det.email_status)        commentParts.push(`Email Status: ${det.email_status}`);
+        if (Array.isArray(det.phone_numbers) && det.phone_numbers.length > 0) {
+          det.phone_numbers.forEach(pn => {
+            if (pn.sanitized_number || pn.raw_number) {
+              commentParts.push(`Phone (${pn.type || 'unknown'}): ${pn.sanitized_number || pn.raw_number}`);
+            }
+          });
+        }
+        if (commentParts.length > 0) {
+          const existing = resumeCandidate.comment || '';
+          updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'Apollo' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : (data.email || '(not found)');
+        const summary = [
+          `✅ Apollo API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.mobile_phone ? `Mobile: ${data.mobile_phone}` : 'Mobile: (not found)',
+          data.office_phone ? `Office: ${data.office_phone}` : 'Office: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('Apollo error:', e);
+        alert('Failed to generate contacts via Apollo.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    if (emailGenProvider === 'rocketreach') {
+      if (!linkedinurl) {
+        alert('LinkedIn URL is required for RocketReach lookup. Please ensure this candidate has a LinkedIn profile URL.');
+        return;
+      }
+      setGeneratingEmails(true);
+      let _ok = false;
+      try {
+        const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ provider: 'rocketreach', linkedinurl }),
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || 'RocketReach request failed');
+          return;
+        }
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+
+        const updates = {};
+        if (data.email)          updates.email = data.email;
+        if (data.phone)          updates.mobile = data.phone;
+        if (data.work_email)     updates.office = data.work_email;
+        // Use LLM-structured comment if available, otherwise fall back to key fields
+        if (data.structured_comment) {
+          const existing = resumeCandidate.comment || '';
+          updates.comment = existing ? `${existing}\n\n${data.structured_comment}` : data.structured_comment;
+        } else {
+          const commentParts = [];
+          if (data.github)         commentParts.push(`GitHub: ${data.github}`);
+          if (data.personal_email) commentParts.push(`Personal Email: ${data.personal_email}`);
+          if (commentParts.length > 0) {
+            const existing = resumeCandidate.comment || '';
+            updates.comment = existing ? `${existing}\n${commentParts.join('\n')}` : commentParts.join('\n');
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          setResumeCandidate(prev => ({ ...prev, ...updates }));
+          saveCandidateDebounced(id, updates);
+        }
+
+        const allEmailsToAdd = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails
+          : [data.email, data.work_email, data.personal_email].filter(Boolean);
+        if (allEmailsToAdd.length > 0) {
+          setResumeEmailList(prev => {
+            const existing = new Set(prev.map(item => item.value));
+            const newEntries = allEmailsToAdd
+              .filter(e => e && !existing.has(e))
+              .map(e => ({ value: e, checked: false, confidence: 'RocketReach' }));
+            return newEntries.length > 0 ? [...prev, ...newEntries] : prev;
+          });
+        }
+
+        const allEmailsDisplay = data.all_emails && data.all_emails.length > 0
+          ? data.all_emails.join(', ')
+          : ([data.email, data.work_email, data.personal_email].filter(Boolean).join(', ') || '(not found)');
+        const summary = [
+          `✅ RocketReach API Response Summary`,
+          `──────────────────────────────`,
+          `Emails: ${allEmailsDisplay}`,
+          data.phone          ? `Mobile: ${data.phone}` : 'Mobile: (not found)',
+          data.work_email     ? `Office: ${data.work_email}` : 'Office: (not found)',
+          data.github         ? `GitHub: ${data.github}` : 'GitHub: (not found)',
+          data.personal_email ? `Personal Email: ${data.personal_email}` : 'Personal Email: (not found)',
+          `──────────────────────────────`,
+          Object.keys(updates).length > 0 ? 'Fields updated and saved.' : 'No contact details returned.',
+        ].filter(Boolean).join('\n');
+        alert(summary);
+        _ok = true;
+      } catch (e) {
+        console.error('RocketReach error:', e);
+        alert('Failed to generate contacts via RocketReach.');
+      } finally {
+        setGeneratingEmails(false);
+      }
+      return _ok;
+    }
+
+    // FIOE / LLM path – requires name + company
     if (!name || !org) {
       alert('Name and Company are required to generate emails.');
       return;
@@ -8280,10 +8874,10 @@ export default function App() {
     setGeneratingEmails(true);
 
     try {
-      const res = await fetch('http://localhost:4000/generate-email', {
+      const res = await fetch(`http://localhost:${API_PORT}/generate-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ name, company: org, country }),
+        body: JSON.stringify({ name, company: org, country, provider: emailGenProvider }),
         credentials: 'include'
       });
       if (!res.ok) throw new Error('Request failed');
@@ -8321,11 +8915,112 @@ export default function App() {
     }
   };
 
+  // Handler for Generate Email/Contacts button click — shows token confirmation for paid providers
+  const handleGenerateContactsClick = async () => {
+    // Gemini is free — no confirmation needed
+    if (emailGenProvider === 'gemini') {
+      handleGenerateResumeEmails();
+      return;
+    }
+    // User's own Option A contact gen keys — no popup, no deduction ONLY when the
+    // currently selected service matches the user's own provider from api_porting.html.
+    // On failure, alert the user and offer Gemini fallback with token deduction.
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (usingOwnContactGenKey) {
+      const succeeded = await handleGenerateResumeEmails();
+      if (!succeeded) {
+        // Fetch latest token balance for the fallback popup
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        // Re-fetch token config for deduction amount
+        let deductAmt = _APP_CONTACT_GEN_DEDUCT;
+        try {
+          const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r.ok) { const cfg = await r.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.contact_gen_deduct === 'number') { deductAmt = t.contact_gen_deduct; _APP_CONTACT_GEN_DEDUCT = deductAmt; setAppContactGenDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doFallback = window.confirm(
+          `Your ${emailGenProvider.charAt(0).toUpperCase() + emailGenProvider.slice(1)} API service failed.\n\n` +
+          `Falling back to FIOE will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed with FIOE?`
+        );
+        if (doFallback) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); return; }
+          // Temporarily switch to gemini, generate, and deduct
+          const origProvider = emailGenProvider;
+          setEmailGenProvider('gemini');
+          setTimeout(async () => {
+            const geminiOk = await handleGenerateResumeEmails();
+            setEmailGenProvider(origProvider);
+            if (geminiOk) {
+              fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(r => r.json())
+                .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+                .catch(err => console.error('Gemini fallback token deduction failed:', err));
+            }
+          }, 0);
+        }
+      }
+      return;
+    }
+    // Re-fetch token config so the popup shows the current admin-configured rate
+    try {
+      const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (r.ok) {
+        const cfg = await r.json();
+        const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT = t.contact_gen_deduct; setAppContactGenDeduct(t.contact_gen_deduct); }
+        if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
+        if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST = t.analytic_token_cost; setAppTokenCost(t.analytic_token_cost); }
+      }
+    } catch (_) {}
+    if (tokensLeft < _APP_CONTACT_GEN_DEDUCT) {
+      alert(`Insufficient tokens. You need at least ${_APP_CONTACT_GEN_DEDUCT} token${_APP_CONTACT_GEN_DEDUCT !== 1 ? 's' : ''} to generate contacts.`);
+      return;
+    }
+    setTokenContactGenConfirmOpen(true);
+  };
+
+  // Called when user confirms the contact-gen token deduction dialog
+  const handleConfirmContactGen = async () => {
+    setTokenContactGenConfirmOpen(false);
+    const succeeded = await handleGenerateResumeEmails();
+    // Only deduct tokens if generation succeeded; skip only when using own matching key
+    const usingOwnContactGenKey = hasCustomContactGen && emailGenProvider.toLowerCase() === customContactGenProvider;
+    if (!succeeded || usingOwnContactGenKey) return;
+    fetch(`http://localhost:${API_PORT}/deduct-tokens-contact-gen`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ service: emailGenProvider }),
+    })
+      .then(r => r.json())
+      .then(t => {
+        if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
+        if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens);
+      })
+      .catch(err => console.error('Contact gen token deduction failed:', err));
+  };
+
   // Handler for verifying selected email in resume tab
   const handleVerifySelectedEmail = async () => {
     const selected = resumeEmailList.filter(item => item.checked);
     if (selected.length === 0) { alert('Please select an email to verify.'); return; }
     if (selected.length > 1) { alert('Please verify one email at a time.'); return; }
+    // User's own Option A keys — no popup, no deduction ONLY when the currently
+    // selected service matches the user's own provider from api_porting.html.
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
+    if (usingOwnVerifKey) {
+      setPendingVerifyEmail(selected[0].value);
+      handleConfirmVerify(selected[0].value);
+      return;
+    }
     // Re-fetch token config so the confirmation popup always shows the current admin value.
     try {
       const r = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
@@ -8334,22 +9029,24 @@ export default function App() {
         const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg;
         if (typeof t.verified_selection_deduct === 'number') { _APP_VERIFIED_SELECTION_DEDUCT = t.verified_selection_deduct; setAppVerifiedDeduct(t.verified_selection_deduct); }
         if (typeof t.analytic_token_cost       === 'number') { _APP_ANALYTIC_TOKEN_COST       = t.analytic_token_cost;       setAppTokenCost(t.analytic_token_cost); }
+        if (typeof t.contact_gen_deduct        === 'number') { _APP_CONTACT_GEN_DEDUCT        = t.contact_gen_deduct;        setAppContactGenDeduct(t.contact_gen_deduct); }
       }
     } catch (_) {}
-    if (!(hasCustomEmailVerif || hasCustomLlm) && tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
+    if (tokensLeft < _APP_VERIFIED_SELECTION_DEDUCT) { alert(`Insufficient tokens. You need at least ${_APP_VERIFIED_SELECTION_DEDUCT} token${_APP_VERIFIED_SELECTION_DEDUCT !== 1 ? 's' : ''} to verify an email.`); return; }
     setPendingVerifyEmail(selected[0].value);
     setTokenConfirmOpen(true);
   };
 
-  const handleConfirmVerify = async () => {
+  const handleConfirmVerify = async (directEmail) => {
     setTokenConfirmOpen(false);
-    const emailToVerify = pendingVerifyEmail;
+    const emailToVerify = directEmail || pendingVerifyEmail;
     setPendingVerifyEmail(null);
     setVerifyingEmail(true);
     setVerifyModalEmail(emailToVerify);
     setVerifyModalData(null);
+    const usingOwnVerifKey = hasCustomEmailVerif && emailVerifService.toLowerCase() === customEmailVerifProvider;
     try {
-      const res = await fetch('http://localhost:4000/verify-email-details', {
+      const res = await fetch(`http://localhost:${API_PORT}/verify-email-details`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ email: emailToVerify, service: emailVerifService }),
@@ -8358,9 +9055,13 @@ export default function App() {
       if (!res.ok) throw new Error('Verification failed');
       const data = await res.json();
       setVerifyModalData(data);
-      // Deduct 2 tokens on successful verification (skipped when custom email verif API or custom LLM is active)
-      if (!(hasCustomEmailVerif || hasCustomLlm)) {
-        fetch('http://localhost:4000/deduct-tokens', { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      // Deduct tokens on successful verification — only when NOT using user's own matching key
+      if (!usingOwnVerifKey) {
+        fetch(`http://localhost:${API_PORT}/deduct-tokens`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ service: emailVerifService }),
+        })
           .then(r => r.json())
           .then(t => {
             if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft);
@@ -8369,7 +9070,54 @@ export default function App() {
           .catch(err => console.error('Token deduction failed:', err));
       }
     } catch (e) {
-      alert('Email verification failed.');
+      // If user's own key failed mid-process, offer retry with admin key + token deduction
+      if (usingOwnVerifKey) {
+        let curBalance = accountTokens;
+        try {
+          const bRes = await fetch(`http://localhost:${API_PORT}/user-tokens`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (bRes.ok) { const bd = await bRes.json(); curBalance = bd.accountTokens ?? bd.tokensLeft ?? curBalance; setAccountTokens(curBalance); setTokensLeft(curBalance); }
+        } catch (_) {}
+        let deductAmt = _APP_VERIFIED_SELECTION_DEDUCT;
+        try {
+          const r2 = await fetch(`http://localhost:${API_PORT}/token-config`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+          if (r2.ok) { const cfg = await r2.json(); const t = (cfg.tokens && typeof cfg.tokens === 'object') ? cfg.tokens : cfg; if (typeof t.verified_selection_deduct === 'number') { deductAmt = t.verified_selection_deduct; _APP_VERIFIED_SELECTION_DEDUCT = deductAmt; setAppVerifiedDeduct(deductAmt); } }
+        } catch (_) {}
+        const remaining = Math.max(0, curBalance - deductAmt);
+        const doRetry = window.confirm(
+          `Your ${emailVerifService.charAt(0).toUpperCase() + emailVerifService.slice(1)} API service failed.\n\n` +
+          `Retrying with platform key will deduct tokens:\n` +
+          `  • Tokens to be deducted: ${deductAmt}\n` +
+          `  • Account Token balance: ${curBalance}\n` +
+          `  • Tokens Left after deduction: ${remaining}\n\n` +
+          `Proceed?`
+        );
+        if (doRetry) {
+          if (curBalance < deductAmt) { alert(`Insufficient tokens. You need at least ${deductAmt} token${deductAmt !== 1 ? 's' : ''}.`); setVerifyingEmail(false); return; }
+          try {
+            const retryRes = await fetch(`http://localhost:${API_PORT}/verify-email-details`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ email: emailToVerify, service: emailVerifService, force_admin: true }),
+              credentials: 'include'
+            });
+            if (!retryRes.ok) throw new Error('Retry failed');
+            const data = await retryRes.json();
+            setVerifyModalData(data);
+            fetch(`http://localhost:${API_PORT}/deduct-tokens`, {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ service: emailVerifService }),
+            })
+              .then(r => r.json())
+              .then(t => { if (t.tokensLeft !== undefined) setTokensLeft(t.tokensLeft); if (t.accountTokens !== undefined) setAccountTokens(t.accountTokens); })
+              .catch(err => console.error('Retry token deduction failed:', err));
+          } catch (_) {
+            alert('Email verification failed even with platform key.');
+          }
+        }
+      } else {
+        alert('Email verification failed.');
+      }
     } finally {
       setVerifyingEmail(false);
     }
@@ -8380,7 +9128,7 @@ export default function App() {
       if (!resumeCandidate || !resumeCandidate.id) return;
       setCalculatingUnmatched(true);
       try {
-          const res = await fetch(`http://localhost:4000/candidates/${resumeCandidate.id}/calculate-unmatched`, {
+          const res = await fetch(`http://localhost:${API_PORT}/candidates/${resumeCandidate.id}/calculate-unmatched`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               credentials: 'include'
@@ -8453,6 +9201,21 @@ export default function App() {
 
     // Trigger save to backend
     saveCandidateDebounced(id, { email: newEmail });
+
+    // Persist email structure to verified_email.json via Gemini analysis
+    const checkedEmails = resumeEmailList.filter(item => item.checked).map(item => item.value);
+    if (checkedEmails.length > 0) {
+      const candidateName = resumeCandidate.name || '';
+      const candidateCompany = resumeCandidate.organisation || resumeCandidate.company || '';
+      if (candidateName && candidateCompany) {
+        fetch(`http://localhost:${API_PORT}/save-verified-email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({ emails: checkedEmails, name: candidateName, company: candidateCompany, candidateId: id }),
+        }).catch(() => {});
+      }
+    }
 
     alert('Email updated in candidate list.');
   };
@@ -8704,47 +9467,7 @@ export default function App() {
         </div>
       </div>
       
-      {/* Token Metrics UI - Account Token and Tokens Left only (hidden when custom email verif or custom LLM is active) */}
-      {!(hasCustomEmailVerif || hasCustomLlm) && <div style={{
-        width: '100%',
-        margin: '0 0 24px 0',
-        padding: '12px 18px',
-        background: 'var(--bg)',
-        border: '1px solid var(--neutral-border)',
-        borderRadius: 8,
-        display: 'flex',
-        gap: 16,
-        alignItems: 'center',
-        flexWrap: 'wrap'
-      }}>
-        <div style={{ 
-          display: 'inline-flex', 
-          alignItems: 'center', 
-          gap: 6,
-          padding: '6px 12px',
-          background: 'rgba(7,54,121,0.08)',
-          border: '1px solid var(--cool-blue)',
-          borderRadius: 6,
-          fontSize: 13
-        }}>
-          <strong style={{ color: 'var(--azure-dragon)' }}>Account Tokens:</strong>
-          <span style={{ fontWeight: 600, color: 'var(--azure-dragon)' }}>{accountTokens}</span>
-        </div>
-        
-        <div style={{ 
-          display: 'inline-flex', 
-          alignItems: 'center', 
-          gap: 6,
-          padding: '6px 12px',
-          background: 'rgba(109,234,249,0.15)',
-          border: '1px solid var(--robins-egg)',
-          borderRadius: 6,
-          fontSize: 13
-        }}>
-          <strong style={{ color: 'var(--azure-dragon)' }}>Tokens Left:</strong>
-          <span style={{ fontWeight: 600 }}>{tokensLeft}</span>
-        </div>
-      </div>}
+      {/* Token Metrics UI removed from here — now displayed in the Status Toolbar inside CandidateTable */}
       
       {/* Title only visible below banner now */}
       <h1 className="cms-page-title">Candidate Management System</h1>
@@ -8832,6 +9555,13 @@ export default function App() {
                 appTokenCost={appTokenCost}
                 dockOutRef={dockOutRef}
                 onRefresh={() => { isRefreshingRef.current = true; window.location.reload(); }}
+                hasCustomLlm={hasCustomLlm}
+                hasCustomEmailVerif={hasCustomEmailVerif}
+                accountTokens={accountTokens}
+                manualParentOverrides={manualParentOverrides}
+                setManualParentOverrides={setManualParentOverrides}
+                lastSavedOverrides={lastSavedOverrides}
+                setLastSavedOverrides={setLastSavedOverrides}
               />
           }
         </div>
@@ -8923,14 +9653,14 @@ export default function App() {
                            <button 
                                 onClick={() => {
                                     if(resumeCandidate.linkedinurl) {
-                                        window.open('http://localhost:4000/process/download_cv?linkedin=' + encodeURIComponent(resumeCandidate.linkedinurl), '_blank');
+                                        window.open(`http://localhost:${API_PORT}/process/download_cv?linkedin=` + encodeURIComponent(resumeCandidate.linkedinurl), '_blank');
                                     } else if(resumeCandidate.cv) {
                                         // Fallback if no linkedinurl but CV blob/path exists somehow
                                         // (e.g. from /candidates/:id/cv)
                                         if (typeof resumeCandidate.cv === 'string' && resumeCandidate.cv.startsWith('http')) {
                                             window.open(resumeCandidate.cv, '_blank');
                                         } else {
-                                            window.open(`http://localhost:4000/candidates/${resumeCandidate.id}/cv`, '_blank');
+                                            window.open(`http://localhost:${API_PORT}/candidates/${resumeCandidate.id}/cv`, '_blank');
                                         }
                                     } else {
                                         alert('No CV available for this candidate.');
@@ -9039,22 +9769,25 @@ export default function App() {
                                     <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
                                         {/* Action row: Generate · Verify Selected · Update & Save */}
                                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                                            <button 
-                                                onClick={handleGenerateResumeEmails} 
-                                                disabled={generatingEmails}
-                                                className="btn-primary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {generatingEmails ? 'Generating...' : 'Generate Emails'}
-                                            </button>
-                                            <button 
-                                                onClick={handleVerifySelectedEmail} 
-                                                disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
-                                                className="btn-secondary"
-                                                style={{ fontSize: 12, padding: '6px 12px' }}
-                                            >
-                                                {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
-                                            </button>
+                                            {verifEngineMode === 'generate' ? (
+                                                <button 
+                                                    onClick={handleGenerateContactsClick} 
+                                                    disabled={generatingEmails}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {generatingEmails ? 'Generating...' : (['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email')}
+                                                </button>
+                                            ) : (
+                                                <button 
+                                                    onClick={handleVerifySelectedEmail} 
+                                                    disabled={verifyingEmail || resumeEmailList.filter(i=>i.checked).length !== 1}
+                                                    className="btn-primary"
+                                                    style={{ fontSize: 12, padding: '6px 12px' }}
+                                                >
+                                                    {verifyingEmail ? 'Verifying...' : 'Verify Selected'}
+                                                </button>
+                                            )}
                                             <button 
                                                 onClick={handleUpdateResumeEmail}
                                                 className="btn-secondary"
@@ -9074,9 +9807,13 @@ export default function App() {
                                                 </svg>
                                                 <span className="email-verif-bar__label">
                                                     Verif. Engine
-                                                    {!verifBarExpanded && emailVerifService !== 'default' && (
+                                                    {!verifBarExpanded && (
                                                         <span className="email-verif-bar__active-hint">
-                                                            {emailVerifService === 'neverbounce' ? ' · Neverbounce' : emailVerifService === 'zerobounce' ? ' · ZeroBounce' : emailVerifService === 'bouncer' ? ' · Bouncer' : ''}
+                                                            {verifEngineMode === 'generate'
+                                                                ? ` · ${['contactout','apollo','rocketreach'].includes(emailGenProvider) ? 'Generate Contacts' : 'Generate Email'} · ${emailGenProvider === 'contactout' ? 'ContactOut' : emailGenProvider === 'apollo' ? 'Apollo' : emailGenProvider === 'rocketreach' ? 'RocketReach' : 'FIOE'}`
+                                                                : emailVerifService !== 'default'
+                                                                    ? ` · Verify Selected · ${emailVerifService === 'neverbounce' ? 'Neverbounce' : emailVerifService === 'zerobounce' ? 'ZeroBounce' : emailVerifService === 'bouncer' ? 'Bouncer' : emailVerifService}`
+                                                                    : ' · Verify Selected'}
                                                         </span>
                                                     )}
                                                 </span>
@@ -9084,19 +9821,77 @@ export default function App() {
                                             </div>
                                             {verifBarExpanded && (
                                                 <div className="email-verif-bar__body">
-                                                    <select
-                                                        className="email-verif-bar__select"
-                                                        value={emailVerifService}
-                                                        onChange={e => setEmailVerifService(e.target.value)}
-                                                        title="Select email verification service"
-                                                    >
-                                                        <option value="default">Default (App Verification)</option>
-                                                        {availableEmailServices.map(svc => (
-                                                            <option key={svc} value={svc}>
-                                                                {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
-                                                            </option>
-                                                        ))}
-                                                    </select>
+                                                    {/* Mode toggle: Verify Selected / Generate Email */}
+                                                    <div style={{ display: 'flex', gap: 0, marginBottom: 8, border: '1px solid var(--neutral-border)', borderRadius: 6, overflow: 'hidden' }}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('verify')}
+                                                            className="verif-toggle-btn"
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
+                                                                background: verifEngineMode === 'verify' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'verify' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'verify' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'verify' ? 1 : 0.55,
+                                                            }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'verify') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'verify' ? '1' : '0.55'; }}
+                                                        >
+                                                            Verify Selected
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setVerifEngineMode('generate')}
+                                                            className="verif-toggle-btn"
+                                                            style={{
+                                                                flex: 1, padding: '6px 10px', fontSize: 12, border: 'none', cursor: 'pointer',
+                                                                transition: 'all 0.2s ease',
+                                                                borderLeft: '1px solid var(--neutral-border)',
+                                                                background: verifEngineMode === 'generate' ? 'var(--accent, #3b82f6)' : 'var(--bg, #fff)',
+                                                                color: verifEngineMode === 'generate' ? '#fff' : 'var(--fg, #333)',
+                                                                fontWeight: verifEngineMode === 'generate' ? 600 : 400,
+                                                                opacity: verifEngineMode === 'generate' ? 1 : 0.55,
+                                                            }}
+                                                            onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 10px 2px rgba(59,130,246,0.45)'; if (verifEngineMode !== 'generate') e.currentTarget.style.opacity = '0.85'; }}
+                                                            onMouseLeave={e => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.opacity = verifEngineMode === 'generate' ? '1' : '0.55'; }}
+                                                        >
+                                                            Generate Email
+                                                        </button>
+                                                    </div>
+                                                    {verifEngineMode === 'verify' ? (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailVerifService}
+                                                            onChange={e => setEmailVerifService(e.target.value)}
+                                                            title="Select email verification service"
+                                                        >
+                                                            <option value="default">Default (App Verification)</option>
+                                                            {availableEmailServices.map(svc => (
+                                                                <option key={svc} value={svc}>
+                                                                    {svc === 'neverbounce' ? 'Neverbounce' : svc === 'zerobounce' ? 'ZeroBounce' : svc === 'bouncer' ? 'Bouncer' : svc}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    ) : (
+                                                        <select
+                                                            className="email-verif-bar__select"
+                                                            value={emailGenProvider}
+                                                            onChange={e => setEmailGenProvider(e.target.value)}
+                                                            title={emailGenProvider === 'gemini' ? 'Email probability based on user confirmations. If consensus is lacking, Gemini will assist.' : undefined}
+                                                        >
+                                                            <option value="gemini">FIOE</option>
+                                                            {availableContactGenServices.includes('contactout') && (
+                                                                <option value="contactout">ContactOut</option>
+                                                            )}
+                                                            {availableContactGenServices.includes('apollo') && (
+                                                                <option value="apollo">Apollo</option>
+                                                            )}
+                                                            {availableContactGenServices.includes('rocketreach') && (
+                                                                <option value="rocketreach">RocketReach</option>
+                                                            )}
+                                                        </select>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
@@ -9407,7 +10202,7 @@ export default function App() {
                                                                 if (resumeCandidate.linkedinurl) params.set('linkedin', resumeCandidate.linkedinurl);
                                                                 if (resumeCandidate.name) params.set('name', resumeCandidate.name);
                                                                 if (!resumeCandidate.linkedinurl && resumeCandidate.id) params.set('process_id', resumeCandidate.id);
-                                                                return `http://localhost:8091/sourcing/download_report?${params.toString()}`;
+                                                                return `http://localhost:${LOGIN_PORT}/sourcing/download_report?${params.toString()}`;
                                                             })()}
                                                             download
                                                             title="Click to download the assessment report as a Word document"
@@ -9566,13 +10361,38 @@ export default function App() {
              onClick={() => setTokenConfirmOpen(false)}>
           <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
             <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Verified Selection</h3>
-            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 24, lineHeight: 1.6 }}>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
               Are you sure you want to proceed?&nbsp;
               <strong>{appVerifiedDeduct} token{appVerifiedDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this verified selection.
             </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appVerifiedDeduct)}</strong></div>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
               <button onClick={() => setTokenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
-              <button onClick={handleConfirmVerify} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+              <button onClick={() => handleConfirmVerify()} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tokenContactGenConfirmOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(34,37,41,0.65)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10002 }}
+             onClick={() => setTokenContactGenConfirmOpen(false)}>
+          <div className="app-card" style={{ width: 420, padding: 28 }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, marginBottom: 12, color: 'var(--azure-dragon)', fontSize: 16 }}>Confirm Generate Contacts</h3>
+            <p style={{ fontSize: 14, color: 'var(--muted)', marginBottom: 16, lineHeight: 1.6 }}>
+              Are you sure you want to proceed?&nbsp;
+              <strong>{appContactGenDeduct} token{appContactGenDeduct !== 1 ? 's' : ''} will be deducted</strong> from your account for this contact generation.
+            </p>
+            <div style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 20, lineHeight: 1.8, background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: '10px 14px' }}>
+              <div>Account Token balance: <strong>{accountTokens}</strong></div>
+              <div>Tokens Left after deduction: <strong>{Math.max(0, accountTokens - appContactGenDeduct)}</strong></div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => setTokenContactGenConfirmOpen(false)} className="btn-secondary" style={{ padding: '8px 20px', fontSize: 13 }}>Cancel</button>
+              <button onClick={handleConfirmContactGen} className="btn-primary" style={{ padding: '8px 20px', fontSize: 13 }}>Continue</button>
             </div>
           </div>
         </div>
