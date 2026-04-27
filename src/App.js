@@ -4159,6 +4159,17 @@ function CandidatesTable({
       return;
     }
     setDockOutClearing(true);
+    // Archive any pending appeal records to disk BEFORE clearing the DB so that
+    // the admin appeals panel can still display and process them after dock-out.
+    try {
+      await fetch(`http://localhost:${API_PORT}/candidates/archive-appeals`, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+    } catch (archiveErr) {
+      console.warn('[Dock Out] Could not archive pending appeals (non-fatal):', archiveErr);
+    }
     // Clear all local caches (candidates, org chart overrides, dismissed badge IDs)
     try {
       localStorage.removeItem('candidatesCache');
