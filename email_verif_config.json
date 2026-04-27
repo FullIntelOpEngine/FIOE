@@ -1,15 +1,15 @@
 {
   "neverbounce": {
-    "api_key": "private_b636b7c8b49d14c064a84c0670e80c0b",
-    "enabled": "enabled"
-  },
-  "zerobounce": {
-    "api_key": "0496f3f44a964c2f8c1d3cb03c523ff7",
-    "enabled": "enabled"
-  },
-  "bouncer": {
     "api_key": "",
     "enabled": "disabled"
+  },
+  "zerobounce": {
+    "api_key": "",
+    "enabled": "disabled"
+  },
+  "bouncer": {
+    "api_key": "Bs32GLU6ONagYfDvTFEsRnA6ReY1no8RRfZG7FqY",
+    "enabled": "enabled"
   },
   "contactout": {
     "api_key": "zozjIvgpFcy2LF21ycl0lKcF",

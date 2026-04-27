@@ -173,6 +173,66 @@ def _cfg_num(env_var: str, tok_key: str, default: "Union[int, float]"):
 
 _APPEAL_APPROVE_CREDIT = _cfg_num("APPEAL_APPROVE_CREDIT", "appeal_approve_credit", 1)
 
+# Directory where appeal records are archived as JSON before DB deletion.
+_APPEAL_ARCHIVE_DIR = os.getenv("APPEAL_ARCHIVE_DIR", r"F:\Recruiting Tools\Autosourcing\Appeal")
+
+
+def _resolve_appeal_tags(msg: str, fullname: str, token, role_tag: str = "", candidate_name: str = "") -> str:
+    """Replace glossary placeholders in *msg* with values.
+
+    Supported tags:
+      [Username]       → the user's full name (login.fullname)
+      [Token]          → the user's current token balance (login.token)
+      [Search Title]   → the role/search title from the appeal record (sourcing.role_tag)
+      [Candidate Name] → the candidate's name from the appeal record (sourcing.name)
+    """
+    msg = msg.replace("[Username]", fullname or "")
+    msg = msg.replace("[Token]", str(token) if token is not None else "")
+    msg = msg.replace("[Search Title]", role_tag or "")
+    msg = msg.replace("[Candidate Name]", candidate_name or "")
+    return msg
+
+
+def _send_appeal_email(to_email: str, subject: str, body: str, smtp_config: dict = None) -> None:
+    """Send an appeal decision email via SMTP.
+
+    Configuration priority:
+      1. smtp_config dict (passed from the UI's per-session Configure SMTP settings)
+      2. Environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    cfg = smtp_config or {}
+    smtp_host = (cfg.get("host") or os.getenv("SMTP_HOST", "")).strip()
+    smtp_port = int(cfg.get("port") or os.getenv("SMTP_PORT", "587"))
+    smtp_user = (cfg.get("user") or os.getenv("SMTP_USER", "")).strip()
+    smtp_pass = cfg.get("pass") or os.getenv("SMTP_PASS", "")
+    smtp_secure = cfg.get("secure", False)
+    smtp_from = (cfg.get("user") or os.getenv("SMTP_FROM", smtp_user)).strip() or smtp_user
+
+    if not smtp_host or not smtp_user:
+        raise RuntimeError("SMTP host and user must be configured to send appeal emails")
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = smtp_from
+    msg["To"] = to_email
+
+    if smtp_secure:
+        import ssl as _ssl
+        ctx = _ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15, context=ctx) as srv:
+            srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, [to_email], msg.as_string())
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as srv:
+            srv.ehlo()
+            srv.starttls()
+            srv.login(smtp_user, smtp_pass)
+            srv.sendmail(smtp_from, [to_email], msg.as_string())
+
+
 # Rate limiting (requires flask-limiter: pip install flask-limiter)
 if _LIMITER_AVAILABLE:
     _limiter = Limiter(
@@ -1843,7 +1903,7 @@ def admin_users_daily_stats():
 @_rate(_make_flask_limit("admin_endpoints"))
 @_require_admin
 def admin_get_appeals():
-    """Return sourcing rows that have a non-empty appeal value."""
+    """Return sourcing rows that have a non-empty appeal value, including role_tag."""
     try:
         conn = _pg_connect()
         cur = conn.cursor()
@@ -1857,14 +1917,60 @@ def admin_get_appeals():
                    COALESCE(s.company, '') AS company,
                    s.appeal,
                    COALESCE(s.username, '') AS username,
-                   COALESCE(s.userid, '') AS userid
+                   COALESCE(s.userid, '') AS userid,
+                   COALESCE(s.role_tag, '') AS role_tag
             FROM sourcing s
             WHERE s.appeal IS NOT NULL AND s.appeal != ''
             ORDER BY s.linkedinurl
         """)
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        # For rows missing role_tag, fall back to process then login tables
+        for row in rows:
+            if not row.get("role_tag") and row.get("username"):
+                uname = row["username"]
+                try:
+                    cur.execute(
+                        "SELECT role_tag FROM process WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                        (uname,)
+                    )
+                    pr = cur.fetchone()
+                    if pr:
+                        row["role_tag"] = pr[0]
+                    else:
+                        cur.execute(
+                            "SELECT role_tag FROM login WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                            (uname,)
+                        )
+                        lr = cur.fetchone()
+                        if lr:
+                            row["role_tag"] = lr[0]
+                except Exception:
+                    pass
         cur.close(); conn.close()
+        # Merge with archived JSON records (saved during DB Dock Out) so pending
+        # appeals remain visible even after the sourcing table has been cleared.
+        try:
+            import glob as _glob
+            existing_urls = {row["linkedinurl"] for row in rows}
+            abs_archive_dir = os.path.abspath(_APPEAL_ARCHIVE_DIR)
+            if os.path.isdir(_APPEAL_ARCHIVE_DIR):
+                for _jf in _glob.glob(os.path.join(_APPEAL_ARCHIVE_DIR, "appeal_*.json")):
+                    if not os.path.abspath(_jf).startswith(abs_archive_dir + os.sep):
+                        continue
+                    try:
+                        with open(_jf, "r", encoding="utf-8") as _fh:
+                            _archived = json.load(_fh)
+                        if isinstance(_archived, list):
+                            for _rec in _archived:
+                                if (isinstance(_rec, dict) and _rec.get("linkedinurl")
+                                        and _rec["linkedinurl"] not in existing_urls):
+                                    rows.append(_rec)
+                                    existing_urls.add(_rec["linkedinurl"])
+                    except Exception:
+                        pass
+        except Exception as _exc:
+            logging.warning("Failed to read appeal archive files: %s", _exc)
         return jsonify({"appeals": rows}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1876,26 +1982,72 @@ def admin_get_appeals():
 def admin_appeal_action():
     """Approve or reject a user appeal.
 
-    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject" }
-    Approve: adds 1 token to the user's login record, then deletes the sourcing row.
-    Reject: deletes the sourcing row without adding a token.
+    Body: { "linkedinurl": "...", "username": "...", "action": "approve"|"reject", "message": "...",
+            "smtpConfig": { "host": "...", "port": "587", "user": "...", "pass": "...", "secure": false } }
+    Approve: adds 1 token to the user's login record, then archives the appeal record to
+      <_APPEAL_ARCHIVE_DIR>/appeal_<username>.json and deletes the sourcing row.
+    Reject: archives and deletes the sourcing row without adding a token.
+    In both cases the admin's message is emailed to the user's cemail address (login table).
+    smtpConfig (optional): if provided, overrides the server env-var SMTP settings.
     """
     body = request.get_json(force=True, silent=True) or {}
     linkedinurl = (body.get("linkedinurl") or "").strip()
     username = (body.get("username") or "").strip()
     action = (body.get("action") or "").strip().lower()
+    message = (body.get("message") or "").strip()
+    subject = (body.get("subject") or "").strip()
+    smtp_config = body.get("smtpConfig") if isinstance(body.get("smtpConfig"), dict) else None
     if not linkedinurl or action not in ("approve", "reject"):
         return jsonify({"error": "linkedinurl and action ('approve'|'reject') required"}), 400
     try:
         conn = _pg_connect()
         cur = conn.cursor()
+
+        # ── Fetch full sourcing record before deletion ─────────────────────────
+        cur.execute("""
+            SELECT linkedinurl,
+                   COALESCE(name, '') AS name,
+                   COALESCE(jobtitle, '') AS jobtitle,
+                   COALESCE(company, '') AS company,
+                   COALESCE(appeal, '') AS appeal,
+                   COALESCE(username, '') AS username,
+                   COALESCE(userid, '') AS userid,
+                   COALESCE(role_tag, '') AS role_tag
+            FROM sourcing WHERE linkedinurl = %s
+        """, (linkedinurl,))
+        rec_cols = [d[0] for d in cur.description]
+        rec_row = cur.fetchone()
+        appeal_record = dict(zip(rec_cols, rec_row)) if rec_row else {}
+
+        # ── Fallback: read record from JSON archive if not in DB ──────────────
+        # Happens when the user ran DB Dock Out (clear-user) before the admin
+        # processed this appeal.  The dock-out archive endpoint wrote the pending
+        # records to appeal_<username>.json; we look up the record there.
+        if not rec_row and username:
+            try:
+                _safe_lu = re.sub(r'[^\w\-]', '_', username)
+                _jf = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{_safe_lu}.json")
+                _abs_jf = os.path.abspath(_jf)
+                if (_abs_jf.startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR) + os.sep)
+                        and os.path.isfile(_abs_jf)):
+                    with open(_abs_jf, "r", encoding="utf-8") as _fh:
+                        _archived_list = json.load(_fh)
+                    if isinstance(_archived_list, list):
+                        for _arch_rec in _archived_list:
+                            if (isinstance(_arch_rec, dict)
+                                    and _arch_rec.get("linkedinurl") == linkedinurl):
+                                appeal_record = {k: (v or '') for k, v in _arch_rec.items()}
+                                break
+            except Exception as _exc:
+                logging.warning("Failed to read appeal archive for %s: %s", username, _exc)
+
         new_token = None
         if action == "approve" and username:
             cur.execute("SELECT COALESCE(token, 0) AS t FROM login WHERE username = %s", (username,))
             before_row = cur.fetchone()
             token_before = int(before_row[0]) if before_row else 0
             cur.execute(
-                "UPDATE login SET token = COALESCE(token, 0) + %s WHERE username = %s RETURNING token, id",
+                "UPDATE login SET token = COALESCE(token, 0) + %s WHERE username = %s RETURNING token, userid",
                 (int(_APPEAL_APPROVE_CREDIT), username)
             )
             row = cur.fetchone()
@@ -1915,13 +2067,391 @@ def admin_appeal_action():
                     token_cost_sgd=float((_load_rate_limits().get("tokens") or {}).get("token_cost_sgd", 0.10)),
                     revenue_sgd=0.0,
                 )
+
+        # ── Send decision email to user ────────────────────────────────────────
+        email_sent = False
+        email_error = ""
+        if username and message:
+            try:
+                cur.execute(
+                    "SELECT cemail, COALESCE(fullname, ''), COALESCE(token, 0) FROM login WHERE username = %s LIMIT 1",
+                    (username,)
+                )
+                er = cur.fetchone()
+                cemail = (er[0] or "").strip() if er else ""
+                # Resolve glossary tags: [Username]→fullname, [Token]→token, [Search Title]→role_tag, [Candidate Name]→name
+                _tag_kwargs = dict(
+                    fullname=er[1] if er else "",
+                    token=er[2] if er else 0,
+                    role_tag=appeal_record.get("role_tag", ""),
+                    candidate_name=appeal_record.get("name", ""),
+                )
+                resolved_message = _resolve_appeal_tags(message, **_tag_kwargs)
+                label_str = "Approved" if action == "approve" else "Rejected"
+                resolved_subject = _resolve_appeal_tags(
+                    subject if subject else f"Your Appeal has been {label_str}",
+                    **_tag_kwargs,
+                )
+                if cemail:
+                    _send_appeal_email(
+                        to_email=cemail,
+                        subject=resolved_subject,
+                        body=resolved_message,
+                        smtp_config=smtp_config,
+                    )
+                    email_sent = True
+            except Exception as _exc:
+                email_error = str(_exc)
+                logging.warning("Appeal email failed for %s: %s", username, _exc)
+
         # Delete the sourcing row (appeal handled)
         cur.execute("DELETE FROM sourcing WHERE linkedinurl = %s", (linkedinurl,))
         deleted = cur.rowcount
+
+        # Check remaining sourcing records for this user *before* commit so the
+        # count reflects the post-delete state (same transaction).
+        remaining_sourcing = 0
+        if username:
+            cur.execute("SELECT COUNT(*) FROM sourcing WHERE username = %s", (username,))
+            remaining_sourcing = (cur.fetchone() or [0])[0]
+
         conn.commit(); cur.close(); conn.close()
-        return jsonify({"ok": True, "action": action, "deleted": deleted, "new_token": new_token}), 200
+
+        # ── Post-commit file cleanup ───────────────────────────────────────────
+        # 1. Remove the processed record from the appeal archive JSON.
+        #    The JSON may contain multiple records (written by the dock-out archive
+        #    endpoint) so we remove only the entry matching this linkedinurl.
+        #    Delete the file only when no records remain.
+        if username:
+            try:
+                safe_uname = re.sub(r'[^\w\-]', '_', username)
+                appeal_file = os.path.join(_APPEAL_ARCHIVE_DIR, f"appeal_{safe_uname}.json")
+                abs_appeal = os.path.abspath(appeal_file)
+                if (abs_appeal.startswith(os.path.abspath(_APPEAL_ARCHIVE_DIR) + os.sep)
+                        and os.path.isfile(abs_appeal)):
+                    try:
+                        with open(abs_appeal, "r", encoding="utf-8") as _fh:
+                            _archived = json.load(_fh)
+                    except Exception:
+                        _archived = None
+                    if isinstance(_archived, list):
+                        _remaining = [r for r in _archived if r.get("linkedinurl") != linkedinurl]
+                        if _remaining:
+                            with open(abs_appeal, "w", encoding="utf-8") as _fh:
+                                json.dump(_remaining, _fh, ensure_ascii=False, indent=2, default=str)
+                        else:
+                            os.remove(abs_appeal)
+                    else:
+                        # Unexpected format — remove the file
+                        os.remove(abs_appeal)
+            except Exception as _exc:
+                logging.warning("Failed to update appeal archive file for %s: %s", username, _exc)
+
+        # 2. Remove JD archive file(s) only when no more sourcing rows remain for
+        #    this user (all appeals resolved and no active records).
+        if username and remaining_sourcing == 0:
+            try:
+                import glob as _glob
+                from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+                safe_uname_jd = _CV_USERNAME_SAFE_RE.sub('_', username)
+                abs_jd_dir = os.path.abspath(_JD_ARCHIVE_DIR)
+                for _ext in ('pdf', 'docx', 'doc'):
+                    _pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_uname_jd}.{_ext}")
+                    for _jd_path in _glob.glob(_pattern):
+                        _abs_jd = os.path.abspath(_jd_path)
+                        if (_abs_jd.startswith(abs_jd_dir + os.sep)
+                                and os.path.isfile(_abs_jd)):
+                            os.remove(_abs_jd)
+            except Exception as _exc:
+                logging.warning("Failed to remove JD archive file for %s: %s", username, _exc)
+
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "deleted": deleted,
+            "new_token": new_token,
+            "email_sent": email_sent,
+            "email_error": email_error,
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.post("/admin/draft-email")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_csrf_required
+@_require_admin
+def admin_draft_email():
+    """Proxy an AI email-draft request to the Node.js server.
+
+    Body: { "prompt": "...", "context": { "candidateName": "...", "myEmail": "..." } }
+    Returns the Node.js /draft-email response: { "subject": "...", "body": "..." }
+    """
+    return _proxy_to_node_admin("draft-email")
+
+
+@app.get("/admin/appeal-templates")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_get_appeal_templates():
+    """Return the list of saved appeal email templates from disk.
+
+    Returns: [ { "id": ..., "name": "...", "body": "..." }, ... ]
+    """
+    try:
+        if os.path.exists(_APPEAL_TEMPLATES_FILE):
+            with open(_APPEAL_TEMPLATES_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        else:
+            data = []
+        return jsonify(data), 200
+    except Exception as exc:
+        logging.warning("admin_get_appeal_templates error: %s", exc)
+        return jsonify({"error": "Failed to load templates"}), 500
+
+
+@app.post("/admin/appeal-templates")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_csrf_required
+@_require_admin
+def admin_save_appeal_templates():
+    """Persist the full list of appeal email templates to disk.
+
+    Body: { "templates": [ { "id": ..., "name": "...", "body": "..." }, ... ] }
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    templates = body.get("templates")
+    if not isinstance(templates, list):
+        return jsonify({"error": "templates list required"}), 400
+    try:
+        os.makedirs(REPORT_TEMPLATES_DIR, exist_ok=True)
+        with open(_APPEAL_TEMPLATES_FILE, "w", encoding="utf-8") as fh:
+            json.dump(templates, fh, ensure_ascii=False, indent=2)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logging.warning("admin_save_appeal_templates error: %s", exc)
+        return jsonify({"error": "Failed to save templates"}), 500
+
+
+@app.get("/admin/resolve-appeal-tags")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_resolve_appeal_tags():
+    """Resolve appeal glossary tags for a given username.
+
+    Query params:
+      username – required; the appeal target username
+
+    Returns: { "fullname": "...", "token": N }
+    """
+    username = (request.args.get("username") or "").strip()
+    if not username:
+        return jsonify({"error": "username required"}), 400
+    try:
+        conn = _pg_connect()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COALESCE(fullname, ''), COALESCE(token, 0) FROM login WHERE username = %s LIMIT 1",
+            (username,),
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "user not found"}), 404
+        return jsonify({"fullname": row[0], "token": int(row[1])}), 200
+    except Exception as exc:
+        logging.warning("admin_resolve_appeal_tags error: %s", exc)
+        return jsonify({"error": "Failed to resolve tags"}), 500
+
+
+@app.get("/admin/download-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_download_jd():
+    """Serve the archived JD file for a user, validating role_tag against the process table.
+
+    Query params:
+      username  – required
+      role_tag  – required; must match the role_tag stored in the process table for that user
+
+    The file is expected at:
+      <_JD_ARCHIVE_DIR>/JD_<role_tag>_<username>.<ext>
+    where ext is pdf, doc, or docx.
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE, _sanitize_jd_name_part
+    username = (request.args.get("username") or "").strip()
+    role_tag = (request.args.get("role_tag") or "").strip()
+    if not username or not role_tag:
+        return jsonify({"error": "username and role_tag required"}), 400
+    try:
+        conn = _pg_connect()
+        cur = conn.cursor()
+        # Validate role_tag against process table (authoritative), then sourcing, then login
+        db_role_tag = None
+        cur.execute(
+            "SELECT role_tag FROM process WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+            (username,)
+        )
+        pr = cur.fetchone()
+        if pr:
+            db_role_tag = pr[0]
+        if not db_role_tag:
+            cur.execute(
+                "SELECT role_tag FROM sourcing WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                (username,)
+            )
+            sr = cur.fetchone()
+            if sr:
+                db_role_tag = sr[0]
+        if not db_role_tag:
+            cur.execute(
+                "SELECT role_tag FROM login WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1",
+                (username,)
+            )
+            lr = cur.fetchone()
+            if lr:
+                db_role_tag = lr[0]
+        cur.close(); conn.close()
+        if not db_role_tag:
+            return jsonify({"error": "No role_tag on record for this user"}), 404
+        # Compare the first role_tag value (comma-separated list possible)
+        first_db_tag = db_role_tag.split(",")[0].strip()
+        first_req_tag = role_tag.split(",")[0].strip()
+        if first_db_tag.lower() != first_req_tag.lower():
+            return jsonify({"error": "role_tag mismatch"}), 403
+        safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+        safe_tag = _sanitize_jd_name_part(first_db_tag)
+        # Search for the file with any supported extension
+        for ext in ('pdf', 'docx', 'doc'):
+            candidate = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_tag}_{safe_username}.{ext}")
+            abs_candidate = os.path.abspath(candidate)
+            if not abs_candidate.startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+                continue
+            if os.path.isfile(abs_candidate):
+                return send_from_directory(
+                    os.path.abspath(_JD_ARCHIVE_DIR),
+                    f"JD_{safe_tag}_{safe_username}.{ext}",
+                    as_attachment=True,
+                )
+        return jsonify({"error": "JD file not found"}), 404
+    except Exception as e:
+        logging.getLogger(__name__).warning("[admin_download_jd] %s", e)
+        return jsonify({"error": "Failed to retrieve JD file"}), 500
+
+
+@app.get("/admin/check-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_check_jd():
+    """Check whether a JD archive file exists for the given username and role_tag.
+
+    Query params:
+      username, role_tag
+
+    Response: { "exists": true|false }
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE, _sanitize_jd_name_part
+    username = (request.args.get("username") or "").strip()
+    role_tag = (request.args.get("role_tag") or "").strip()
+    if not username or not role_tag:
+        return jsonify({"exists": False}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    first_tag = role_tag.split(",")[0].strip()
+    safe_tag = _sanitize_jd_name_part(first_tag)
+    for ext in ('pdf', 'docx', 'doc'):
+        candidate = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_tag}_{safe_username}.{ext}")
+        abs_candidate = os.path.abspath(candidate)
+        if not abs_candidate.startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            continue
+        if os.path.isfile(abs_candidate):
+            return jsonify({"exists": True, "ext": ext}), 200
+    return jsonify({"exists": False}), 200
+
+
+@app.get("/admin/list-jd")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_list_jd():
+    """List all JD archive files for a given username.
+
+    Query params:
+      username – required
+
+    Response: { "files": ["JD_RoleTag_username.pdf", ...] }
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+    username = (request.args.get("username") or "").strip()
+    if not username:
+        return jsonify({"files": []}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    archive_abs = os.path.abspath(_JD_ARCHIVE_DIR)
+    results = []
+    for ext in ('pdf', 'docx', 'doc'):
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        for path in _glob.glob(pattern):
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(archive_abs + os.sep) and os.path.isfile(abs_path):
+                results.append(os.path.basename(abs_path))
+    return jsonify({"files": sorted(results)}), 200
+
+
+@app.get("/admin/download-jd-file")
+@_rate(_make_flask_limit("admin_endpoints"))
+@_require_admin
+def admin_download_jd_file():
+    """Serve a specific JD archive file by filename.
+
+    Query params:
+      username – required; used to verify the file belongs to this user
+      filename – required; bare filename (no path separators)
+
+    Security checks:
+      - filename must be a pure basename with no directory components
+      - filename must end with _{safe_username}.{ext}
+      - resolved path must stay inside _JD_ARCHIVE_DIR
+      - extension must be pdf, doc, or docx
+    """
+    import glob as _glob
+    from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
+    username = (request.args.get("username") or "").strip()
+    filename = (request.args.get("filename") or "").strip()
+    if not username or not filename:
+        return jsonify({"error": "username and filename required"}), 400
+    # filename must be a pure basename – no path separators allowed
+    if os.path.basename(filename) != filename or filename.startswith('.'):
+        return jsonify({"error": "Invalid filename"}), 400
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in ('pdf', 'doc', 'docx'):
+        return jsonify({"error": "Invalid file type"}), 400
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    # The file must belong to the requested user (suffix check)
+    if not filename.endswith(f'_{safe_username}.{ext}'):
+        return jsonify({"error": "File does not belong to this user"}), 403
+    # Resolve via filesystem glob so the final path is filesystem-sourced
+    # rather than user-sourced, eliminating path-injection risk.
+    archive_abs = os.path.abspath(_JD_ARCHIVE_DIR)
+    pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+    matched = None
+    for candidate in _glob.glob(pattern):
+        abs_candidate = os.path.abspath(candidate)
+        if not abs_candidate.startswith(archive_abs + os.sep):
+            continue
+        if not os.path.isfile(abs_candidate):
+            continue
+        if os.path.basename(abs_candidate) == filename:
+            matched = abs_candidate
+            break
+    if matched is None:
+        return jsonify({"error": "File not found"}), 404
+    try:
+        return send_from_directory(archive_abs, os.path.basename(matched), as_attachment=True)
+    except Exception as e:
+        logging.getLogger(__name__).warning("[admin_download_jd_file] %s", e)
+        return jsonify({"error": "Failed to retrieve file"}), 500
+
 
 @app.get("/admin/logs")
 @_rate(_make_flask_limit("admin_endpoints"))
@@ -2185,12 +2715,16 @@ def _proxy_to_node_admin(path: str):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     else:
-        # No shared API token configured — forward the browser's username cookie so
-        # Node.js requireAdminOrToken can verify admin access via its own DB check.
-        # (webbridge.py has already confirmed admin via @_require_admin above.)
-        username_cookie = request.cookies.get("username", "")
-        if username_cookie:
-            headers["Cookie"] = f"username={username_cookie}"
+        # No shared API token configured — forward the browser's session cookies so
+        # Node.js requireLogin / requireAdminOrToken can verify access via its own DB
+        # check.  (webbridge.py has already confirmed admin via @_require_admin above.)
+        cookie_parts = []
+        for _ck in ("username", "userid", "session_id"):
+            _cv = request.cookies.get(_ck, "")
+            if _cv:
+                cookie_parts.append(f"{_ck}={_cv}")
+        if cookie_parts:
+            headers["Cookie"] = "; ".join(cookie_parts)
     try:
         resp = requests.post(
             f"{_NODE_SERVER_URL}/{path}",
@@ -2785,6 +3319,11 @@ REPORT_TEMPLATES_DIR = os.getenv(
     r"F:\Recruiting Tools\Autosourcing\templates"
 )
 os.makedirs(REPORT_TEMPLATES_DIR, exist_ok=True)
+
+# File where appeal email templates are persisted on disk.
+_APPEAL_TEMPLATES_FILE = os.path.join(
+    REPORT_TEMPLATES_DIR, "appeal_email_templates.json"
+)
 
 GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
 GOOGLE_CSE_CX = os.getenv("GOOGLE_CSE_CX") or os.getenv("GOOGLE_CUSTOM_SEARCH_CX")

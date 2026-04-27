@@ -1221,6 +1221,54 @@ pre {
   background: #fff;
   min-width: 130px;
 }
+/* Strict Search toggle button */
+#strictSearchBtn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border, #d8d8d8);
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+  background: #fff;
+  color: var(--text-soft, #666);
+  position: relative;
+}
+#strictSearchBtn.sp-strict-on {
+  background: var(--azure-dragon, #073679);
+  color: #fff;
+  border-color: var(--azure-dragon, #073679);
+}
+#strictSearchBtn.sp-strict-on:hover {
+  box-shadow: 0 0 8px 1px rgba(7,54,121,0.3);
+}
+#strictSearchBtn:not(.sp-strict-on):hover {
+  box-shadow: 0 0 8px 1px rgba(59,130,246,0.25);
+  border-color: #aac;
+}
+/* Strict button tooltip */
+#strictSearchBtn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1b2636;
+  color: #e8edf2;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 9999;
+}
+#strictSearchBtn:hover::after {
+  opacity: 1;
+}
 
 /* Skill Adjacency button tooltip */
 #skillAdjacencyBtn {
@@ -1632,6 +1680,7 @@ pre {
           <div id="searchProviderToggle">
             <div class="sp-toggle-header">
               <button type="button" id="spToggleBtn" class="sp-toggle-btn sp-mode-cse" onclick="window._toggleSearchProviderMode()">Default CSE</button>
+              <button type="button" id="strictSearchBtn" aria-label="Toggle strict search mode" data-tooltip="Search will only include the selected companies." onclick="window._toggleStrictMode()">Strict</button>
             </div>
             <div id="spDropdownWrap">
               <select id="spProviderSelect">
@@ -2141,6 +2190,7 @@ let jdJobSnapshot = [];             // frozen job suggestion list
 let jdCompanySnapshot = [];         // frozen company suggestion list
 let jdProducts = [];                // product/technology references extracted from JD (e.g., "Aircon", "HVAC")
 let jdDetectedCompanies = new Set(); // canonical keys of companies detected IN the JD — excluded from suggestions
+let _jdFileExt = '';                // file extension of the most recently uploaded JD ('pdf', 'doc', 'docx')
 
 function captureSuggestionSnapshot(){
   try{
@@ -2364,9 +2414,14 @@ function buildCompanyExpression(){
   if(companies.length===1) return `"${escapeQuotes(companies[0])}"`;
   return '('+companies.map(c=>`"${escapeQuotes(c)}"`).join(' OR ')+')';
 }
+// Returns true when at least one selected sector chip is NOT locked.
+// When all sectors are locked, sector-based company suggestions are fully deactivated.
+function hasActiveSectors(){
+  return selectedSectors.some(l => !lockedSectorTags.has(l));
+}
 function buildEffectiveCompanyExpression(){
   let combined;
-  if(selectedSectors.length > 0){
+  if(selectedSectors.length > 0 && hasActiveSectors()){
     // Sector guardrail: when a sector is active, build the company expression strictly from
     // sector-derived companies (sectorCompanyRelated) only. Do NOT merge in user-typed companies
     // (companies array) or generic auto-suggested companies — they belong to a different context
@@ -2436,6 +2491,12 @@ function populateSectorSelect(){
   const other=document.createElement('option'); other.value="__OTHER__"; other.textContent="Other (enter manually)"; sectorSelect.appendChild(other);
 }
 
+function clearSectorBasedCompanyTags(){
+  lockedSectorCompanyTags.clear();
+  sectorCompanyList.innerHTML='';
+  hide(sectorCompanyDisplay);
+}
+
 function renderSectorChips(){
   sectorChips.innerHTML=''; if(!selectedSectors.length){ sectorChipsWrap.classList.add('hidden'); hide(sectorCompanyDisplay); updateDynamicCompanyPreview(true); updateDynamicCompanyHeader(); return; }
   sectorChipsWrap.classList.remove('hidden');
@@ -2444,12 +2505,13 @@ function renderSectorChips(){
     const chip=document.createElement('div'); chip.className='tag-chip';
     const isLocked=lockedSectorTags.has(label);
     if(isLocked) chip.classList.add('tag-locked');
+    chip.title='Toggle on will deactivate sector-based company suggestions.';
     chip.innerHTML=`<span>${label}</span><button type="button" aria-label="Remove sector" style="margin-left:4px;">&times;</button>`;
     const removeBtn=chip.querySelector('button');
     if(isLocked){ removeBtn.disabled=true; removeBtn.title='Click the tag to unlock before removing'; removeBtn.style.opacity='0.4'; removeBtn.style.cursor='not-allowed'; }
     chip.addEventListener('click', e=>{
       if(e.target===removeBtn) return;
-      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); }
+      if(lockedSectorTags.has(label)){ lockedSectorTags.delete(label); } else { lockedSectorTags.add(label); clearSectorBasedCompanyTags(); }
       renderSectorChips(); scheduleSectorSuggestionsUpdate(); scheduleSuggestionsUpdate(); updateFullCompiledQuery(); renderEffectiveCompaniesDisplay(); updateDynamicCompanyPreview(); updateDynamicCompanyHeader();
     });
     removeBtn.addEventListener('click',()=>{
@@ -2476,7 +2538,7 @@ function addManualSector(){
 }
 
 function renderEffectiveCompaniesDisplay(){
-  if(!selectedSectors.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
+  if(!selectedSectors.length || !hasActiveSectors()){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   const effective=dedupe([...companies,...autoSuggestedCompanies.filter(c=>!suppressedAutoSuggestedCompanies.has(c.toLowerCase()) || lockedSectorCompanyTags.has(c.toLowerCase()))]);
   if(!effective.length){ hide(sectorCompanyDisplay); sectorCompanyList.innerHTML=''; updateDynamicCompanyPreview(); return; }
   show(sectorCompanyDisplay); sectorCompanyList.innerHTML='';
@@ -2537,6 +2599,13 @@ let sectorJobRelated=new Set(); let sectorCompanyRelated=new Set();
 
 /* Debounced fetch already declared earlier; below we update how results are stored */
 async function fetchSectorSuggestions(){
+  // When all sector chips are locked, there are no active sectors — clear stale data and bail out.
+  if (selectedSectors.length > 0 && !hasActiveSectors()) {
+    sectorJobRelated = new Set(); sectorCompanyRelated = new Set();
+    if (lastGeneralSuggestions) renderSuggestionsAggregated(lastGeneralSuggestions);
+    else renderSuggestionsAggregated({ job:{related:[]}, company:{related:[]} });
+    return;
+  }
   const activeStr=getActiveSectorString();
   const sectors= selectedSectors.length ? selectedSectors.slice() : (activeStr ? [activeStr] : []);
   const userJobTitle=normalizeSpaces(val('jobTitleInput')) || (jobTitles[0]||'');
@@ -2582,8 +2651,7 @@ function updateDynamicCompanyPreview(clear=false){
   }
 
   let opts = [];
-  if (selectedSectors.length > 0) {
-    // Start from strict sector-derived companies
+  if (selectedSectors.length > 0 && hasActiveSectors()) {
     const sectorArr = Array.from(sectorCompanyRelated || []).map(s => s.toString());
     // autoRelated: only autoSuggested entries that match sectorCompanyRelated (case-insensitive)
     const autoRelated = (autoSuggestedCompanies || []).filter(c => {
@@ -3122,11 +3190,11 @@ function renderSuggestionsAggregated(data){
 
     // Merge sector-derived suggestions into snapshot view so sector selections still show results
     try {
-      if (sectorJobRelated && sectorJobRelated.size) {
+      if (hasActiveSectors() && sectorJobRelated && sectorJobRelated.size) {
         const mergedJobs = dedupe([...jobList, ...Array.from(sectorJobRelated).map(s => normalizeSpaces(s))]);
         jobList = mergedJobs;
       }
-      if (sectorCompanyRelated && sectorCompanyRelated.size) {
+      if (hasActiveSectors() && sectorCompanyRelated && sectorCompanyRelated.size) {
         const mergedComps = dedupe([...companyList, ...Array.from(sectorCompanyRelated).map(s => normalizeSpaces(s))]);
         companyList = mergedComps;
       }
@@ -3138,8 +3206,8 @@ function renderSuggestionsAggregated(data){
     const jobSet=new Set(), companySet=new Set();
     (data.job?.related||[]).forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); });
     (data.company?.related||[]).forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); });
-    sectorJobRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); });
-    sectorCompanyRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); });
+    if(hasActiveSectors()){ sectorJobRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) jobSet.add(n); }); }
+    if(hasActiveSectors()){ sectorCompanyRelated.forEach(s=>{ const n=normalizeSpaces(s); if(n) companySet.add(n); }); }
 
     jobList = Array.from(jobSet);
     companyList = Array.from(companySet);
@@ -3157,7 +3225,7 @@ function renderSuggestionsAggregated(data){
   // suggestions available in the same panel.
   // We also track genericCompetitorCompanies separately so buildQueries can generate a second
   // query for the competitor companies when a sector query already covers sector companies.
-  if (selectedSectors.length > 0 && sectorCompanyRelated && sectorCompanyRelated.size > 0) {
+  if (selectedSectors.length > 0 && hasActiveSectors() && sectorCompanyRelated && sectorCompanyRelated.size > 0) {
     const sectorKeys = new Set();
     sectorCompanyRelated.forEach(s => sectorKeys.add(canonicalKey(normalizeSpaces(s))));
     // Derive competitors ONLY from the raw /suggest response (data.company.related), never from
@@ -3354,7 +3422,7 @@ function buildFullBooleanQuery(){
 // Builds the full Xray query for direct competitor companies (non-sector).
 // Returns '' when no competitor companies are available or no sector is active.
 function buildGenericFullQuery(){
-  if (!selectedSectors.length) return '';
+  if (!selectedSectors.length || !hasActiveSectors()) return '';
   const genericBlock = buildGenericCompanyExpression();
   if (!genericBlock) return '';
   const lang=buildLanguageXrayBlock();
@@ -4421,6 +4489,21 @@ function _refreshTokenRates() {
   };
 })();
 
+// ── Strict Search Toggle ─────────────────────────────────────────────────────
+// When enabled, fallback queries are suppressed so only company-filtered
+// primary queries execute.
+(function _initStrictToggle(){
+  let _strictOn = false;
+
+  window._toggleStrictMode = function() {
+    _strictOn = !_strictOn;
+    const btn = document.getElementById('strictSearchBtn');
+    if (btn) btn.classList.toggle('sp-strict-on', _strictOn);
+  };
+
+  window._isStrictMode = function() { return _strictOn; };
+})();
+
 function showBestModeNotif(){
   // Guard suppression before the async fetch to avoid a flash of the suppressed popup.
   try{ if(localStorage.getItem(STORAGE_KEY_NOTIF_BEST_MODE_SUPPRESS) === 'true') return; }catch(_){}
@@ -4643,7 +4726,10 @@ async function generateAndStart(){
     return;
   }
   const qBundle=buildQueries(val('country'));
-  renderQueries([...qBundle.primary,...qBundle.fallback]);
+  const queriesToRender = (window._isStrictMode && window._isStrictMode())
+    ? qBundle.primary
+    : [...qBundle.primary, ...qBundle.fallback];
+  renderQueries(queriesToRender);
   if(btn){ btn.dataset.state='searching'; btn.disabled=true; applySearchingSpinner(btn); btn.classList.remove('ready-download'); }
   
   const currentRole = false;
@@ -4662,7 +4748,7 @@ async function generateAndStart(){
     languageQuery:buildLanguageXrayBlock(),
     currentRole:currentRole,
     queries:qBundle.primary.map(q=>q.query),
-    fallbackQueries:qBundle.fallback.map(q=>q.query),
+    fallbackQueries:(window._isStrictMode && window._isStrictMode()) ? [] : qBundle.fallback.map(q=>q.query),
     country:val('country'),
     autoExpand: autoExpand,
     manualUrls: [],
@@ -4706,6 +4792,8 @@ async function generateAndStart(){
   try{
     // Client-side rate-limit check before submitting the sourcing job
     if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('start_job'))) return;
+    // JD archive file renaming is now handled server-side inside start_job using the
+    // authoritative role_tag from the sourcing table, so no separate tag_jd call is needed here.
     const res=await fetch('/start_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status+' '+(await res.text()));
     const data=await res.json();
@@ -5011,6 +5099,9 @@ function updateSectorEnabledState(){
     if(browseBtn) browseBtn.disabled = true;
     
     const username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || '';
+    // Track the file extension so later tag_jd calls can pass it to the server
+    const _fname = (file.name || '').toLowerCase();
+    _jdFileExt = _fname.endsWith('.pdf') ? 'pdf' : _fname.endsWith('.docx') ? 'docx' : 'doc';
     
     const formData = new FormData();
     formData.append('file', file);
@@ -5101,6 +5192,20 @@ function updateSectorEnabledState(){
 
           // Render the analysis to the JD Analysis box
           if (analyzeData) {
+            // Fire-and-forget: rename the archived JD copy using the detected job title.
+            (function _tagJdAfterAnalysis() {
+              const _jt = (analyzeData.job_titles && analyzeData.job_titles.length > 0)
+                ? analyzeData.job_titles[0]
+                : (analyzeData.job_title || '');
+              if (username && _jdFileExt) {
+                fetch('/user/tag_jd', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'same-origin',
+                  body: JSON.stringify({ username: username, ext: _jdFileExt, job_title: _jt })
+                }).catch(function() {});
+              }
+            })();
             if (summaryEl) summaryEl.innerHTML = analyzeData.summary || '';
             let tagHtml = '';
             // Display job titles (multiple if available)

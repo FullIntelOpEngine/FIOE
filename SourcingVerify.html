@@ -2913,6 +2913,7 @@ const GEMINI_REBATE_VALIDATE_API = '/gemini/rebate_validate';
 const TOKEN_APPLY_API = '/user/token_apply';
 const TOKEN_UPDATE_API = '/user/token_update';
 const APPEAL_SAVE_API = '/sourcing/update';
+const HAS_JD_API = '/user/has-jd';
 // SNIPPER_CLEANUP_API removed
 const API_UPLOAD_CV = '/process/upload_cv'; 
 const API_DOWNLOAD_CV = '/process/download_cv'; 
@@ -2925,6 +2926,32 @@ const API_UPLOAD_MULTIPLE = '/process/upload_multiple_cvs'; // New bulk endpoint
 const MSG_CV_NAME_MISMATCH = 'The profile name in the uploaded PDF is invalid. Please ensure the name matches an entry in the search result.';
 
 const PROCESS_GEO_API = '/process/geography';
+
+// ── JD-presence check (cached per page load) ────────────────────────────────
+// Appeal is only available for records sourced via an uploaded JD file.
+// _svJdExistsCache: null = not yet fetched, true/false = resolved.
+let _svJdExistsCache = null;
+let _svJdExistsFetching = null;
+async function _svCheckHasJd() {
+    if (_svJdExistsCache !== null) return _svJdExistsCache;
+    if (_svJdExistsFetching) return _svJdExistsFetching;
+    _svJdExistsFetching = (async () => {
+        try {
+            const uname = window.__SV_ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+            if (!uname) { _svJdExistsCache = false; return false; }
+            const resp = await fetch(`${HAS_JD_API}?username=${encodeURIComponent(uname)}`, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const d = await resp.json();
+            _svJdExistsCache = !!(d && d.exists);
+        } catch (_) { _svJdExistsCache = false; }
+        _svJdExistsFetching = null;
+        return _svJdExistsCache;
+    })();
+    return _svJdExistsFetching;
+}
+// Pre-fetch on page load so the result is ready when appeal buttons render.
+document.addEventListener('DOMContentLoaded', () => { _svCheckHasJd(); });
 
 // No-op stubs for removed snipper functions (keeps existing code safe)
 const tableBody   = document.getElementById('tableBody');
@@ -3689,9 +3716,13 @@ function _nameFromLinkedInUrl(url) {
   const slug = m[1].replace(/\/$/, '').toLowerCase();
   const parts = slug.split('-').filter(Boolean);
   // Drop the trailing LinkedIn numeric/alphanumeric profile-ID segment
-  const nameParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
+  const trimmedParts = (parts.length > 1 && /\d/.test(parts[parts.length - 1]))
     ? parts.slice(0, -1)
     : parts;
+  // Strip any remaining digits from each name segment (e.g. jungyu0222 → jungyu)
+  const nameParts = trimmedParts
+    .map(p => p.replace(/\d+/g, ''))
+    .filter(p => p.length > 0);
   if (!nameParts.length) return null;
   return nameParts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 }
@@ -4095,6 +4126,8 @@ function buildRow(row) {
   tr.dataset.linkedinurl = row.linkedinurl;
   // Store the sourcing record's role_tag so assessment can validate it matches the current session.
   tr.dataset.roleTag = row.role_tag || '';
+  // Track whether an appeal has already been filed for this record.
+  if (row.appeal) { tr.dataset.hasAppeal = '1'; }
 
   const checkboxCell = document.createElement('td');
   checkboxCell.className = 'checkbox-cell';
@@ -4808,9 +4841,7 @@ function buildRow(row) {
                                 if (newCompany) { const cCell = tr.querySelector('td[data-field="company"]'); if(cCell) { cCell.textContent = newCompany; markDirty(cCell); flushImmediate(value, 'company', newCompany, cCell); } }
                                 if (newJob) { const jCell = tr.querySelector('td[data-field="jobtitle"]'); if(jCell) { jCell.textContent = newJob; markDirty(jCell); flushImmediate(value, 'jobtitle', newJob, jCell); } }
                                 if (newCountry) { const cntCell = tr.querySelector('td[data-field="country"]'); if(cntCell) { cntCell.textContent = newCountry; markDirty(cntCell); flushImmediate(value, 'country', newCountry, cntCell); } }
-                                const newName = (newJob && newCompany)
-                                    ? `${newJob.trim()} at ${newCompany.trim()}`
-                                    : (analyzeData.name || '').trim();
+                                const newName = _nameFromLinkedInUrl(value) || (analyzeData.name || '').trim();
                                 if (newName) { const nCell = tr.querySelector('td[data-field="name"]'); if(nCell) { nCell.textContent = newName; flushImmediate(value, 'name', newName, nCell); } }
                                 
                                 // All assessments use L2 (inference mode) by default
@@ -5079,7 +5110,7 @@ function buildRow(row) {
     return td;
   }
 
-  tr.appendChild(makeEditableCell('name', row.name || '', false, row.linkedinurl));
+  tr.appendChild(makeEditableCell('name', _nameFromLinkedInUrl(row.linkedinurl) || row.name || '', false, row.linkedinurl));
   tr.appendChild(makeEditableCell('company', row.company, false));
   tr.appendChild(makeEditableCell('jobtitle', row.jobtitle, false));
   const urlCountry = _countryFromLinkedInUrl(row.linkedinurl);
@@ -5459,7 +5490,10 @@ async function triggerLevel1Assessment(tr, anchor) {
             });
             }
         } else if (!window.__HAS_CUSTOM_LLM) {
-            /* AFFECTED: Add Appeal Button if score > 50% */
+            /* AFFECTED: Add Appeal Button if score > 50% — only for JD-sourced records */
+            _svCheckHasJd().then(hasJd => {
+            if (!hasJd) return; // no JD on file — appeal not applicable for this user
+            if (tr.dataset.hasAppeal === '1') return; // appeal already filed for this record
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
                     title:'Rebate denied',
@@ -5470,6 +5504,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                     onPrimary:()=> { 
                         if(typeof openAppealModal === 'function') {
                             openAppealModal({ finalJob: jobTitle, roleTag: roleTag, anchor: anchor });
+                            tr.dataset.hasAppeal = '1';
                         } else {
                             // Fallback simple appeal prompt — saves to sourcing.appeal
                             const reason = prompt("Enter justification for appeal:");
@@ -5479,7 +5514,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                                     headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
                                     body: JSON.stringify({ linkedinurl: anchor, field: 'appeal', value: reason })
                                 }).then(r => r.json()).then(d => {
-                                    if (d.updated) setStatus("Appeal saved.", "success");
+                                    if (d.updated) { tr.dataset.hasAppeal = '1'; setStatus("Appeal saved.", "success"); }
                                     else setStatus("Appeal save failed: " + (d.error || 'unknown'), "error");
                                 }).catch(e => setStatus("Appeal save error: " + e.message, "error"));
                             }
@@ -5505,6 +5540,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                     }
                 });
             }
+            }); // end _svCheckHasJd().then
         }
 
     } catch(e) {
@@ -6495,26 +6531,34 @@ function renderTable(){
                 };
                 assessmentActionContainer.appendChild(rebateBtn);
             } else {
-                // Show Appeal Button
-                const appealBtn = document.createElement('button');
-                appealBtn.textContent = 'Appeal';
-                appealBtn.className = 'review-action-btn view'; // Use neutral style
-                appealBtn.style.padding = '6px 12px';
-                appealBtn.onclick = () => {
-                    const anchor = content.dataset.anchor;
-                    const justification = prompt("Please enter your justification for appeal:");
-                    if (justification) {
-                        fetch(APPEAL_SAVE_API, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-                            body: JSON.stringify({ linkedinurl: anchor, field: 'appeal', value: justification })
-                        }).then(r => r.json()).then(d => {
-                            if (d.updated) { alert("Appeal saved successfully."); }
-                            else { alert("Appeal save failed: " + (d.error || 'unknown error')); }
-                        }).catch(e => { alert("Appeal save error: " + e.message); });
-                    }
-                };
-                assessmentActionContainer.appendChild(appealBtn);
+                // Show Appeal Button only if user sourced via an uploaded JD and has not yet filed an appeal
+                _svCheckHasJd().then(hasJd => {
+                    if (!hasJd) return;
+                    if (tr.dataset.hasAppeal === '1') return; // appeal already filed
+                    const appealBtn = document.createElement('button');
+                    appealBtn.textContent = 'Appeal';
+                    appealBtn.className = 'review-action-btn view'; // Use neutral style
+                    appealBtn.style.padding = '6px 12px';
+                    appealBtn.onclick = () => {
+                        const anchor = content.dataset.anchor;
+                        const justification = prompt("Please enter your justification for appeal:");
+                        if (justification) {
+                            fetch(APPEAL_SAVE_API, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                                body: JSON.stringify({ linkedinurl: anchor, field: 'appeal', value: justification })
+                            }).then(r => r.json()).then(d => {
+                                if (d.updated) {
+                                    tr.dataset.hasAppeal = '1';
+                                    appealBtn.remove();
+                                    alert("Appeal saved successfully.");
+                                }
+                                else { alert("Appeal save failed: " + (d.error || 'unknown error')); }
+                            }).catch(e => { alert("Appeal save error: " + e.message); });
+                        }
+                    };
+                    assessmentActionContainer.appendChild(appealBtn);
+                });
             }
         }
     } else {
@@ -6647,7 +6691,7 @@ function renderTable(){
     downloadBtn.textContent = 'Download Assessment';
     downloadBtn.title = 'Download assessment report as Word document (available after assessment is complete)';
     downloadBtn.style.width = '100%'; // Full width
-    downloadBtn.style.display = 'none'; // Hidden until assessment exists
+    downloadBtn.style.display = 'block'; // Always visible in View Details tab
     downloadBtn.style.backgroundColor = '#f6f8fa';
     downloadBtn.style.color = 'var(--azure-dragon,#073679)';
     downloadBtn.style.border = '1px solid var(--desired-dawn,#d8d8d8)';

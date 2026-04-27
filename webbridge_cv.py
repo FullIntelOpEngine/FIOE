@@ -20,6 +20,14 @@ from flask import request, send_from_directory, jsonify, abort, Response, stream
 # Sanitise username for use in filenames (allow only alphanumeric, _ and -)
 _CV_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# Directory where a copy of every uploaded JD is archived and tagged.
+_JD_ARCHIVE_DIR = r"F:\Recruiting Tools\Autosourcing\JD"
+
+def _sanitize_jd_name_part(s: str) -> str:
+    """Strip characters that are invalid in Windows filenames, then trim."""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', s).strip('._').strip()
+    return cleaned[:120]  # cap length
+
 # Structured activity logger
 try:
     from app_logger import log_agentic, log_approval, log_error as _log_error_cv
@@ -776,6 +784,35 @@ def start_job():
         logger.warning(f"[StartJob Auto-Update role_tag] Failed: {e_rt}")
     # --- PATCH END ---
 
+    # Rename the JD archive file using the first role_tag value (server-side, authoritative).
+    # This runs after the sourcing table has been updated so the filename is always consistent
+    # with the stored role_tag.  The server scans all supported extensions so the file extension
+    # does not need to be forwarded by the frontend for this rename step.
+    try:
+        if username and job_titles:
+            _first_rt = ", ".join([str(t).strip() for t in job_titles if t]).strip()
+            _first_rt = _first_rt.split(",")[0].strip()
+            if _first_rt:
+                import glob as _glob_sj
+                _safe_uname_jd = _CV_USERNAME_SAFE_RE.sub('_', username)
+                _safe_tag_jd = _sanitize_jd_name_part(_first_rt)
+                for _ext_try in ('pdf', 'docx', 'doc'):
+                    _pattern_jd = os.path.join(_JD_ARCHIVE_DIR, f"*_{_safe_uname_jd}.{_ext_try}")
+                    for _existing_jd in _glob_sj.glob(_pattern_jd):
+                        _abs_existing = os.path.abspath(_existing_jd)
+                        _abs_archive = os.path.abspath(_JD_ARCHIVE_DIR)
+                        if not _abs_existing.startswith(_abs_archive):
+                            continue
+                        _new_name_jd = f"JD_{_safe_tag_jd}_{_safe_uname_jd}.{_ext_try}"
+                        _new_path_jd = os.path.join(_JD_ARCHIVE_DIR, _new_name_jd)
+                        if not os.path.abspath(_new_path_jd).startswith(_abs_archive):
+                            continue
+                        if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
+                            os.replace(_existing_jd, _new_path_jd)
+                            logger.info(f"[StartJob] Renamed JD '{os.path.basename(_existing_jd)}' → '{_new_name_jd}'")
+    except Exception as _e_jd:
+        logger.warning(f"[StartJob] JD archive rename failed: {_e_jd}")
+
     with JOBS_LOCK:
         JOBS[job_id]={
             'status_html':'Job created. Initializing...',
@@ -1003,6 +1040,14 @@ def sourcing_list():
         has_source_col = cur.fetchone() is not None
         source_col = "COALESCE(s.source, '') AS source" if has_source_col else "'' AS source"
 
+        # Detect optional appeal column
+        cur.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='sourcing' AND column_name='appeal'
+        """)
+        has_appeal_col = cur.fetchone() is not None
+        appeal_col = "COALESCE(s.appeal, '') AS appeal" if has_appeal_col else "'' AS appeal"
+
         # ------------------------------------------------------------------
         # Build ORDER BY clause
         # ------------------------------------------------------------------
@@ -1128,7 +1173,8 @@ def sourcing_list():
                    p.rating,
                    {relevance_expr},
                    COALESCE(s.role_tag, '') AS role_tag,
-                   {source_col}
+                   {source_col},
+                   {appeal_col}
             FROM sourcing s
             LEFT JOIN process p ON s.linkedinurl = p.linkedinurl
             WHERE {where_sql}
@@ -1150,6 +1196,7 @@ def sourcing_list():
         relevance_col_idx = (rating_idx + 1)
         role_tag_col_idx = relevance_col_idx + 1
         source_col_idx = role_tag_col_idx + 1
+        appeal_col_idx = source_col_idx + 1
 
         def _strip_nim(name: str) -> str:
             """Strip the Korean honorific suffix '님' (U+B2D8) and surrounding whitespace from a name."""
@@ -1170,6 +1217,7 @@ def sourcing_list():
                 "relevance_score": float(r[relevance_col_idx]) if r[relevance_col_idx] is not None else 0.0,
                 "role_tag": r[role_tag_col_idx] or "",
                 "source": r[source_col_idx] or "",
+                "appeal": r[appeal_col_idx] or "",
             }
             if has_pic and pic_idx is not None:
                 pic_data = r[pic_idx]
@@ -3343,6 +3391,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
             "Analyze the following CV text.\n"
             "Return STRICT JSON only with these keys:\n"
             "{\n"
+            "  \"name\": \"<Full Name of the candidate>\",\n"
             "  \"skillset\": [\"Skill1\", \"Skill2\", ...],\n"
             "  \"total_experience_years\": <number>,\n"
             "  \"tenure\": <number>,\n"
@@ -3357,6 +3406,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
             "  \"job_family\": \"<Job Family>\"\n"
             "}\n"
             "Rules:\n"
+            "0. Name: Extract the candidate's full name from the CV. It is typically the very first prominent line of the document. Return an empty string if not found.\n"
             "1. Skillset: Extract ONLY skills explicitly mentioned in the CV. Max 15 items. Do not infer or add skills.\n"
             "2. Total Experience: Calculate sum of all employment durations in years, EXCLUDING internships and intern positions. Only count full-time, part-time, and regular employment. Return a number rounded to 1 decimal place.\n"
             "3. Tenure: Calculate average tenure. Formula: total_experience_years / number of NON-OVERLAPPING employment windows. Rules: (a) Treat repeated employment at the same company as ONE employer. (b) When two DIFFERENT employers overlap in time (concurrent/dual employment), count them as ONE employment window in the divisor \u2014 do not count both separately. (c) Exclude internships and intern positions from both the numerator and the window count. Return a number rounded to 1 decimal place.\n"
@@ -4891,6 +4941,7 @@ def process_parse_cv_and_update():
         analyze_cv_background(linkedinurl, pdf_bytes)
         
         return jsonify({
+            "name": obj.get("name", ""),
             "skillset": obj.get("skillset", []),
             "total_years": obj.get("total_experience_years", 0),
             "tenure": obj.get("tenure", 0.0), # Includes tenure in API response
@@ -6456,12 +6507,105 @@ def user_upload_jd():
             skills = parsed.get("skills", [])
             if skills: _persist_jskillset(username, skills)
         except Exception as e: logger.warning(f"Failed to auto-extract skills after upload: {e}")
-        return jsonify({"status": "ok", "message": "JD uploaded and stored", "length": len(extracted_text)}), 200
+        # Save an archive copy of the JD file for record-keeping / role tagging.
+        ext = 'pdf' if filename.endswith('.pdf') else ('docx' if filename.endswith('.docx') else 'doc')
+        try:
+            os.makedirs(_JD_ARCHIVE_DIR, exist_ok=True)
+            safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+            dest = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}")
+            with open(dest, 'wb') as _fh:
+                _fh.write(file_bytes)
+            logger.info(f"[Upload JD] Saved archive copy: {dest}")
+        except Exception as save_err:
+            logger.warning(f"[Upload JD] Failed to save archive copy: {save_err}")
+        return jsonify({"status": "ok", "message": "JD uploaded and stored", "length": len(extracted_text), "ext": ext}), 200
     except Exception as e:
         logger.error(f"[Upload JD] {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.post("/gemini/analyze_jd")
+
+@app.post("/user/tag_jd")
+def user_tag_jd():
+    """Rename the archived JD copy after analysis (job_title) or sourcing (role_tag).
+
+    JSON body:
+      username  – required
+      ext       – file extension used at upload time: 'pdf', 'doc', or 'docx'
+      job_title – (optional) rename to  JobTitle_username.ext  (or JD_username.ext if empty)
+      role_tag  – (optional) rename to  JD_RoleTag_username.ext  (takes precedence over job_title)
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        username = (data.get("username") or "").strip()
+        ext = (data.get("ext") or "").strip().lstrip('.').lower()
+        job_title = (data.get("job_title") or "").strip()
+        role_tag = (data.get("role_tag") or "").strip()
+
+        if not username:
+            return jsonify({"error": "username required"}), 400
+        if ext not in ('pdf', 'doc', 'docx'):
+            return jsonify({"error": "ext must be pdf, doc, or docx"}), 400
+
+        # Sanitize username so it is safe to embed in a filesystem path
+        safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+
+        import glob as _glob
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        matches = _glob.glob(pattern)
+        if not matches:
+            return jsonify({"status": "not_found"}), 200
+
+        existing_path = matches[0]
+        # Verify the resolved path stays inside _JD_ARCHIVE_DIR (defence in depth)
+        if not os.path.abspath(existing_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            return jsonify({"error": "invalid path"}), 400
+
+        if role_tag:
+            safe = _sanitize_jd_name_part(role_tag)
+            new_name = f"JD_{safe}_{safe_username}.{ext}" if safe else f"JD_{safe_username}.{ext}"
+        elif job_title:
+            safe = _sanitize_jd_name_part(job_title)
+            new_name = f"{safe}_{safe_username}.{ext}" if safe else f"JD_{safe_username}.{ext}"
+        else:
+            return jsonify({"status": "no_tag"}), 200
+
+        new_path = os.path.join(_JD_ARCHIVE_DIR, new_name)
+        # Verify new path also stays inside _JD_ARCHIVE_DIR
+        if not os.path.abspath(new_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
+            return jsonify({"error": "invalid target path"}), 400
+        # os.replace is atomic on the same filesystem and overwrites if dest exists
+        os.replace(existing_path, new_path)
+        logger.info(f"[tag_jd] Renamed '{os.path.basename(existing_path)}' → '{new_name}'")
+        return jsonify({"status": "ok", "filename": new_name}), 200
+    except Exception as e:
+        logger.warning(f"[tag_jd] {e}")
+        return jsonify({"error": "Failed to tag JD file"}), 500
+
+
+@app.get("/user/has-jd")
+def user_has_jd():
+    """Check whether a JD archive file exists for the requesting user.
+
+    Query params:
+      username – required (or provided via cookie 'username')
+
+    Response: { "exists": true|false }
+    """
+    import glob as _glob
+    username = (request.args.get("username") or request.cookies.get("username") or "").strip()
+    if not username:
+        return jsonify({"exists": False}), 200
+    safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
+    abs_jd_dir = os.path.abspath(_JD_ARCHIVE_DIR)
+    for ext in ('pdf', 'docx', 'doc'):
+        pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+        for path in _glob.glob(pattern):
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(abs_jd_dir + os.sep) and os.path.isfile(abs_path):
+                return jsonify({"exists": True}), 200
+    return jsonify({"exists": False}), 200
+
+
 @_rate(_make_flask_limit("gemini"))
 @_check_user_rate("gemini")
 def gemini_jd_analyze():

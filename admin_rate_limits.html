@@ -3384,7 +3384,25 @@ function renderAppealsCard() {
   const card = document.createElement('div');
   card.className = 'card';
   card.id = 'appealsCard';
-  card.innerHTML = '<h2>Pending Appeals</h2>';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;';
+
+  const title = document.createElement('h2');
+  title.style.margin = '0';
+  title.textContent = 'Pending Appeals';
+
+  const smtpBtn = document.createElement('button');
+  smtpBtn.className = 'btn btn-sm';
+  smtpBtn.style.cssText = 'background:#0d6efd;color:#fff;font-size:12px;display:flex;align-items:center;gap:5px;';
+  smtpBtn.innerHTML = '⚙ Configure SMTP';
+  smtpBtn.title = 'Set up the email account used to send appeal decision messages to users';
+  smtpBtn.addEventListener('click', () => showAppealSmtpModal());
+
+  header.appendChild(title);
+  header.appendChild(smtpBtn);
+  card.appendChild(header);
+
   renderAppealsTable(card);
   return card;
 }
@@ -3414,6 +3432,8 @@ function renderAppealsTable(card) {
         <th>Company</th>
         <th>LinkedIn URL</th>
         <th>Appeal Text</th>
+        <th>Search Title</th>
+        <th>Job Description</th>
         <th>Actions</th>
       </tr>
     </thead>`;
@@ -3429,7 +3449,74 @@ function renderAppealsTable(card) {
       <td><a href="${escHtml(ap.linkedinurl)}" target="_blank" rel="noopener" title="${escHtml(ap.linkedinurl)}"
              class="appeal-url">${escHtml(ap.linkedinurl)}</a></td>
       <td class="appeal-text">${escHtml(ap.appeal)}</td>
+      <td class="td-search-title">${escHtml(ap.role_tag ? ap.role_tag.split(',')[0].trim() : '—')}</td>
+      <td class="td-jd-btn"></td>
       <td></td>`;
+
+    // Job Description dropdown (populated asynchronously from /admin/list-jd)
+    const tdJd = tr.querySelector('.td-jd-btn');
+    if (ap.username) {
+      const jdWrap = document.createElement('div');
+      jdWrap.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:nowrap;';
+
+      const sel = document.createElement('select');
+      sel.className = 'form-select form-select-sm';
+      sel.style.cssText = 'min-width:160px;max-width:220px;font-size:12px;';
+      sel.innerHTML = '<option value="">⏳ Loading…</option>';
+      sel.disabled = true;
+
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'btn btn-sm';
+      dlBtn.style.cssText = 'background:#e9ecef;color:#495057;cursor:not-allowed;white-space:nowrap;';
+      dlBtn.textContent = '⬇ Download';
+      dlBtn.disabled = true;
+
+      jdWrap.appendChild(sel);
+      jdWrap.appendChild(dlBtn);
+      tdJd.appendChild(jdWrap);
+
+      fetch(`${API}/admin/list-jd?username=${encodeURIComponent(ap.username)}`, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(data => {
+          sel.innerHTML = '';
+          if (data.files && data.files.length) {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '— Select JD —';
+            sel.appendChild(placeholder);
+            data.files.forEach(f => {
+              const opt = document.createElement('option');
+              opt.value = f;
+              opt.textContent = f;
+              sel.appendChild(opt);
+            });
+            sel.disabled = false;
+            const syncBtn = () => {
+              const hasVal = !!sel.value;
+              dlBtn.disabled = !hasVal;
+              dlBtn.style.cssText = hasVal
+                ? 'background:#0d6efd;color:#fff;cursor:pointer;white-space:nowrap;'
+                : 'background:#e9ecef;color:#495057;cursor:not-allowed;white-space:nowrap;';
+            };
+            sel.addEventListener('change', syncBtn);
+            dlBtn.addEventListener('click', () => {
+              if (!sel.value) return;
+              window.location.href = `${API}/admin/download-jd-file?username=${encodeURIComponent(ap.username)}&filename=${encodeURIComponent(sel.value)}`;
+            });
+          } else {
+            sel.innerHTML = '<option value="">No JD on record</option>';
+            sel.disabled = true;
+          }
+        })
+        .catch(() => {
+          sel.innerHTML = '<option value="">Error loading</option>';
+          sel.disabled = true;
+        });
+    } else {
+      tdJd.textContent = '—';
+      tdJd.style.color = '#aaa';
+    }
+
     const tdAct = tr.querySelector('td:last-child');
 
     const approveBtn = document.createElement('button');
@@ -3453,15 +3540,284 @@ function renderAppealsTable(card) {
   card.appendChild(wrap);
 }
 
+function showAppealMessageModal(label, recipientName, action, username, appealData) {
+  return new Promise(async resolve => {
+    const old = document.getElementById('appealMsgModal');
+    if (old) old.remove();
+
+    const accentColor = action === 'approve' ? '#198754' : '#dc3545';
+
+    // Load templates from backend (fall back to empty list on error)
+    let templates = [];
+    try {
+      const tr = await fetch(`${API}/admin/appeal-templates`, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (tr.ok) templates = await tr.json();
+    } catch (_e) {}
+
+    // Pre-fetch tag values for this user so the glossary can show resolved values
+    let tagData = { fullname: username || '', token: '?' };
+    if (username) {
+      try {
+        const tagR = await fetch(`${API}/admin/resolve-appeal-tags?username=${encodeURIComponent(username)}`, {
+          credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (tagR.ok) tagData = await tagR.json();
+      } catch (_e) {}
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'appealMsgModal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(7,54,121,.22);width:100%;max-width:540px;overflow:hidden;font-size:13px;';
+
+    // Build template options
+    const tmplOptions = templates.map(t => `<option value="${escHtml(t.name)}">${escHtml(t.name)}</option>`).join('');
+
+    modal.innerHTML = `
+      <div style="background:${accentColor};color:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-weight:700;font-size:14px;">⚖️ ${escHtml(label)} — ${escHtml(recipientName)}</span>
+        <button id="appealMsgClose" style="background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:10px;">
+
+        <!-- Template row -->
+        <div style="display:flex;gap:6px;align-items:center;">
+          <select id="appealTmplSel" style="flex:1;padding:6px 8px;font-size:12px;border:1px solid #ccd;border-radius:4px;">
+            <option value="">— Load template —</option>
+            ${tmplOptions}
+          </select>
+          <button id="appealTmplSave" title="Save current text as a template"
+            style="padding:6px 10px;background:#e8eef7;border:1px solid #4c82b8;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#073679;">💾 Save</button>
+          <button id="appealTmplDel" title="Delete selected template"
+            style="padding:6px 10px;background:#fde;border:1px solid #f99;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap;color:#c00;">🗑 Del</button>
+        </div>
+
+        <!-- Glossary tag row -->
+        <div style="position:relative;display:inline-flex;align-items:center;gap:5px;">
+          <button id="appealTagGlossaryBtn" type="button"
+            style="display:inline-flex;align-items:center;gap:4px;padding:4px 8px;background:#f0f4ff;border:1px solid #4c82b8;border-radius:4px;font-size:11px;cursor:pointer;color:#073679;font-weight:600;">
+            <span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#073679;color:#fff;font-size:10px;font-weight:700;">?</span>
+            Tag Glossary
+          </button>
+          <div id="appealTagGlossary" style="display:none;position:absolute;top:110%;left:0;z-index:10000;background:#1e2433;color:#fff;border-radius:8px;padding:10px 14px;min-width:310px;box-shadow:0 6px 24px rgba(0,0,0,.4);font-size:12px;line-height:1.7;">
+            <div style="font-weight:700;font-size:11px;border-bottom:1px solid rgba(255,255,255,.2);padding-bottom:5px;margin-bottom:6px;letter-spacing:.4px;">Available Template Tags</div>
+            <div style="font-weight:700;font-size:10px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;">User</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Username]" style="color:#6deaf9;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Username]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– User's full name (${escHtml(tagData.fullname || '—')})</span>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Token]" style="color:#86efac;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Token]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– User's token balance (${escHtml(String(tagData.token ?? '?'))})</span>
+            </div>
+            <div style="font-weight:700;font-size:10px;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;margin-top:6px;">Appeal</div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Search Title]" style="color:#fde68a;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Search Title]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– Role/search title (${escHtml(appealData?.role_tag ? appealData.role_tag.split(',')[0].trim() : '—')})</span>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:2px;">
+              <b class="appeal-tag-chip" data-tag="[Candidate Name]" style="color:#fde68a;cursor:pointer;border-radius:4px;padding:0 3px;" title="Click to insert">[Candidate Name]</b>
+              <span style="color:rgba(255,255,255,.6);font-size:11px;">– Candidate's name (${escHtml(appealData?.name || '—')})</span>
+            </div>
+            <div style="margin-top:5px;font-size:10px;color:rgba(255,255,255,.4);border-top:1px solid rgba(255,255,255,.1);padding-top:4px;">Click a tag to insert it at the cursor · Tags are resolved when the email is sent</div>
+          </div>
+        </div>
+
+        <!-- AI draft row -->
+        <div id="aiDraftArea" style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input id="aiDraftPrompt" type="text" placeholder="AI: describe what to write…"
+              style="flex:1;padding:6px 8px;border:1px solid #ccd;border-radius:4px;font-size:12px;">
+            <button id="aiDraftBtn"
+              style="padding:6px 12px;background:#7c3aed;color:#fff;border:none;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">✨ Draft</button>
+          </div>
+          <div id="aiDraftStatus" style="display:none;font-size:11px;color:#7c3aed;"></div>
+        </div>
+
+        <!-- Subject field -->
+        <label style="display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:12px;">
+          Subject
+          <input id="appealMsgSubject" type="text" placeholder="Email subject…"
+            style="padding:8px;border:1px solid #cdd;border-radius:5px;font-size:13px;margin-top:4px;">
+        </label>
+
+        <!-- Message textarea -->
+        <label style="display:flex;flex-direction:column;gap:4px;font-weight:600;font-size:12px;">
+          Message to user <span style="font-weight:400;color:#666;">(will be sent by email)</span>
+          <textarea id="appealMsgText" rows="6" placeholder="Type your response to the user here…"
+            style="padding:8px;border:1px solid #cdd;border-radius:5px;font-size:13px;resize:vertical;margin-top:4px;"></textarea>
+        </label>
+
+        <div id="appealMsgError" style="display:none;padding:8px 12px;background:#fde;border:1px solid #f99;border-radius:5px;color:#c00;font-size:12px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button id="appealMsgCancel" style="padding:8px 18px;background:#e8eef7;border:1px solid #4c82b8;border-radius:5px;cursor:pointer;font-size:12px;color:#073679;">Cancel</button>
+          <button id="appealMsgSubmit" style="padding:8px 18px;background:${accentColor};color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600;">${escHtml(label)}</button>
+        </div>
+      </div>`;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const close = result => { overlay.remove(); resolve(result); };
+
+    document.getElementById('appealMsgClose').addEventListener('click', () => close(null));
+    document.getElementById('appealMsgCancel').addEventListener('click', () => close(null));
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
+
+    // ── Tag Glossary toggle ───────────────────────────────────────────────────
+    const glossaryBtn = document.getElementById('appealTagGlossaryBtn');
+    const glossaryPanel = document.getElementById('appealTagGlossary');
+    let glossaryOpen = false;
+    glossaryBtn.addEventListener('click', () => {
+      glossaryOpen = !glossaryOpen;
+      glossaryPanel.style.display = glossaryOpen ? 'block' : 'none';
+    });
+    document.addEventListener('click', function outsideGlossary(e) {
+      if (glossaryOpen && !glossaryBtn.contains(e.target) && !glossaryPanel.contains(e.target)) {
+        glossaryOpen = false;
+        glossaryPanel.style.display = 'none';
+        document.removeEventListener('click', outsideGlossary);
+      }
+    });
+    // Insert tag at cursor when clicking a tag chip
+    glossaryPanel.querySelectorAll('.appeal-tag-chip').forEach(chip => {
+      chip.addEventListener('click', e => {
+        e.stopPropagation();
+        const tag = chip.dataset.tag;
+        const ta = document.getElementById('appealMsgText');
+        if (!ta) return;
+        const start = ta.selectionStart, end = ta.selectionEnd;
+        ta.value = ta.value.slice(0, start) + tag + ta.value.slice(end);
+        ta.selectionStart = ta.selectionEnd = start + tag.length;
+        ta.focus();
+        chip.style.background = 'rgba(109,234,249,0.15)';
+        setTimeout(() => { chip.style.background = ''; }, 600);
+      });
+    });
+
+    // ── Template helpers (backend-persisted) ─────────────────────────────────
+    async function _syncTemplates(list) {
+      try {
+        await fetch(`${API}/admin/appeal-templates`, {
+          method: 'POST',
+          headers: csrfHeaders(),
+          credentials: 'same-origin',
+          body: JSON.stringify({ templates: list }),
+        });
+      } catch (_e) {}
+    }
+
+    // Load template into textarea
+    document.getElementById('appealTmplSel').addEventListener('change', e => {
+      const name = e.target.value;
+      if (!name) return;
+      const tmpl = templates.find(t => t.name === name);
+      if (tmpl) document.getElementById('appealMsgText').value = tmpl.body || '';
+    });
+
+    // Save current text as a template
+    document.getElementById('appealTmplSave').addEventListener('click', async () => {
+      const body = document.getElementById('appealMsgText').value.trim();
+      if (!body) { alert('Nothing to save — write a message first.'); return; }
+      const name = prompt('Template name:');
+      if (!name) return;
+      const idx = templates.findIndex(t => t.name === name);
+      if (idx >= 0) {
+        if (!confirm(`Overwrite template "${name}"?`)) return;
+        templates[idx].body = body;
+      } else {
+        templates.push({ id: Date.now(), name, body });
+      }
+      await _syncTemplates(templates);
+      // Refresh dropdown
+      const sel = document.getElementById('appealTmplSel');
+      const existing = sel.querySelector(`option[value="${CSS.escape(name)}"]`);
+      if (!existing) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      sel.value = name;
+    });
+
+    // Delete selected template
+    document.getElementById('appealTmplDel').addEventListener('click', async () => {
+      const sel = document.getElementById('appealTmplSel');
+      const name = sel.value;
+      if (!name) return;
+      if (!confirm(`Delete template "${name}"?`)) return;
+      templates = templates.filter(t => t.name !== name);
+      await _syncTemplates(templates);
+      sel.querySelector(`option[value="${CSS.escape(name)}"]`)?.remove();
+      sel.value = '';
+    });
+
+    // AI draft
+    document.getElementById('aiDraftBtn').addEventListener('click', async () => {
+      const prompt = document.getElementById('aiDraftPrompt').value.trim();
+      if (!prompt) return;
+      const btn = document.getElementById('aiDraftBtn');
+      const status = document.getElementById('aiDraftStatus');
+      btn.disabled = true;
+      btn.textContent = '…';
+      status.style.display = 'block';
+      status.textContent = '✨ Generating draft…';
+      try {
+        const res = await fetch(`${API}/admin/draft-email`, {
+          method: 'POST',
+          headers: csrfHeaders(),
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            prompt,
+            context: { candidateName: recipientName, myEmail: _appealSmtpConfig?.user || '' },
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Draft failed');
+        const ta = document.getElementById('appealMsgText');
+        ta.value = (data.body || '').trim();
+        const subjEl = document.getElementById('appealMsgSubject');
+        if (subjEl && data.subject) subjEl.value = data.subject.trim();
+        status.textContent = '✓ Draft generated.';
+      } catch (err) {
+        status.style.color = '#c00';
+        status.textContent = '✗ ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '✨ Draft';
+      }
+    });
+
+    document.getElementById('appealMsgSubmit').addEventListener('click', () => {
+      const msg = document.getElementById('appealMsgText').value.trim();
+      const subj = document.getElementById('appealMsgSubject').value.trim();
+      if (!msg) {
+        const errEl = document.getElementById('appealMsgError');
+        errEl.textContent = 'Please enter a message for the user.';
+        errEl.style.display = 'block';
+        return;
+      }
+      close({ message: msg, subject: subj });
+    });
+
+    setTimeout(() => { const ta = document.getElementById('appealMsgText'); if (ta) ta.focus(); }, 50);
+  });
+}
+
 async function handleAppeal(ap, action, tr) {
   const label = action === 'approve' ? 'Approve (+1 token)' : 'Reject';
-  if (!confirm(`${label} appeal for ${ap.username || ap.linkedinurl}?`)) return;
+  const result = await showAppealMessageModal(label, ap.username || ap.linkedinurl, action, ap.username, ap);
+  if (result === null) return; // Admin cancelled
+  const { message, subject } = result;
   try {
     const r = await fetch(`${API}/admin/appeal-action`, {
       method: 'POST',
       headers: csrfHeaders(),
       credentials: 'same-origin',
-      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action }),
+      body: JSON.stringify({ linkedinurl: ap.linkedinurl, username: ap.username, action, message, subject: subject || undefined, smtpConfig: _appealSmtpConfig || undefined }),
     });
     const data = await r.json();
     if (!r.ok) { toast(data.error || 'Action failed', 'error'); return; }
@@ -3469,6 +3825,8 @@ async function handleAppeal(ap, action, tr) {
       ? `Appeal approved — 1 token added to ${ap.username} ✓`
       : `Appeal rejected and record removed ✓`;
     toast(msg, 'success');
+    if (data.email_sent) toast(`Email sent to ${ap.username} ✓`, 'success');
+    else if (data.email_error) toast(`Email not sent: ${data.email_error}`, 'warn');
     // Remove from local state and refresh table
     _appeals = _appeals.filter(a => a.linkedinurl !== ap.linkedinurl);
     const card = document.getElementById('appealsCard');
@@ -3491,6 +3849,91 @@ async function handleAppeal(ap, action, tr) {
   } catch (err) {
     toast('Network error: ' + err.message, 'error');
   }
+}
+
+// ── Appeal SMTP configuration (stored in localStorage) ────────────────────────
+let _appealSmtpConfig = null;
+(function _loadAppealSmtp() {
+  try {
+    const raw = localStorage.getItem('rl_appeal_smtp_config');
+    if (raw) _appealSmtpConfig = JSON.parse(raw);
+  } catch (_e) { /* ignore */ }
+})();
+
+function _saveAppealSmtp(cfg) {
+  _appealSmtpConfig = cfg;
+  try { localStorage.setItem('rl_appeal_smtp_config', JSON.stringify(cfg)); } catch (_e) {}
+}
+
+function showAppealSmtpModal() {
+  const old = document.getElementById('appealSmtpModal');
+  if (old) old.remove();
+
+  const cfg = _appealSmtpConfig || {};
+  const overlay = document.createElement('div');
+  overlay.id = 'appealSmtpModal';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const inp = (id, type, placeholder, value) =>
+    `<input id="${id}" type="${type}" placeholder="${escHtml(placeholder)}" value="${escHtml(value || '')}"
+      style="width:100%;padding:8px;margin-bottom:12px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">`;
+
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:10px;box-shadow:0 8px 32px rgba(7,54,121,.22);width:100%;max-width:420px;overflow:hidden;font-size:13px;">
+      <div style="background:#0d6efd;color:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-weight:700;font-size:14px;">⚙ SMTP Configuration — Appeals</span>
+        <button id="smtpModalClose" style="background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="padding:18px;display:flex;flex-direction:column;">
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Host</label>
+        ${inp('smtpHost','text','smtp.gmail.com', cfg.host)}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Port</label>
+        ${inp('smtpPort','text','587', cfg.port || '587')}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">User (email address)</label>
+        ${inp('smtpUser','text','user@example.com', cfg.user)}
+        <label style="font-weight:600;font-size:12px;margin-bottom:4px;">Password</label>
+        <input id="smtpPass" type="password" value="${escHtml(cfg.pass || '')}"
+          style="width:100%;padding:8px;margin-bottom:12px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:16px;cursor:pointer;">
+          <input id="smtpSecure" type="checkbox" ${cfg.secure ? 'checked' : ''}>
+          Use Secure Connection (SSL/TLS on port 465)
+        </label>
+        <div id="smtpSaveMsg" style="display:none;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;"></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button id="smtpCancelBtn" style="padding:8px 18px;background:#e8eef7;border:1px solid #4c82b8;border-radius:5px;cursor:pointer;font-size:12px;color:#073679;">Cancel</button>
+          <button id="smtpSaveBtn" style="padding:8px 18px;background:#0d6efd;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600;">Save Config</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById('smtpModalClose').addEventListener('click', close);
+  document.getElementById('smtpCancelBtn').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  document.getElementById('smtpSaveBtn').addEventListener('click', () => {
+    const host = document.getElementById('smtpHost').value.trim();
+    const user = document.getElementById('smtpUser').value.trim();
+    if (!host || !user) {
+      const msg = document.getElementById('smtpSaveMsg');
+      msg.style.cssText = 'display:block;background:#fde;border:1px solid #f99;color:#c00;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;';
+      msg.textContent = 'Host and user (email) are required.';
+      return;
+    }
+    _saveAppealSmtp({
+      host,
+      port: document.getElementById('smtpPort').value.trim() || '587',
+      user,
+      pass: document.getElementById('smtpPass').value,
+      secure: document.getElementById('smtpSecure').checked,
+    });
+    const msg = document.getElementById('smtpSaveMsg');
+    msg.style.cssText = 'display:block;background:#d1fae5;border:1px solid #34d399;color:#065f46;padding:7px 10px;border-radius:4px;font-size:12px;margin-bottom:10px;';
+    msg.textContent = '✓ SMTP config saved.';
+    setTimeout(close, 800);
+  });
 }
 
 // ── Porting tab ──────────────────────────────────────────────────────────────
