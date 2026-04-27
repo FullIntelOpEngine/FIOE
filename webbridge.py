@@ -2075,7 +2075,7 @@ def admin_list_jd():
         pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
         for path in _glob.glob(pattern):
             abs_path = os.path.abspath(path)
-            if abs_path.startswith(archive_abs + os.sep) or abs_path == archive_abs:
+            if abs_path.startswith(archive_abs + os.sep) and os.path.isfile(abs_path):
                 results.append(os.path.basename(abs_path))
     return jsonify({"files": sorted(results)}), 200
 
@@ -2096,6 +2096,7 @@ def admin_download_jd_file():
       - resolved path must stay inside _JD_ARCHIVE_DIR
       - extension must be pdf, doc, or docx
     """
+    import glob as _glob
     from webbridge_cv import _JD_ARCHIVE_DIR, _CV_USERNAME_SAFE_RE
     username = (request.args.get("username") or "").strip()
     filename = (request.args.get("filename") or "").strip()
@@ -2111,14 +2112,24 @@ def admin_download_jd_file():
     # The file must belong to the requested user (suffix check)
     if not filename.endswith(f'_{safe_username}.{ext}'):
         return jsonify({"error": "File does not belong to this user"}), 403
+    # Resolve via filesystem glob so the final path is filesystem-sourced
+    # rather than user-sourced, eliminating path-injection risk.
     archive_abs = os.path.abspath(_JD_ARCHIVE_DIR)
-    abs_file = os.path.abspath(os.path.join(_JD_ARCHIVE_DIR, filename))
-    if not abs_file.startswith(archive_abs + os.sep) and abs_file != archive_abs:
-        return jsonify({"error": "Invalid path"}), 400
-    if not os.path.isfile(abs_file):
+    pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
+    matched = None
+    for candidate in _glob.glob(pattern):
+        abs_candidate = os.path.abspath(candidate)
+        if not abs_candidate.startswith(archive_abs + os.sep):
+            continue
+        if not os.path.isfile(abs_candidate):
+            continue
+        if os.path.basename(abs_candidate) == filename:
+            matched = abs_candidate
+            break
+    if matched is None:
         return jsonify({"error": "File not found"}), 404
     try:
-        return send_from_directory(archive_abs, filename, as_attachment=True)
+        return send_from_directory(archive_abs, os.path.basename(matched), as_attachment=True)
     except Exception as e:
         logging.getLogger(__name__).warning("[admin_download_jd_file] %s", e)
         return jsonify({"error": "Failed to retrieve file"}), 500
