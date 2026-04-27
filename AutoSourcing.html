@@ -4792,15 +4792,8 @@ async function generateAndStart(){
   try{
     // Client-side rate-limit check before submitting the sourcing job
     if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('start_job'))) return;
-    // Tag the archived JD copy with the first role_tag (job title) before launching the search.
-    if (jdUploaded && _jdFileExt && activeUsername && jobTitles.length > 0) {
-      fetch('/user/tag_jd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ username: activeUsername, ext: _jdFileExt, role_tag: jobTitles[0] })
-      }).catch(function() {});
-    }
+    // JD archive file renaming is now handled server-side inside start_job using the
+    // authoritative role_tag from the sourcing table, so no separate tag_jd call is needed here.
     const res=await fetch('/start_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status+' '+(await res.text()));
     const data=await res.json();

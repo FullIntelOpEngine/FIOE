@@ -3414,6 +3414,7 @@ function renderAppealsTable(card) {
         <th>Company</th>
         <th>LinkedIn URL</th>
         <th>Appeal Text</th>
+        <th>Search Title</th>
         <th>Job Description</th>
         <th>Actions</th>
       </tr>
@@ -3430,6 +3431,7 @@ function renderAppealsTable(card) {
       <td><a href="${escHtml(ap.linkedinurl)}" target="_blank" rel="noopener" title="${escHtml(ap.linkedinurl)}"
              class="appeal-url">${escHtml(ap.linkedinurl)}</a></td>
       <td class="appeal-text">${escHtml(ap.appeal)}</td>
+      <td class="td-search-title">${escHtml(ap.role_tag ? ap.role_tag.split(',')[0].trim() : '—')}</td>
       <td class="td-jd-btn"></td>
       <td></td>`;
 

@@ -784,6 +784,35 @@ def start_job():
         logger.warning(f"[StartJob Auto-Update role_tag] Failed: {e_rt}")
     # --- PATCH END ---
 
+    # Rename the JD archive file using the first role_tag value (server-side, authoritative).
+    # This runs after the sourcing table has been updated so the filename is always consistent
+    # with the stored role_tag.  The server scans all supported extensions so the file extension
+    # does not need to be forwarded by the frontend for this rename step.
+    try:
+        if username and job_titles:
+            _first_rt = ", ".join([str(t).strip() for t in job_titles if t]).strip()
+            _first_rt = _first_rt.split(",")[0].strip()
+            if _first_rt:
+                import glob as _glob_sj
+                _safe_uname_jd = _CV_USERNAME_SAFE_RE.sub('_', username)
+                _safe_tag_jd = _sanitize_jd_name_part(_first_rt)
+                for _ext_try in ('pdf', 'docx', 'doc'):
+                    _pattern_jd = os.path.join(_JD_ARCHIVE_DIR, f"*_{_safe_uname_jd}.{_ext_try}")
+                    for _existing_jd in _glob_sj.glob(_pattern_jd):
+                        _abs_existing = os.path.abspath(_existing_jd)
+                        _abs_archive = os.path.abspath(_JD_ARCHIVE_DIR)
+                        if not _abs_existing.startswith(_abs_archive):
+                            continue
+                        _new_name_jd = f"JD_{_safe_tag_jd}_{_safe_uname_jd}.{_ext_try}"
+                        _new_path_jd = os.path.join(_JD_ARCHIVE_DIR, _new_name_jd)
+                        if not os.path.abspath(_new_path_jd).startswith(_abs_archive):
+                            continue
+                        if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
+                            os.replace(_existing_jd, _new_path_jd)
+                            logger.info(f"[StartJob] Renamed JD '{os.path.basename(_existing_jd)}' → '{_new_name_jd}'")
+    except Exception as _e_jd:
+        logger.warning(f"[StartJob] JD archive rename failed: {_e_jd}")
+
     with JOBS_LOCK:
         JOBS[job_id]={
             'status_html':'Job created. Initializing...',
