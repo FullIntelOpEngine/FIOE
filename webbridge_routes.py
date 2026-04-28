@@ -2644,7 +2644,7 @@ def prospect_crm_data_delete():
         return jsonify({"ok": True}), 200
     except Exception as exc:
         logger.warning("[CRM delete] Could not remove %s: %s", crm_file, exc)
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": False, "error": "Could not delete CRM file."}), 500
 
 
 JOBS = {}

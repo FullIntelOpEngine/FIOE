@@ -1363,7 +1363,7 @@
         <div class="crm-title">📋 CRM — Prospect Candidates</div>
         <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
         <button class="crm-export-btn" id="crmExportBtn" onclick="crmExportOrImport()">⬇ Export XLS</button>
-        <input type="file" id="crmImportFileInput" accept=".xlsx,.xls,.xml" style="display:none;" onchange="crmImportXls(this)" />
+        <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
         <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
       </div>
@@ -2926,53 +2926,40 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         try {
-          const wb = XLSX.read(e.target.result, { type: 'array' });
-          // Prefer DB Copy sheet (preserves all fields); fall back to Prospect sheet
-          const dbCopyName = wb.SheetNames.find(n => n === 'DB Copy');
-          if (dbCopyName) {
-            const ws2 = wb.Sheets[dbCopyName];
-            const raw = XLSX.utils.sheet_to_json(ws2, { header: 1, defval: '' });
-            // row 0 = sentinel, data starts at row 1
-            const dataRaw = raw.slice(1).filter(r => r && r[0] && String(r[0]).trim());
-            if (!dataRaw.length) {
-              alert('Import failed: DB Copy sheet contains no data rows.');
-              return;
-            }
-            const imported = [];
-            for (const cells of dataRaw) {
-              try {
-                const s = cells.map(c => String(c)).join('');
-                if (s) imported.push(JSON.parse(s));
-              } catch(e) { /* skip malformed row */ }
-            }
-            if (!imported.length) {
-              alert('Import failed: Could not parse any rows from DB Copy sheet.');
-              return;
-            }
-            _crmRows = [];
-            _crmNextId = 1;
-            _crmSelected.clear();
-            imported.forEach(r => crmAddRow(r));
-          } else {
-            // Fallback: parse Prospect sheet
-            const ws1 = wb.Sheets[wb.SheetNames[0]];
-            const rows = XLSX.utils.sheet_to_json(ws1, { defval: '' });
-            if (!rows.length) { alert('Import failed: No data found in Prospect sheet.'); return; }
-            _crmRows = [];
-            _crmNextId = 1;
-            _crmSelected.clear();
-            rows.forEach(r => crmAddRow({
-              name:        r['Name']         || '',
-              jobTitle:    r['Job Title']     || '',
-              company:     r['Company']       || '',
-              sector:      r['Sector']        || '',
-              seniority:   r['Seniority']     || '',
-              email:       r['Email']         || '',
-              mobile:      r['Mobile']        || '',
-              linkedinUrl: r['LinkedIn URL']  || '',
-              comment:     r['Comment']       || '',
-            }));
+          const text = new TextDecoder('utf-8').decode(new Uint8Array(e.target.result));
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(text, 'application/xml');
+          if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+
+          // Find the DB Copy worksheet
+          const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
+          let dbCopyWs = null;
+          for (const ws of wsNodes) {
+            const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
+            if (name === 'DB Copy') { dbCopyWs = ws; break; }
           }
+          if (!dbCopyWs) throw new Error('DB Copy sheet not found. Only CRM exports from this system can be imported.');
+
+          const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
+          // Skip sentinel row (row 0)
+          const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
+          if (!dataRows.length) throw new Error('DB Copy sheet contains no data rows.');
+
+          const imported = [];
+          for (const row of dataRows) {
+            try {
+              const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
+              const s = cells.join('');
+              if (s) imported.push(JSON.parse(s));
+            } catch(e) { /* skip malformed row */ }
+          }
+          if (!imported.length) throw new Error('Could not parse any rows from DB Copy sheet.');
+
+          _crmRows = [];
+          _crmNextId = 1;
+          _crmSelected.clear();
+          imported.forEach(r => crmAddRow(r));
+
           const btn = document.getElementById('crmExportBtn');
           if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
           alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + file.name);
@@ -3176,6 +3163,5 @@
       if (_allTxnsForCharts.length) renderFinancialCharts(_allTxnsForCharts, true);
     });
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js"></script>
 </body>
 </html>
