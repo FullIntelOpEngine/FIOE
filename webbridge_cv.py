@@ -826,7 +826,7 @@ def start_job():
                         # Each distinct role_tag must keep its own filename; only rename
                         # untagged files (e.g. JD_username.ext) or same-role_tag files.
                         _existing_basename = os.path.basename(_existing_jd)
-                        if _existing_basename.lower().startswith('jd_') and _existing_basename != _new_name_jd:
+                        if _existing_basename.lower().startswith('jd_') and _existing_basename.lower() != _new_name_jd.lower():
                             logger.info(f"[StartJob] Skipping rename of '{_existing_basename}' (already tagged with different role_tag)")
                             continue
                         if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
@@ -6597,12 +6597,10 @@ def user_tag_jd():
         if not os.path.abspath(new_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
             return jsonify({"error": "invalid target path"}), 400
         if os.path.abspath(new_path) != os.path.abspath(existing_path):
-            if role_tag:
-                # role_tag tagging: overwrite same role_tag+username file directly so the
-                # canonical filename is preserved without adding _2/_3 suffixes.
-                pass
-            else:
-                # job_title tagging: preserve existing record (audit integrity).
+            # For job_title tagging, preserve the existing record (audit integrity).
+            # For role_tag tagging, overwrite the same role_tag+username file directly
+            # so the canonical filename is preserved without adding _2/_3 suffixes.
+            if not role_tag:
                 new_path = _unique_jd_path(new_path)
                 new_name = os.path.basename(new_path)
         os.replace(existing_path, new_path)
