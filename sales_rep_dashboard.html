@@ -450,11 +450,684 @@
       color: var(--arg);
     }
 
+    /* ── Main tab bar (Dashboard / Prospect) ─────────────────── */
+    .main-tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid var(--cb);
+      background: rgba(7,54,121,0.18);
+      padding: 0 24px;
+      position: sticky;
+      top: 60px;
+      z-index: 90;
+    }
+    .main-tab-btn {
+      padding: 12px 24px;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: var(--arg);
+      cursor: pointer;
+      border-radius: 4px 4px 0 0;
+      transition: all .15s;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: -2px;
+    }
+    .main-tab-btn.active {
+      font-weight: 700;
+      border-bottom-color: var(--re);
+      color: var(--dd);
+      background: rgba(109,234,249,0.08);
+    }
+    .main-tab-btn:hover:not(.active) {
+      color: var(--dd);
+      background: rgba(109,234,249,0.04);
+    }
+    :root[data-theme="light"] .main-tab-bar {
+      background: rgba(7,54,121,0.08);
+      border-bottom-color: #4c82b8;
+    }
+    :root[data-theme="light"] .main-tab-btn { color: #073679; }
+    :root[data-theme="light"] .main-tab-btn.active {
+      color: #073679;
+      border-bottom-color: #073679;
+      background: rgba(7,54,121,0.10);
+    }
+
+    /* ── Prospect tab ─────────────────────────────────────────── */
+    .prospect-layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 28px;
+      align-items: start;
+      padding: 28px 32px 52px;
+    }
+    @media (max-width: 900px) {
+      .prospect-layout { grid-template-columns: 1fr; }
+    }
+    .prospect-form-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 20px;
+    }
+    .prospect-form-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+      margin-bottom: 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    :root[data-theme="light"] .prospect-form-title { color: var(--ad); }
+    .prospect-field { margin-bottom: 16px; }
+    .prospect-field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--arg);
+      margin-bottom: 6px;
+    }
+    :root[data-theme="light"] .prospect-field label { color: #073679; }
+    .prospect-field-row { display: flex; gap: 8px; }
+    .prospect-input {
+      flex: 1;
+      padding: 9px 12px;
+      background: var(--panel);
+      border: 1.5px solid var(--border);
+      border-radius: 7px;
+      color: var(--dd);
+      font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif;
+      outline: none;
+      transition: border-color .15s;
+      width: 100%;
+    }
+    .prospect-input:focus { border-color: var(--re); }
+    .prospect-input option {
+      background: var(--bb);
+      color: var(--dd);
+    }
+    :root[data-theme="light"] .prospect-input {
+      background: #fff;
+      color: #222529;
+      border-color: #87888a;
+    }
+    :root[data-theme="light"] .prospect-input option {
+      background: #fff;
+      color: #222529;
+    }
+    .prospect-add-btn {
+      padding: 9px 16px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .15s;
+    }
+    .prospect-add-btn:hover { background: #0a4baa; }
+    .prospect-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      min-height: 0;
+    }
+    .prospect-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      background: rgba(109,234,249,0.12);
+      border: 1px solid rgba(109,234,249,0.30);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--dd);
+      cursor: default;
+    }
+    .prospect-chip .chip-x {
+      cursor: pointer;
+      color: var(--arg);
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .prospect-chip .chip-x:hover { color: var(--danger); }
+    .prospect-suggest-btn {
+      width: 100%;
+      padding: 11px;
+      margin-top: 8px;
+      background: linear-gradient(90deg, var(--ad) 0%, #1565c0 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity .15s;
+    }
+    .prospect-suggest-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .prospect-suggest-btn:not(:disabled):hover { opacity: .9; }
+
+    /* ── Prospect suggestions panel ───────────────────────────── */
+    .prospect-suggestions-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 20px;
+      min-height: 200px;
+    }
+    .prospect-suggestions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .prospect-suggestions-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .prospect-suggestions-title { color: var(--ad); }
+    .prospect-refresh-btn {
+      padding: 6px 14px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+    }
+    .prospect-refresh-btn:hover { background: #0a4baa; }
+    .prospect-sg-group { margin-bottom: 20px; }
+    .prospect-sg-group-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--cb);
+      margin-bottom: 10px;
+    }
+    .prospect-sg-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .prospect-sg-item {
+      padding: 6px 14px;
+      background: rgba(76,130,184,0.10);
+      border: 1px solid rgba(76,130,184,0.25);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--dd);
+      cursor: pointer;
+      transition: all .12s;
+    }
+    .prospect-sg-item:hover {
+      background: rgba(109,234,249,0.14);
+      border-color: var(--re);
+      color: var(--re);
+    }
+    .prospect-sg-empty {
+      color: var(--arg);
+      font-size: 13px;
+      font-style: italic;
+      text-align: center;
+      padding: 32px 0;
+    }
+    .prospect-sg-loading {
+      color: var(--arg);
+      font-size: 13px;
+      text-align: center;
+      padding: 32px 0;
+    }
+    .prospect-sg-error {
+      color: var(--danger);
+      font-size: 13px;
+      padding: 12px;
+      background: rgba(224,82,82,0.08);
+      border-radius: 6px;
+    }
+
+    /* ── Prospect sourcing bar ────────────────────────────────── */
+    .prospect-source-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: rgba(7,54,121,0.20);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .prospect-source-btn {
+      padding: 9px 20px;
+      background: linear-gradient(90deg, #073679 0%, #1565c0 100%);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .prospect-source-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .prospect-source-btn:not(:disabled):hover { opacity: .9; }
+    @keyframes _sp-spin { to { transform: rotate(360deg); } }
+    .prospect-source-btn .sp-spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: _sp-spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    .prospect-sp-toggle-btn {
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s;
+      white-space: nowrap;
+      font-family: "Roboto Condensed", sans-serif;
+    }
+    .prospect-sp-toggle-btn.sp-cse {
+      background: var(--panel);
+      color: var(--arg);
+    }
+    .prospect-sp-toggle-btn.sp-api {
+      background: var(--ad);
+      color: #fff;
+      border-color: var(--ad);
+    }
+    .prospect-sp-provider-wrap {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    .prospect-sp-provider-wrap.sp-open { display: flex; }
+    .prospect-sp-provider-select {
+      padding: 5px 10px;
+      border: 1.5px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--dd);
+      font-size: 12px;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+    }
+    .prospect-source-status {
+      font-size: 12px;
+      color: var(--re);
+      font-style: italic;
+      margin-top: 6px;
+      min-height: 18px;
+    }
+
+    /* ── CRM tab ──────────────────────────────────────────────── */
+    .crm-layout {
+      padding: 28px 32px 52px;
+    }
+    .crm-toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    /* CRM email / SMTP buttons */
+    .crm-smtp-btn {
+      padding: 7px 16px;
+      background: var(--panel);
+      color: var(--arg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .crm-smtp-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-send-email-btn {
+      padding: 7px 16px;
+      background: #0b5c1a;
+      color: #fff;
+      border: 1px solid #1a7a2a;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    .crm-send-email-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .crm-send-email-btn:not(:disabled):hover { background: #0e7d22; }
+    /* per-row checkbox column */
+    .crm-check-col { width: 32px; text-align: center; }
+    /* overlay modal shared style */
+    .fioe-modal-backdrop {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(34,37,41,0.72);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    .fioe-modal-box {
+      background: #1b1f24;
+      border: 1px solid rgba(76,130,184,0.35);
+      border-radius: 12px;
+      padding: 28px 26px 22px;
+      min-width: 360px;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 8px 40px rgba(0,0,0,.55);
+      color: var(--dd);
+    }
+    :root[data-theme="light"] .fioe-modal-box { background: #fff; }
+    .fioe-modal-box h3 {
+      margin: 0 0 18px;
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .fioe-modal-box h3 { color: var(--ad); }
+    .fioe-modal-label {
+      display: block; margin-bottom: 5px; font-size: 12px;
+      font-weight: 700; letter-spacing: 0.4px; color: var(--arg);
+      text-transform: uppercase;
+    }
+    .fioe-modal-input {
+      width: 100%; padding: 8px 10px; margin-bottom: 12px;
+      background: var(--panel2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--dd); font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+      box-sizing: border-box;
+    }
+    .fioe-modal-input:focus { border-color: var(--re); }
+    .fioe-modal-row { display: flex; gap: 10px; }
+    .fioe-modal-row .fioe-modal-input { flex: 1; }
+    .fioe-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+    .fioe-modal-btn-cancel {
+      padding: 8px 18px; background: transparent;
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--arg); font-size: 12px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+    }
+    .fioe-modal-btn-cancel:hover { border-color: var(--danger); color: var(--danger); }
+    .fioe-modal-btn-primary {
+      padding: 8px 18px; background: var(--ad); border: none;
+      border-radius: 6px; color: #fff; font-size: 12px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+    }
+    .fioe-modal-btn-primary:hover { background: #0a4baa; }
+    /* email compose modal specifics */
+    .crm-email-modal-box {
+      max-width: 680px; max-height: 90vh; overflow-y: auto;
+    }
+    .crm-email-textarea {
+      width: 100%; min-height: 140px; padding: 10px;
+      background: var(--panel2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--dd); font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+      resize: vertical; box-sizing: border-box; margin-bottom: 12px;
+    }
+    .crm-email-textarea:focus { border-color: var(--re); }
+    .crm-email-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--cb); margin: 14px 0 6px;
+    }
+    .crm-calendar-row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+      padding: 10px 12px;
+      background: rgba(7,54,121,0.15);
+      border: 1px solid var(--border); border-radius: 7px;
+    }
+    .crm-cal-btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--dd); font-size: 12px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; transition: background .12s, color .12s;
+    }
+    .crm-cal-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-cal-btn.active { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-send-spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+      border-radius: 50%; animation: _sp-spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 5px;
+    }
+    .crm-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--re);
+      flex: 1;
+    }
+    :root[data-theme="light"] .crm-title { color: var(--ad); }
+    .crm-add-row-btn {
+      padding: 7px 18px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-add-row-btn:hover { background: #0a4baa; }
+    .crm-export-btn {
+      padding: 7px 16px;
+      background: var(--panel);
+      color: var(--cb);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .crm-export-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .crm-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .crm-table thead th {
+      background: rgba(7,54,121,0.35);
+      color: var(--dd);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 10px 12px;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+    }
+    :root[data-theme="light"] .crm-table thead th {
+      background: rgba(7,54,121,0.15);
+      color: #073679;
+    }
+    .crm-table tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background .12s;
+    }
+    .crm-table tbody tr:hover { background: rgba(109,234,249,0.06); }
+    .crm-table td {
+      padding: 8px 10px;
+      vertical-align: middle;
+      color: var(--dd);
+    }
+    .crm-table td .crm-cell-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      border-bottom: 1px dashed transparent;
+      color: var(--dd);
+      font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif;
+      padding: 2px 4px;
+      outline: none;
+      transition: border-color .15s;
+      min-width: 60px;
+    }
+    .crm-table td .crm-cell-input:focus {
+      border-bottom-color: var(--re);
+    }
+    :root[data-theme="light"] .crm-table td .crm-cell-input {
+      color: #222529;
+    }
+    .crm-table .crm-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--arg);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color .12s;
+    }
+    .crm-table .crm-del-btn:hover { color: var(--danger); }
+    .crm-name-link {
+      color: var(--accent, #6deaf9);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 13px;
+      display: block;
+      padding: 2px 4px;
+    }
+    .crm-name-link:hover { text-decoration: underline; }
+    :root[data-theme="light"] .crm-name-link { color: var(--accent, #1a73e8); }
+    .crm-empty {
+      text-align: center;
+      color: var(--arg);
+      font-size: 13px;
+      font-style: italic;
+      padding: 40px 0;
+    }
+
+    /* ── Dark-theme dropdown fix (explicit hex so browsers honour option bg) ── */
+    :root:not([data-theme="light"]) select.prospect-input,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select {
+      background-color: #222529;
+      color: #d8d8d8;
+    }
+    :root:not([data-theme="light"]) select.prospect-input option,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select option {
+      background-color: #222529;
+      color: #d8d8d8;
+    }
+    :root:not([data-theme="light"]) select.prospect-input optgroup,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select optgroup {
+      background-color: #2a2e33;
+      color: #6deaf9;
+    }
+
+    /* ── CRM Status dropdown ────────────────────────────────────── */
+    .crm-status-select {
+      padding: 3px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      color: var(--dd);
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+      font-family: "Roboto Condensed", sans-serif;
+    }
+
+    /* ── Email modal – template bar & glossary tags ───────────── */
+    .crm-tpl-bar {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+    }
+    .crm-tpl-select {
+      flex: 1; padding: 6px 8px; border-radius: 6px;
+      background: var(--panel2); border: 1px solid var(--border);
+      color: var(--dd); font-size: 12px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+    }
+    .crm-tpl-btn {
+      padding: 6px 11px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--dd); font-size: 11px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; white-space: nowrap; transition: background .12s, color .12s;
+    }
+    .crm-tpl-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-glossary-row {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px;
+    }
+    .crm-glossary-tag {
+      padding: 3px 9px; border-radius: 12px;
+      background: var(--panel2); border: 1px solid var(--border);
+      color: var(--re); font-size: 11px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .crm-glossary-tag:hover { background: var(--ad); border-color: var(--ad); color: #fff; }
+    .crm-ai-draft-btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(109,234,249,0.35);
+      background: rgba(109,234,249,0.08); color: var(--re); font-size: 11px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; transition: background .12s, color .12s; margin-bottom: 6px;
+    }
+    .crm-ai-draft-btn:hover { background: rgba(109,234,249,0.18); }
+    .crm-ai-draft-btn:disabled { opacity: .45; cursor: not-allowed; }
+
     /* ── Responsive ──────────────────────────────────────────── */
     @media (max-width: 600px) {
       .top-banner { padding: 0 14px; }
       .page-body { padding: 16px 14px 0; }
       .page-body--bot { padding: 16px 14px 40px; }
+      .prospect-layout { padding: 16px 14px 40px; }
+      .crm-layout { padding: 16px 14px 40px; }
     }
   </style>
 </head>
@@ -477,6 +1150,16 @@
       <button class="btn-logout" id="logoutBtn">Log Out</button>
     </div>
   </div>
+
+  <!-- ── Main tab navigation ──────────────────────────────── -->
+  <div class="main-tab-bar" id="mainTabBar">
+    <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
+    <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')" aria-label="Prospect tab">🔍 Prospect</button>
+    <button class="main-tab-btn" id="mainTabBtnCrm" onclick="switchMainTab('crm')" aria-label="CRM tab">📋 CRM</button>
+  </div>
+
+  <!-- ── Dashboard tab content ────────────────────────────── -->
+  <div id="mainTabContentDashboard">
 
   <!-- ── Page body ────────────────────────────────────────── -->
   <div class="page-body">
@@ -584,6 +1267,286 @@
     <div class="card" id="txnCard" style="padding:0;overflow:visible;"></div>
 
   </div><!-- /.page-body--bot -->
+
+  </div><!-- /#mainTabContentDashboard -->
+
+  <!-- ── Prospect tab content ─────────────────────────────── -->
+  <div id="mainTabContentProspect" style="display:none;">
+    <div class="prospect-layout">
+
+      <!-- Left column: search form -->
+      <div class="prospect-form-card">
+        <div class="prospect-form-title" aria-label="AI Assist — Prospect Search">🤖 AI Assist — Prospect Search</div>
+
+        <!-- Job Title -->
+        <div class="prospect-field">
+          <label>Job Title</label>
+          <div class="prospect-field-row">
+            <input type="text" id="prospectJobTitleInput" class="prospect-input" placeholder="e.g. Account Executive" autocomplete="off" />
+            <button class="prospect-add-btn" onclick="prospectAddJobTitle()">Add</button>
+          </div>
+          <div class="prospect-chips" id="prospectJobTitleChips"></div>
+        </div>
+
+        <!-- Company Name -->
+        <div class="prospect-field">
+          <label>Company Name</label>
+          <div class="prospect-field-row">
+            <input type="text" id="prospectCompanyInput" class="prospect-input" placeholder="e.g. Salesforce" autocomplete="off" />
+            <button class="prospect-add-btn" onclick="prospectAddCompany()">Add</button>
+          </div>
+          <div class="prospect-chips" id="prospectCompanyChips"></div>
+        </div>
+
+        <!-- Location -->
+        <div class="prospect-field">
+          <label>Location</label>
+          <select id="prospectCountry" class="prospect-input">
+            <option value="">Select a country…</option>
+            <optgroup label="North America">
+              <option value="United States">United States</option>
+              <option value="Canada">Canada</option>
+              <option value="Mexico">Mexico</option>
+            </optgroup>
+            <optgroup label="Latin America">
+              <option value="Brazil">Brazil</option>
+              <option value="Argentina">Argentina</option>
+              <option value="Chile">Chile</option>
+              <option value="Colombia">Colombia</option>
+              <option value="Peru">Peru</option>
+            </optgroup>
+            <optgroup label="Europe">
+              <option value="United Kingdom">United Kingdom</option>
+              <option value="Germany">Germany</option>
+              <option value="France">France</option>
+              <option value="Spain">Spain</option>
+              <option value="Italy">Italy</option>
+              <option value="Netherlands">Netherlands</option>
+              <option value="Belgium">Belgium</option>
+              <option value="Switzerland">Switzerland</option>
+              <option value="Sweden">Sweden</option>
+              <option value="Denmark">Denmark</option>
+              <option value="Norway">Norway</option>
+              <option value="Poland">Poland</option>
+              <option value="Romania">Romania</option>
+              <option value="Czech Republic">Czech Republic</option>
+              <option value="Ireland">Ireland</option>
+              <option value="Austria">Austria</option>
+              <option value="Finland">Finland</option>
+              <option value="Russia">Russia</option>
+              <option value="Ukraine">Ukraine</option>
+            </optgroup>
+            <optgroup label="Middle East">
+              <option value="United Arab Emirates">United Arab Emirates</option>
+              <option value="Saudi Arabia">Saudi Arabia</option>
+              <option value="Qatar">Qatar</option>
+              <option value="Israel">Israel</option>
+              <option value="Turkey">Turkey</option>
+            </optgroup>
+            <optgroup label="Asia-Pacific">
+              <option value="China">China</option>
+              <option value="India">India</option>
+              <option value="Japan">Japan</option>
+              <option value="Korea">South Korea</option>
+              <option value="Singapore">Singapore</option>
+              <option value="Malaysia">Malaysia</option>
+              <option value="Indonesia">Indonesia</option>
+              <option value="Thailand">Thailand</option>
+              <option value="Vietnam">Vietnam</option>
+              <option value="Philippines">Philippines</option>
+              <option value="Australia">Australia</option>
+              <option value="New Zealand">New Zealand</option>
+              <option value="Pakistan">Pakistan</option>
+              <option value="Hong Kong">Hong Kong</option>
+              <option value="Taiwan">Taiwan</option>
+              <option value="Sri Lanka">Sri Lanka</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <!-- Seniority -->
+        <div class="prospect-field">
+          <label>Seniority</label>
+          <select id="prospectSeniority" class="prospect-input">
+            <option value="">(Any)</option>
+            <option value="Associate">Associate</option>
+            <option value="Manager">Manager</option>
+            <option value="Director">Director</option>
+          </select>
+        </div>
+
+        <!-- Sector -->
+        <div class="prospect-field">
+          <label>Sector</label>
+          <div class="prospect-field-row">
+            <select id="prospectSectorSelect" class="prospect-input" onchange="prospectSectorSelectChange()">
+              <option value="">Select a sector…</option>
+            </select>
+          </div>
+          <div class="prospect-chips" id="prospectSectorChips"></div>
+        </div>
+
+        <!-- AI Suggest button -->
+        <button class="prospect-suggest-btn" id="prospectSuggestBtn" onclick="prospectFetchSuggestions()">
+          🤖 Get AI Suggestions
+        </button>
+
+        <!-- Sourcing Bar -->
+        <div class="prospect-source-bar">
+          <button class="prospect-source-btn" id="prospectSourceBtn" onclick="prospectStartSourcing()">🔎 Source Profiles</button>
+          <button class="prospect-sp-toggle-btn sp-cse" id="prospectSpToggleBtn" onclick="prospectToggleSpMode()" title="Toggle between Default CSE and API Provider">Default CSE</button>
+          <div class="prospect-sp-provider-wrap" id="prospectSpProviderWrap">
+            <select id="prospectSpProviderSelect" class="prospect-sp-provider-select">
+              <option value="">— select provider —</option>
+            </select>
+          </div>
+        </div>
+        <div class="prospect-source-status" id="prospectSourceStatus"></div>
+      </div>
+
+      <!-- Right column: suggestions -->
+      <div class="prospect-suggestions-panel">
+        <div class="prospect-suggestions-header">
+          <div class="prospect-suggestions-title">Suggestions</div>
+          <button class="prospect-refresh-btn" id="prospectRefreshBtn" onclick="prospectFetchSuggestions(true)">Refresh</button>
+        </div>
+        <div id="prospectSgLoading" class="prospect-sg-loading" style="display:none;">
+          Generating suggestions…
+        </div>
+        <div id="prospectSgError" class="prospect-sg-error" style="display:none;"></div>
+        <div id="prospectSgEmpty" class="prospect-sg-empty">
+          Add a Job Title or Company Name and click <em>Get AI Suggestions</em> to begin.
+        </div>
+        <div id="prospectSgContent" style="display:none;"></div>
+      </div>
+
+    </div>
+  </div><!-- /#mainTabContentProspect -->
+
+  <!-- ── CRM tab content ──────────────────────────────────── -->
+  <div id="mainTabContentCrm" style="display:none;">
+    <div class="crm-layout">
+      <div class="crm-toolbar">
+        <div class="crm-title">📋 CRM — Prospect Candidates</div>
+        <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
+        <button class="crm-export-btn" id="crmExportBtn" onclick="crmExportOrImport()">⬇ Export XLS</button>
+        <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
+        <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
+        <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+      </div>
+      <div class="crm-table-wrap">
+        <table class="crm-table" id="crmTable">
+          <thead>
+            <tr>
+              <th class="crm-check-col"><input type="checkbox" id="crmSelectAll" title="Select all" onchange="crmToggleSelectAll(this.checked)" /></th>
+              <th>#</th>
+              <th>Name</th>
+              <th>Job Title</th>
+              <th>Company</th>
+              <th>Country</th>
+              <th>Sector</th>
+              <th>Seniority</th>
+              <th>Email</th>
+              <th>Mobile</th>
+              <th>Comment</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="crmBody">
+            <tr id="crmEmptyRow"><td colspan="13" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /#mainTabContentCrm -->
+
+  <!-- ── SMTP Config Modal ──────────────────────────────── -->
+  <div id="crmSmtpModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseSmtpModal()">
+    <div class="fioe-modal-box" onclick="event.stopPropagation()">
+      <h3>⚙ SMTP Configuration</h3>
+      <label class="fioe-modal-label">Host</label>
+      <input class="fioe-modal-input" id="crmSmtpHost" type="text" placeholder="smtp.gmail.com" />
+      <div class="fioe-modal-row">
+        <div style="flex:2">
+          <label class="fioe-modal-label">Port</label>
+          <input class="fioe-modal-input" id="crmSmtpPort" type="text" placeholder="587" />
+        </div>
+        <div style="flex:1;display:flex;align-items:flex-end;padding-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:var(--dd);">
+            <input type="checkbox" id="crmSmtpSecure" /> TLS/SSL
+          </label>
+        </div>
+      </div>
+      <label class="fioe-modal-label">User (From address)</label>
+      <input class="fioe-modal-input" id="crmSmtpUser" type="text" placeholder="you@example.com" />
+      <label class="fioe-modal-label">Password</label>
+      <input class="fioe-modal-input" id="crmSmtpPass" type="password" />
+      <div class="fioe-modal-actions">
+        <button class="fioe-modal-btn-cancel" onclick="crmCloseSmtpModal()">Cancel</button>
+        <button class="fioe-modal-btn-primary" onclick="crmSaveSmtpConfig()">Save Config</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CRM Email Compose Modal ────────────────────────── -->
+  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseEmailModal()">
+    <div class="fioe-modal-box crm-email-modal-box" onclick="event.stopPropagation()">
+      <h3>✉ Send Email to Selected Candidates</h3>
+      <!-- Template bar -->
+      <div class="crm-tpl-bar">
+        <select id="crmEmailTplSelect" class="crm-tpl-select" onchange="crmLoadTemplate(this.value)">
+          <option value="">— Load template —</option>
+        </select>
+        <button class="crm-tpl-btn" onclick="crmSaveTemplate()">💾 Save Template</button>
+        <button class="crm-tpl-btn" onclick="crmDeleteTemplate()" title="Delete selected template">🗑</button>
+      </div>
+      <label class="fioe-modal-label">From</label>
+      <input class="fioe-modal-input" id="crmEmailFrom" type="email" placeholder="you@example.com" />
+      <label class="fioe-modal-label">CC</label>
+      <input class="fioe-modal-input" id="crmEmailCc" type="text" placeholder="cc@example.com" />
+      <label class="fioe-modal-label">Subject</label>
+      <input class="fioe-modal-input" id="crmEmailSubject" type="text" placeholder="Email subject…" />
+      <label class="fioe-modal-label">Message</label>
+      <!-- Glossary tags -->
+      <div class="crm-glossary-row" title="Click to insert tag at cursor">
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Name]')">[Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Job Title]')">[Job Title]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Company Name]')">[Company Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Country]')">[Country]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Sector]')">[Sector]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Seniority]')">[Seniority]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Your Name]')">[Your Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Your Company Name]')">[Your Company Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Meeting Date]')">[Meeting Date]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Meeting Time]')">[Meeting Time]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Video Conference Link]')">[Video Conference Link]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Scheduler]')">[Scheduler]</span>
+      </div>
+      <button class="crm-ai-draft-btn" id="crmAiDraftBtn" onclick="crmAiDraft()">🤖 AI Draft</button>
+      <textarea class="crm-email-textarea" id="crmEmailBody" placeholder="Write your message…&#10;&#10;Use glossary tags above to personalise per-recipient."></textarea>
+      <!-- Calendar / Scheduler section -->
+      <div class="crm-email-section-title">📅 Calendar &amp; Scheduler</div>
+      <div class="crm-calendar-row">
+        <input type="date" id="crmCalFrom" class="fioe-modal-input" style="margin:0;width:150px;" title="Calendar search from" />
+        <input type="date" id="crmCalTo"   class="fioe-modal-input" style="margin:0;width:150px;" title="Calendar search to" />
+        <select id="crmCalDuration" class="fioe-modal-input" style="margin:0;width:110px;" title="Interview duration">
+          <option value="30">30 min</option>
+          <option value="45">45 min</option>
+          <option value="60">60 min</option>
+          <option value="90">90 min</option>
+        </select>
+        <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
+        <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+      </div>
+      <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
+      <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
+      <div class="fioe-modal-actions">
+        <button class="fioe-modal-btn-cancel" onclick="crmCloseEmailModal()">Cancel</button>
+        <button class="fioe-modal-btn-primary" id="crmEmailSendBtn" onclick="crmSendEmail()">✉ Send</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ── Helpers ──────────────────────────────────────────────
@@ -1433,6 +2396,967 @@
     }
 
     loadDashboard();
+
+    // ── Main tab switching ─────────────────────────────────────
+    function switchMainTab(tab) {
+      const tabs = ['dashboard', 'prospect', 'crm'];
+      tabs.forEach(t => {
+        const btn     = document.getElementById('mainTabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
+        const content = document.getElementById('mainTabContent' + t.charAt(0).toUpperCase() + t.slice(1));
+        if (btn)     btn.classList.toggle('active', t === tab);
+        if (content) content.style.display = (t === tab) ? '' : 'none';
+      });
+      if (tab === 'crm') {
+        _crmLoadFromServer();
+      }
+    }
+
+    function _crmLoadFromServer() {
+      fetch('/prospect/crm-data', {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+        .then(data => {
+          if (!data || !Array.isArray(data.profiles) || !data.profiles.length) return;
+          // Merge server profiles with any rows already in memory, dedup by linkedinUrl
+          const existingUrls = new Set(
+            _crmRows.map(r => (r.linkedinUrl || '').toLowerCase()).filter(Boolean)
+          );
+          let added = 0;
+          data.profiles.forEach(p => {
+            const url = (p.linkedinUrl || p.linkedin_url || '').toLowerCase();
+            if (url && existingUrls.has(url)) return;
+            if (url) existingUrls.add(url);
+            // Push directly to avoid per-row re-render; render once at end
+            _crmRows.push(Object.assign({
+              id: _crmNextId++,
+              name: '', jobTitle: '', company: '',
+              sector: '', seniority: '', email: '',
+              mobile: '', comment: '', status: '', linkedinUrl: ''
+            }, {
+              name:        p.name        || '',
+              jobTitle:    p.jobTitle    || p.job_title  || '',
+              company:     p.company     || '',
+              sector:      p.sector      || '',
+              seniority:   p.seniority   || '',
+              email:       p.email       || '',
+              mobile:      p.mobile      || '',
+              linkedinUrl: p.linkedinUrl || p.linkedin_url || '',
+              comment:     p.comment     || '',
+              status:      p.status      || '',
+            }));
+            added++;
+          });
+          if (added) _crmRenderTable();
+        });
+    }
+
+    // ── Prospect tab — AI Assist ───────────────────────────────
+    let _prospectJobTitles = [];
+    let _prospectCompanies = [];
+    let _prospectSectors   = [];
+    let _prospectLastHash  = '';
+
+    // ── Prospect: Sector select — loaded from sectors.json ────
+    (function loadProspectSectors() {
+      fetch('/sectors.json')
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+        .then(data => {
+          const sel = document.getElementById('prospectSectorSelect');
+          if (!sel || !Array.isArray(data)) return;
+          sel.innerHTML = '<option value="">Select a sector…</option>';
+          data.forEach(entry => {
+            const grp = document.createElement('optgroup');
+            grp.label = entry.sector || '';
+            // Sector name itself as first selectable option
+            const topOpt = document.createElement('option');
+            topOpt.value = entry.sector; topOpt.textContent = entry.sector;
+            grp.appendChild(topOpt);
+            (entry.domains || []).forEach(d => {
+              const opt = document.createElement('option');
+              opt.value = d; opt.textContent = '  ' + d;
+              grp.appendChild(opt);
+            });
+            sel.appendChild(grp);
+          });
+        });
+    })();
+
+    function prospectSectorSelectChange() {
+      const sel = document.getElementById('prospectSectorSelect');
+      const val = sel ? sel.value.trim() : '';
+      if (!val) return;
+      if (!_prospectSectors.some(s => s.toLowerCase() === val.toLowerCase())) {
+        _prospectSectors.push(val);
+        _prospectRenderChips(_prospectSectors, 'prospectSectorChips', 'prospectRemoveSector');
+      }
+      if (sel) sel.value = '';
+    }
+
+    function prospectRemoveSector(i) {
+      _prospectSectors.splice(i, 1);
+      _prospectRenderChips(_prospectSectors, 'prospectSectorChips', 'prospectRemoveSector');
+    }
+
+    function _prospectEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _prospectRenderChips(items, containerId, removeCallback) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      el.innerHTML = '';
+      items.forEach((item, i) => {
+        const chip = document.createElement('span');
+        chip.className = 'prospect-chip';
+        chip.innerHTML = _prospectEsc(item) +
+          ' <span class="chip-x" title="Remove" onclick="' + removeCallback + '(' + i + ')">×</span>';
+        el.appendChild(chip);
+      });
+    }
+
+    function prospectAddJobTitle() {
+      const inp = document.getElementById('prospectJobTitleInput');
+      const val = (inp ? inp.value.trim() : '');
+      if (!val) return;
+      if (!_prospectJobTitles.some(t => t.toLowerCase() === val.toLowerCase())) {
+        _prospectJobTitles.push(val);
+        _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+      }
+      if (inp) inp.value = '';
+    }
+
+    function prospectRemoveJobTitle(i) {
+      _prospectJobTitles.splice(i, 1);
+      _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+    }
+
+    function prospectAddCompany() {
+      const inp = document.getElementById('prospectCompanyInput');
+      const val = (inp ? inp.value.trim() : '');
+      if (!val) return;
+      if (!_prospectCompanies.some(c => c.toLowerCase() === val.toLowerCase())) {
+        _prospectCompanies.push(val);
+        _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+      }
+      if (inp) inp.value = '';
+    }
+
+    function prospectRemoveCompany(i) {
+      _prospectCompanies.splice(i, 1);
+      _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+    }
+
+    // Allow Enter key to add chips
+    document.addEventListener('DOMContentLoaded', function() {
+      const jti = document.getElementById('prospectJobTitleInput');
+      const ci  = document.getElementById('prospectCompanyInput');
+      if (jti) jti.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); prospectAddJobTitle(); } });
+      if (ci)  ci.addEventListener('keydown',  function(e) { if (e.key === 'Enter') { e.preventDefault(); prospectAddCompany();  } });
+    });
+
+    async function prospectFetchSuggestions(force) {
+      const country   = (document.getElementById('prospectCountry')   || {}).value  || '';
+      const seniority = (document.getElementById('prospectSeniority') || {}).value  || '';
+
+      const hash = JSON.stringify({
+        jobs: [..._prospectJobTitles].sort(),
+        companies: [..._prospectCompanies].sort(),
+        sectors: [..._prospectSectors].sort(),
+        country, seniority
+      });
+
+      if (!force && hash === _prospectLastHash) return;
+      if (!_prospectJobTitles.length && !_prospectCompanies.length && !country) {
+        document.getElementById('prospectSgEmpty').style.display = '';
+        document.getElementById('prospectSgContent').style.display = 'none';
+        document.getElementById('prospectSgError').style.display = 'none';
+        return;
+      }
+      _prospectLastHash = hash;
+
+      const suggestBtn   = document.getElementById('prospectSuggestBtn');
+      const refreshBtn   = document.getElementById('prospectRefreshBtn');
+      const loadingEl    = document.getElementById('prospectSgLoading');
+      const errorEl      = document.getElementById('prospectSgError');
+      const emptyEl      = document.getElementById('prospectSgEmpty');
+      const contentEl    = document.getElementById('prospectSgContent');
+
+      if (suggestBtn)  suggestBtn.disabled  = true;
+      if (refreshBtn)  refreshBtn.disabled  = true;
+      if (loadingEl)   loadingEl.style.display = '';
+      if (emptyEl)     emptyEl.style.display   = 'none';
+      if (errorEl)     errorEl.style.display   = 'none';
+      if (contentEl)   contentEl.style.display = 'none';
+
+      try {
+        const payload = {
+          jobTitles:  _prospectJobTitles,
+          companies:  _prospectCompanies,
+          languages:  [],
+          sectors:    _prospectSectors,
+          country:    country,
+          products:   []
+        };
+        const res  = await fetch('/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        _prospectRenderSuggestions(data, seniority, contentEl);
+        if (contentEl) contentEl.style.display = '';
+      } catch(e) {
+        if (errorEl) {
+          errorEl.textContent = 'Could not load suggestions: ' + e.message;
+          errorEl.style.display = '';
+        }
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (suggestBtn) suggestBtn.disabled = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+      }
+    }
+
+    function _prospectRenderSuggestions(data, seniority, container) {
+      if (!container) return;
+      container.innerHTML = '';
+
+      const jobList  = Array.isArray(data.job  && data.job.related)  ? data.job.related   :
+                       Array.isArray(data.jobs)                       ? data.jobs           : [];
+      const compList = Array.isArray(data.company && data.company.related) ? data.company.related :
+                       Array.isArray(data.companies)                       ? data.companies        : [];
+
+      // Filter out items already added by the user
+      const userJobsLower  = _prospectJobTitles.map(t => t.toLowerCase());
+      const userCompsLower = _prospectCompanies.map(c => c.toLowerCase());
+      const filteredJobs   = jobList.filter(j  => !userJobsLower.includes((j||'').toLowerCase())).slice(0, 15);
+      const filteredComps  = compList.filter(c => !userCompsLower.includes((c||'').toLowerCase())).slice(0, 15);
+
+      if (!filteredJobs.length && !filteredComps.length) {
+        container.innerHTML = '<div class="prospect-sg-empty">No suggestions returned. Try adding more inputs.</div>';
+        return;
+      }
+
+      function buildGroup(title, items, addFn) {
+        if (!items.length) return;
+        const grp = document.createElement('div');
+        grp.className = 'prospect-sg-group';
+        const gtitle = document.createElement('div');
+        gtitle.className = 'prospect-sg-group-title';
+        gtitle.textContent = title;
+        grp.appendChild(gtitle);
+        const itemsWrap = document.createElement('div');
+        itemsWrap.className = 'prospect-sg-items';
+        items.forEach(item => {
+          const el = document.createElement('span');
+          el.className = 'prospect-sg-item';
+          el.textContent = item;
+          el.title = 'Click to add "' + item + '"';
+          el.onclick = function() { addFn(item); el.style.opacity = '.4'; el.style.pointerEvents = 'none'; };
+          itemsWrap.appendChild(el);
+        });
+        grp.appendChild(itemsWrap);
+        container.appendChild(grp);
+      }
+
+      buildGroup('Job Title Suggestions', filteredJobs, function(v) {
+        if (!_prospectJobTitles.some(t => t.toLowerCase() === v.toLowerCase())) {
+          _prospectJobTitles.push(v);
+          _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+        }
+      });
+      buildGroup('Company Suggestions', filteredComps, function(v) {
+        if (!_prospectCompanies.some(c => c.toLowerCase() === v.toLowerCase())) {
+          _prospectCompanies.push(v);
+          _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+        }
+      });
+    }
+
+    // ── Prospect: Sourcing Bar — API Provider Toggle ───────────
+    let _prospectSpMode     = 'cse';
+    let _prospectSpProvider = '';
+    let _prospectSpLoaded   = false;
+
+    const _SP_LABELS = {
+      serper:      'Serper.dev',
+      dataforseo:  'DataForSEO',
+      linkedin:    'LinkedIn',
+      contactout:  'ContactOut',
+      apollo:      'Apollo',
+      rocketreach: 'RocketReach',
+    };
+    const _SP_CATEGORY = {
+      serper:      '🔍 Search',
+      dataforseo:  '🔍 Search',
+      linkedin:    '🔍 Search',
+      contactout:  '📇 Contact',
+      apollo:      '📇 Contact',
+      rocketreach: '📇 Contact',
+    };
+
+    function prospectToggleSpMode() {
+      prospectSetSpMode(_prospectSpMode === 'cse' ? 'api' : 'cse');
+    }
+
+    function prospectSetSpMode(mode) {
+      _prospectSpMode = mode;
+      const btn  = document.getElementById('prospectSpToggleBtn');
+      const wrap = document.getElementById('prospectSpProviderWrap');
+      if (btn) {
+        btn.classList.toggle('sp-cse', mode === 'cse');
+        btn.classList.toggle('sp-api', mode === 'api');
+        btn.textContent = mode === 'api' ? 'API Provider' : 'Default CSE';
+      }
+      if (wrap) {
+        if (mode === 'api') {
+          wrap.classList.add('sp-open');
+          if (!_prospectSpLoaded) prospectLoadSpProviders();
+        } else {
+          wrap.classList.remove('sp-open');
+        }
+      }
+    }
+
+    function prospectLoadSpProviders() {
+      Promise.all([
+        fetch('/search-provider-services',  { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/contact-gen-services',       { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      ]).then(([searchData, contactData, userData]) => {
+        _prospectSpLoaded = true;
+        const services = new Set();
+        if (searchData && Array.isArray(searchData.services))  searchData.services.forEach(s => services.add(s));
+        if (contactData && Array.isArray(contactData.services)) contactData.services.forEach(s => services.add(s));
+        if (userData && userData.active && userData.providers) {
+          const sp = (userData.providers.search || '').toLowerCase();
+          if (['serper','dataforseo','linkedin'].includes(sp)) services.add(sp);
+        }
+        const sel = document.getElementById('prospectSpProviderSelect');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">— select provider —</option>';
+        const groups = {};
+        services.forEach(svc => {
+          const cat = _SP_CATEGORY[svc] || 'Other';
+          if (!groups[cat]) groups[cat] = [];
+          groups[cat].push(svc);
+        });
+        ['🔍 Search', '📇 Contact', 'Other'].forEach(cat => {
+          if (!groups[cat] || !groups[cat].length) return;
+          const og = document.createElement('optgroup');
+          og.label = cat;
+          groups[cat].forEach(svc => {
+            const opt = document.createElement('option');
+            opt.value = svc;
+            opt.textContent = _SP_LABELS[svc] || svc;
+            og.appendChild(opt);
+          });
+          sel.appendChild(og);
+        });
+        if (services.size === 1) {
+          sel.value = [...services][0];
+          _prospectSpProvider = sel.value;
+        }
+        sel.addEventListener('change', function() { _prospectSpProvider = sel.value; });
+      });
+    }
+
+    async function prospectStartSourcing() {
+      const country   = (document.getElementById('prospectCountry')   || {}).value  || '';
+      const seniority = (document.getElementById('prospectSeniority') || {}).value  || '';
+      if (!_prospectJobTitles.length && !_prospectCompanies.length && !country && !_prospectSectors.length) {
+        _prospectSetStatus('⚠ Please add at least one search parameter.', 'var(--danger)');
+        return;
+      }
+      const btn = document.getElementById('prospectSourceBtn');
+      const btnOrigHTML = btn ? btn.innerHTML : null;
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="sp-spinner"></span>Sourcing…'; }
+      _prospectSetStatus('⏳ Sourcing profiles…');
+
+      try {
+        const payload = {
+          jobTitles:  _prospectJobTitles,
+          companies:  _prospectCompanies,
+          sectors:    _prospectSectors,
+          country:    country,
+          seniority:  seniority,
+          mode:       _prospectSpMode,
+          provider:   _prospectSpMode === 'api' ? _prospectSpProvider : '',
+        };
+        const res = await fetch('/prospect/source', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+          body:    JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        const profiles = Array.isArray(data.profiles) ? data.profiles : (Array.isArray(data.results) ? data.results : []);
+        if (!profiles.length) {
+          _prospectSetStatus('No profiles found. Try different parameters or a different provider.');
+          return;
+        }
+        // Add profiles to CRM
+        profiles.forEach(p => {
+          crmAddRow({
+            name:        p.name      || p.fullName      || '',
+            jobTitle:    p.job_title || p.jobTitle      || p.title || '',
+            company:     p.company   || p.organization  || '',
+            sector:      p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
+            seniority:   p.seniority || seniority        || '',
+            email:       p.email     || p.emailAddress  || '',
+            mobile:      p.mobile    || p.phone          || '',
+            linkedinUrl: p.linkedinUrl || p.linkedin_url || '',
+            comment:     '',
+          });
+        });
+        _prospectSetStatus('✅ ' + profiles.length + ' profile(s) added to CRM.');
+        // Switch to CRM tab so user sees results
+        switchMainTab('crm');
+      } catch(e) {
+        _prospectSetStatus('❌ Sourcing failed: ' + e.message, 'var(--danger)');
+      } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHTML !== null ? btnOrigHTML : '🔎 Source Profiles'; }
+      }
+    }
+
+    function _prospectSetStatus(msg, color) {
+      const el = document.getElementById('prospectSourceStatus');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.color = color || 'var(--re)';
+    }
+
+    // ── CRM tab ────────────────────────────────────────────────
+    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, status, linkedinUrl}
+    let _crmNextId = 1;
+    let _crmSelected = new Set();  // set of row ids currently checked
+
+    function crmAddRow(data) {
+      const row = Object.assign({
+        id: _crmNextId++,
+        name: '', jobTitle: '', company: '',
+        sector: '', seniority: '', email: '',
+        mobile: '', comment: '', status: '', linkedinUrl: ''
+      }, data || {});
+      _crmRows.push(row);
+      _crmRenderTable();
+    }
+
+    function crmDeleteRow(id) {
+      _crmRows = _crmRows.filter(r => r.id !== id);
+      _crmSelected.delete(id);
+      _crmUpdateSendBtn();
+      _crmRenderTable();
+    }
+
+    function _crmRenderTable() {
+      const tbody = document.getElementById('crmBody');
+      if (!tbody) return;
+      if (!_crmRows.length) {
+        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="13" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
+        _crmUpdateSendBtn();
+        return;
+      }
+      // Prune stale selected ids
+      const validIds = new Set(_crmRows.map(r => r.id));
+      _crmSelected.forEach(id => { if (!validIds.has(id)) _crmSelected.delete(id); });
+
+      tbody.innerHTML = '';
+      _crmRows.forEach((row, idx) => {
+        const tr = document.createElement('tr');
+        tr.dataset.id = row.id;
+        const isChecked = _crmSelected.has(row.id);
+        const fields = ['name','jobTitle','company','country','sector','seniority','email','mobile','comment'];
+        const placeholders = {
+          name: 'Full Name', jobTitle: 'e.g. Sales Manager', company: 'e.g. Acme Corp',
+          country: 'e.g. Singapore', sector: 'e.g. Technology', seniority: 'e.g. Director', email: 'email@domain.com',
+          mobile: '+65 9000 0000', comment: 'Notes…'
+        };
+        let html = `<td class="crm-check-col"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="_crmRowCheck(${row.id},this.checked)" /></td>`;
+        html += `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
+        fields.forEach(f => {
+          if (f === 'name' && row.linkedinUrl) {
+            html += `<td><a href="${esc(row.linkedinUrl)}" target="_blank" rel="noopener noreferrer" class="crm-name-link" title="Open LinkedIn profile">${esc(row.name) || '<em>Unknown</em>'}</a></td>`;
+          } else {
+            html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
+          }
+        });
+        // Status dropdown
+        const st = row.status || '';
+        html += `<td><select class="crm-status-select" onchange="_crmSetStatus(${row.id},this.value)">` +
+          `<option value="">—</option>` +
+          `<option value="sad"${st==='sad'?' selected':''}>😢 :( Sad</option>` +
+          `<option value="neutral"${st==='neutral'?' selected':''}>😐 :| Neutral</option>` +
+          `<option value="happy"${st==='happy'?' selected':''}>😊 :) Happy</option>` +
+          `</select></td>`;
+        html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
+        tr.innerHTML = html;
+        tbody.appendChild(tr);
+      });
+      _crmSyncSelectAllState();
+      _crmUpdateSendBtn();
+    }
+
+    function _crmRowCheck(id, checked) {
+      if (checked) _crmSelected.add(id); else _crmSelected.delete(id);
+      _crmSyncSelectAllState();
+      _crmUpdateSendBtn();
+    }
+
+    function crmToggleSelectAll(checked) {
+      if (checked) {
+        _crmRows.forEach(r => _crmSelected.add(r.id));
+      } else {
+        _crmSelected.clear();
+      }
+      // Re-sync individual checkboxes without full re-render
+      document.querySelectorAll('#crmBody input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
+      _crmUpdateSendBtn();
+    }
+
+    function _crmSyncSelectAllState() {
+      const all = document.getElementById('crmSelectAll');
+      if (!all) return;
+      if (!_crmRows.length) { all.checked = false; all.indeterminate = false; return; }
+      const n = _crmSelected.size;
+      if (n === 0) { all.checked = false; all.indeterminate = false; }
+      else if (n === _crmRows.length) { all.checked = true; all.indeterminate = false; }
+      else { all.checked = false; all.indeterminate = true; }
+    }
+
+    function _crmUpdateSendBtn() {
+      const btn = document.getElementById('crmSendEmailBtn');
+      if (btn) btn.disabled = _crmSelected.size === 0;
+    }
+
+    function _crmCellChange(id, input) {
+      const row = _crmRows.find(r => r.id === id);
+      if (row) row[input.dataset.field] = input.value;
+    }
+
+    function _crmSetStatus(id, val) {
+      const row = _crmRows.find(r => r.id === id);
+      if (row) row.status = val;
+    }
+
+    function crmExportOrImport() {
+      const btn = document.getElementById('crmExportBtn');
+      if (btn && btn.dataset.mode === 'import') {
+        document.getElementById('crmImportFileInput').click();
+      } else {
+        crmExportXls();
+      }
+    }
+
+    function crmExportXls() {
+      // Build XML Spreadsheet 2003 workbook with two sheets:
+      // Sheet 1 "Prospect" — human-editable columns
+      // Sheet 2 "DB Copy"  — full JSON rows for lossless reimport
+      const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      const MAX_LEN = 32767;
+      const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
+
+      // Sheet 1 — Prospect (visible)
+      const S1_FIELDS  = ['name','jobTitle','company','country','sector','seniority','email','mobile','linkedinUrl','comment','status'];
+      const S1_HEADERS = ['Name','Job Title','Company','Country','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
+      const colDefs  = S1_FIELDS.map(() => '<Column ss:Width="120"/>').join('');
+      const hdrRow   = '<Row>' + S1_HEADERS.map(h => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(h)}</Data></Cell>`).join('') + '</Row>';
+      const dataRows = _crmRows.map(row =>
+        '<Row>' + S1_FIELDS.map(f => `<Cell><Data ss:Type="String">${ex(cellStr(row[f] || ''))}</Data></Cell>`).join('') + '</Row>'
+      ).join('');
+
+      // Sheet 2 — DB Copy (hidden), one JSON object per row
+      const jsonHeaderRow = '<Row><Cell><Data ss:Type="String">__crm_json_export_v1__</Data></Cell></Row>';
+      const jsonRows = _crmRows.map(row => {
+        const s = JSON.stringify(row);
+        const chunks = [];
+        for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
+        const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
+        return `<Row>${cells}</Row>`;
+      }).join('');
+
+      const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
+        `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+        ` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
+        ` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
+        ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+        ` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
+        ` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n` +
+        ` <Worksheet ss:Name="Prospect">\n` +
+        `  <Table ss:DefaultColumnWidth="110">${colDefs}${hdrRow}${dataRows}</Table>\n` +
+        `  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">\n` +
+        `   <FreezePanes/><FrozenNoSplit/>\n` +
+        `   <SplitHorizontal>1</SplitHorizontal>\n` +
+        `   <TopRowBottomPane>1</TopRowBottomPane>\n` +
+        `   <ActivePane>2</ActivePane>\n` +
+        `  </WorksheetOptions>\n` +
+        ` </Worksheet>\n` +
+        ` <Worksheet ss:Name="DB Copy" ss:Visible="SheetHidden">\n` +
+        `  <Table>${jsonHeaderRow}${jsonRows}</Table>\n` +
+        ` </Worksheet>\n` +
+        `</Workbook>`;
+
+      const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url;
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xml';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+      // Delete the server-side JSON and switch button to Import
+      fetch('/prospect/crm-data', {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      }).catch(() => { /* non-fatal */ });
+
+      const btn = document.getElementById('crmExportBtn');
+      if (btn) {
+        btn.textContent = '⬆ Import CSV';
+        btn.dataset.mode = 'import';
+      }
+    }
+
+    function crmImportXls(input) {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const text = new TextDecoder('utf-8').decode(new Uint8Array(e.target.result));
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(text, 'application/xml');
+          if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+
+          // Find the DB Copy worksheet
+          const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
+          let dbCopyWs = null;
+          for (const ws of wsNodes) {
+            const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
+            if (name === 'DB Copy') { dbCopyWs = ws; break; }
+          }
+          if (!dbCopyWs) throw new Error('DB Copy sheet not found. Only CRM exports from this system can be imported.');
+
+          const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
+          // Skip sentinel row (row 0)
+          const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
+          if (!dataRows.length) throw new Error('DB Copy sheet contains no data rows.');
+
+          const imported = [];
+          for (const row of dataRows) {
+            try {
+              const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
+              const s = cells.join('');
+              if (s) imported.push(JSON.parse(s));
+            } catch(e) { /* skip malformed row */ }
+          }
+          if (!imported.length) throw new Error('Could not parse any rows from DB Copy sheet.');
+
+          _crmRows = [];
+          _crmNextId = 1;
+          _crmSelected.clear();
+          imported.forEach(r => crmAddRow(r));
+
+          const btn = document.getElementById('crmExportBtn');
+          if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
+          alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + file.name);
+        } catch(err) {
+          alert('❌ Import failed: ' + (err && err.message ? err.message : 'Unknown error'));
+        } finally {
+          input.value = '';
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // ── SMTP Config Modal ────────────────────────────────────
+    const _CRM_SMTP_KEY = 'fioe_crm_smtp_config';
+    let _crmSmtpConfig = null;
+
+    (function _loadSmtpConfig() {
+      try {
+        const raw = localStorage.getItem(_CRM_SMTP_KEY);
+        if (raw) _crmSmtpConfig = JSON.parse(raw);
+      } catch(e) { /* ignore */ }
+    })();
+
+    function crmOpenSmtpModal() {
+      const cfg = _crmSmtpConfig || {};
+      document.getElementById('crmSmtpHost').value    = cfg.host    || 'smtp.gmail.com';
+      document.getElementById('crmSmtpPort').value    = cfg.port    || '587';
+      document.getElementById('crmSmtpUser').value    = cfg.user    || '';
+      document.getElementById('crmSmtpPass').value    = cfg.pass    || '';
+      document.getElementById('crmSmtpSecure').checked = cfg.secure || false;
+      document.getElementById('crmSmtpModal').style.display = 'flex';
+    }
+
+    function crmCloseSmtpModal() {
+      document.getElementById('crmSmtpModal').style.display = 'none';
+    }
+
+    function crmSaveSmtpConfig() {
+      _crmSmtpConfig = {
+        host:   document.getElementById('crmSmtpHost').value.trim(),
+        port:   document.getElementById('crmSmtpPort').value.trim(),
+        user:   document.getElementById('crmSmtpUser').value.trim(),
+        pass:   document.getElementById('crmSmtpPass').value,
+        secure: document.getElementById('crmSmtpSecure').checked,
+      };
+      try { localStorage.setItem(_CRM_SMTP_KEY, JSON.stringify(_crmSmtpConfig)); } catch(e) { /* ignore */ }
+      crmCloseSmtpModal();
+    }
+
+    // ── CRM Email Compose Modal ──────────────────────────────
+    let _crmCalSlots = [];
+
+    function crmOpenEmailModal() {
+      if (_crmSelected.size === 0) return;
+      const cfg = _crmSmtpConfig || {};
+      document.getElementById('crmEmailFrom').value    = cfg.user || '';
+      document.getElementById('crmEmailCc').value      = '';
+      document.getElementById('crmEmailSubject').value = '';
+      document.getElementById('crmEmailBody').value    = '';
+      document.getElementById('crmCalStatus').textContent = '';
+      document.getElementById('crmCalSlots').style.display = 'none';
+      document.getElementById('crmCalSlots').innerHTML = '';
+      _crmCalSlots = [];
+      // Pre-fill from/to dates
+      const today = new Date();
+      const nextWeek = new Date(today.getTime() + 7 * 86400000);
+      document.getElementById('crmCalFrom').value = today.toISOString().slice(0,10);
+      document.getElementById('crmCalTo').value   = nextWeek.toISOString().slice(0,10);
+      _crmRefreshTemplateDropdown();
+      document.getElementById('crmEmailModal').style.display = 'flex';
+    }
+
+    function crmCloseEmailModal() {
+      document.getElementById('crmEmailModal').style.display = 'none';
+    }
+
+    // ── Email template management ───────────────────────────
+    const _CRM_TPL_KEY = 'fioe_crm_email_templates';
+
+    function _crmGetTemplates() {
+      try { return JSON.parse(localStorage.getItem(_CRM_TPL_KEY) || '[]'); } catch(e) { return []; }
+    }
+    function _crmSaveTemplates(tpls) {
+      try { localStorage.setItem(_CRM_TPL_KEY, JSON.stringify(tpls)); } catch(e) { /* ignore */ }
+    }
+    function _crmRefreshTemplateDropdown() {
+      const sel = document.getElementById('crmEmailTplSelect');
+      if (!sel) return;
+      const tpls = _crmGetTemplates();
+      sel.innerHTML = '<option value="">— Load template —</option>';
+      tpls.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = t.name;
+        sel.appendChild(opt);
+      });
+    }
+    function crmLoadTemplate(id) {
+      if (!id) return;
+      const tpl = _crmGetTemplates().find(t => t.id === id);
+      if (!tpl) return;
+      document.getElementById('crmEmailSubject').value = tpl.subject || '';
+      document.getElementById('crmEmailBody').value    = tpl.body    || '';
+    }
+    function crmSaveTemplate() {
+      const subject = document.getElementById('crmEmailSubject').value.trim();
+      const body    = document.getElementById('crmEmailBody').value;
+      const name    = (prompt('Enter a name for this template:') || '').trim();
+      if (!name) return;
+      const tpls = _crmGetTemplates();
+      const id   = 'tpl_' + Date.now();
+      tpls.push({ id, name, subject, body });
+      _crmSaveTemplates(tpls);
+      _crmRefreshTemplateDropdown();
+      const sel = document.getElementById('crmEmailTplSelect');
+      if (sel) sel.value = id;
+    }
+    function crmDeleteTemplate() {
+      const sel = document.getElementById('crmEmailTplSelect');
+      const id  = sel ? sel.value : '';
+      if (!id) { alert('Select a template to delete first.'); return; }
+      const tpls = _crmGetTemplates().filter(t => t.id !== id);
+      _crmSaveTemplates(tpls);
+      _crmRefreshTemplateDropdown();
+    }
+
+    // ── Glossary tag insert at cursor ───────────────────────
+    function crmInsertTag(tag) {
+      const ta = document.getElementById('crmEmailBody');
+      if (!ta) return;
+      const start = ta.selectionStart;
+      const end   = ta.selectionEnd;
+      const val   = ta.value;
+      ta.value = val.slice(0, start) + tag + val.slice(end);
+      ta.selectionStart = ta.selectionEnd = start + tag.length;
+      ta.focus();
+    }
+
+    // ── AI Draft ────────────────────────────────────────────
+    async function crmAiDraft() {
+      const btn = document.getElementById('crmAiDraftBtn');
+      if (!btn) return;
+      const subject     = document.getElementById('crmEmailSubject').value.trim();
+      const existingBody = document.getElementById('crmEmailBody').value.trim();
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      const recipients   = selectedRows.map(r => ({
+        name: r.name, jobTitle: r.jobTitle, company: r.company, country: r.country,
+        sector: r.sector, seniority: r.seniority
+      }));
+      btn.disabled = true;
+      const origTxt = btn.textContent;
+      btn.textContent = '⏳ Drafting…';
+      try {
+        const res = await fetch('/prospect/crm-email-draft', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ subject, existingBody, recipients })
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        if (data.body) document.getElementById('crmEmailBody').value = data.body;
+      } catch(e) {
+        alert('❌ AI Draft failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origTxt;
+      }
+    }
+
+    async function crmCalFindSlots() {
+      const startISO = document.getElementById('crmCalFrom').value;
+      const endISO   = document.getElementById('crmCalTo').value;
+      const duration = parseInt(document.getElementById('crmCalDuration').value, 10) || 30;
+      const statusEl = document.getElementById('crmCalStatus');
+      const slotsEl  = document.getElementById('crmCalSlots');
+      if (!startISO || !endISO) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      statusEl.textContent = '⏳ Finding available slots…';
+      slotsEl.style.display = 'none';
+      slotsEl.innerHTML = '';
+      _crmCalSlots = [];
+      try {
+        const res = await fetch('http://localhost:4000/calendar/freebusy', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startISO, endISO, durationMinutes: duration, provider: 'google' })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to query calendar');
+        _crmCalSlots = Array.isArray(data.slots) ? data.slots : [];
+        if (!_crmCalSlots.length) { statusEl.textContent = 'No free slots found in selected range.'; return; }
+        statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.';
+        slotsEl.innerHTML = '';
+        _crmCalSlots.forEach((slot, i) => {
+          const d = new Date(slot.start);
+          const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+          const btn = document.createElement('button');
+          btn.className = 'crm-cal-btn';
+          btn.style.cssText = 'margin:3px;';
+          btn.textContent = lbl;
+          btn.onclick = function() { _crmInsertSlotTag(slot, i); btn.classList.add('active'); };
+          slotsEl.appendChild(btn);
+        });
+        slotsEl.style.display = 'block';
+      } catch(e) {
+        statusEl.textContent = '❌ ' + (e.message || 'Could not find slots. Connect your calendar first.');
+      }
+    }
+
+    function _crmInsertSlotTag(slot, i) {
+      const d = new Date(slot.start);
+      const dateStr = d.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+      const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+      const bodyEl = document.getElementById('crmEmailBody');
+      let text = bodyEl.value;
+      text = text.replace(/\[Meeting Date\]/g, dateStr).replace(/\[Meeting Time\]/g, timeStr)
+               .replace(/\[Date of Interview\]/g, dateStr).replace(/\[Time of Interview\]/g, timeStr);
+      // Append slot summary if tags weren't present
+      if (!text.includes(dateStr)) {
+        const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+        text += sep + 'Meeting Date: ' + dateStr + '\nMeeting Time: ' + timeStr;
+      }
+      bodyEl.value = text;
+    }
+
+    function crmInsertSchedulerLink() {
+      const url = window.location.protocol + '//' + window.location.hostname + ':4000/scheduler.html';
+      const bodyEl = document.getElementById('crmEmailBody');
+      let text = bodyEl.value;
+      text = text.replace(/\[Scheduler\]/g, url);
+      if (!text.includes(url)) {
+        const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+        text += sep + 'Book a time: ' + url;
+      }
+      bodyEl.value = text;
+    }
+
+    async function crmSendEmail() {
+      if (_crmSelected.size === 0) return;
+      const from    = document.getElementById('crmEmailFrom').value.trim();
+      const cc      = document.getElementById('crmEmailCc').value.trim();
+      const subject = document.getElementById('crmEmailSubject').value.trim();
+      const bodyTpl = document.getElementById('crmEmailBody').value;
+      if (!from)    { alert('Please enter a From address.'); return; }
+      if (!subject) { alert('Please enter a subject.'); return; }
+      if (!bodyTpl) { alert('Please enter a message.'); return; }
+
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      if (!selectedRows.length) return;
+
+      const sendBtn = document.getElementById('crmEmailSendBtn');
+      const origTxt = sendBtn.textContent;
+      sendBtn.disabled = true;
+      sendBtn.innerHTML = '<span class="crm-send-spinner"></span>Sending…';
+
+      let sent = 0, failed = 0;
+      for (const row of selectedRows) {
+        const to = (row.email || '').trim();
+        if (!to) { failed++; continue; }
+        // Resolve glossary tags per-recipient
+        let body = bodyTpl
+          .replace(/\[Name\]/gi, row.name || to)
+          .replace(/\[Candidate Name\]/gi, row.name || to)
+          .replace(/\[Job Title\]/gi, row.jobTitle || '')
+          .replace(/\[Company Name\]/gi, row.company || '')
+          .replace(/\[Country\]/gi, row.country || '')
+          .replace(/\[Sector\]/gi, row.sector || '')
+          .replace(/\[Seniority\]/gi, row.seniority || '')
+          .replace(/\[Your Name\]/gi, from);
+        try {
+          const payload = {
+            from, to, cc, subject, body,
+            smtp: _crmSmtpConfig || {}
+          };
+          const res = await fetch('http://localhost:4000/draft-email', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          sent++;
+        } catch(e) {
+          failed++;
+        }
+      }
+
+      sendBtn.disabled = false;
+      sendBtn.textContent = origTxt;
+      const msg = '✅ Sent: ' + sent + (failed ? ', ❌ Failed: ' + failed : '') + ' email(s).';
+      document.getElementById('crmCalStatus').textContent = msg;
+      if (!failed) setTimeout(crmCloseEmailModal, 1800);
+    }
 
     // ── Theme toggle ─────────────────────────────────────────
     (function initTheme() {

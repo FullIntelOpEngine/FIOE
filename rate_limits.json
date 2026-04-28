@@ -1,7 +1,7 @@
 {
   "defaults": {
     "admin_endpoints": {
-      "requests": 60,
+      "requests": 200,
       "window_seconds": 60
     },
     "analytic_batch_size": {
@@ -29,7 +29,7 @@
       "window_seconds": 60
     },
     "dashboard": {
-      "requests": 50,
+      "requests": 200,
       "window_seconds": 60
     },
     "gemini": {

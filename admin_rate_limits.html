@@ -3714,21 +3714,27 @@ function showAppealMessageModal(label, recipientName, action, username, appealDa
       const name = e.target.value;
       if (!name) return;
       const tmpl = templates.find(t => t.name === name);
-      if (tmpl) document.getElementById('appealMsgText').value = tmpl.body || '';
+      if (tmpl) {
+        document.getElementById('appealMsgText').value = tmpl.body || '';
+        const subjEl = document.getElementById('appealMsgSubject');
+        if (subjEl) subjEl.value = tmpl.subject || '';
+      }
     });
 
     // Save current text as a template
     document.getElementById('appealTmplSave').addEventListener('click', async () => {
       const body = document.getElementById('appealMsgText').value.trim();
       if (!body) { alert('Nothing to save — write a message first.'); return; }
+      const subject = (document.getElementById('appealMsgSubject')?.value || '').trim();
       const name = prompt('Template name:');
       if (!name) return;
       const idx = templates.findIndex(t => t.name === name);
       if (idx >= 0) {
         if (!confirm(`Overwrite template "${name}"?`)) return;
         templates[idx].body = body;
+        templates[idx].subject = subject;
       } else {
-        templates.push({ id: Date.now(), name, body });
+        templates.push({ id: Date.now(), name, body, subject });
       }
       await _syncTemplates(templates);
       // Refresh dropdown
