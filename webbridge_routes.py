@@ -2482,7 +2482,7 @@ def _save_crm_json(username, profiles):
     # Security: ensure the resolved path stays within the intended directory
     abs_crm_dir = os.path.abspath(crm_dir)
     abs_file = os.path.abspath(crm_file)
-    if not abs_file.startswith(abs_crm_dir + os.sep) and abs_file != abs_crm_dir:
+    if not abs_file.startswith(abs_crm_dir + os.sep):
         logger.error("[CRM save] Path traversal blocked: %s", crm_file)
         return
     existing = []
