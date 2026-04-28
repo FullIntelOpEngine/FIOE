@@ -2647,6 +2647,49 @@ def prospect_crm_data_delete():
         return jsonify({"ok": False, "error": "Could not delete CRM file."}), 500
 
 
+@app.post("/prospect/crm-email-draft")
+@_require_session
+def prospect_crm_email_draft():
+    """Generate an AI-drafted email body using LLM, based on subject and recipient context."""
+    body = request.get_json(silent=True) or {}
+    subject      = str(body.get("subject") or "").strip()
+    existing     = str(body.get("existingBody") or "").strip()
+    recipients   = body.get("recipients") or []
+    if not isinstance(recipients, list):
+        recipients = []
+
+    # Build a concise recipient summary for the prompt
+    rec_lines = []
+    for r in recipients[:10]:
+        parts = [r.get("name") or ""]
+        if r.get("jobTitle"):  parts.append(r["jobTitle"])
+        if r.get("company"):   parts.append("at " + r["company"])
+        if r.get("sector"):    parts.append("(" + r["sector"] + ")")
+        if r.get("seniority"): parts.append("[" + r["seniority"] + "]")
+        rec_lines.append(", ".join(p for p in parts if p))
+    rec_summary = "\n".join("- " + l for l in rec_lines) if rec_lines else "(no recipients)"
+
+    prompt = (
+        "You are a professional sales outreach copywriter.\n"
+        "Draft a concise, personalised outreach email body for the following recipients.\n"
+        "Use placeholder tags exactly as written so the sender can auto-fill them per recipient:\n"
+        "  [Name]  [Job Title]  [Company Name]  [Sector]  [Seniority]\n\n"
+        f"Email Subject: {subject or '(not specified)'}\n\n"
+        "Recipients:\n" + rec_summary + "\n\n"
+        + (f"Existing draft to improve:\n{existing}\n\n" if existing else "")
+        + "Return only the email body text (no subject line, no extra commentary)."
+    )
+
+    try:
+        draft = unified_llm_call_text(prompt, temperature=0.7, max_output_tokens=512)
+        if not draft:
+            return jsonify({"ok": False, "error": "LLM returned no content. Check your AI provider configuration."}), 500
+        return jsonify({"ok": True, "body": draft.strip()}), 200
+    except Exception as exc:
+        logger.warning("[CRM email draft] LLM call failed: %s", exc)
+        return jsonify({"ok": False, "error": "AI draft failed: " + str(exc)}), 500
+
+
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 PERSIST_JOBS_TO_FILES = os.getenv("PERSIST_JOBS_TO_FILES", "1") == "1"

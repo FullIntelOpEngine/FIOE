@@ -1054,6 +1054,77 @@
       padding: 40px 0;
     }
 
+    /* ── Dark-theme dropdown fix (explicit hex so browsers honour option bg) ── */
+    :root:not([data-theme="light"]) select.prospect-input,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select {
+      background-color: #222529;
+      color: #d8d8d8;
+    }
+    :root:not([data-theme="light"]) select.prospect-input option,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select option {
+      background-color: #222529;
+      color: #d8d8d8;
+    }
+    :root:not([data-theme="light"]) select.prospect-input optgroup,
+    :root:not([data-theme="light"]) select.prospect-sp-provider-select optgroup {
+      background-color: #2a2e33;
+      color: #6deaf9;
+    }
+
+    /* ── CRM Status picker ────────────────────────────────────── */
+    .crm-status-picker { display: flex; gap: 4px; justify-content: center; }
+    .crm-status-btn {
+      background: none;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 5px;
+      line-height: 1;
+      transition: background .12s, border-color .12s;
+      color: var(--arg);
+      opacity: 0.55;
+    }
+    .crm-status-btn:hover { background: var(--panel); border-color: var(--border); opacity: 1; }
+    .crm-status-btn.active { background: var(--panel2); border-color: var(--re); opacity: 1; }
+
+    /* ── Email modal – template bar & glossary tags ───────────── */
+    .crm-tpl-bar {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
+    }
+    .crm-tpl-select {
+      flex: 1; padding: 6px 8px; border-radius: 6px;
+      background: var(--panel2); border: 1px solid var(--border);
+      color: var(--dd); font-size: 12px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+    }
+    .crm-tpl-btn {
+      padding: 6px 11px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--dd); font-size: 11px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; white-space: nowrap; transition: background .12s, color .12s;
+    }
+    .crm-tpl-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-glossary-row {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px;
+    }
+    .crm-glossary-tag {
+      padding: 3px 9px; border-radius: 12px;
+      background: var(--panel2); border: 1px solid var(--border);
+      color: var(--re); font-size: 11px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .crm-glossary-tag:hover { background: var(--ad); border-color: var(--ad); color: #fff; }
+    .crm-ai-draft-btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(109,234,249,0.35);
+      background: rgba(109,234,249,0.08); color: var(--re); font-size: 11px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; transition: background .12s, color .12s; margin-bottom: 6px;
+    }
+    .crm-ai-draft-btn:hover { background: rgba(109,234,249,0.18); }
+    .crm-ai-draft-btn:disabled { opacity: .45; cursor: not-allowed; }
+
     /* ── Responsive ──────────────────────────────────────────── */
     @media (max-width: 600px) {
       .top-banner { padding: 0 14px; }
@@ -1381,11 +1452,12 @@
               <th>Email</th>
               <th>Mobile</th>
               <th>Comment</th>
+              <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="crmBody">
-            <tr id="crmEmptyRow"><td colspan="11" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
+            <tr id="crmEmptyRow"><td colspan="12" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1424,6 +1496,14 @@
   <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseEmailModal()">
     <div class="fioe-modal-box crm-email-modal-box" onclick="event.stopPropagation()">
       <h3>✉ Send Email to Selected Candidates</h3>
+      <!-- Template bar -->
+      <div class="crm-tpl-bar">
+        <select id="crmEmailTplSelect" class="crm-tpl-select" onchange="crmLoadTemplate(this.value)">
+          <option value="">— Load template —</option>
+        </select>
+        <button class="crm-tpl-btn" onclick="crmSaveTemplate()">💾 Save Template</button>
+        <button class="crm-tpl-btn" onclick="crmDeleteTemplate()" title="Delete selected template">🗑</button>
+      </div>
       <label class="fioe-modal-label">From</label>
       <input class="fioe-modal-input" id="crmEmailFrom" type="email" placeholder="you@example.com" />
       <label class="fioe-modal-label">CC</label>
@@ -1431,7 +1511,20 @@
       <label class="fioe-modal-label">Subject</label>
       <input class="fioe-modal-input" id="crmEmailSubject" type="text" placeholder="Email subject…" />
       <label class="fioe-modal-label">Message</label>
-      <textarea class="crm-email-textarea" id="crmEmailBody" placeholder="Write your message…&#10;&#10;Tags: [Candidate Name], [Scheduler], [Date of Interview], [Time of Interview]"></textarea>
+      <!-- Glossary tags -->
+      <div class="crm-glossary-row" title="Click to insert tag at cursor">
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Name]')">[Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Job Title]')">[Job Title]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Company Name]')">[Company Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Sector]')">[Sector]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Seniority]')">[Seniority]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Candidate Name]')">[Candidate Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Scheduler]')">[Scheduler]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Date of Interview]')">[Date of Interview]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Time of Interview]')">[Time of Interview]</span>
+      </div>
+      <button class="crm-ai-draft-btn" id="crmAiDraftBtn" onclick="crmAiDraft()">🤖 AI Draft</button>
+      <textarea class="crm-email-textarea" id="crmEmailBody" placeholder="Write your message…&#10;&#10;Use glossary tags above to personalise per-recipient."></textarea>
       <!-- Calendar / Scheduler section -->
       <div class="crm-email-section-title">📅 Calendar &amp; Scheduler</div>
       <div class="crm-calendar-row">
@@ -2305,7 +2398,6 @@
     loadDashboard();
 
     // ── Main tab switching ─────────────────────────────────────
-    let _crmTabLoaded = false;
     function switchMainTab(tab) {
       const tabs = ['dashboard', 'prospect', 'crm'];
       tabs.forEach(t => {
@@ -2314,8 +2406,7 @@
         if (btn)     btn.classList.toggle('active', t === tab);
         if (content) content.style.display = (t === tab) ? '' : 'none';
       });
-      if (tab === 'crm' && !_crmTabLoaded) {
-        _crmTabLoaded = true;
+      if (tab === 'crm') {
         _crmLoadFromServer();
       }
     }
@@ -2343,7 +2434,7 @@
               id: _crmNextId++,
               name: '', jobTitle: '', company: '',
               sector: '', seniority: '', email: '',
-              mobile: '', comment: '', linkedinUrl: ''
+              mobile: '', comment: '', status: '', linkedinUrl: ''
             }, {
               name:        p.name        || '',
               jobTitle:    p.jobTitle    || p.job_title  || '',
@@ -2354,6 +2445,7 @@
               mobile:      p.mobile      || '',
               linkedinUrl: p.linkedinUrl || p.linkedin_url || '',
               comment:     p.comment     || '',
+              status:      p.status      || '',
             }));
             added++;
           });
@@ -2742,7 +2834,7 @@
     }
 
     // ── CRM tab ────────────────────────────────────────────────
-    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, linkedinUrl}
+    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, status, linkedinUrl}
     let _crmNextId = 1;
     let _crmSelected = new Set();  // set of row ids currently checked
 
@@ -2751,7 +2843,7 @@
         id: _crmNextId++,
         name: '', jobTitle: '', company: '',
         sector: '', seniority: '', email: '',
-        mobile: '', comment: '', linkedinUrl: ''
+        mobile: '', comment: '', status: '', linkedinUrl: ''
       }, data || {});
       _crmRows.push(row);
       _crmRenderTable();
@@ -2768,7 +2860,7 @@
       const tbody = document.getElementById('crmBody');
       if (!tbody) return;
       if (!_crmRows.length) {
-        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="11" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
+        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="12" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
         _crmUpdateSendBtn();
         return;
       }
@@ -2796,6 +2888,13 @@
             html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
           }
         });
+        // Status picker
+        const st = row.status || '';
+        html += `<td><div class="crm-status-picker">` +
+          `<button class="crm-status-btn${st==='sad'?' active':''}" data-status="sad" onclick="_crmSetStatus(${row.id},'sad')" title=":(">😢</button>` +
+          `<button class="crm-status-btn${st==='neutral'?' active':''}" data-status="neutral" onclick="_crmSetStatus(${row.id},'neutral')" title=":|">😐</button>` +
+          `<button class="crm-status-btn${st==='happy'?' active':''}" data-status="happy" onclick="_crmSetStatus(${row.id},'happy')" title=":)">😊</button>` +
+          `</div></td>`;
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
         tbody.appendChild(tr);
@@ -2841,6 +2940,19 @@
       if (row) row[input.dataset.field] = input.value;
     }
 
+    function _crmSetStatus(id, val) {
+      const row = _crmRows.find(r => r.id === id);
+      if (!row) return;
+      row.status = val;
+      // Update just the status buttons for this row without full re-render
+      const tr = document.querySelector(`#crmBody tr[data-id="${id}"]`);
+      if (tr) {
+        tr.querySelectorAll('.crm-status-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.status === val);
+        });
+      }
+    }
+
     function crmExportOrImport() {
       const btn = document.getElementById('crmExportBtn');
       if (btn && btn.dataset.mode === 'import') {
@@ -2859,8 +2971,8 @@
       const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
 
       // Sheet 1 — Prospect (visible)
-      const S1_FIELDS = ['name','jobTitle','company','sector','seniority','email','mobile','linkedinUrl','comment'];
-      const S1_HEADERS = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment'];
+      const S1_FIELDS  = ['name','jobTitle','company','sector','seniority','email','mobile','linkedinUrl','comment','status'];
+      const S1_HEADERS = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
       const colDefs  = S1_FIELDS.map(() => '<Column ss:Width="120"/>').join('');
       const hdrRow   = '<Row>' + S1_HEADERS.map(h => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(h)}</Data></Cell>`).join('') + '</Row>';
       const dataRows = _crmRows.map(row =>
@@ -2915,7 +3027,7 @@
 
       const btn = document.getElementById('crmExportBtn');
       if (btn) {
-        btn.textContent = '⬆ Import CRM';
+        btn.textContent = '⬆ Import CSV';
         btn.dataset.mode = 'import';
       }
     }
@@ -3028,11 +3140,106 @@
       const nextWeek = new Date(today.getTime() + 7 * 86400000);
       document.getElementById('crmCalFrom').value = today.toISOString().slice(0,10);
       document.getElementById('crmCalTo').value   = nextWeek.toISOString().slice(0,10);
+      _crmRefreshTemplateDropdown();
       document.getElementById('crmEmailModal').style.display = 'flex';
     }
 
     function crmCloseEmailModal() {
       document.getElementById('crmEmailModal').style.display = 'none';
+    }
+
+    // ── Email template management ───────────────────────────
+    const _CRM_TPL_KEY = 'fioe_crm_email_templates';
+
+    function _crmGetTemplates() {
+      try { return JSON.parse(localStorage.getItem(_CRM_TPL_KEY) || '[]'); } catch(e) { return []; }
+    }
+    function _crmSaveTemplates(tpls) {
+      try { localStorage.setItem(_CRM_TPL_KEY, JSON.stringify(tpls)); } catch(e) { /* ignore */ }
+    }
+    function _crmRefreshTemplateDropdown() {
+      const sel = document.getElementById('crmEmailTplSelect');
+      if (!sel) return;
+      const tpls = _crmGetTemplates();
+      sel.innerHTML = '<option value="">— Load template —</option>';
+      tpls.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = t.name;
+        sel.appendChild(opt);
+      });
+    }
+    function crmLoadTemplate(id) {
+      if (!id) return;
+      const tpl = _crmGetTemplates().find(t => t.id === id);
+      if (!tpl) return;
+      document.getElementById('crmEmailSubject').value = tpl.subject || '';
+      document.getElementById('crmEmailBody').value    = tpl.body    || '';
+    }
+    function crmSaveTemplate() {
+      const subject = document.getElementById('crmEmailSubject').value.trim();
+      const body    = document.getElementById('crmEmailBody').value;
+      const name    = (prompt('Enter a name for this template:') || '').trim();
+      if (!name) return;
+      const tpls = _crmGetTemplates();
+      const id   = 'tpl_' + Date.now();
+      tpls.push({ id, name, subject, body });
+      _crmSaveTemplates(tpls);
+      _crmRefreshTemplateDropdown();
+      const sel = document.getElementById('crmEmailTplSelect');
+      if (sel) sel.value = id;
+    }
+    function crmDeleteTemplate() {
+      const sel = document.getElementById('crmEmailTplSelect');
+      const id  = sel ? sel.value : '';
+      if (!id) { alert('Select a template to delete first.'); return; }
+      const tpls = _crmGetTemplates().filter(t => t.id !== id);
+      _crmSaveTemplates(tpls);
+      _crmRefreshTemplateDropdown();
+    }
+
+    // ── Glossary tag insert at cursor ───────────────────────
+    function crmInsertTag(tag) {
+      const ta = document.getElementById('crmEmailBody');
+      if (!ta) return;
+      const start = ta.selectionStart;
+      const end   = ta.selectionEnd;
+      const val   = ta.value;
+      ta.value = val.slice(0, start) + tag + val.slice(end);
+      ta.selectionStart = ta.selectionEnd = start + tag.length;
+      ta.focus();
+    }
+
+    // ── AI Draft ────────────────────────────────────────────
+    async function crmAiDraft() {
+      const btn = document.getElementById('crmAiDraftBtn');
+      if (!btn) return;
+      const subject     = document.getElementById('crmEmailSubject').value.trim();
+      const existingBody = document.getElementById('crmEmailBody').value.trim();
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      const recipients   = selectedRows.map(r => ({
+        name: r.name, jobTitle: r.jobTitle, company: r.company,
+        sector: r.sector, seniority: r.seniority
+      }));
+      btn.disabled = true;
+      const origTxt = btn.textContent;
+      btn.textContent = '⏳ Drafting…';
+      try {
+        const res = await fetch('/prospect/crm-email-draft', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ subject, existingBody, recipients })
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        if (data.body) document.getElementById('crmEmailBody').value = data.body;
+      } catch(e) {
+        alert('❌ AI Draft failed: ' + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origTxt;
+      }
     }
 
     async function crmCalFindSlots() {
@@ -3123,8 +3330,14 @@
       for (const row of selectedRows) {
         const to = (row.email || '').trim();
         if (!to) { failed++; continue; }
-        // Resolve [Candidate Name] tag
-        const body = bodyTpl.replace(/\[Candidate Name\]/gi, row.name || to);
+        // Resolve glossary tags per-recipient
+        let body = bodyTpl
+          .replace(/\[Name\]/gi, row.name || to)
+          .replace(/\[Candidate Name\]/gi, row.name || to)
+          .replace(/\[Job Title\]/gi, row.jobTitle || '')
+          .replace(/\[Company Name\]/gi, row.company || '')
+          .replace(/\[Sector\]/gi, row.sector || '')
+          .replace(/\[Seniority\]/gi, row.seniority || '');
         try {
           const payload = {
             from, to, cc, subject, body,
