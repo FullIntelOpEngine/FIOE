@@ -2673,7 +2673,9 @@ def prospect_crm_email_draft():
         "You are a professional sales outreach copywriter.\n"
         "Draft a concise, personalised outreach email body for the following recipients.\n"
         "Use placeholder tags exactly as written so the sender can auto-fill them per recipient:\n"
-        "  [Name]  [Job Title]  [Company Name]  [Sector]  [Seniority]\n\n"
+        "  [Name]  [Job Title]  [Company Name]  [Country]  [Sector]  [Seniority]\n"
+        "  [Your Name]  [Your Company Name]  [Meeting Date]  [Meeting Time]\n"
+        "  [Video Conference Link]  [Scheduler]\n\n"
         f"Email Subject: {subject or '(not specified)'}\n\n"
         "Recipients:\n" + rec_summary + "\n\n"
         + (f"Existing draft to improve:\n{existing}\n\n" if existing else "")
