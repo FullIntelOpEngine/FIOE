@@ -824,9 +824,17 @@ def start_job():
                             continue
                         # Skip files that are already tagged with a DIFFERENT role_tag.
                         # Each distinct role_tag must keep its own filename; only rename
-                        # untagged files (e.g. JD_username.ext) or same-role_tag files.
+                        # untagged files (e.g. JD_username.ext or JD_username_2.ext) or
+                        # same-role_tag files.
+                        # IMPORTANT: untagged files like JD_{username}.ext also start with
+                        # 'JD_', so we must NOT skip them — check explicitly.
                         _existing_basename = os.path.basename(_existing_jd)
-                        if _existing_basename.lower().startswith('jd_') and _existing_basename.lower() != _new_name_jd.lower():
+                        _untagged_jd_re = re.compile(
+                            r'^jd_' + re.escape(_safe_uname_jd.lower()) + r'(?:_\d+)?\.' + _ext_try + r'$')
+                        _is_untagged_jd = bool(_untagged_jd_re.match(_existing_basename.lower()))
+                        if (not _is_untagged_jd
+                                and _existing_basename.lower().startswith('jd_')
+                                and _existing_basename.lower() != _new_name_jd.lower()):
                             logger.info(f"[StartJob] Skipping rename of '{_existing_basename}' (already tagged with different role_tag)")
                             continue
                         if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
@@ -6535,7 +6543,23 @@ def user_upload_jd():
         try:
             os.makedirs(_JD_ARCHIVE_DIR, exist_ok=True)
             safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
-            dest = _unique_jd_path(os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}"))
+            # If the uploaded filename already carries a role_tag in the form
+            # JD_{role_tag}_{username}.ext, preserve that name so each distinct
+            # search title keeps its own canonical file.  Same role_tag → overwrite
+            # (no _2 suffix); different role_tag → creates a new file for that role.
+            _upload_basename = os.path.basename(file.filename)
+            _tagged_upload_re = re.compile(
+                r'^[Jj][Dd]_(.+)_' + re.escape(safe_username) + r'\.(pdf|docx|doc)$',
+                re.IGNORECASE)
+            _m_upload = _tagged_upload_re.match(_upload_basename)
+            if _m_upload:
+                _safe_rt = _sanitize_jd_name_part(_m_upload.group(1))
+                dest = os.path.join(_JD_ARCHIVE_DIR, f"JD_{_safe_rt}_{safe_username}.{ext}")
+                # Safety: reject paths that escape the archive directory.
+                if not os.path.abspath(dest).startswith(os.path.abspath(_JD_ARCHIVE_DIR) + os.sep):
+                    dest = _unique_jd_path(os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}"))
+            else:
+                dest = _unique_jd_path(os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}"))
             with open(dest, 'wb') as _fh:
                 _fh.write(file_bytes)
             logger.info(f"[Upload JD] Saved archive copy: {dest}")
@@ -6579,6 +6603,17 @@ def user_tag_jd():
             return jsonify({"status": "not_found"}), 200
 
         existing_path = matches[0]
+        # When multiple files match (e.g. both JD_Site Activation Manager_orlha.pdf
+        # and JD_orlha.pdf exist), prefer the untagged file (JD_{username}.ext or
+        # JD_{username}_N.ext) so we don't accidentally overwrite a file that is
+        # already tagged with a different role_tag.
+        if len(matches) > 1:
+            _untagged_tag_re = re.compile(
+                r'^jd_' + re.escape(safe_username) + r'(?:_\d+)?\.' + re.escape(ext) + r'$',
+                re.IGNORECASE)
+            _untagged_m = [m for m in matches if _untagged_tag_re.match(os.path.basename(m))]
+            if _untagged_m:
+                existing_path = _untagged_m[0]
         # Verify the resolved path stays inside _JD_ARCHIVE_DIR (defence in depth)
         if not os.path.abspath(existing_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
             return jsonify({"error": "invalid path"}), 400
