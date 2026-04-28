@@ -450,11 +450,270 @@
       color: var(--arg);
     }
 
+    /* ── Main tab bar (Dashboard / Prospect) ─────────────────── */
+    .main-tab-bar {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid var(--cb);
+      background: rgba(7,54,121,0.18);
+      padding: 0 24px;
+      position: sticky;
+      top: 60px;
+      z-index: 90;
+    }
+    .main-tab-btn {
+      padding: 12px 24px;
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: var(--arg);
+      cursor: pointer;
+      border-radius: 4px 4px 0 0;
+      transition: all .15s;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      margin-bottom: -2px;
+    }
+    .main-tab-btn.active {
+      font-weight: 700;
+      border-bottom-color: var(--re);
+      color: var(--dd);
+      background: rgba(109,234,249,0.08);
+    }
+    .main-tab-btn:hover:not(.active) {
+      color: var(--dd);
+      background: rgba(109,234,249,0.04);
+    }
+    :root[data-theme="light"] .main-tab-bar {
+      background: rgba(7,54,121,0.08);
+      border-bottom-color: #4c82b8;
+    }
+    :root[data-theme="light"] .main-tab-btn { color: #073679; }
+    :root[data-theme="light"] .main-tab-btn.active {
+      color: #073679;
+      border-bottom-color: #073679;
+      background: rgba(7,54,121,0.10);
+    }
+
+    /* ── Prospect tab ─────────────────────────────────────────── */
+    .prospect-layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 28px;
+      align-items: start;
+      padding: 28px 32px 52px;
+    }
+    @media (max-width: 900px) {
+      .prospect-layout { grid-template-columns: 1fr; }
+    }
+    .prospect-form-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 20px;
+    }
+    .prospect-form-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+      margin-bottom: 18px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    :root[data-theme="light"] .prospect-form-title { color: var(--ad); }
+    .prospect-field { margin-bottom: 16px; }
+    .prospect-field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: var(--arg);
+      margin-bottom: 6px;
+    }
+    :root[data-theme="light"] .prospect-field label { color: #073679; }
+    .prospect-field-row { display: flex; gap: 8px; }
+    .prospect-input {
+      flex: 1;
+      padding: 9px 12px;
+      background: var(--panel);
+      border: 1.5px solid var(--border);
+      border-radius: 7px;
+      color: var(--dd);
+      font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif;
+      outline: none;
+      transition: border-color .15s;
+      width: 100%;
+    }
+    .prospect-input:focus { border-color: var(--re); }
+    :root[data-theme="light"] .prospect-input {
+      background: #fff;
+      color: #222529;
+      border-color: #87888a;
+    }
+    .prospect-add-btn {
+      padding: 9px 16px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .15s;
+    }
+    .prospect-add-btn:hover { background: #0a4baa; }
+    .prospect-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      min-height: 0;
+    }
+    .prospect-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      background: rgba(109,234,249,0.12);
+      border: 1px solid rgba(109,234,249,0.30);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--dd);
+      cursor: default;
+    }
+    .prospect-chip .chip-x {
+      cursor: pointer;
+      color: var(--arg);
+      font-weight: 700;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .prospect-chip .chip-x:hover { color: var(--danger); }
+    .prospect-suggest-btn {
+      width: 100%;
+      padding: 11px;
+      margin-top: 8px;
+      background: linear-gradient(90deg, var(--ad) 0%, #1565c0 100%);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: opacity .15s;
+    }
+    .prospect-suggest-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .prospect-suggest-btn:not(:disabled):hover { opacity: .9; }
+
+    /* ── Prospect suggestions panel ───────────────────────────── */
+    .prospect-suggestions-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 22px 20px;
+      min-height: 200px;
+    }
+    .prospect-suggestions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .prospect-suggestions-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .prospect-suggestions-title { color: var(--ad); }
+    .prospect-refresh-btn {
+      padding: 6px 14px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+    }
+    .prospect-refresh-btn:hover { background: #0a4baa; }
+    .prospect-sg-group { margin-bottom: 20px; }
+    .prospect-sg-group-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--cb);
+      margin-bottom: 10px;
+    }
+    .prospect-sg-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .prospect-sg-item {
+      padding: 6px 14px;
+      background: rgba(76,130,184,0.10);
+      border: 1px solid rgba(76,130,184,0.25);
+      border-radius: 20px;
+      font-size: 12px;
+      color: var(--dd);
+      cursor: pointer;
+      transition: all .12s;
+    }
+    .prospect-sg-item:hover {
+      background: rgba(109,234,249,0.14);
+      border-color: var(--re);
+      color: var(--re);
+    }
+    .prospect-sg-empty {
+      color: var(--arg);
+      font-size: 13px;
+      font-style: italic;
+      text-align: center;
+      padding: 32px 0;
+    }
+    .prospect-sg-loading {
+      color: var(--arg);
+      font-size: 13px;
+      text-align: center;
+      padding: 32px 0;
+    }
+    .prospect-sg-error {
+      color: var(--danger);
+      font-size: 13px;
+      padding: 12px;
+      background: rgba(224,82,82,0.08);
+      border-radius: 6px;
+    }
+
     /* ── Responsive ──────────────────────────────────────────── */
     @media (max-width: 600px) {
       .top-banner { padding: 0 14px; }
       .page-body { padding: 16px 14px 0; }
       .page-body--bot { padding: 16px 14px 40px; }
+      .prospect-layout { padding: 16px 14px 40px; }
     }
   </style>
 </head>
@@ -477,6 +736,15 @@
       <button class="btn-logout" id="logoutBtn">Log Out</button>
     </div>
   </div>
+
+  <!-- ── Main tab navigation ──────────────────────────────── -->
+  <div class="main-tab-bar" id="mainTabBar">
+    <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
+    <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')">🔍 Prospect</button>
+  </div>
+
+  <!-- ── Dashboard tab content ────────────────────────────── -->
+  <div id="mainTabContentDashboard">
 
   <!-- ── Page body ────────────────────────────────────────── -->
   <div class="page-body">
@@ -584,6 +852,138 @@
     <div class="card" id="txnCard" style="padding:0;overflow:visible;"></div>
 
   </div><!-- /.page-body--bot -->
+
+  </div><!-- /#mainTabContentDashboard -->
+
+  <!-- ── Prospect tab content ─────────────────────────────── -->
+  <div id="mainTabContentProspect" style="display:none;">
+    <div class="prospect-layout">
+
+      <!-- Left column: search form -->
+      <div class="prospect-form-card">
+        <div class="prospect-form-title">🤖 AI Assist — Prospect Search</div>
+
+        <!-- Job Title -->
+        <div class="prospect-field">
+          <label>Job Title</label>
+          <div class="prospect-field-row">
+            <input type="text" id="prospectJobTitleInput" class="prospect-input" placeholder="e.g. Account Executive" autocomplete="off" />
+            <button class="prospect-add-btn" onclick="prospectAddJobTitle()">Add</button>
+          </div>
+          <div class="prospect-chips" id="prospectJobTitleChips"></div>
+        </div>
+
+        <!-- Company Name -->
+        <div class="prospect-field">
+          <label>Company Name</label>
+          <div class="prospect-field-row">
+            <input type="text" id="prospectCompanyInput" class="prospect-input" placeholder="e.g. Salesforce" autocomplete="off" />
+            <button class="prospect-add-btn" onclick="prospectAddCompany()">Add</button>
+          </div>
+          <div class="prospect-chips" id="prospectCompanyChips"></div>
+        </div>
+
+        <!-- Location -->
+        <div class="prospect-field">
+          <label>Location</label>
+          <select id="prospectCountry" class="prospect-input">
+            <option value="">Select a country…</option>
+            <optgroup label="North America">
+              <option value="United States">United States</option>
+              <option value="Canada">Canada</option>
+              <option value="Mexico">Mexico</option>
+            </optgroup>
+            <optgroup label="Latin America">
+              <option value="Brazil">Brazil</option>
+              <option value="Argentina">Argentina</option>
+              <option value="Chile">Chile</option>
+              <option value="Colombia">Colombia</option>
+              <option value="Peru">Peru</option>
+            </optgroup>
+            <optgroup label="Europe">
+              <option value="United Kingdom">United Kingdom</option>
+              <option value="Germany">Germany</option>
+              <option value="France">France</option>
+              <option value="Spain">Spain</option>
+              <option value="Italy">Italy</option>
+              <option value="Netherlands">Netherlands</option>
+              <option value="Belgium">Belgium</option>
+              <option value="Switzerland">Switzerland</option>
+              <option value="Sweden">Sweden</option>
+              <option value="Denmark">Denmark</option>
+              <option value="Norway">Norway</option>
+              <option value="Poland">Poland</option>
+              <option value="Romania">Romania</option>
+              <option value="Czech Republic">Czech Republic</option>
+              <option value="Ireland">Ireland</option>
+              <option value="Austria">Austria</option>
+              <option value="Finland">Finland</option>
+              <option value="Russia">Russia</option>
+              <option value="Ukraine">Ukraine</option>
+            </optgroup>
+            <optgroup label="Middle East">
+              <option value="United Arab Emirates">United Arab Emirates</option>
+              <option value="Saudi Arabia">Saudi Arabia</option>
+              <option value="Qatar">Qatar</option>
+              <option value="Israel">Israel</option>
+              <option value="Turkey">Turkey</option>
+            </optgroup>
+            <optgroup label="Asia-Pacific">
+              <option value="China">China</option>
+              <option value="India">India</option>
+              <option value="Japan">Japan</option>
+              <option value="Korea">South Korea</option>
+              <option value="Singapore">Singapore</option>
+              <option value="Malaysia">Malaysia</option>
+              <option value="Indonesia">Indonesia</option>
+              <option value="Thailand">Thailand</option>
+              <option value="Vietnam">Vietnam</option>
+              <option value="Philippines">Philippines</option>
+              <option value="Australia">Australia</option>
+              <option value="New Zealand">New Zealand</option>
+              <option value="Pakistan">Pakistan</option>
+              <option value="Hong Kong">Hong Kong</option>
+              <option value="Taiwan">Taiwan</option>
+              <option value="Sri Lanka">Sri Lanka</option>
+            </optgroup>
+          </select>
+        </div>
+
+        <!-- Seniority -->
+        <div class="prospect-field">
+          <label>Seniority</label>
+          <select id="prospectSeniority" class="prospect-input">
+            <option value="">(Any)</option>
+            <option value="Associate">Associate</option>
+            <option value="Manager">Manager</option>
+            <option value="Director">Director</option>
+          </select>
+        </div>
+
+        <!-- AI Suggest button -->
+        <button class="prospect-suggest-btn" id="prospectSuggestBtn" onclick="prospectFetchSuggestions()">
+          🤖 Get AI Suggestions
+        </button>
+      </div>
+
+      <!-- Right column: suggestions -->
+      <div class="prospect-suggestions-panel">
+        <div class="prospect-suggestions-header">
+          <div class="prospect-suggestions-title">Suggestions</div>
+          <button class="prospect-refresh-btn" id="prospectRefreshBtn" onclick="prospectFetchSuggestions(true)">Refresh</button>
+        </div>
+        <div id="prospectSgLoading" class="prospect-sg-loading" style="display:none;">
+          Generating suggestions…
+        </div>
+        <div id="prospectSgError" class="prospect-sg-error" style="display:none;"></div>
+        <div id="prospectSgEmpty" class="prospect-sg-empty">
+          Add a Job Title or Company Name and click <em>Get AI Suggestions</em> to begin.
+        </div>
+        <div id="prospectSgContent" style="display:none;"></div>
+      </div>
+
+    </div>
+  </div><!-- /#mainTabContentProspect -->
 
   <script>
     // ── Helpers ──────────────────────────────────────────────
@@ -1433,6 +1833,199 @@
     }
 
     loadDashboard();
+
+    // ── Main tab switching ─────────────────────────────────────
+    function switchMainTab(tab) {
+      const tabs = ['dashboard', 'prospect'];
+      tabs.forEach(t => {
+        const btn     = document.getElementById('mainTabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
+        const content = document.getElementById('mainTabContent' + t.charAt(0).toUpperCase() + t.slice(1));
+        if (btn)     btn.classList.toggle('active', t === tab);
+        if (content) content.style.display = (t === tab) ? '' : 'none';
+      });
+    }
+
+    // ── Prospect tab — AI Assist ───────────────────────────────
+    let _prospectJobTitles = [];
+    let _prospectCompanies = [];
+    let _prospectLastHash  = '';
+
+    function _prospectEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _prospectRenderChips(items, containerId, removeCallback) {
+      const el = document.getElementById(containerId);
+      if (!el) return;
+      el.innerHTML = '';
+      items.forEach((item, i) => {
+        const chip = document.createElement('span');
+        chip.className = 'prospect-chip';
+        chip.innerHTML = _prospectEsc(item) +
+          ' <span class="chip-x" title="Remove" onclick="' + removeCallback + '(' + i + ')">×</span>';
+        el.appendChild(chip);
+      });
+    }
+
+    function prospectAddJobTitle() {
+      const inp = document.getElementById('prospectJobTitleInput');
+      const val = (inp ? inp.value.trim() : '');
+      if (!val) return;
+      if (!_prospectJobTitles.some(t => t.toLowerCase() === val.toLowerCase())) {
+        _prospectJobTitles.push(val);
+        _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+      }
+      if (inp) inp.value = '';
+    }
+
+    function prospectRemoveJobTitle(i) {
+      _prospectJobTitles.splice(i, 1);
+      _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+    }
+
+    function prospectAddCompany() {
+      const inp = document.getElementById('prospectCompanyInput');
+      const val = (inp ? inp.value.trim() : '');
+      if (!val) return;
+      if (!_prospectCompanies.some(c => c.toLowerCase() === val.toLowerCase())) {
+        _prospectCompanies.push(val);
+        _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+      }
+      if (inp) inp.value = '';
+    }
+
+    function prospectRemoveCompany(i) {
+      _prospectCompanies.splice(i, 1);
+      _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+    }
+
+    // Allow Enter key to add chips
+    document.addEventListener('DOMContentLoaded', function() {
+      const jti = document.getElementById('prospectJobTitleInput');
+      const ci  = document.getElementById('prospectCompanyInput');
+      if (jti) jti.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); prospectAddJobTitle(); } });
+      if (ci)  ci.addEventListener('keydown',  function(e) { if (e.key === 'Enter') { e.preventDefault(); prospectAddCompany();  } });
+    });
+
+    async function prospectFetchSuggestions(force) {
+      const country   = (document.getElementById('prospectCountry')   || {}).value  || '';
+      const seniority = (document.getElementById('prospectSeniority') || {}).value  || '';
+
+      const hash = JSON.stringify({
+        jobs: [..._prospectJobTitles].sort(),
+        companies: [..._prospectCompanies].sort(),
+        country, seniority
+      });
+
+      if (!force && hash === _prospectLastHash) return;
+      if (!_prospectJobTitles.length && !_prospectCompanies.length && !country) {
+        document.getElementById('prospectSgEmpty').style.display = '';
+        document.getElementById('prospectSgContent').style.display = 'none';
+        document.getElementById('prospectSgError').style.display = 'none';
+        return;
+      }
+      _prospectLastHash = hash;
+
+      const suggestBtn   = document.getElementById('prospectSuggestBtn');
+      const refreshBtn   = document.getElementById('prospectRefreshBtn');
+      const loadingEl    = document.getElementById('prospectSgLoading');
+      const errorEl      = document.getElementById('prospectSgError');
+      const emptyEl      = document.getElementById('prospectSgEmpty');
+      const contentEl    = document.getElementById('prospectSgContent');
+
+      if (suggestBtn)  suggestBtn.disabled  = true;
+      if (refreshBtn)  refreshBtn.disabled  = true;
+      if (loadingEl)   loadingEl.style.display = '';
+      if (emptyEl)     emptyEl.style.display   = 'none';
+      if (errorEl)     errorEl.style.display   = 'none';
+      if (contentEl)   contentEl.style.display = 'none';
+
+      try {
+        const payload = {
+          jobTitles:  _prospectJobTitles,
+          companies:  _prospectCompanies,
+          languages:  [],
+          sectors:    [],
+          country:    country,
+          products:   []
+        };
+        const res  = await fetch('/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        _prospectRenderSuggestions(data, seniority, contentEl);
+        if (contentEl) contentEl.style.display = '';
+      } catch(e) {
+        if (errorEl) {
+          errorEl.textContent = 'Could not load suggestions: ' + e.message;
+          errorEl.style.display = '';
+        }
+      } finally {
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (suggestBtn) suggestBtn.disabled = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+      }
+    }
+
+    function _prospectRenderSuggestions(data, seniority, container) {
+      if (!container) return;
+      container.innerHTML = '';
+
+      const jobList  = Array.isArray(data.job  && data.job.related)  ? data.job.related   :
+                       Array.isArray(data.jobs)                       ? data.jobs           : [];
+      const compList = Array.isArray(data.company && data.company.related) ? data.company.related :
+                       Array.isArray(data.companies)                       ? data.companies        : [];
+
+      // Filter out items already added by the user
+      const userJobsLower  = _prospectJobTitles.map(t => t.toLowerCase());
+      const userCompsLower = _prospectCompanies.map(c => c.toLowerCase());
+      const filteredJobs   = jobList.filter(j  => !userJobsLower.includes((j||'').toLowerCase())).slice(0, 15);
+      const filteredComps  = compList.filter(c => !userCompsLower.includes((c||'').toLowerCase())).slice(0, 15);
+
+      if (!filteredJobs.length && !filteredComps.length) {
+        container.innerHTML = '<div class="prospect-sg-empty">No suggestions returned. Try adding more inputs.</div>';
+        return;
+      }
+
+      function buildGroup(title, items, addFn) {
+        if (!items.length) return;
+        const grp = document.createElement('div');
+        grp.className = 'prospect-sg-group';
+        const gtitle = document.createElement('div');
+        gtitle.className = 'prospect-sg-group-title';
+        gtitle.textContent = title;
+        grp.appendChild(gtitle);
+        const itemsWrap = document.createElement('div');
+        itemsWrap.className = 'prospect-sg-items';
+        items.forEach(item => {
+          const el = document.createElement('span');
+          el.className = 'prospect-sg-item';
+          el.textContent = item + (seniority ? ' · ' + seniority : '');
+          el.title = 'Click to add "' + item + '"';
+          el.onclick = function() { addFn(item); el.style.opacity = '.4'; el.style.pointerEvents = 'none'; };
+          itemsWrap.appendChild(el);
+        });
+        grp.appendChild(itemsWrap);
+        container.appendChild(grp);
+      }
+
+      buildGroup('Job Title Suggestions', filteredJobs, function(v) {
+        if (!_prospectJobTitles.some(t => t.toLowerCase() === v.toLowerCase())) {
+          _prospectJobTitles.push(v);
+          _prospectRenderChips(_prospectJobTitles, 'prospectJobTitleChips', 'prospectRemoveJobTitle');
+        }
+      });
+      buildGroup('Company Suggestions', filteredComps, function(v) {
+        if (!_prospectCompanies.some(c => c.toLowerCase() === v.toLowerCase())) {
+          _prospectCompanies.push(v);
+          _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
+        }
+      });
+    }
 
     // ── Theme toggle ─────────────────────────────────────────
     (function initTheme() {

@@ -5510,8 +5510,8 @@ async function triggerLevel1Assessment(tr, anchor) {
                 }
             });
             }
-        } else if (!window.__HAS_CUSTOM_LLM) {
-            /* AFFECTED: Add Appeal Button if score > 50% — only for JD-sourced records */
+        } else {
+            /* Appeal Button when score >= threshold — show for all users when a JD file matches the role_tag */
             (async () => {
             if (tr.dataset.hasAppeal === '1') return; // appeal already filed for this record
             // Show appeal only when a JD file exists for this record's role_tag.
@@ -6525,68 +6525,67 @@ function renderTable(){
         if (m) currentScore = parseInt(m[1], 10);
         
         // Dynamic Button Logic
-        if (currentScore > 0 && !window.__HAS_CUSTOM_LLM) {
-            if (currentScore < 50) {
-                // Show Rebate Button
-                const rebateBtn = document.createElement('button');
-                rebateBtn.textContent = 'Rebate';
-                rebateBtn.className = 'review-action-btn rebate';
-                rebateBtn.style.padding = '6px 12px';
-                rebateBtn.onclick = async () => {
+        // Rebate button: only for non-custom-LLM users with score < 50%
+        if (currentScore > 0 && !window.__HAS_CUSTOM_LLM && currentScore < 50) {
+            const rebateBtn = document.createElement('button');
+            rebateBtn.textContent = 'Rebate';
+            rebateBtn.className = 'review-action-btn rebate';
+            rebateBtn.style.padding = '6px 12px';
+            rebateBtn.onclick = async () => {
+                const anchor = content.dataset.anchor;
+                if (!anchor) return;
+                if (!confirm(`Rebate this profile due to low score (${currentScore}%)? This will delete the entry and credit a token.`)) return;
+                
+                matchingLevelContainer.innerHTML += '<br>Processing rebate...';
+                
+                try {
+                    await applyTokenDelta(_SV_REBATE_CREDIT, 'search_rebate');
+                    rebateTokens += 1;
+                    updateRebateTokenDisplay();
+                    await deleteBackendRow(anchor);
+                    autoDeleteRow(anchor); // Helper to remove from UI table
+                    
+                    alert('Rebate processed successfully.');
+                    switchTab('tab-search'); // Go back to search
+                    await loadRows(currentPage); // Refresh list
+                } catch(e) {
+                    alert('Rebate failed: ' + e.message);
+                }
+            };
+            assessmentActionContainer.appendChild(rebateBtn);
+        }
+        // Appeal button: show for all users (including custom LLM) when a JD file matches the role_tag
+        if (currentScore > 0) {
+            (async () => {
+                if (tr.dataset.hasAppeal === '1') return; // appeal already filed
+                // Show appeal only when a JD file exists for this record's role_tag.
+                const _dtRowRoleTag = (tr.dataset.roleTag || '').trim();
+                const _dtHasJdForRole = _dtRowRoleTag ? await _svCheckHasJdForRole(_dtRowRoleTag) : await _svCheckHasJd();
+                if (!_dtHasJdForRole) return; // no matching JD — appeal not applicable
+                const appealBtn = document.createElement('button');
+                appealBtn.textContent = 'Appeal';
+                appealBtn.className = 'review-action-btn view'; // Use neutral style
+                appealBtn.style.padding = '6px 12px';
+                appealBtn.onclick = () => {
                     const anchor = content.dataset.anchor;
-                    if (!anchor) return;
-                    if (!confirm(`Rebate this profile due to low score (${currentScore}%)? This will delete the entry and credit a token.`)) return;
-                    
-                    matchingLevelContainer.innerHTML += '<br>Processing rebate...';
-                    
-                    try {
-                        await applyTokenDelta(_SV_REBATE_CREDIT, 'search_rebate');
-                        rebateTokens += 1;
-                        updateRebateTokenDisplay();
-                        await deleteBackendRow(anchor);
-                        autoDeleteRow(anchor); // Helper to remove from UI table
-                        
-                        alert('Rebate processed successfully.');
-                        switchTab('tab-search'); // Go back to search
-                        await loadRows(currentPage); // Refresh list
-                    } catch(e) {
-                        alert('Rebate failed: ' + e.message);
+                    const justification = prompt("Please enter your justification for appeal:");
+                    if (justification) {
+                        fetch(APPEAL_SAVE_API, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                            body: JSON.stringify({ linkedinurl: anchor, field: 'appeal', value: justification })
+                        }).then(r => r.json()).then(d => {
+                            if (d.updated) {
+                                tr.dataset.hasAppeal = '1';
+                                appealBtn.remove();
+                                alert("Appeal saved successfully.");
+                            }
+                            else { alert("Appeal save failed: " + (d.error || 'unknown error')); }
+                        }).catch(e => { alert("Appeal save error: " + e.message); });
                     }
                 };
-                assessmentActionContainer.appendChild(rebateBtn);
-            } else {
-                // Show Appeal Button only if user sourced via an uploaded JD and has not yet filed an appeal
-                (async () => {
-                    if (tr.dataset.hasAppeal === '1') return; // appeal already filed
-                    // Show appeal only when a JD file exists for this record's role_tag.
-                    const _dtRowRoleTag = (tr.dataset.roleTag || '').trim();
-                    const _dtHasJdForRole = _dtRowRoleTag ? await _svCheckHasJdForRole(_dtRowRoleTag) : await _svCheckHasJd();
-                    if (!_dtHasJdForRole) return; // no matching JD — appeal not applicable
-                    const appealBtn = document.createElement('button');
-                    appealBtn.textContent = 'Appeal';
-                    appealBtn.className = 'review-action-btn view'; // Use neutral style
-                    appealBtn.style.padding = '6px 12px';
-                    appealBtn.onclick = () => {
-                        const anchor = content.dataset.anchor;
-                        const justification = prompt("Please enter your justification for appeal:");
-                        if (justification) {
-                            fetch(APPEAL_SAVE_API, {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
-                                body: JSON.stringify({ linkedinurl: anchor, field: 'appeal', value: justification })
-                            }).then(r => r.json()).then(d => {
-                                if (d.updated) {
-                                    tr.dataset.hasAppeal = '1';
-                                    appealBtn.remove();
-                                    alert("Appeal saved successfully.");
-                                }
-                                else { alert("Appeal save failed: " + (d.error || 'unknown error')); }
-                            }).catch(e => { alert("Appeal save error: " + e.message); });
-                        }
-                    };
-                    assessmentActionContainer.appendChild(appealBtn);
-                })();
-            }
+                assessmentActionContainer.appendChild(appealBtn);
+            })();
         }
     } else {
         // No localStorage cache — fall back to DB-backed rating from tr.dataset.rating
