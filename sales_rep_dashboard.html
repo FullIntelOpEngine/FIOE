@@ -708,12 +708,207 @@
       border-radius: 6px;
     }
 
+    /* ── Prospect sourcing bar ────────────────────────────────── */
+    .prospect-source-bar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+      padding: 12px 14px;
+      background: rgba(7,54,121,0.20);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .prospect-source-btn {
+      padding: 9px 20px;
+      background: linear-gradient(90deg, #073679 0%, #1565c0 100%);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .prospect-source-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .prospect-source-btn:not(:disabled):hover { opacity: .9; }
+    .prospect-sp-toggle-btn {
+      padding: 6px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s;
+      white-space: nowrap;
+      font-family: "Roboto Condensed", sans-serif;
+    }
+    .prospect-sp-toggle-btn.sp-cse {
+      background: var(--panel);
+      color: var(--arg);
+    }
+    .prospect-sp-toggle-btn.sp-api {
+      background: var(--ad);
+      color: #fff;
+      border-color: var(--ad);
+    }
+    .prospect-sp-provider-wrap {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    .prospect-sp-provider-wrap.sp-open { display: flex; }
+    .prospect-sp-provider-select {
+      padding: 5px 10px;
+      border: 1.5px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--dd);
+      font-size: 12px;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+    }
+    .prospect-source-status {
+      font-size: 12px;
+      color: var(--re);
+      font-style: italic;
+      margin-top: 6px;
+      min-height: 18px;
+    }
+
+    /* ── CRM tab ──────────────────────────────────────────────── */
+    .crm-layout {
+      padding: 28px 32px 52px;
+    }
+    .crm-toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .crm-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--re);
+      flex: 1;
+    }
+    :root[data-theme="light"] .crm-title { color: var(--ad); }
+    .crm-add-row-btn {
+      padding: 7px 18px;
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-add-row-btn:hover { background: #0a4baa; }
+    .crm-export-btn {
+      padding: 7px 16px;
+      background: var(--panel);
+      color: var(--cb);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .crm-export-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-table-wrap {
+      overflow-x: auto;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .crm-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .crm-table thead th {
+      background: rgba(7,54,121,0.35);
+      color: var(--dd);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      padding: 10px 12px;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+    }
+    :root[data-theme="light"] .crm-table thead th {
+      background: rgba(7,54,121,0.15);
+      color: #073679;
+    }
+    .crm-table tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background .12s;
+    }
+    .crm-table tbody tr:hover { background: rgba(109,234,249,0.06); }
+    .crm-table td {
+      padding: 8px 10px;
+      vertical-align: middle;
+      color: var(--dd);
+    }
+    .crm-table td .crm-cell-input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      border-bottom: 1px dashed transparent;
+      color: var(--dd);
+      font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif;
+      padding: 2px 4px;
+      outline: none;
+      transition: border-color .15s;
+      min-width: 60px;
+    }
+    .crm-table td .crm-cell-input:focus {
+      border-bottom-color: var(--re);
+    }
+    :root[data-theme="light"] .crm-table td .crm-cell-input {
+      color: #222529;
+    }
+    .crm-table .crm-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--arg);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: color .12s;
+    }
+    .crm-table .crm-del-btn:hover { color: var(--danger); }
+    .crm-empty {
+      text-align: center;
+      color: var(--arg);
+      font-size: 13px;
+      font-style: italic;
+      padding: 40px 0;
+    }
+
     /* ── Responsive ──────────────────────────────────────────── */
     @media (max-width: 600px) {
       .top-banner { padding: 0 14px; }
       .page-body { padding: 16px 14px 0; }
       .page-body--bot { padding: 16px 14px 40px; }
       .prospect-layout { padding: 16px 14px 40px; }
+      .crm-layout { padding: 16px 14px 40px; }
     }
   </style>
 </head>
@@ -741,6 +936,7 @@
   <div class="main-tab-bar" id="mainTabBar">
     <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
     <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')" aria-label="Prospect tab">🔍 Prospect</button>
+    <button class="main-tab-btn" id="mainTabBtnCrm" onclick="switchMainTab('crm')" aria-label="CRM tab">📋 CRM</button>
   </div>
 
   <!-- ── Dashboard tab content ────────────────────────────── -->
@@ -960,10 +1156,33 @@
           </select>
         </div>
 
+        <!-- Sector -->
+        <div class="prospect-field">
+          <label>Sector</label>
+          <div class="prospect-field-row">
+            <select id="prospectSectorSelect" class="prospect-input" onchange="prospectSectorSelectChange()">
+              <option value="">Select a sector…</option>
+            </select>
+          </div>
+          <div class="prospect-chips" id="prospectSectorChips"></div>
+        </div>
+
         <!-- AI Suggest button -->
         <button class="prospect-suggest-btn" id="prospectSuggestBtn" onclick="prospectFetchSuggestions()">
           🤖 Get AI Suggestions
         </button>
+
+        <!-- Sourcing Bar -->
+        <div class="prospect-source-bar">
+          <button class="prospect-source-btn" id="prospectSourceBtn" onclick="prospectStartSourcing()">🔎 Source Profiles</button>
+          <button class="prospect-sp-toggle-btn sp-cse" id="prospectSpToggleBtn" onclick="prospectToggleSpMode()" title="Toggle between Default CSE and API Provider">Default CSE</button>
+          <div class="prospect-sp-provider-wrap" id="prospectSpProviderWrap">
+            <select id="prospectSpProviderSelect" class="prospect-sp-provider-select">
+              <option value="">— select provider —</option>
+            </select>
+          </div>
+        </div>
+        <div class="prospect-source-status" id="prospectSourceStatus"></div>
       </div>
 
       <!-- Right column: suggestions -->
@@ -984,6 +1203,38 @@
 
     </div>
   </div><!-- /#mainTabContentProspect -->
+
+  <!-- ── CRM tab content ──────────────────────────────────── -->
+  <div id="mainTabContentCrm" style="display:none;">
+    <div class="crm-layout">
+      <div class="crm-toolbar">
+        <div class="crm-title">📋 CRM — Prospect Candidates</div>
+        <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
+        <button class="crm-export-btn" onclick="crmExportCSV()">⬇ Export CSV</button>
+      </div>
+      <div class="crm-table-wrap">
+        <table class="crm-table" id="crmTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Job Title</th>
+              <th>Company</th>
+              <th>Sector</th>
+              <th>Seniority</th>
+              <th>Email</th>
+              <th>Mobile</th>
+              <th>Comment</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="crmBody">
+            <tr id="crmEmptyRow"><td colspan="10" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /#mainTabContentCrm -->
 
   <script>
     // ── Helpers ──────────────────────────────────────────────
@@ -1836,7 +2087,7 @@
 
     // ── Main tab switching ─────────────────────────────────────
     function switchMainTab(tab) {
-      const tabs = ['dashboard', 'prospect'];
+      const tabs = ['dashboard', 'prospect', 'crm'];
       tabs.forEach(t => {
         const btn     = document.getElementById('mainTabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
         const content = document.getElementById('mainTabContent' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -1848,7 +2099,50 @@
     // ── Prospect tab — AI Assist ───────────────────────────────
     let _prospectJobTitles = [];
     let _prospectCompanies = [];
+    let _prospectSectors   = [];
     let _prospectLastHash  = '';
+
+    // ── Prospect: Sector select — loaded from sectors.json ────
+    (function loadProspectSectors() {
+      fetch('/sectors.json')
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null)
+        .then(data => {
+          const sel = document.getElementById('prospectSectorSelect');
+          if (!sel || !Array.isArray(data)) return;
+          sel.innerHTML = '<option value="">Select a sector…</option>';
+          data.forEach(entry => {
+            const grp = document.createElement('optgroup');
+            grp.label = entry.sector || '';
+            // Sector name itself as first selectable option
+            const topOpt = document.createElement('option');
+            topOpt.value = entry.sector; topOpt.textContent = entry.sector;
+            grp.appendChild(topOpt);
+            (entry.domains || []).forEach(d => {
+              const opt = document.createElement('option');
+              opt.value = d; opt.textContent = '  ' + d;
+              grp.appendChild(opt);
+            });
+            sel.appendChild(grp);
+          });
+        });
+    })();
+
+    function prospectSectorSelectChange() {
+      const sel = document.getElementById('prospectSectorSelect');
+      const val = sel ? sel.value.trim() : '';
+      if (!val) return;
+      if (!_prospectSectors.some(s => s.toLowerCase() === val.toLowerCase())) {
+        _prospectSectors.push(val);
+        _prospectRenderChips(_prospectSectors, 'prospectSectorChips', 'prospectRemoveSector');
+      }
+      if (sel) sel.value = '';
+    }
+
+    function prospectRemoveSector(i) {
+      _prospectSectors.splice(i, 1);
+      _prospectRenderChips(_prospectSectors, 'prospectSectorChips', 'prospectRemoveSector');
+    }
 
     function _prospectEsc(s) {
       return String(s == null ? '' : s)
@@ -1915,6 +2209,7 @@
       const hash = JSON.stringify({
         jobs: [..._prospectJobTitles].sort(),
         companies: [..._prospectCompanies].sort(),
+        sectors: [..._prospectSectors].sort(),
         country, seniority
       });
 
@@ -1946,7 +2241,7 @@
           jobTitles:  _prospectJobTitles,
           companies:  _prospectCompanies,
           languages:  [],
-          sectors:    [],
+          sectors:    _prospectSectors,
           country:    country,
           products:   []
         };
@@ -2025,6 +2320,229 @@
           _prospectRenderChips(_prospectCompanies, 'prospectCompanyChips', 'prospectRemoveCompany');
         }
       });
+    }
+
+    // ── Prospect: Sourcing Bar — API Provider Toggle ───────────
+    let _prospectSpMode     = 'cse';
+    let _prospectSpProvider = '';
+    let _prospectSpLoaded   = false;
+
+    const _SP_LABELS = {
+      serper:      'Serper.dev',
+      dataforseo:  'DataForSEO',
+      linkedin:    'LinkedIn',
+      contactout:  'ContactOut',
+      apollo:      'Apollo',
+      rocketreach: 'RocketReach',
+    };
+    const _SP_CATEGORY = {
+      serper:      '🔍 Search',
+      dataforseo:  '🔍 Search',
+      linkedin:    '🔍 Search',
+      contactout:  '📇 Contact',
+      apollo:      '📇 Contact',
+      rocketreach: '📇 Contact',
+    };
+
+    function prospectToggleSpMode() {
+      prospectSetSpMode(_prospectSpMode === 'cse' ? 'api' : 'cse');
+    }
+
+    function prospectSetSpMode(mode) {
+      _prospectSpMode = mode;
+      const btn  = document.getElementById('prospectSpToggleBtn');
+      const wrap = document.getElementById('prospectSpProviderWrap');
+      if (btn) {
+        btn.classList.toggle('sp-cse', mode === 'cse');
+        btn.classList.toggle('sp-api', mode === 'api');
+        btn.textContent = mode === 'api' ? 'API Provider' : 'Default CSE';
+      }
+      if (wrap) {
+        if (mode === 'api') {
+          wrap.classList.add('sp-open');
+          if (!_prospectSpLoaded) prospectLoadSpProviders();
+        } else {
+          wrap.classList.remove('sp-open');
+        }
+      }
+    }
+
+    function prospectLoadSpProviders() {
+      Promise.all([
+        fetch('/search-provider-services',  { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/contact-gen-services',       { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/user-service-config/status', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      ]).then(([searchData, contactData, userData]) => {
+        _prospectSpLoaded = true;
+        const services = new Set();
+        if (searchData && Array.isArray(searchData.services))  searchData.services.forEach(s => services.add(s));
+        if (contactData && Array.isArray(contactData.services)) contactData.services.forEach(s => services.add(s));
+        if (userData && userData.active && userData.providers) {
+          const sp = (userData.providers.search || '').toLowerCase();
+          if (['serper','dataforseo','linkedin'].includes(sp)) services.add(sp);
+        }
+        const sel = document.getElementById('prospectSpProviderSelect');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">— select provider —</option>';
+        const groups = {};
+        services.forEach(svc => {
+          const cat = _SP_CATEGORY[svc] || 'Other';
+          if (!groups[cat]) groups[cat] = [];
+          groups[cat].push(svc);
+        });
+        ['🔍 Search', '📇 Contact', 'Other'].forEach(cat => {
+          if (!groups[cat] || !groups[cat].length) return;
+          const og = document.createElement('optgroup');
+          og.label = cat;
+          groups[cat].forEach(svc => {
+            const opt = document.createElement('option');
+            opt.value = svc;
+            opt.textContent = _SP_LABELS[svc] || svc;
+            og.appendChild(opt);
+          });
+          sel.appendChild(og);
+        });
+        if (services.size === 1) {
+          sel.value = [...services][0];
+          _prospectSpProvider = sel.value;
+        }
+        sel.addEventListener('change', function() { _prospectSpProvider = sel.value; });
+      });
+    }
+
+    async function prospectStartSourcing() {
+      const country   = (document.getElementById('prospectCountry')   || {}).value  || '';
+      const seniority = (document.getElementById('prospectSeniority') || {}).value  || '';
+      if (!_prospectJobTitles.length && !_prospectCompanies.length && !country && !_prospectSectors.length) {
+        _prospectSetStatus('⚠ Please add at least one search parameter.', 'var(--danger)');
+        return;
+      }
+      const btn = document.getElementById('prospectSourceBtn');
+      if (btn) btn.disabled = true;
+      _prospectSetStatus('⏳ Sourcing profiles…');
+
+      try {
+        const payload = {
+          jobTitles:  _prospectJobTitles,
+          companies:  _prospectCompanies,
+          sectors:    _prospectSectors,
+          country:    country,
+          seniority:  seniority,
+          mode:       _prospectSpMode,
+          provider:   _prospectSpMode === 'api' ? _prospectSpProvider : '',
+        };
+        const res = await fetch('/prospect/source', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin',
+          body:    JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        const profiles = Array.isArray(data.profiles) ? data.profiles : (Array.isArray(data.results) ? data.results : []);
+        if (!profiles.length) {
+          _prospectSetStatus('No profiles found. Try different parameters or a different provider.');
+          return;
+        }
+        // Add profiles to CRM
+        profiles.forEach(p => {
+          crmAddRow({
+            name:      p.name      || p.fullName      || '',
+            jobTitle:  p.job_title || p.jobTitle      || p.title || '',
+            company:   p.company   || p.organization  || '',
+            sector:    p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
+            seniority: p.seniority || seniority        || '',
+            email:     p.email     || p.emailAddress  || '',
+            mobile:    p.mobile    || p.phone          || '',
+            comment:   '',
+          });
+        });
+        _prospectSetStatus('✅ ' + profiles.length + ' profile(s) added to CRM.');
+        // Switch to CRM tab so user sees results
+        switchMainTab('crm');
+      } catch(e) {
+        _prospectSetStatus('❌ Sourcing failed: ' + e.message, 'var(--danger)');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function _prospectSetStatus(msg, color) {
+      const el = document.getElementById('prospectSourceStatus');
+      if (!el) return;
+      el.textContent = msg;
+      el.style.color = color || 'var(--re)';
+    }
+
+    // ── CRM tab ────────────────────────────────────────────────
+    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment}
+    let _crmNextId = 1;
+
+    function crmAddRow(data) {
+      const row = Object.assign({
+        id: _crmNextId++,
+        name: '', jobTitle: '', company: '',
+        sector: '', seniority: '', email: '',
+        mobile: '', comment: ''
+      }, data || {});
+      _crmRows.push(row);
+      _crmRenderTable();
+    }
+
+    function crmDeleteRow(id) {
+      _crmRows = _crmRows.filter(r => r.id !== id);
+      _crmRenderTable();
+    }
+
+    function _crmRenderTable() {
+      const tbody = document.getElementById('crmBody');
+      if (!tbody) return;
+      if (!_crmRows.length) {
+        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="10" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = '';
+      _crmRows.forEach((row, idx) => {
+        const tr = document.createElement('tr');
+        tr.dataset.id = row.id;
+        const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment'];
+        const placeholders = {
+          name: 'Full Name', jobTitle: 'e.g. Sales Manager', company: 'e.g. Acme Corp',
+          sector: 'e.g. Technology', seniority: 'e.g. Director', email: 'email@domain.com',
+          mobile: '+65 9000 0000', comment: 'Notes…'
+        };
+        let html = `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
+        fields.forEach(f => {
+          html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
+        });
+        html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
+        tr.innerHTML = html;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function _crmCellChange(id, input) {
+      const row = _crmRows.find(r => r.id === id);
+      if (row) row[input.dataset.field] = input.value;
+    }
+
+    function crmExportCSV() {
+      const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment'];
+      const headers = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','Comment'];
+      const csvLines = [headers.join(',')];
+      _crmRows.forEach(row => {
+        csvLines.push(fields.map(f => {
+          const v = String(row[f] || '').replace(/"/g, '""');
+          return '"' + v + '"';
+        }).join(','));
+      });
+      const blob = new Blob([csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
+      a.href = url;
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     // ── Theme toggle ─────────────────────────────────────────
