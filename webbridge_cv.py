@@ -28,6 +28,21 @@ def _sanitize_jd_name_part(s: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', s).strip('._').strip()
     return cleaned[:120]  # cap length
 
+
+def _unique_jd_path(path: str) -> str:
+    """Return *path* if it does not exist, otherwise append _2, _3, … to the
+    stem until a free filename is found.  Preserves audit integrity by never
+    silently overwriting an existing JD archive file."""
+    if not os.path.exists(path):
+        return path
+    root, ext = os.path.splitext(path)
+    counter = 2
+    while True:
+        candidate = f"{root}_{counter}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        counter += 1
+
 # Structured activity logger
 try:
     from app_logger import log_agentic, log_approval, log_error as _log_error_cv
@@ -808,6 +823,9 @@ def start_job():
                         if not os.path.abspath(_new_path_jd).startswith(_abs_archive):
                             continue
                         if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
+                            # Avoid overwriting an existing archive; find a unique target name.
+                            _new_path_jd = _unique_jd_path(_new_path_jd)
+                            _new_name_jd = os.path.basename(_new_path_jd)
                             os.replace(_existing_jd, _new_path_jd)
                             logger.info(f"[StartJob] Renamed JD '{os.path.basename(_existing_jd)}' → '{_new_name_jd}'")
     except Exception as _e_jd:
@@ -6512,7 +6530,7 @@ def user_upload_jd():
         try:
             os.makedirs(_JD_ARCHIVE_DIR, exist_ok=True)
             safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
-            dest = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}")
+            dest = _unique_jd_path(os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_username}.{ext}"))
             with open(dest, 'wb') as _fh:
                 _fh.write(file_bytes)
             logger.info(f"[Upload JD] Saved archive copy: {dest}")
@@ -6573,7 +6591,11 @@ def user_tag_jd():
         # Verify new path also stays inside _JD_ARCHIVE_DIR
         if not os.path.abspath(new_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
             return jsonify({"error": "invalid target path"}), 400
-        # os.replace is atomic on the same filesystem and overwrites if dest exists
+        # If the target already exists and is a different file, find a unique name
+        # to preserve the existing record (audit integrity).
+        if os.path.abspath(new_path) != os.path.abspath(existing_path):
+            new_path = _unique_jd_path(new_path)
+            new_name = os.path.basename(new_path)
         os.replace(existing_path, new_path)
         logger.info(f"[tag_jd] Renamed '{os.path.basename(existing_path)}' → '{new_name}'")
         return jsonify({"status": "ok", "filename": new_name}), 200
