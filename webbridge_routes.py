@@ -2687,7 +2687,7 @@ def prospect_crm_email_draft():
         return jsonify({"ok": True, "body": draft.strip()}), 200
     except Exception as exc:
         logger.warning("[CRM email draft] LLM call failed: %s", exc)
-        return jsonify({"ok": False, "error": "AI draft failed: " + str(exc)}), 500
+        return jsonify({"ok": False, "error": "AI draft failed. Check server logs for details."}), 500
 
 
 JOBS = {}
