@@ -2387,6 +2387,219 @@ def sector_suggest():
     result["company"]["related"] = [_strip_corp_suffix(c) for c in comp_rel if c]
     return jsonify(result), 200
 
+# ── /prospect/source — CRM profile sourcing ──────────────────────────────────
+
+_CRM_SALES_DIR = os.getenv(
+    "CRM_SALES_DIR",
+    r"F:\Recruiting Tools\Autosourcing\Sales",
+)
+_CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
+
+
+def _build_prospect_query(job_titles, companies, sectors, country, seniority):
+    """Build an X-ray LinkedIn people-search query from Prospect tab parameters."""
+    parts = ["site:linkedin.com/in/"]
+
+    title_terms = [jt.strip() for jt in (job_titles or []) if isinstance(jt, str) and jt.strip()]
+    if title_terms:
+        if len(title_terms) == 1:
+            parts.append(f'"{title_terms[0]}"')
+        else:
+            parts.append("(" + " OR ".join(f'"{t}"' for t in title_terms) + ")")
+
+    company_terms = [c.strip() for c in (companies or []) if isinstance(c, str) and c.strip()]
+    if company_terms:
+        if len(company_terms) == 1:
+            parts.append(f'"{company_terms[0]}"')
+        else:
+            parts.append("(" + " OR ".join(f'"{c}"' for c in company_terms) + ")")
+
+    sector_terms = [s.strip() for s in (sectors or []) if isinstance(s, str) and s.strip()]
+    if sector_terms and not title_terms and not company_terms:
+        # Only include sector terms when we have nothing else — avoids over-filtering
+        parts.append("(" + " OR ".join(f'"{s}"' for s in sector_terms) + ")")
+
+    if seniority and isinstance(seniority, str) and seniority.strip():
+        parts.append(f'"{seniority.strip()}"')
+
+    if country and isinstance(country, str) and country.strip():
+        parts.append(country.strip())
+
+    return " ".join(parts)
+
+
+def _gemini_assess_crm_profile(name, job_title, company, snippet, sectors_hint, seniority_hint):
+    """Use Gemini to infer sector and seniority for a sourced LinkedIn profile.
+
+    Returns a dict: {"sector": str, "seniority": str}.  Falls back to the
+    caller-supplied hints when the LLM is unavailable or returns garbage.
+    """
+    prompt = (
+        "You are a talent-sourcing assistant.  Given the following person's details, "
+        "return ONLY a JSON object with exactly two keys:\n"
+        '  "sector": a concise industry sector label (e.g. "Technology", "Finance", "Healthcare")\n'
+        '  "seniority": one of: C-Suite, VP, Director, Manager, Senior, Mid-Level, Junior, Intern\n\n'
+        f"Name: {name or '(unknown)'}\n"
+        f"Job Title: {job_title or '(unknown)'}\n"
+        f"Company: {company or '(unknown)'}\n"
+        f"Snippet: {(snippet or '')[:300]}\n"
+    )
+    if sectors_hint:
+        prompt += f"Preferred sector(s): {', '.join(sectors_hint)}\n"
+    prompt += "\nJSON only, no commentary:"
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=128)
+        parsed = _extract_json_object(raw or "")
+        if isinstance(parsed, dict):
+            sector_val = parsed.get("sector")
+            if not sector_val and sectors_hint:
+                sector_val = sectors_hint[0]
+            sector = str(sector_val or "").strip()
+            seniority = str(parsed.get("seniority") or seniority_hint or "").strip()
+            return {"sector": sector, "seniority": seniority}
+    except Exception as exc:
+        logger.warning("[CRM Gemini assess] %s", exc)
+    return {
+        "sector": sectors_hint[0] if sectors_hint else "",
+        "seniority": seniority_hint or "",
+    }
+
+
+def _save_crm_json(username, profiles):
+    """Append *profiles* to CRM_{username}.json in _CRM_SALES_DIR.
+
+    Creates the directory and file if they do not exist.  Existing entries are
+    preserved; duplicates (same LinkedIn URL) are skipped.
+    """
+    safe = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    crm_dir = _CRM_SALES_DIR
+    try:
+        os.makedirs(crm_dir, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[CRM save] Cannot create directory %s: %s", crm_dir, exc)
+        return
+    crm_file = os.path.join(crm_dir, f"CRM_{safe}.json")
+    # Security: ensure the resolved path stays within the intended directory
+    abs_crm_dir = os.path.abspath(crm_dir)
+    abs_file = os.path.abspath(crm_file)
+    if not abs_file.startswith(abs_crm_dir + os.sep) and abs_file != abs_crm_dir:
+        logger.error("[CRM save] Path traversal blocked: %s", crm_file)
+        return
+    existing = []
+    try:
+        if os.path.exists(crm_file):
+            with open(crm_file, "r", encoding="utf-8") as fh:
+                existing = json.load(fh)
+            if not isinstance(existing, list):
+                existing = []
+    except Exception as exc:
+        logger.warning("[CRM save] Could not read existing file %s: %s", crm_file, exc)
+        existing = []
+    existing_urls = {(r.get("linkedinUrl") or "").lower() for r in existing if r.get("linkedinUrl")}
+    added = 0
+    for p in profiles:
+        url = (p.get("linkedinUrl") or "").lower()
+        if url and url in existing_urls:
+            continue
+        existing.append(p)
+        if url:
+            existing_urls.add(url)
+        added += 1
+    try:
+        tmp = crm_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(existing, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, crm_file)
+        logger.info("[CRM save] Saved %d new profile(s) to %s", added, crm_file)
+    except Exception as exc:
+        logger.warning("[CRM save] Write failed for %s: %s", crm_file, exc)
+
+
+@app.post("/prospect/source")
+@_require_session
+def prospect_source():
+    """Source LinkedIn profiles for the Sales Rep Prospect tab.
+
+    Accepts JSON: {jobTitles, companies, sectors, country, seniority, mode, provider}
+
+    Builds an X-ray/CSE query, fetches results via ``unified_search_page``,
+    parses LinkedIn profile results, runs Gemini assessment for sector &
+    seniority, persists to CRM_{username}.json, and returns the profiles.
+    """
+    username = request._session_user
+    data = request.get_json(force=True, silent=True) or {}
+    job_titles  = data.get("jobTitles")  or []
+    companies   = data.get("companies")  or []
+    sectors     = data.get("sectors")    or []
+    country     = (data.get("country")   or "").strip()
+    seniority   = (data.get("seniority") or "").strip()
+    provider    = (data.get("provider")  or "").strip().lower() or None
+
+    if not job_titles and not companies and not country and not sectors:
+        return jsonify({"error": "At least one search parameter is required."}), 400
+
+    query = _build_prospect_query(job_titles, companies, sectors, country, seniority)
+
+    gl_hint = None
+    if country:
+        gl_hint = _infer_region_from_country(country) or None
+
+    # Fetch up to 3 pages (30 results) from the configured provider
+    all_results = []
+    for page_start in [1, 11, 21]:
+        try:
+            items, _ = unified_search_page(
+                query, 10, page_start,
+                gl_hint=gl_hint,
+                selected_provider=provider,
+            )
+            all_results.extend(items or [])
+        except Exception as exc:
+            logger.warning("[prospect/source] search page failed (start=%d): %s", page_start, exc)
+        if len(all_results) >= 20:
+            break
+
+    # Filter to LinkedIn profile URLs and parse
+    seen_urls = set()
+    profiles = []
+    for item in all_results:
+        url = (item.get("link") or "").strip()
+        if not is_linkedin_profile(url):
+            continue
+        url_norm = url.lower().rstrip('/')
+        if url_norm in seen_urls:
+            continue
+        seen_urls.add(url_norm)
+
+        title   = item.get("title") or ""
+        snippet = item.get("snippet") or ""
+        name, job_title_parsed, company_parsed = parse_linkedin_title(title)
+
+        # Gemini assessment for sector + seniority
+        assessed = _gemini_assess_crm_profile(
+            name, job_title_parsed, company_parsed, snippet,
+            sectors_hint=[s for s in sectors if isinstance(s, str) and s.strip()],
+            seniority_hint=seniority,
+        )
+
+        profiles.append({
+            "name":        name        or "",
+            "jobTitle":    job_title_parsed or "",
+            "company":     company_parsed   or "",
+            "linkedinUrl": url,
+            "sector":      assessed.get("sector")    or "",
+            "seniority":   assessed.get("seniority") or seniority,
+            "email":       "",
+            "mobile":      "",
+        })
+
+    # Persist to CRM JSON file on disk
+    if profiles:
+        _save_crm_json(username, profiles)
+
+    return jsonify({"profiles": profiles})
+
+
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 PERSIST_JOBS_TO_FILES = os.getenv("PERSIST_JOBS_TO_FILES", "1") == "1"

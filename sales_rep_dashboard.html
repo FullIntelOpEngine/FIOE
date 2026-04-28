@@ -894,6 +894,16 @@
       transition: color .12s;
     }
     .crm-table .crm-del-btn:hover { color: var(--danger); }
+    .crm-name-link {
+      color: var(--accent, #6deaf9);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 13px;
+      display: block;
+      padding: 2px 4px;
+    }
+    .crm-name-link:hover { text-decoration: underline; }
+    :root[data-theme="light"] .crm-name-link { color: var(--accent, #1a73e8); }
     .crm-empty {
       text-align: center;
       color: var(--arg);
@@ -2447,14 +2457,15 @@
         // Add profiles to CRM
         profiles.forEach(p => {
           crmAddRow({
-            name:      p.name      || p.fullName      || '',
-            jobTitle:  p.job_title || p.jobTitle      || p.title || '',
-            company:   p.company   || p.organization  || '',
-            sector:    p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
-            seniority: p.seniority || seniority        || '',
-            email:     p.email     || p.emailAddress  || '',
-            mobile:    p.mobile    || p.phone          || '',
-            comment:   '',
+            name:        p.name      || p.fullName      || '',
+            jobTitle:    p.job_title || p.jobTitle      || p.title || '',
+            company:     p.company   || p.organization  || '',
+            sector:      p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
+            seniority:   p.seniority || seniority        || '',
+            email:       p.email     || p.emailAddress  || '',
+            mobile:      p.mobile    || p.phone          || '',
+            linkedinUrl: p.linkedinUrl || p.linkedin_url || '',
+            comment:     '',
           });
         });
         _prospectSetStatus('✅ ' + profiles.length + ' profile(s) added to CRM.');
@@ -2475,7 +2486,7 @@
     }
 
     // ── CRM tab ────────────────────────────────────────────────
-    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment}
+    let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, linkedinUrl}
     let _crmNextId = 1;
 
     function crmAddRow(data) {
@@ -2483,7 +2494,7 @@
         id: _crmNextId++,
         name: '', jobTitle: '', company: '',
         sector: '', seniority: '', email: '',
-        mobile: '', comment: ''
+        mobile: '', comment: '', linkedinUrl: ''
       }, data || {});
       _crmRows.push(row);
       _crmRenderTable();
@@ -2513,7 +2524,11 @@
         };
         let html = `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
         fields.forEach(f => {
-          html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
+          if (f === 'name' && row.linkedinUrl) {
+            html += `<td><a href="${esc(row.linkedinUrl)}" target="_blank" rel="noopener noreferrer" class="crm-name-link" title="Open LinkedIn profile">${esc(row.name) || '<em>Unknown</em>'}</a></td>`;
+          } else {
+            html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
+          }
         });
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
@@ -2527,8 +2542,8 @@
     }
 
     function crmExportCSV() {
-      const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment'];
-      const headers = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','Comment'];
+      const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment','linkedinUrl'];
+      const headers = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','Comment','LinkedIn URL'];
       const csvLines = [headers.join(',')];
       _crmRows.forEach(row => {
         csvLines.push(fields.map(f => {
