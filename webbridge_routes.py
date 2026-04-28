@@ -2600,6 +2600,53 @@ def prospect_source():
     return jsonify({"profiles": profiles})
 
 
+@app.get("/prospect/crm-data")
+@_require_session
+def prospect_crm_data_get():
+    """Return the current user's CRM prospect list from CRM_{username}.json."""
+    username = request._session_user
+    safe = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    crm_file = os.path.join(_CRM_SALES_DIR, f"CRM_{safe}.json")
+    abs_crm_dir = os.path.abspath(_CRM_SALES_DIR)
+    abs_file = os.path.abspath(crm_file)
+    if not abs_file.startswith(abs_crm_dir + os.sep):
+        logger.error("[CRM load] Path traversal blocked: %s", crm_file)
+        return jsonify({"profiles": []}), 200
+    if not os.path.exists(crm_file):
+        return jsonify({"profiles": []}), 200
+    try:
+        with open(crm_file, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, list):
+            data = []
+        return jsonify({"profiles": data}), 200
+    except Exception as exc:
+        logger.warning("[CRM load] Could not read %s: %s", crm_file, exc)
+        return jsonify({"profiles": []}), 200
+
+
+@app.delete("/prospect/crm-data")
+@_require_session
+def prospect_crm_data_delete():
+    """Delete the current user's CRM_{username}.json file (called after XLS export)."""
+    username = request._session_user
+    safe = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    crm_file = os.path.join(_CRM_SALES_DIR, f"CRM_{safe}.json")
+    abs_crm_dir = os.path.abspath(_CRM_SALES_DIR)
+    abs_file = os.path.abspath(crm_file)
+    if not abs_file.startswith(abs_crm_dir + os.sep):
+        logger.error("[CRM delete] Path traversal blocked: %s", crm_file)
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
+    try:
+        if os.path.exists(crm_file):
+            os.remove(crm_file)
+            logger.info("[CRM delete] Removed %s", crm_file)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logger.warning("[CRM delete] Could not remove %s: %s", crm_file, exc)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
 JOBS = {}
 JOBS_LOCK = threading.Lock()
 PERSIST_JOBS_TO_FILES = os.getenv("PERSIST_JOBS_TO_FILES", "1") == "1"
