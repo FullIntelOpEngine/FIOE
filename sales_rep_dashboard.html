@@ -1071,22 +1071,18 @@
       color: #6deaf9;
     }
 
-    /* ── CRM Status picker ────────────────────────────────────── */
-    .crm-status-picker { display: flex; gap: 4px; justify-content: center; }
-    .crm-status-btn {
-      background: none;
-      border: 1px solid transparent;
+    /* ── CRM Status dropdown ────────────────────────────────────── */
+    .crm-status-select {
+      padding: 3px 6px;
       border-radius: 5px;
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      color: var(--dd);
+      font-size: 13px;
       cursor: pointer;
-      font-size: 14px;
-      padding: 2px 5px;
-      line-height: 1;
-      transition: background .12s, border-color .12s;
-      color: var(--arg);
-      opacity: 0.55;
+      outline: none;
+      font-family: "Roboto Condensed", sans-serif;
     }
-    .crm-status-btn:hover { background: var(--panel); border-color: var(--border); opacity: 1; }
-    .crm-status-btn.active { background: var(--panel2); border-color: var(--re); opacity: 1; }
 
     /* ── Email modal – template bar & glossary tags ───────────── */
     .crm-tpl-bar {
@@ -1447,6 +1443,7 @@
               <th>Name</th>
               <th>Job Title</th>
               <th>Company</th>
+              <th>Country</th>
               <th>Sector</th>
               <th>Seniority</th>
               <th>Email</th>
@@ -1457,7 +1454,7 @@
             </tr>
           </thead>
           <tbody id="crmBody">
-            <tr id="crmEmptyRow"><td colspan="12" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
+            <tr id="crmEmptyRow"><td colspan="13" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1516,12 +1513,15 @@
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Name]')">[Name]</span>
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Job Title]')">[Job Title]</span>
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Company Name]')">[Company Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Country]')">[Country]</span>
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Sector]')">[Sector]</span>
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Seniority]')">[Seniority]</span>
-        <span class="crm-glossary-tag" onclick="crmInsertTag('[Candidate Name]')">[Candidate Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Your Name]')">[Your Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Your Company Name]')">[Your Company Name]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Meeting Date]')">[Meeting Date]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Meeting Time]')">[Meeting Time]</span>
+        <span class="crm-glossary-tag" onclick="crmInsertTag('[Video Conference Link]')">[Video Conference Link]</span>
         <span class="crm-glossary-tag" onclick="crmInsertTag('[Scheduler]')">[Scheduler]</span>
-        <span class="crm-glossary-tag" onclick="crmInsertTag('[Date of Interview]')">[Date of Interview]</span>
-        <span class="crm-glossary-tag" onclick="crmInsertTag('[Time of Interview]')">[Time of Interview]</span>
       </div>
       <button class="crm-ai-draft-btn" id="crmAiDraftBtn" onclick="crmAiDraft()">🤖 AI Draft</button>
       <textarea class="crm-email-textarea" id="crmEmailBody" placeholder="Write your message…&#10;&#10;Use glossary tags above to personalise per-recipient."></textarea>
@@ -2873,10 +2873,10 @@
         const tr = document.createElement('tr');
         tr.dataset.id = row.id;
         const isChecked = _crmSelected.has(row.id);
-        const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment'];
+        const fields = ['name','jobTitle','company','country','sector','seniority','email','mobile','comment'];
         const placeholders = {
           name: 'Full Name', jobTitle: 'e.g. Sales Manager', company: 'e.g. Acme Corp',
-          sector: 'e.g. Technology', seniority: 'e.g. Director', email: 'email@domain.com',
+          country: 'e.g. Singapore', sector: 'e.g. Technology', seniority: 'e.g. Director', email: 'email@domain.com',
           mobile: '+65 9000 0000', comment: 'Notes…'
         };
         let html = `<td class="crm-check-col"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="_crmRowCheck(${row.id},this.checked)" /></td>`;
@@ -2888,13 +2888,14 @@
             html += `<td><input class="crm-cell-input" type="text" value="${esc(row[f])}" placeholder="${esc(placeholders[f] || '')}" data-field="${f}" onchange="_crmCellChange(${row.id},this)" /></td>`;
           }
         });
-        // Status picker
+        // Status dropdown
         const st = row.status || '';
-        html += `<td><div class="crm-status-picker">` +
-          `<button class="crm-status-btn${st==='sad'?' active':''}" data-status="sad" onclick="_crmSetStatus(${row.id},'sad')" title=":(">😢</button>` +
-          `<button class="crm-status-btn${st==='neutral'?' active':''}" data-status="neutral" onclick="_crmSetStatus(${row.id},'neutral')" title=":|">😐</button>` +
-          `<button class="crm-status-btn${st==='happy'?' active':''}" data-status="happy" onclick="_crmSetStatus(${row.id},'happy')" title=":)">😊</button>` +
-          `</div></td>`;
+        html += `<td><select class="crm-status-select" onchange="_crmSetStatus(${row.id},this.value)">` +
+          `<option value="">—</option>` +
+          `<option value="sad"${st==='sad'?' selected':''}>😢 :( Sad</option>` +
+          `<option value="neutral"${st==='neutral'?' selected':''}>😐 :| Neutral</option>` +
+          `<option value="happy"${st==='happy'?' selected':''}>😊 :) Happy</option>` +
+          `</select></td>`;
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
         tbody.appendChild(tr);
@@ -2942,15 +2943,7 @@
 
     function _crmSetStatus(id, val) {
       const row = _crmRows.find(r => r.id === id);
-      if (!row) return;
-      row.status = val;
-      // Update just the status buttons for this row without full re-render
-      const tr = document.querySelector(`#crmBody tr[data-id="${id}"]`);
-      if (tr) {
-        tr.querySelectorAll('.crm-status-btn').forEach(btn => {
-          btn.classList.toggle('active', btn.dataset.status === val);
-        });
-      }
+      if (row) row.status = val;
     }
 
     function crmExportOrImport() {
@@ -2971,8 +2964,8 @@
       const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
 
       // Sheet 1 — Prospect (visible)
-      const S1_FIELDS  = ['name','jobTitle','company','sector','seniority','email','mobile','linkedinUrl','comment','status'];
-      const S1_HEADERS = ['Name','Job Title','Company','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
+      const S1_FIELDS  = ['name','jobTitle','company','country','sector','seniority','email','mobile','linkedinUrl','comment','status'];
+      const S1_HEADERS = ['Name','Job Title','Company','Country','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
       const colDefs  = S1_FIELDS.map(() => '<Column ss:Width="120"/>').join('');
       const hdrRow   = '<Row>' + S1_HEADERS.map(h => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(h)}</Data></Cell>`).join('') + '</Row>';
       const dataRows = _crmRows.map(row =>
@@ -3218,7 +3211,7 @@
       const existingBody = document.getElementById('crmEmailBody').value.trim();
       const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
       const recipients   = selectedRows.map(r => ({
-        name: r.name, jobTitle: r.jobTitle, company: r.company,
+        name: r.name, jobTitle: r.jobTitle, company: r.company, country: r.country,
         sector: r.sector, seniority: r.seniority
       }));
       btn.disabled = true;
@@ -3287,11 +3280,12 @@
       const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
       const bodyEl = document.getElementById('crmEmailBody');
       let text = bodyEl.value;
-      text = text.replace(/\[Date of Interview\]/g, dateStr).replace(/\[Time of Interview\]/g, timeStr);
+      text = text.replace(/\[Meeting Date\]/g, dateStr).replace(/\[Meeting Time\]/g, timeStr)
+               .replace(/\[Date of Interview\]/g, dateStr).replace(/\[Time of Interview\]/g, timeStr);
       // Append slot summary if tags weren't present
       if (!text.includes(dateStr)) {
         const sep = text && !text.endsWith('\n') ? '\n\n' : '';
-        text += sep + 'Interview Date: ' + dateStr + '\nInterview Time: ' + timeStr;
+        text += sep + 'Meeting Date: ' + dateStr + '\nMeeting Time: ' + timeStr;
       }
       bodyEl.value = text;
     }
@@ -3336,8 +3330,10 @@
           .replace(/\[Candidate Name\]/gi, row.name || to)
           .replace(/\[Job Title\]/gi, row.jobTitle || '')
           .replace(/\[Company Name\]/gi, row.company || '')
+          .replace(/\[Country\]/gi, row.country || '')
           .replace(/\[Sector\]/gi, row.sector || '')
-          .replace(/\[Seniority\]/gi, row.seniority || '');
+          .replace(/\[Seniority\]/gi, row.seniority || '')
+          .replace(/\[Your Name\]/gi, from);
         try {
           const payload = {
             from, to, cc, subject, body,
