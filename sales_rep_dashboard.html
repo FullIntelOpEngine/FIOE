@@ -740,7 +740,7 @@
   <!-- ── Main tab navigation ──────────────────────────────── -->
   <div class="main-tab-bar" id="mainTabBar">
     <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
-    <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')">🔍 Prospect</button>
+    <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')" aria-label="Prospect tab">🔍 Prospect</button>
   </div>
 
   <!-- ── Dashboard tab content ────────────────────────────── -->
@@ -861,7 +861,7 @@
 
       <!-- Left column: search form -->
       <div class="prospect-form-card">
-        <div class="prospect-form-title">🤖 AI Assist — Prospect Search</div>
+        <div class="prospect-form-title" aria-label="AI Assist — Prospect Search">🤖 AI Assist — Prospect Search</div>
 
         <!-- Job Title -->
         <div class="prospect-field">
