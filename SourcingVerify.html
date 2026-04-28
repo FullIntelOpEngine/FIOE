@@ -5513,12 +5513,11 @@ async function triggerLevel1Assessment(tr, anchor) {
         } else if (!window.__HAS_CUSTOM_LLM) {
             /* AFFECTED: Add Appeal Button if score > 50% — only for JD-sourced records */
             (async () => {
-            const hasJd = await _svCheckHasJd();
-            if (!hasJd) return; // no JD on file — appeal not applicable for this user
             if (tr.dataset.hasAppeal === '1') return; // appeal already filed for this record
-            // Hide appeal when a JD file is already linked to this record's role_tag.
+            // Show appeal only when a JD file exists for this record's role_tag.
             const _srRowRoleTag = (tr.dataset.roleTag || '').trim();
-            if (_srRowRoleTag && await _svCheckHasJdForRole(_srRowRoleTag)) return;
+            const _srHasJdForRole = _srRowRoleTag ? await _svCheckHasJdForRole(_srRowRoleTag) : await _svCheckHasJd();
+            if (!_srHasJdForRole) return; // no matching JD — appeal not applicable
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
                     title:'Rebate denied',
@@ -6558,12 +6557,11 @@ function renderTable(){
             } else {
                 // Show Appeal Button only if user sourced via an uploaded JD and has not yet filed an appeal
                 (async () => {
-                    const hasJd = await _svCheckHasJd();
-                    if (!hasJd) return;
                     if (tr.dataset.hasAppeal === '1') return; // appeal already filed
-                    // Hide appeal when a JD file is already linked to this record's role_tag.
+                    // Show appeal only when a JD file exists for this record's role_tag.
                     const _dtRowRoleTag = (tr.dataset.roleTag || '').trim();
-                    if (_dtRowRoleTag && await _svCheckHasJdForRole(_dtRowRoleTag)) return;
+                    const _dtHasJdForRole = _dtRowRoleTag ? await _svCheckHasJdForRole(_dtRowRoleTag) : await _svCheckHasJd();
+                    if (!_dtHasJdForRole) return; // no matching JD — appeal not applicable
                     const appealBtn = document.createElement('button');
                     appealBtn.textContent = 'Appeal';
                     appealBtn.className = 'review-action-btn view'; // Use neutral style
