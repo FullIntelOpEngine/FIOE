@@ -736,6 +736,17 @@
     }
     .prospect-source-btn:disabled { opacity: .5; cursor: not-allowed; }
     .prospect-source-btn:not(:disabled):hover { opacity: .9; }
+    @keyframes _sp-spin { to { transform: rotate(360deg); } }
+    .prospect-source-btn .sp-spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: _sp-spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
     .prospect-sp-toggle-btn {
       padding: 6px 14px;
       font-size: 11px;
@@ -790,6 +801,129 @@
       flex-wrap: wrap;
       gap: 10px;
       margin-bottom: 18px;
+    }
+    /* CRM email / SMTP buttons */
+    .crm-smtp-btn {
+      padding: 7px 16px;
+      background: var(--panel);
+      color: var(--arg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .crm-smtp-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-send-email-btn {
+      padding: 7px 16px;
+      background: #0b5c1a;
+      color: #fff;
+      border: 1px solid #1a7a2a;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    .crm-send-email-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .crm-send-email-btn:not(:disabled):hover { background: #0e7d22; }
+    /* per-row checkbox column */
+    .crm-check-col { width: 32px; text-align: center; }
+    /* overlay modal shared style */
+    .fioe-modal-backdrop {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(34,37,41,0.72);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999;
+    }
+    .fioe-modal-box {
+      background: #1b1f24;
+      border: 1px solid rgba(76,130,184,0.35);
+      border-radius: 12px;
+      padding: 28px 26px 22px;
+      min-width: 360px;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 8px 40px rgba(0,0,0,.55);
+      color: var(--dd);
+    }
+    :root[data-theme="light"] .fioe-modal-box { background: #fff; }
+    .fioe-modal-box h3 {
+      margin: 0 0 18px;
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .fioe-modal-box h3 { color: var(--ad); }
+    .fioe-modal-label {
+      display: block; margin-bottom: 5px; font-size: 12px;
+      font-weight: 700; letter-spacing: 0.4px; color: var(--arg);
+      text-transform: uppercase;
+    }
+    .fioe-modal-input {
+      width: 100%; padding: 8px 10px; margin-bottom: 12px;
+      background: var(--panel2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--dd); font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+      box-sizing: border-box;
+    }
+    .fioe-modal-input:focus { border-color: var(--re); }
+    .fioe-modal-row { display: flex; gap: 10px; }
+    .fioe-modal-row .fioe-modal-input { flex: 1; }
+    .fioe-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+    .fioe-modal-btn-cancel {
+      padding: 8px 18px; background: transparent;
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--arg); font-size: 12px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+    }
+    .fioe-modal-btn-cancel:hover { border-color: var(--danger); color: var(--danger); }
+    .fioe-modal-btn-primary {
+      padding: 8px 18px; background: var(--ad); border: none;
+      border-radius: 6px; color: #fff; font-size: 12px; font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif; cursor: pointer;
+    }
+    .fioe-modal-btn-primary:hover { background: #0a4baa; }
+    /* email compose modal specifics */
+    .crm-email-modal-box {
+      max-width: 680px; max-height: 90vh; overflow-y: auto;
+    }
+    .crm-email-textarea {
+      width: 100%; min-height: 140px; padding: 10px;
+      background: var(--panel2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--dd); font-size: 13px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+      resize: vertical; box-sizing: border-box; margin-bottom: 12px;
+    }
+    .crm-email-textarea:focus { border-color: var(--re); }
+    .crm-email-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.6px; color: var(--cb); margin: 14px 0 6px;
+    }
+    .crm-calendar-row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;
+      padding: 10px 12px;
+      background: rgba(7,54,121,0.15);
+      border: 1px solid var(--border); border-radius: 7px;
+    }
+    .crm-cal-btn {
+      padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--panel); color: var(--dd); font-size: 12px;
+      font-weight: 700; font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer; transition: background .12s, color .12s;
+    }
+    .crm-cal-btn:hover { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-cal-btn.active { background: var(--ad); color: #fff; border-color: var(--ad); }
+    .crm-send-spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+      border-radius: 50%; animation: _sp-spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 5px;
     }
     .crm-title {
       font-family: "Orbitron", "Roboto Condensed", sans-serif;
@@ -1221,11 +1355,14 @@
         <div class="crm-title">📋 CRM — Prospect Candidates</div>
         <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
         <button class="crm-export-btn" onclick="crmExportCSV()">⬇ Export CSV</button>
+        <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
+        <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
           <thead>
             <tr>
+              <th class="crm-check-col"><input type="checkbox" id="crmSelectAll" title="Select all" onchange="crmToggleSelectAll(this.checked)" /></th>
               <th>#</th>
               <th>Name</th>
               <th>Job Title</th>
@@ -1239,12 +1376,75 @@
             </tr>
           </thead>
           <tbody id="crmBody">
-            <tr id="crmEmptyRow"><td colspan="10" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
+            <tr id="crmEmptyRow"><td colspan="11" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>
           </tbody>
         </table>
       </div>
     </div>
   </div><!-- /#mainTabContentCrm -->
+
+  <!-- ── SMTP Config Modal ──────────────────────────────── -->
+  <div id="crmSmtpModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseSmtpModal()">
+    <div class="fioe-modal-box" onclick="event.stopPropagation()">
+      <h3>⚙ SMTP Configuration</h3>
+      <label class="fioe-modal-label">Host</label>
+      <input class="fioe-modal-input" id="crmSmtpHost" type="text" placeholder="smtp.gmail.com" />
+      <div class="fioe-modal-row">
+        <div style="flex:2">
+          <label class="fioe-modal-label">Port</label>
+          <input class="fioe-modal-input" id="crmSmtpPort" type="text" placeholder="587" />
+        </div>
+        <div style="flex:1;display:flex;align-items:flex-end;padding-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;color:var(--dd);">
+            <input type="checkbox" id="crmSmtpSecure" /> TLS/SSL
+          </label>
+        </div>
+      </div>
+      <label class="fioe-modal-label">User (From address)</label>
+      <input class="fioe-modal-input" id="crmSmtpUser" type="text" placeholder="you@example.com" />
+      <label class="fioe-modal-label">Password</label>
+      <input class="fioe-modal-input" id="crmSmtpPass" type="password" />
+      <div class="fioe-modal-actions">
+        <button class="fioe-modal-btn-cancel" onclick="crmCloseSmtpModal()">Cancel</button>
+        <button class="fioe-modal-btn-primary" onclick="crmSaveSmtpConfig()">Save Config</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CRM Email Compose Modal ────────────────────────── -->
+  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseEmailModal()">
+    <div class="fioe-modal-box crm-email-modal-box" onclick="event.stopPropagation()">
+      <h3>✉ Send Email to Selected Candidates</h3>
+      <label class="fioe-modal-label">From</label>
+      <input class="fioe-modal-input" id="crmEmailFrom" type="email" placeholder="you@example.com" />
+      <label class="fioe-modal-label">CC</label>
+      <input class="fioe-modal-input" id="crmEmailCc" type="text" placeholder="cc@example.com" />
+      <label class="fioe-modal-label">Subject</label>
+      <input class="fioe-modal-input" id="crmEmailSubject" type="text" placeholder="Email subject…" />
+      <label class="fioe-modal-label">Message</label>
+      <textarea class="crm-email-textarea" id="crmEmailBody" placeholder="Write your message…&#10;&#10;Tags: [Candidate Name], [Scheduler], [Date of Interview], [Time of Interview]"></textarea>
+      <!-- Calendar / Scheduler section -->
+      <div class="crm-email-section-title">📅 Calendar &amp; Scheduler</div>
+      <div class="crm-calendar-row">
+        <input type="date" id="crmCalFrom" class="fioe-modal-input" style="margin:0;width:150px;" title="Calendar search from" />
+        <input type="date" id="crmCalTo"   class="fioe-modal-input" style="margin:0;width:150px;" title="Calendar search to" />
+        <select id="crmCalDuration" class="fioe-modal-input" style="margin:0;width:110px;" title="Interview duration">
+          <option value="30">30 min</option>
+          <option value="45">45 min</option>
+          <option value="60">60 min</option>
+          <option value="90">90 min</option>
+        </select>
+        <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
+        <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+      </div>
+      <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
+      <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
+      <div class="fioe-modal-actions">
+        <button class="fioe-modal-btn-cancel" onclick="crmCloseEmailModal()">Cancel</button>
+        <button class="fioe-modal-btn-primary" id="crmEmailSendBtn" onclick="crmSendEmail()">✉ Send</button>
+      </div>
+    </div>
+  </div>
 
   <script>
     // ── Helpers ──────────────────────────────────────────────
@@ -2309,7 +2509,7 @@
         items.forEach(item => {
           const el = document.createElement('span');
           el.className = 'prospect-sg-item';
-          el.textContent = item + (seniority ? ' · ' + seniority : '');
+          el.textContent = item;
           el.title = 'Click to add "' + item + '"';
           el.onclick = function() { addFn(item); el.style.opacity = '.4'; el.style.pointerEvents = 'none'; };
           itemsWrap.appendChild(el);
@@ -2428,7 +2628,8 @@
         return;
       }
       const btn = document.getElementById('prospectSourceBtn');
-      if (btn) btn.disabled = true;
+      const btnOrigHTML = btn ? btn.innerHTML : null;
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="sp-spinner"></span>Sourcing…'; }
       _prospectSetStatus('⏳ Sourcing profiles…');
 
       try {
@@ -2474,7 +2675,7 @@
       } catch(e) {
         _prospectSetStatus('❌ Sourcing failed: ' + e.message, 'var(--danger)');
       } finally {
-        if (btn) btn.disabled = false;
+        if (btn) { btn.disabled = false; btn.innerHTML = btnOrigHTML !== null ? btnOrigHTML : '🔎 Source Profiles'; }
       }
     }
 
@@ -2488,6 +2689,7 @@
     // ── CRM tab ────────────────────────────────────────────────
     let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, linkedinUrl}
     let _crmNextId = 1;
+    let _crmSelected = new Set();  // set of row ids currently checked
 
     function crmAddRow(data) {
       const row = Object.assign({
@@ -2502,6 +2704,8 @@
 
     function crmDeleteRow(id) {
       _crmRows = _crmRows.filter(r => r.id !== id);
+      _crmSelected.delete(id);
+      _crmUpdateSendBtn();
       _crmRenderTable();
     }
 
@@ -2509,20 +2713,27 @@
       const tbody = document.getElementById('crmBody');
       if (!tbody) return;
       if (!_crmRows.length) {
-        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="10" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
+        tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="11" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
+        _crmUpdateSendBtn();
         return;
       }
+      // Prune stale selected ids
+      const validIds = new Set(_crmRows.map(r => r.id));
+      _crmSelected.forEach(id => { if (!validIds.has(id)) _crmSelected.delete(id); });
+
       tbody.innerHTML = '';
       _crmRows.forEach((row, idx) => {
         const tr = document.createElement('tr');
         tr.dataset.id = row.id;
+        const isChecked = _crmSelected.has(row.id);
         const fields = ['name','jobTitle','company','sector','seniority','email','mobile','comment'];
         const placeholders = {
           name: 'Full Name', jobTitle: 'e.g. Sales Manager', company: 'e.g. Acme Corp',
           sector: 'e.g. Technology', seniority: 'e.g. Director', email: 'email@domain.com',
           mobile: '+65 9000 0000', comment: 'Notes…'
         };
-        let html = `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
+        let html = `<td class="crm-check-col"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="_crmRowCheck(${row.id},this.checked)" /></td>`;
+        html += `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
         fields.forEach(f => {
           if (f === 'name' && row.linkedinUrl) {
             html += `<td><a href="${esc(row.linkedinUrl)}" target="_blank" rel="noopener noreferrer" class="crm-name-link" title="Open LinkedIn profile">${esc(row.name) || '<em>Unknown</em>'}</a></td>`;
@@ -2534,6 +2745,40 @@
         tr.innerHTML = html;
         tbody.appendChild(tr);
       });
+      _crmSyncSelectAllState();
+      _crmUpdateSendBtn();
+    }
+
+    function _crmRowCheck(id, checked) {
+      if (checked) _crmSelected.add(id); else _crmSelected.delete(id);
+      _crmSyncSelectAllState();
+      _crmUpdateSendBtn();
+    }
+
+    function crmToggleSelectAll(checked) {
+      if (checked) {
+        _crmRows.forEach(r => _crmSelected.add(r.id));
+      } else {
+        _crmSelected.clear();
+      }
+      // Re-sync individual checkboxes without full re-render
+      document.querySelectorAll('#crmBody input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
+      _crmUpdateSendBtn();
+    }
+
+    function _crmSyncSelectAllState() {
+      const all = document.getElementById('crmSelectAll');
+      if (!all) return;
+      if (!_crmRows.length) { all.checked = false; all.indeterminate = false; return; }
+      const n = _crmSelected.size;
+      if (n === 0) { all.checked = false; all.indeterminate = false; }
+      else if (n === _crmRows.length) { all.checked = true; all.indeterminate = false; }
+      else { all.checked = false; all.indeterminate = true; }
+    }
+
+    function _crmUpdateSendBtn() {
+      const btn = document.getElementById('crmSendEmailBtn');
+      if (btn) btn.disabled = _crmSelected.size === 0;
     }
 
     function _crmCellChange(id, input) {
@@ -2558,6 +2803,183 @@
       a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.csv';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // ── SMTP Config Modal ────────────────────────────────────
+    const _CRM_SMTP_KEY = 'fioe_crm_smtp_config';
+    let _crmSmtpConfig = null;
+
+    (function _loadSmtpConfig() {
+      try {
+        const raw = localStorage.getItem(_CRM_SMTP_KEY);
+        if (raw) _crmSmtpConfig = JSON.parse(raw);
+      } catch(e) { /* ignore */ }
+    })();
+
+    function crmOpenSmtpModal() {
+      const cfg = _crmSmtpConfig || {};
+      document.getElementById('crmSmtpHost').value    = cfg.host    || 'smtp.gmail.com';
+      document.getElementById('crmSmtpPort').value    = cfg.port    || '587';
+      document.getElementById('crmSmtpUser').value    = cfg.user    || '';
+      document.getElementById('crmSmtpPass').value    = cfg.pass    || '';
+      document.getElementById('crmSmtpSecure').checked = cfg.secure || false;
+      document.getElementById('crmSmtpModal').style.display = 'flex';
+    }
+
+    function crmCloseSmtpModal() {
+      document.getElementById('crmSmtpModal').style.display = 'none';
+    }
+
+    function crmSaveSmtpConfig() {
+      _crmSmtpConfig = {
+        host:   document.getElementById('crmSmtpHost').value.trim(),
+        port:   document.getElementById('crmSmtpPort').value.trim(),
+        user:   document.getElementById('crmSmtpUser').value.trim(),
+        pass:   document.getElementById('crmSmtpPass').value,
+        secure: document.getElementById('crmSmtpSecure').checked,
+      };
+      try { localStorage.setItem(_CRM_SMTP_KEY, JSON.stringify(_crmSmtpConfig)); } catch(e) { /* ignore */ }
+      crmCloseSmtpModal();
+    }
+
+    // ── CRM Email Compose Modal ──────────────────────────────
+    let _crmCalSlots = [];
+
+    function crmOpenEmailModal() {
+      if (_crmSelected.size === 0) return;
+      const cfg = _crmSmtpConfig || {};
+      document.getElementById('crmEmailFrom').value    = cfg.user || '';
+      document.getElementById('crmEmailCc').value      = '';
+      document.getElementById('crmEmailSubject').value = '';
+      document.getElementById('crmEmailBody').value    = '';
+      document.getElementById('crmCalStatus').textContent = '';
+      document.getElementById('crmCalSlots').style.display = 'none';
+      document.getElementById('crmCalSlots').innerHTML = '';
+      _crmCalSlots = [];
+      // Pre-fill from/to dates
+      const today = new Date();
+      const nextWeek = new Date(today.getTime() + 7 * 86400000);
+      document.getElementById('crmCalFrom').value = today.toISOString().slice(0,10);
+      document.getElementById('crmCalTo').value   = nextWeek.toISOString().slice(0,10);
+      document.getElementById('crmEmailModal').style.display = 'flex';
+    }
+
+    function crmCloseEmailModal() {
+      document.getElementById('crmEmailModal').style.display = 'none';
+    }
+
+    async function crmCalFindSlots() {
+      const startISO = document.getElementById('crmCalFrom').value;
+      const endISO   = document.getElementById('crmCalTo').value;
+      const duration = parseInt(document.getElementById('crmCalDuration').value, 10) || 30;
+      const statusEl = document.getElementById('crmCalStatus');
+      const slotsEl  = document.getElementById('crmCalSlots');
+      if (!startISO || !endISO) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      statusEl.textContent = '⏳ Finding available slots…';
+      slotsEl.style.display = 'none';
+      slotsEl.innerHTML = '';
+      _crmCalSlots = [];
+      try {
+        const res = await fetch('http://localhost:4000/calendar/freebusy', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startISO, endISO, durationMinutes: duration, provider: 'google' })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to query calendar');
+        _crmCalSlots = Array.isArray(data.slots) ? data.slots : [];
+        if (!_crmCalSlots.length) { statusEl.textContent = 'No free slots found in selected range.'; return; }
+        statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.';
+        slotsEl.innerHTML = '';
+        _crmCalSlots.forEach((slot, i) => {
+          const d = new Date(slot.start);
+          const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+          const btn = document.createElement('button');
+          btn.className = 'crm-cal-btn';
+          btn.style.cssText = 'margin:3px;';
+          btn.textContent = lbl;
+          btn.onclick = function() { _crmInsertSlotTag(slot, i); btn.classList.add('active'); };
+          slotsEl.appendChild(btn);
+        });
+        slotsEl.style.display = 'block';
+      } catch(e) {
+        statusEl.textContent = '❌ ' + (e.message || 'Could not find slots. Connect your calendar first.');
+      }
+    }
+
+    function _crmInsertSlotTag(slot, i) {
+      const d = new Date(slot.start);
+      const dateStr = d.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+      const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+      const bodyEl = document.getElementById('crmEmailBody');
+      let text = bodyEl.value;
+      text = text.replace(/\[Date of Interview\]/g, dateStr).replace(/\[Time of Interview\]/g, timeStr);
+      // Append slot summary if tags weren't present
+      if (!text.includes(dateStr)) {
+        const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+        text += sep + 'Interview Date: ' + dateStr + '\nInterview Time: ' + timeStr;
+      }
+      bodyEl.value = text;
+    }
+
+    function crmInsertSchedulerLink() {
+      const url = window.location.protocol + '//' + window.location.hostname + ':4000/scheduler.html';
+      const bodyEl = document.getElementById('crmEmailBody');
+      let text = bodyEl.value;
+      text = text.replace(/\[Scheduler\]/g, url);
+      if (!text.includes(url)) {
+        const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+        text += sep + 'Book a time: ' + url;
+      }
+      bodyEl.value = text;
+    }
+
+    async function crmSendEmail() {
+      if (_crmSelected.size === 0) return;
+      const from    = document.getElementById('crmEmailFrom').value.trim();
+      const cc      = document.getElementById('crmEmailCc').value.trim();
+      const subject = document.getElementById('crmEmailSubject').value.trim();
+      const bodyTpl = document.getElementById('crmEmailBody').value;
+      if (!from)    { alert('Please enter a From address.'); return; }
+      if (!subject) { alert('Please enter a subject.'); return; }
+      if (!bodyTpl) { alert('Please enter a message.'); return; }
+
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      if (!selectedRows.length) return;
+
+      const sendBtn = document.getElementById('crmEmailSendBtn');
+      const origTxt = sendBtn.textContent;
+      sendBtn.disabled = true;
+      sendBtn.innerHTML = '<span class="crm-send-spinner"></span>Sending…';
+
+      let sent = 0, failed = 0;
+      for (const row of selectedRows) {
+        const to = (row.email || '').trim();
+        if (!to) { failed++; continue; }
+        // Resolve [Candidate Name] tag
+        const body = bodyTpl.replace(/\[Candidate Name\]/gi, row.name || to);
+        try {
+          const payload = {
+            from, to, cc, subject, body,
+            smtp: _crmSmtpConfig || {}
+          };
+          const res = await fetch('http://localhost:4000/draft-email', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          sent++;
+        } catch(e) {
+          failed++;
+        }
+      }
+
+      sendBtn.disabled = false;
+      sendBtn.textContent = origTxt;
+      const msg = '✅ Sent: ' + sent + (failed ? ', ❌ Failed: ' + failed : '') + ' email(s).';
+      document.getElementById('crmCalStatus').textContent = msg;
+      if (!failed) setTimeout(crmCloseEmailModal, 1800);
     }
 
     // ── Theme toggle ─────────────────────────────────────────
