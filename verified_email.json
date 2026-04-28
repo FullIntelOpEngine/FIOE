@@ -73,5 +73,21 @@
       }
     ],
     "Confidence_threshold": 1
+  },
+  "ubisoft": {
+    "Domain": [
+      {
+        "company": "ubisoft",
+        "domain": "ubisoft.com",
+        "format": "first_name.last_name",
+        "fake_example": "emily.chen@ubisoft.com",
+        "fake_local_part": "emily.chen",
+        "saved_at": "2026-04-28T12:53:40.306Z",
+        "candidateId": "19426",
+        "count": 1,
+        "confidence": 1
+      }
+    ],
+    "Confidence_threshold": 1
   }
 }
