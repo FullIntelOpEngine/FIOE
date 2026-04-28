@@ -2953,6 +2953,27 @@ async function _svCheckHasJd() {
 // Pre-fetch on page load so the result is ready when appeal buttons render.
 document.addEventListener('DOMContentLoaded', () => { _svCheckHasJd(); });
 
+// ── Per-role_tag JD check (cached per role_tag) ───────────────────────────────
+// Maps "username\trole_tag" → Promise<boolean>
+const _svJdRoleCache = {};
+async function _svCheckHasJdForRole(roleTag) {
+    const uname = window.__SV_ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+    if (!uname || !roleTag) return false;
+    const key = uname + '\t' + roleTag;
+    if (key in _svJdRoleCache) return _svJdRoleCache[key];
+    _svJdRoleCache[key] = (async () => {
+        try {
+            const resp = await fetch(
+                `${HAS_JD_API}?username=${encodeURIComponent(uname)}&role_tag=${encodeURIComponent(roleTag)}`,
+                { headers: { 'X-Requested-With': 'XMLHttpRequest' } }
+            );
+            const d = await resp.json();
+            return !!(d && d.exists);
+        } catch (_) { return false; }
+    })();
+    return _svJdRoleCache[key];
+}
+
 // No-op stubs for removed snipper functions (keeps existing code safe)
 const tableBody   = document.getElementById('tableBody');
 const statusEl    = document.getElementById('status');
@@ -5491,9 +5512,13 @@ async function triggerLevel1Assessment(tr, anchor) {
             }
         } else if (!window.__HAS_CUSTOM_LLM) {
             /* AFFECTED: Add Appeal Button if score > 50% — only for JD-sourced records */
-            _svCheckHasJd().then(hasJd => {
+            (async () => {
+            const hasJd = await _svCheckHasJd();
             if (!hasJd) return; // no JD on file — appeal not applicable for this user
             if (tr.dataset.hasAppeal === '1') return; // appeal already filed for this record
+            // Hide appeal when a JD file is already linked to this record's role_tag.
+            const _srRowRoleTag = (tr.dataset.roleTag || '').trim();
+            if (_srRowRoleTag && await _svCheckHasJdForRole(_srRowRoleTag)) return;
             if (typeof openRebateModal === 'function') {
                 openRebateModal({
                     title:'Rebate denied',
@@ -5540,7 +5565,7 @@ async function triggerLevel1Assessment(tr, anchor) {
                     }
                 });
             }
-            }); // end _svCheckHasJd().then
+            })(); // end async appeal gate
         }
 
     } catch(e) {
@@ -6532,9 +6557,13 @@ function renderTable(){
                 assessmentActionContainer.appendChild(rebateBtn);
             } else {
                 // Show Appeal Button only if user sourced via an uploaded JD and has not yet filed an appeal
-                _svCheckHasJd().then(hasJd => {
+                (async () => {
+                    const hasJd = await _svCheckHasJd();
                     if (!hasJd) return;
                     if (tr.dataset.hasAppeal === '1') return; // appeal already filed
+                    // Hide appeal when a JD file is already linked to this record's role_tag.
+                    const _dtRowRoleTag = (tr.dataset.roleTag || '').trim();
+                    if (_dtRowRoleTag && await _svCheckHasJdForRole(_dtRowRoleTag)) return;
                     const appealBtn = document.createElement('button');
                     appealBtn.textContent = 'Appeal';
                     appealBtn.className = 'review-action-btn view'; // Use neutral style
@@ -6558,7 +6587,7 @@ function renderTable(){
                         }
                     };
                     assessmentActionContainer.appendChild(appealBtn);
-                });
+                })();
             }
         }
     } else {

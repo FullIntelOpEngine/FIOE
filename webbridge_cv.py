@@ -822,12 +822,17 @@ def start_job():
                         _new_path_jd = os.path.join(_JD_ARCHIVE_DIR, _new_name_jd)
                         if not os.path.abspath(_new_path_jd).startswith(_abs_archive):
                             continue
+                        # Skip files that are already tagged with a DIFFERENT role_tag.
+                        # Each distinct role_tag must keep its own filename; only rename
+                        # untagged files (e.g. JD_username.ext) or same-role_tag files.
+                        _existing_basename = os.path.basename(_existing_jd)
+                        if _existing_basename.lower().startswith('jd_') and _existing_basename != _new_name_jd:
+                            logger.info(f"[StartJob] Skipping rename of '{_existing_basename}' (already tagged with different role_tag)")
+                            continue
                         if os.path.abspath(_existing_jd) != os.path.abspath(_new_path_jd):
-                            # Avoid overwriting an existing archive; find a unique target name.
-                            _new_path_jd = _unique_jd_path(_new_path_jd)
-                            _new_name_jd = os.path.basename(_new_path_jd)
+                            # Same role_tag: overwrite directly to keep the canonical filename.
                             os.replace(_existing_jd, _new_path_jd)
-                            logger.info(f"[StartJob] Renamed JD '{os.path.basename(_existing_jd)}' → '{_new_name_jd}'")
+                            logger.info(f"[StartJob] Renamed JD '{_existing_basename}' → '{_new_name_jd}'")
     except Exception as _e_jd:
         logger.warning(f"[StartJob] JD archive rename failed: {_e_jd}")
 
@@ -6591,11 +6596,15 @@ def user_tag_jd():
         # Verify new path also stays inside _JD_ARCHIVE_DIR
         if not os.path.abspath(new_path).startswith(os.path.abspath(_JD_ARCHIVE_DIR)):
             return jsonify({"error": "invalid target path"}), 400
-        # If the target already exists and is a different file, find a unique name
-        # to preserve the existing record (audit integrity).
         if os.path.abspath(new_path) != os.path.abspath(existing_path):
-            new_path = _unique_jd_path(new_path)
-            new_name = os.path.basename(new_path)
+            if role_tag:
+                # role_tag tagging: overwrite same role_tag+username file directly so the
+                # canonical filename is preserved without adding _2/_3 suffixes.
+                pass
+            else:
+                # job_title tagging: preserve existing record (audit integrity).
+                new_path = _unique_jd_path(new_path)
+                new_name = os.path.basename(new_path)
         os.replace(existing_path, new_path)
         logger.info(f"[tag_jd] Renamed '{os.path.basename(existing_path)}' → '{new_name}'")
         return jsonify({"status": "ok", "filename": new_name}), 200
@@ -6610,15 +6619,27 @@ def user_has_jd():
 
     Query params:
       username – required (or provided via cookie 'username')
+      role_tag – optional; when supplied, checks specifically for
+                 JD_{role_tag}_{username}.{ext} rather than any JD file.
 
     Response: { "exists": true|false }
     """
     import glob as _glob
     username = (request.args.get("username") or request.cookies.get("username") or "").strip()
+    role_tag = (request.args.get("role_tag") or "").strip()
     if not username:
         return jsonify({"exists": False}), 200
     safe_username = _CV_USERNAME_SAFE_RE.sub('_', username)
     abs_jd_dir = os.path.abspath(_JD_ARCHIVE_DIR)
+    if role_tag:
+        # Check specifically for JD_{role_tag}_{username}.{ext}
+        safe_tag = _sanitize_jd_name_part(role_tag)
+        for ext in ('pdf', 'docx', 'doc'):
+            path = os.path.join(_JD_ARCHIVE_DIR, f"JD_{safe_tag}_{safe_username}.{ext}")
+            abs_path = os.path.abspath(path)
+            if abs_path.startswith(abs_jd_dir + os.sep) and os.path.isfile(abs_path):
+                return jsonify({"exists": True}), 200
+        return jsonify({"exists": False}), 200
     for ext in ('pdf', 'docx', 'doc'):
         pattern = os.path.join(_JD_ARCHIVE_DIR, f"*_{safe_username}.{ext}")
         for path in _glob.glob(pattern):
