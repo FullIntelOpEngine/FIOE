@@ -2492,6 +2492,112 @@ def _gemini_assess_crm_profile(name, job_title, company, snippet, sectors_hint, 
     }
 
 
+# ── Temporary profile files for Gemini batch job-title/company extraction ────
+
+def _save_gp_tmp_file(username: str, linkedin_url: str, raw_data, profile: dict) -> None:
+    """Save raw BrightData response to GPTMP_{user}_{slug}.json for batch Gemini extraction.
+
+    After all profiles are fetched the frontend calls /prospect/crm-gemini-profile-assess
+    which reads these files, calls Gemini once for all of them, then deletes the files.
+    """
+    safe_user = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    slug = (linkedin_url.rstrip('/').split('/')[-1] or 'profile')
+    safe_slug = re.sub(r'[^A-Za-z0-9_-]', '_', slug)[:80]
+    tmp_dir = _CRM_SALES_DIR
+    try:
+        os.makedirs(tmp_dir, exist_ok=True)
+    except OSError as exc:
+        logger.warning("[GPTMP] Cannot create dir %s: %s", tmp_dir, exc)
+        return
+    fname = f"GPTMP_{safe_user}_{safe_slug}.json"
+    fpath = os.path.join(tmp_dir, fname)
+    abs_dir = os.path.abspath(tmp_dir)
+    abs_path = os.path.abspath(fpath)
+    if not abs_path.startswith(abs_dir + os.sep):
+        logger.error("[GPTMP] Path traversal blocked: %s", fpath)
+        return
+    # Collect SERP titles and snippets (top-5) for Gemini context
+    serp_titles: list = []
+    serp_snippets: list = []
+    _cands: list = []
+    if isinstance(raw_data, list):
+        for _item in raw_data:
+            if not isinstance(_item, dict):
+                continue
+            if isinstance(_item.get("organic"), list):
+                _cands.extend(e for e in _item["organic"] if isinstance(e, dict))
+            else:
+                _cands.append(_item)
+    if not _cands:
+        _cands = [e for e in (profile.get("organic") or []) if isinstance(e, dict)]
+    for _cand in _cands[:5]:
+        _t = (_cand.get("title") or "").strip()
+        _s = (_cand.get("description") or _cand.get("snippet") or "").strip()
+        if _t:
+            serp_titles.append(_t)
+        if _s:
+            serp_snippets.append(_s)
+    content = {
+        "linkedinUrl":  linkedin_url,
+        "name":         (profile.get("fullName") or profile.get("full_name") or "").strip(),
+        "headline":     (profile.get("headline") or "").strip(),
+        "serp_titles":  serp_titles,
+        "serp_snippets": serp_snippets,
+    }
+    try:
+        with open(fpath, "w", encoding="utf-8") as fh:
+            json.dump(content, fh, ensure_ascii=False, indent=2)
+        logger.info("[GPTMP] Saved %s", fname)
+    except Exception as exc:
+        logger.warning("[GPTMP] Could not write %s: %s", fpath, exc)
+
+
+def _gemini_batch_extract_job_company(profiles: list) -> list:
+    """Use Gemini to batch-extract jobTitle and company from SERP/headline data.
+
+    profiles: list of {linkedinUrl, name, headline, serp_titles, serp_snippets}
+    Returns: list of {linkedinUrl, jobTitle, company}
+    """
+    if not profiles:
+        return []
+    parts = []
+    for i, p in enumerate(profiles, 1):
+        lines = [f"Profile {i}:"]
+        lines.append(f"  LinkedIn URL: {p.get('linkedinUrl', '')}")
+        if p.get("name"):
+            lines.append(f"  Name: {p['name']}")
+        if p.get("headline"):
+            lines.append(f"  Headline: {p['headline']}")
+        for t in (p.get("serp_titles") or [])[:3]:
+            lines.append(f"  SERP Title: {t}")
+        for s in (p.get("serp_snippets") or [])[:3]:
+            lines.append(f"  SERP Snippet: {s}")
+        parts.append('\n'.join(lines))
+    prompt = (
+        "You are a LinkedIn data extraction assistant. "
+        "For each profile below, determine the current Job Title and Company.\n\n"
+        "Return ONLY a JSON object in this exact format:\n"
+        "{\"results\": [{\"linkedinUrl\": \"...\", \"jobTitle\": \"...\", \"company\": \"...\"}, ...]}\n\n"
+        "Profiles:\n---\n" + "\n---\n".join(parts) + "\n---\n\nJSON only, no commentary:"
+    )
+    try:
+        raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=1024)
+        parsed = _extract_json_object(raw or "")
+        if isinstance(parsed, dict) and isinstance(parsed.get("results"), list):
+            out = []
+            for item in parsed["results"]:
+                if isinstance(item, dict) and item.get("linkedinUrl"):
+                    out.append({
+                        "linkedinUrl": str(item.get("linkedinUrl", "")),
+                        "jobTitle":    str(item.get("jobTitle") or item.get("job_title") or "").strip(),
+                        "company":     str(item.get("company") or "").strip(),
+                    })
+            return out
+    except Exception as exc:
+        logger.warning("[Gemini batch extract] %s", exc)
+    return []
+
+
 def _save_crm_json(username, profiles):
     """Append *profiles* to CRM_{username}.json in _CRM_SALES_DIR.
 
@@ -2921,6 +3027,10 @@ def prospect_crm_get_profile():
     if not crm_country:
         crm_country = (profile.get("location") or (profile.get("geo") or {}).get("full") or "").strip()
 
+    # Save raw SERP data to a temp file so the follow-up Gemini batch endpoint can
+    # derive the correct jobTitle and company after all profiles have been fetched.
+    _save_gp_tmp_file(req_user, linkedin_url, raw_data, profile)
+
     return jsonify({
         "ok":          True,
         "name":        crm_name,
@@ -2931,6 +3041,48 @@ def prospect_crm_get_profile():
         "mobile":      crm_mobile,
         "linkedinUrl": linkedin_url,
     }), 200
+
+
+@app.post("/prospect/crm-gemini-profile-assess")
+@_require_session
+def prospect_crm_gemini_profile_assess():
+    """Batch-assess all pending GPTMP_* temp files for the current user via Gemini.
+
+    Reads all GPTMP_{username}_*.json files written by /prospect/crm-get-profile,
+    calls Gemini once for the entire batch to extract jobTitle and company for each
+    profile, returns the results, then deletes all processed temp files.
+
+    Returns: {ok, results: [{linkedinUrl, jobTitle, company}, ...]}
+    """
+    import glob as _glob  # noqa: PLC0415
+    req_user = getattr(request, "_session_user", "") or ""
+    safe_user = _CRM_USERNAME_SAFE_RE.sub('_', req_user).strip('_') or 'user'
+    tmp_dir = _CRM_SALES_DIR
+    pattern = os.path.join(tmp_dir, f"GPTMP_{safe_user}_*.json")
+    tmp_files = sorted(_glob.glob(pattern))
+    if not tmp_files:
+        return jsonify({"ok": True, "results": []}), 200
+    abs_dir = os.path.abspath(tmp_dir)
+    profiles = []
+    for fpath in tmp_files:
+        try:
+            abs_fp = os.path.abspath(fpath)
+            if not abs_fp.startswith(abs_dir + os.sep):
+                continue
+            with open(fpath, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and data.get("linkedinUrl"):
+                profiles.append(data)
+        except Exception as exc:
+            logger.warning("[GPTMP read] %s: %s", fpath, exc)
+    results = _gemini_batch_extract_job_company(profiles)
+    # Delete temp files after Gemini processing
+    for fpath in tmp_files:
+        try:
+            os.remove(fpath)
+        except Exception as exc:
+            logger.warning("[GPTMP cleanup] %s: %s", fpath, exc)
+    return jsonify({"ok": True, "results": results}), 200
 
 
 JOBS = {}

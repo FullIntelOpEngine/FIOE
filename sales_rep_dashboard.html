@@ -2922,9 +2922,9 @@
         const st = row.status || '';
         html += `<td><select class="crm-status-select" onchange="_crmSetStatus(${row.id},this.value)">` +
           `<option value="">—</option>` +
-          `<option value="uninterested"${(st==='uninterested'||st==='sad')?' selected':''}>😢 :( Uninterested</option>` +
-          `<option value="considering"${(st==='considering'||st==='neutral')?' selected':''}>😐 :| Considering</option>` +
-          `<option value="prospected"${(st==='prospected'||st==='happy')?' selected':''}>😊 :) Prospected</option>` +
+          `<option value="uninterested"${(st==='uninterested'||st==='sad')?' selected':''}>🙁</option>` +
+          `<option value="considering"${(st==='considering'||st==='neutral')?' selected':''}>😐</option>` +
+          `<option value="prospected"${(st==='prospected'||st==='happy')?' selected':''}>🙂</option>` +
           `</select></td>`;
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
@@ -3029,6 +3029,28 @@
       }
       if (btn) { btn.disabled = false; btn.textContent = '👤 Get Profile'; }
       if (ok || failed) {
+        // After all individual profile fetches, call Gemini batch endpoint to extract
+        // jobTitle and company from the temp JSON files saved by each fetch.
+        try {
+          const gemRes = await fetch('/prospect/crm-gemini-profile-assess', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+            body: JSON.stringify({}),
+          });
+          const gemData = await gemRes.json().catch(() => ({}));
+          if (gemData.ok && Array.isArray(gemData.results) && gemData.results.length) {
+            for (const item of gemData.results) {
+              const row = _crmRows.find(r => r.linkedinUrl === item.linkedinUrl);
+              if (row) {
+                if (item.jobTitle) row.jobTitle = item.jobTitle;
+                if (item.company)  row.company  = item.company;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[CRM Gemini assess]', e);
+        }
         _crmRenderTable();
         const msg = ok
           ? `✅ ${ok} profile(s) updated${failed ? '; ' + failed + ' failed' : ''}.`
