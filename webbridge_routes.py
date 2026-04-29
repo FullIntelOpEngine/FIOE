@@ -2843,10 +2843,15 @@ def prospect_crm_generate_email():
         verified_data  = _load_verified_email()
         company_entry  = verified_data.get(company_key)
 
+        email_source = 'gemini'
+        verified_confidence = None
+
         if (company_entry
                 and isinstance(company_entry.get('Domain'), list)
                 and company_entry['Domain']):
             top_entry = max(company_entry['Domain'], key=lambda e: e.get('confidence') or 0)
+            email_source = 'verified'
+            verified_confidence = top_entry.get('confidence')
             gen_prompt = (
                 f'You are an email address generator. The following verified email domain '
                 f'structure has been confirmed for the company "{company}":\n'
@@ -2862,11 +2867,13 @@ def prospect_crm_generate_email():
             )
         else:
             gen_prompt = (
-                f'Generate the single most likely business email address for a person named '
+                f'Generate the most likely business email addresses for a person named '
                 f'"{name}" working at the company "{company}"'
                 + (f' (located in {country})' if country else '') + '.\n'
                 'Infer the likely domain name based on the company name.\n'
-                'Return strictly a JSON object: { "emails": ["email1"] }\n'
+                'For each email address candidate, estimate a probability (0–100) that it is the correct active email.\n'
+                'Return strictly a JSON object: { "emails": [{ "email": "addr1", "probability": 85 }, { "email": "addr2", "probability": 10 }] }\n'
+                'Sort by highest probability first. Include at least 1 and at most 3 candidates.\n'
                 'Do not include markdown formatting.'
             )
 
@@ -2885,7 +2892,21 @@ def prospect_crm_generate_email():
             else:
                 raise ValueError('Failed to parse LLM email generation response')
 
-        return jsonify({'emails': data.get('emails') or []}), 200
+        # Normalise: Gemini fallback may return [{email, probability}] objects; verified path returns strings.
+        raw_emails = data.get('emails') or []
+        top_probability = None
+        if email_source == 'gemini' and raw_emails and isinstance(raw_emails[0], dict):
+            top_probability = raw_emails[0].get('probability')
+            email_list = [e['email'] for e in raw_emails if isinstance(e, dict) and e.get('email')]
+        else:
+            email_list = [e if isinstance(e, str) else e.get('email', '') for e in raw_emails if e]
+
+        return jsonify({
+            'emails': email_list,
+            'source': email_source,
+            'confidence': verified_confidence,
+            'probability': top_probability,
+        }), 200
 
     except Exception as exc:
         logger.warning('[CRM generate-email] failed: %s', exc)

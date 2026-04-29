@@ -8364,7 +8364,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       try {
         const apolloRes = await apolloPost(
-          '/api/v1/mixed_people/search',
+          '/api/v1/mixed_people/api_search',
           { person_linkedin_urls: [apolloUrl], per_page: 1, page: 1 }
         );
 
@@ -8396,7 +8396,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         try {
           console.log('[Apollo] people/match fallback for linkedin_url:', apolloUrl);
           const matchRes = await apolloPost(
-            '/v1/people/match',
+            '/api/v1/people/match',
             { linkedin_url: apolloUrl, reveal_personal_emails: true, reveal_phone_number: true }
           );
           if (matchRes._http_status === 401) {
@@ -8415,7 +8415,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       }
 
       if (!contact) {
-        return res.status(404).json({ error: 'No matching contact found in Apollo' });
+        return res.status(200).json({ emails: [], all_emails: [], error: 'No matching contact found in Apollo. Verify the LinkedIn URL is correct and the contact exists in Apollo\'s database.' });
       }
 
       console.log('[Apollo] person fields — keys:', Object.keys(contact));
@@ -8666,12 +8666,16 @@ Phone: ...`;
     const companyEntry = verifiedEmailData[companyKey];
 
     let genPrompt;
+    let emailSource = 'gemini';
+    let verifiedConfidence = null;
     if (companyEntry && Array.isArray(companyEntry.Domain) && companyEntry.Domain.length > 0) {
       // Find the entry with the highest confidence value
       const topEntry = companyEntry.Domain.reduce((best, e) =>
         (e.confidence || 0) > (best.confidence || 0) ? e : best,
         companyEntry.Domain[0]
       );
+      emailSource = 'verified';
+      verifiedConfidence = topEntry.confidence;
       // Ask Gemini to generate 3 variations using the verified domain structure
       genPrompt = `
         You are an email address generator. The following verified email domain structure has been confirmed for the company "${company}":
@@ -8685,11 +8689,13 @@ Phone: ...`;
         Do not include markdown formatting.
       `;
     } else {
-      // No verified data — fall back to Gemini's own LLM knowledge, 1 email only
+      // No verified data — fall back to Gemini's own LLM knowledge with probability estimates
       genPrompt = `
-        Generate the single most likely business email address for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
+        Generate the most likely business email addresses for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
         Infer the likely domain name based on the company name.
-        Return strictly a JSON object: { "emails": ["email1"] }
+        For each email address candidate, estimate a probability (0–100) that it is the correct active email.
+        Return strictly a JSON object: { "emails": [{ "email": "addr1", "probability": 85 }, { "email": "addr2", "probability": 10 }] }
+        Sort by highest probability first. Include at least 1 and at most 3 candidates.
         Do not include markdown formatting.
       `;
     }
@@ -8707,11 +8713,24 @@ Phone: ...`;
        if (match) data = { emails: JSON.parse(match[0]) };
        else throw new Error("Failed to parse LLM email generation response");
     }
-    
-    const candidates = data.emails || [];
-    
-    // RETURN IMMEDIATELY, NO VERIFICATION
-    res.json({ emails: candidates });
+
+    // Normalise: Gemini fallback returns [{email, probability}] objects; verified path returns strings.
+    let candidates = [];
+    let topProbability = null;
+    const rawEmails = data.emails || [];
+    if (emailSource === 'gemini' && rawEmails.length > 0 && typeof rawEmails[0] === 'object') {
+      candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+      topProbability = rawEmails[0] && rawEmails[0].probability != null ? rawEmails[0].probability : null;
+    } else {
+      candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+    }
+
+    res.json({
+      emails: candidates,
+      source: emailSource,
+      confidence: verifiedConfidence,
+      probability: topProbability,
+    });
 
   } catch (err) {
     console.error('[generate-email] Unhandled error:', err.message || err);
