@@ -3034,6 +3034,9 @@
     }
 
     function crmExportXls() {
+      // Sync any in-progress cell edits back to _crmRows before building the export.
+      _crmSyncFromTable();
+
       // Build a proper XLSX (Office Open XML / ZIP) workbook with two sheets:
       // Sheet 1 "Prospect" — human-editable columns (visible)
       // Sheet 2 "Raw"      — full JSON rows for lossless reimport (hidden)

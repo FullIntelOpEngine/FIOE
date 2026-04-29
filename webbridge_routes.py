@@ -2848,6 +2848,41 @@ def prospect_crm_get_profile():
         profile.get("company_name"),
     )
 
+    # BrightData SERP zone returns Google search results — the LinkedIn profile
+    # data is not present as structured fields (positions, experience, etc.).
+    # Instead the organic result title follows the pattern:
+    #   "Name - Job Title at Company | LinkedIn"
+    # Parse that with parse_linkedin_title as a fallback when direct fields fail.
+    if not crm_job_title or not crm_company:
+        # Build a list of SERP organic candidates.
+        # Case 1: raw_data is a bare list of organic items (each item is a result dict).
+        _serp_candidates: list = (
+            [e for e in raw_data if isinstance(e, dict)]
+            if isinstance(raw_data, list)
+            else []
+        )
+        # Case 2: raw_data (or profile) is wrapped as {"organic": [...], ...}.
+        if not _serp_candidates:
+            _serp_candidates = [
+                e for e in (profile.get("organic") or [])
+                if isinstance(e, dict)
+            ]
+        for _cand in _serp_candidates:
+            _cand_url   = (_cand.get("url") or _cand.get("link") or "").strip()
+            _cand_title = (_cand.get("title") or "").strip()
+            # Skip non-LinkedIn URLs when a URL is present.
+            if _cand_url and not is_linkedin_profile(_cand_url):
+                continue
+            if not _cand_title:
+                continue
+            _, _parsed_job, _parsed_company = parse_linkedin_title(_cand_title)
+            if not crm_job_title and _parsed_job:
+                crm_job_title = _parsed_job
+            if not crm_company and _parsed_company:
+                crm_company = _parsed_company
+            if crm_job_title and crm_company:
+                break
+
     crm_email  = (profile.get("email") or "").strip()
     crm_mobile = (profile.get("phone") or profile.get("mobile") or profile.get("phoneNumber") or "").strip()
 
