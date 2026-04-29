@@ -7628,6 +7628,46 @@ function parseIcsDate(dateStr) {
   return new Date(s).getTime();
 }
 
+// Helper: parse an ICS YYYYMMDDTHHMMSS floating date in the named IANA timezone and return UTC ms.
+// Falls back to parseIcsDate (treat as UTC) when tzid is absent or unrecognised.
+function parseIcsDateWithTzid(dateStr, tzid) {
+  if (!tzid) return parseIcsDate(dateStr);
+  const s = (dateStr || '').trim();
+  // Already UTC — no timezone adjustment needed
+  if (/^\d{8}T\d{6}Z$/i.test(s)) return parseIcsDate(s);
+  // Floating datetime: YYYYMMDDTHHMMSS — convert from tzid to UTC via Intl
+  if (/^\d{8}T\d{6}$/.test(s)) {
+    try {
+      const y  = parseInt(s.slice(0, 4), 10);
+      const mo = parseInt(s.slice(4, 6), 10) - 1;
+      const d  = parseInt(s.slice(6, 8), 10);
+      const h  = parseInt(s.slice(9, 11), 10);
+      const mi = parseInt(s.slice(11, 13), 10);
+      const sc = parseInt(s.slice(13, 15), 10);
+      // Use the Intl API: find what UTC timestamp shows the given local time in tzid.
+      // Method: take the "naive UTC" equivalent, ask what local time the timezone shows
+      // at that UTC instant, then compute the offset and adjust.
+      const naiveUtcMs = Date.UTC(y, mo, d, h, mi, sc);
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tzid,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      });
+      const parts = fmt.formatToParts(new Date(naiveUtcMs));
+      const get = (t) => parseInt((parts.find(p => p.type === t) || { value: '0' }).value, 10);
+      // hour12:false may return 24 for midnight — normalise
+      const localH = get('hour') === 24 ? 0 : get('hour');
+      const localMs = Date.UTC(get('year'), get('month') - 1, get('day'), localH, get('minute'), get('second'));
+      const offsetMs = localMs - naiveUtcMs; // tz offset at naiveUtcMs
+      return naiveUtcMs - offsetMs;
+    } catch (_) {
+      return parseIcsDate(dateStr); // unknown timezone — fall back to UTC
+    }
+  }
+  return parseIcsDate(dateStr);
+}
+
 // Helper: fetch an ICS URL and return busy [{start, end}] intervals overlapping [startISO, endISO]
 // Supports http://, https://, and webcal:// (remapped to https://).
 async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
@@ -7702,10 +7742,10 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         const status = (evt.status || '').toUpperCase();
         const transp  = (evt.transp  || 'OPAQUE').toUpperCase();
         if (status !== 'CANCELLED' && transp !== 'TRANSPARENT') {
-          let startMs = parseIcsDate(evt.dtstart);
+          let startMs = parseIcsDateWithTzid(evt.dtstart, evt.dtstart_tzid);
           let endMs;
           if (evt.dtend) {
-            endMs = parseIcsDate(evt.dtend);
+            endMs = parseIcsDateWithTzid(evt.dtend, evt.dtend_tzid || evt.dtstart_tzid);
           } else if (evt.duration) {
             // Rudimentary DURATION parser: P[nD][T[nH][nM][nS]]
             const dur = evt.duration.toUpperCase();
@@ -7741,9 +7781,19 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     const semiIdx = rawProp.indexOf(';');
     const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
 
-    if      (propKey === 'DTSTART')  evt.dtstart  = value;
-    else if (propKey === 'DTEND')    evt.dtend    = value;
-    else if (propKey === 'DURATION') evt.duration = value;
+    if (propKey === 'DTSTART') {
+      evt.dtstart = value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.dtstart_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'DTEND') {
+      evt.dtend = value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.dtend_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'DURATION') evt.duration = value;
     else if (propKey === 'STATUS')   evt.status   = value;
     else if (propKey === 'TRANSP')   evt.transp   = value;
   }

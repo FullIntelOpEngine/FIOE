@@ -495,6 +495,42 @@ function EmailVerificationModal({ data, onClose, email, service }) {
 }
 
 /* ========================= EMAIL COMPOSE MODAL ========================= */
+
+// Curated IANA timezone list for the timezone picker (both Calendar and Self-Scheduler).
+const COMMON_TIMEZONES = [
+  { value: 'Pacific/Midway',        label: 'UTC-11 — Midway Island' },
+  { value: 'Pacific/Honolulu',      label: 'UTC-10 — Hawaii' },
+  { value: 'America/Anchorage',     label: 'UTC-9  — Alaska' },
+  { value: 'America/Los_Angeles',   label: 'UTC-8  — Pacific Time (US)' },
+  { value: 'America/Denver',        label: 'UTC-7  — Mountain Time (US)' },
+  { value: 'America/Phoenix',       label: 'UTC-7  — Arizona (no DST)' },
+  { value: 'America/Chicago',       label: 'UTC-6  — Central Time (US)' },
+  { value: 'America/New_York',      label: 'UTC-5  — Eastern Time (US)' },
+  { value: 'America/Toronto',       label: 'UTC-5  — Toronto' },
+  { value: 'America/Halifax',       label: 'UTC-4  — Atlantic Time (CA)' },
+  { value: 'America/Sao_Paulo',     label: 'UTC-3  — São Paulo' },
+  { value: 'America/Buenos_Aires',  label: 'UTC-3  — Buenos Aires' },
+  { value: 'Atlantic/South_Georgia',label: 'UTC-2  — South Georgia' },
+  { value: 'Atlantic/Azores',       label: 'UTC-1  — Azores' },
+  { value: 'UTC',                   label: 'UTC+0  — UTC' },
+  { value: 'Europe/London',         label: 'UTC+0  — London' },
+  { value: 'Europe/Paris',          label: 'UTC+1  — Paris / Berlin' },
+  { value: 'Europe/Helsinki',       label: 'UTC+2  — Helsinki / Kyiv' },
+  { value: 'Europe/Moscow',         label: 'UTC+3  — Moscow' },
+  { value: 'Asia/Dubai',            label: 'UTC+4  — Dubai' },
+  { value: 'Asia/Karachi',          label: 'UTC+5  — Karachi' },
+  { value: 'Asia/Kolkata',          label: 'UTC+5:30 — India' },
+  { value: 'Asia/Dhaka',            label: 'UTC+6  — Dhaka' },
+  { value: 'Asia/Bangkok',          label: 'UTC+7  — Bangkok / Jakarta' },
+  { value: 'Asia/Singapore',        label: 'UTC+8  — Singapore' },
+  { value: 'Asia/Shanghai',         label: 'UTC+8  — China (Beijing)' },
+  { value: 'Asia/Tokyo',            label: 'UTC+9  — Tokyo' },
+  { value: 'Asia/Seoul',            label: 'UTC+9  — Seoul' },
+  { value: 'Australia/Brisbane',    label: 'UTC+10 — Brisbane' },
+  { value: 'Australia/Sydney',      label: 'UTC+10/11 — Sydney' },
+  { value: 'Pacific/Auckland',      label: 'UTC+12/13 — Auckland' },
+];
+
 function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candidateData, userData, smtpConfig, recipientCandidates = [], onSendSuccess, statusOptions = [], onOpenSelfScheduler, schedulerLinkToInsert, onSchedulerLinkConsumed }) {
   const [from, setFrom] = useState('');
   const [cc, setCc] = useState('');
@@ -514,6 +550,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [showIcsInput, setShowIcsInput] = useState(false);
   const [icsCalendarUrl, setIcsCalendarUrl] = useState('');
   const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
+  const [icsConnecting, setIcsConnecting] = useState(false);
   const [calendarSlots, setCalendarSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
@@ -525,6 +562,9 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [slotEndDate, setSlotEndDate] = useState('');
   const [interviewDuration, setInterviewDuration] = useState(30);
   const [slotDayIndex, setSlotDayIndex] = useState(0);
+  const [displayTimezone, setDisplayTimezone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
   const [glossaryCopied, setGlossaryCopied] = useState(false);
   const [copiedTag, setCopiedTag] = useState('');
   const [glossaryLocked, setGlossaryLocked] = useState(false);
@@ -786,15 +826,38 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     return true;
   };
 
-  const handleConnectIcs = () => {
+  const handleConnectIcs = async () => {
     if (!validateIcsUrl(icsCalendarUrl)) {
       setCalendarError('Please enter a valid ICS URL starting with http://, https://, or webcal://');
       return;
     }
+    setIcsConnecting(true);
     setCalendarError('');
-    setIcsCalendarConnected(true);
-    setConnectDropdownOpen(false);
-    setShowIcsInput(false);
+    try {
+      // Test that the ICS feed is actually accessible and parseable by doing a
+      // real freebusy query over the next 24 hours.  This ensures busy/free status
+      // will be read correctly and prevents "connected but calendar ignored" issues.
+      const now = new Date();
+      const testStart = now.toISOString();
+      const testEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+      const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ startISO: testStart, endISO: testEnd, durationMinutes: 30, provider: 'ics', icsUrl: icsCalendarUrl }),
+        credentials: 'include'
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Could not read ICS calendar. Please verify the URL is accessible.');
+      }
+      setIcsCalendarConnected(true);
+      setConnectDropdownOpen(false);
+      setShowIcsInput(false);
+    } catch (e) {
+      setCalendarError(e.message || 'Failed to connect ICS calendar. Please verify the URL.');
+    } finally {
+      setIcsConnecting(false);
+    }
   };
 
   const handleFindSlots = async () => {
@@ -819,7 +882,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider, ...(calendarProvider === 'ics' ? { icsUrl: icsCalendarUrl } : {}) }),
+        body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider, timezone: displayTimezone, ...(calendarProvider === 'ics' ? { icsUrl: icsCalendarUrl } : {}) }),
         credentials: 'include'
       });
       if (!res.ok) {
@@ -857,7 +920,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         startISO: slot.start,
         endISO: slot.end,
         attendees,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        timezone: displayTimezone,
         sendUpdates: 'none',
         provider: calendarProvider,
         ...(calendarProvider === 'ics' ? { icsUrl: icsCalendarUrl } : {})
@@ -1342,9 +1405,10 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                             <button
                               type="button"
                               onClick={handleConnectIcs}
-                              style={{ width: '100%', padding: '5px 10px', background: 'var(--azure-dragon)', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                              disabled={icsConnecting}
+                              style={{ width: '100%', padding: '5px 10px', background: 'var(--azure-dragon)', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: icsConnecting ? 'not-allowed' : 'pointer', opacity: icsConnecting ? 0.7 : 1 }}
                             >
-                              {icsCalendarConnected ? '✅ Connected' : '🔗 Connect ICS'}
+                              {icsConnecting ? '⏳ Verifying…' : icsCalendarConnected ? '✅ Connected' : '🔗 Connect ICS'}
                             </button>
                           </div>
                         )}
@@ -1393,7 +1457,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                 )}
               </div>
 
-              {/* Row 2: date range + find slots */}
+              {/* Row 2: date range + timezone + find slots */}
               {addMeet && (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap', background: '#fff', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--desired-dawn)' }}>
                   <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -1416,6 +1480,18 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                       style={{ padding: '4px 8px', border: '1px solid var(--desired-dawn)', borderRadius: 6, fontSize: 13 }}
                     />
                   </label>
+                  <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ color: 'var(--cool-blue)', fontWeight: 600 }}>Timezone:</span>
+                    <select
+                      value={displayTimezone}
+                      onChange={e => { setDisplayTimezone(e.target.value); setCalendarSlots([]); setSelectedSlotIndex(null); }}
+                      style={{ padding: '4px 8px', border: '1px solid var(--desired-dawn)', borderRadius: 6, fontSize: 12, background: '#fff', color: 'var(--azure-dragon)', maxWidth: 220 }}
+                    >
+                      {COMMON_TIMEZONES.map(tz => (
+                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                      ))}
+                    </select>
+                  </label>
                   <button
                     type="button"
                     onClick={handleFindSlots}
@@ -1435,7 +1511,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                 const groups = [];
                 const groupMap = {};
                 calendarSlots.forEach((s, i) => {
-                  const day = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                  const day = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: displayTimezone });
                   if (!groupMap[day]) {
                     groupMap[day] = { day, entries: [] };
                     groups.push(groupMap[day]);
@@ -1473,7 +1549,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                         {entries.map(({ slot: s, idx: i }) => {
                           const isSelected = selectedSlotIndex === i;
-                          const timeLabel = new Date(s.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' – ' + new Date(s.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                          const timeLabel = new Date(s.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: displayTimezone }) + ' – ' + new Date(s.end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: displayTimezone });
                           return (
                             <button
                               key={i}
@@ -1630,6 +1706,9 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
   const [error, setError] = useState('');
   const [cleared, setCleared] = useState(false);
   const [step2DayIndex, setStep2DayIndex] = useState(0); // day-navigation for Step 2
+  const [displayTimezone, setDisplayTimezone] = useState(
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  );
 
   // Pre-fill start/end to sensible defaults when opening
   useEffect(() => {
@@ -1666,7 +1745,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
       const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider, ...(provider === 'ics' ? { icsUrl } : {}) }),
+        body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider, timezone: displayTimezone, ...(provider === 'ics' ? { icsUrl } : {}) }),
         credentials: 'include'
       });
       if (!res.ok) {
@@ -1751,7 +1830,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
   // Group generated slots by date label for display
   const slotsByDay = [];
   generatedSlots.forEach((s, i) => {
-    const label = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    const label = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: displayTimezone });
     if (!slotsByDay.length || slotsByDay[slotsByDay.length - 1].label !== label) {
       slotsByDay.push({ label, slots: [] });
     }
@@ -1802,6 +1881,20 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
             </select>
           </div>
 
+          {/* Timezone */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={labelStyle}>Timezone</label>
+            <select
+              value={displayTimezone}
+              onChange={e => { setDisplayTimezone(e.target.value); setGeneratedSlots([]); setSelectedIds(new Set()); }}
+              style={inputStyle}
+            >
+              {COMMON_TIMEZONES.map(tz => (
+                <option key={tz.value} value={tz.value}>{tz.label}</option>
+              ))}
+            </select>
+          </div>
+
           <button onClick={handleGenerate} disabled={generating}
             style={{ width: '100%', padding: '9px 0', background: 'var(--azure-dragon,#073679)', color: '#fff', border: 'none', borderRadius: 7, cursor: generating ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: generating ? 0.7 : 1 }}>
             {generating ? '⏳ Generating…' : '🔍 Generate Available Slots'}
@@ -1839,8 +1932,8 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                   {currentDayGroup.slots.map(({ slot, idx }) => {
                     const checked = selectedIds.has(idx);
-                    const timeStr = new Date(slot.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) +
-                      ' – ' + new Date(slot.end).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                    const timeStr = new Date(slot.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', timeZone: displayTimezone }) +
+                      ' – ' + new Date(slot.end).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', timeZone: displayTimezone });
                     return (
                       <button key={idx} type="button" onClick={() => toggleSlot(idx)}
                         style={{ padding: '4px 9px', border: `1.5px solid ${checked ? 'var(--azure-dragon,#073679)' : 'var(--border,#cbd5e1)'}`, borderRadius: 20, cursor: 'pointer', fontSize: 11, fontWeight: checked ? 700 : 400, background: checked ? 'var(--azure-dragon,#073679)' : '#fff', color: checked ? '#fff' : 'var(--text,#222)', transition: 'all 0.12s' }}>
