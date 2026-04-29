@@ -3638,11 +3638,13 @@
 
             if (provider === 'fioe') {
               // FIOE generator uses name + company (no LinkedIn URL required).
+              // Routes through the Flask backend so the same-origin CSP is satisfied
+              // and verified_email.json lookup logic is applied.
               if (!name || !company) continue;
-              const res = await fetch('http://localhost:4000/generate-email', {
+              const res = await fetch('/prospect/crm-generate-email', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ provider, name, company, country }),
+                body: JSON.stringify({ name, company, country }),
                 credentials: 'include'
               });
               if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3826,6 +3828,15 @@
             if (!res.ok) throw new Error('HTTP ' + res.status);
             sent++;
           } catch(e) { failed++; }
+        }
+        // Persist generated email addresses to verified_email.json so the FIOE
+        // domain-pattern learning improves over time.
+        if (sent > 0 && refRow.name && refRow.company) {
+          fetch('/prospect/crm-save-verified-email', {
+            method: 'POST', credentials: 'include',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ emails: toAddresses, name: refRow.name, company: refRow.company })
+          }).catch(err => console.warn('[crm-save-verified-email] failed (non-fatal):', err));
         }
       } else {
         // Per-row sending (uses each row's individual email from the CRM)
