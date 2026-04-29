@@ -3382,6 +3382,8 @@
 
     // ── CRM Email Compose Modal ──────────────────────────────
     let _crmCalSlots = [];
+    let _crmCalPage  = 0;
+    const _SLOTS_PER_PAGE = 20;
 
     function crmOpenEmailModal() {
       if (_crmSelected.size === 0) return;
@@ -3874,22 +3876,58 @@
         if (!res.ok) throw new Error(data.error || 'Failed to query calendar');
         _crmCalSlots = Array.isArray(data.slots) ? data.slots : [];
         if (!_crmCalSlots.length) { statusEl.textContent = 'No free slots found in selected range.'; return; }
-        statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.';
-        slotsEl.innerHTML = '';
-        _crmCalSlots.forEach((slot, i) => {
-          const d = new Date(slot.start);
-          const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-          const btn = document.createElement('button');
-          btn.className = 'crm-cal-btn';
-          btn.style.cssText = 'margin:3px;';
-          btn.textContent = lbl;
-          btn.onclick = function() { _crmInsertSlotTag(slot, i); btn.classList.add('active'); };
-          slotsEl.appendChild(btn);
-        });
-        slotsEl.style.display = 'block';
+        _crmCalPage = 0;
+        _crmRenderSlotPage();
       } catch(e) {
         statusEl.textContent = '❌ ' + (e.message || 'Could not find slots. Connect your calendar first.');
       }
+    }
+
+    function _crmRenderSlotPage() {
+      const statusEl   = document.getElementById('crmCalStatus');
+      const slotsEl    = document.getElementById('crmCalSlots');
+      const totalPages = Math.ceil(_crmCalSlots.length / _SLOTS_PER_PAGE);
+      const pageSlots  = _crmCalSlots.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
+      statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.' +
+        (totalPages > 1 ? ' (Page ' + (_crmCalPage + 1) + ' of ' + totalPages + ')' : '');
+      slotsEl.innerHTML = '';
+      pageSlots.forEach(function(slot, i) {
+        const globalIdx = _crmCalPage * _SLOTS_PER_PAGE + i;
+        const d   = new Date(slot.start);
+        const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const btn = document.createElement('button');
+        btn.className = 'crm-cal-btn';
+        btn.style.cssText = 'margin:3px;';
+        btn.textContent = lbl;
+        btn.onclick = (function(s, idx) {
+          return function() { _crmInsertSlotTag(s, idx); btn.classList.add('active'); };
+        })(slot, globalIdx);
+        slotsEl.appendChild(btn);
+      });
+      if (totalPages > 1) {
+        const nav = document.createElement('div');
+        nav.style.cssText = 'margin-top:8px;display:flex;gap:6px;align-items:center;';
+        if (_crmCalPage > 0) {
+          const prev = document.createElement('button');
+          prev.className = 'crm-cal-btn';
+          prev.textContent = '‹ Prev';
+          prev.onclick = function() { _crmCalPage--; _crmRenderSlotPage(); };
+          nav.appendChild(prev);
+        }
+        const pg = document.createElement('span');
+        pg.style.cssText = 'font-size:12px;color:var(--cb);padding:0 4px;';
+        pg.textContent = (_crmCalPage + 1) + ' / ' + totalPages;
+        nav.appendChild(pg);
+        if (_crmCalPage < totalPages - 1) {
+          const next = document.createElement('button');
+          next.className = 'crm-cal-btn';
+          next.textContent = 'Next ›';
+          next.onclick = function() { _crmCalPage++; _crmRenderSlotPage(); };
+          nav.appendChild(next);
+        }
+        slotsEl.appendChild(nav);
+      }
+      slotsEl.style.display = 'block';
     }
 
     function _crmInsertSlotTag(slot, i) {
@@ -3961,10 +3999,10 @@
             .replace(/\[Seniority\]/gi, refRow.seniority || '')
             .replace(/\[Your Name\]/gi, from);
           try {
-            const payload = { from, to, cc, subject, body, smtp: _crmSmtpConfig || {} };
-            const res = await fetch('http://localhost:4000/draft-email', {
+            const payload = { from, to, cc, subject, body, smtpConfig: _crmSmtpConfig || {} };
+            const res = await fetch('http://localhost:4000/send-email', {
               method: 'POST', credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify(payload)
             });
             if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3995,10 +4033,10 @@
             .replace(/\[Seniority\]/gi, row.seniority || '')
             .replace(/\[Your Name\]/gi, from);
           try {
-            const payload = { from, to, cc, subject, body, smtp: _crmSmtpConfig || {} };
-            const res = await fetch('http://localhost:4000/draft-email', {
+            const payload = { from, to, cc, subject, body, smtpConfig: _crmSmtpConfig || {} };
+            const res = await fetch('http://localhost:4000/send-email', {
               method: 'POST', credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               body: JSON.stringify(payload)
             });
             if (!res.ok) throw new Error('HTTP ' + res.status);
