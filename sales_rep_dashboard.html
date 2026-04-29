@@ -3024,6 +3024,13 @@
         tr.querySelectorAll('input.crm-cell-input').forEach(inp => {
           row[inp.dataset.field] = inp.value;
         });
+        // For rows where the Name column renders as a link (<a class="crm-name-link">),
+        // sync row.name from the link text and row.linkedinUrl from the href.
+        const nameLink = tr.querySelector('a.crm-name-link');
+        if (nameLink) {
+          if (!row.name) row.name = nameLink.textContent.trim();
+          if (!row.linkedinUrl) row.linkedinUrl = nameLink.href;
+        }
         const sel = tr.querySelector('select.crm-status-select');
         if (sel) row.status = sel.value;
       });
@@ -3526,13 +3533,18 @@
         const foundEmails = [];
         for (const row of selectedRows) {
           try {
+            const _tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+            const _nameLink = _tr ? _tr.querySelector('a.crm-name-link') : null;
             if (provider === 'fioe') {
-              // FIOE: generate from name + company (no LinkedIn URL required — same as App.js)
-              if (!row.name || !row.company) continue;
+              // FIOE: generate from name + company — same as App.js.
+              // For linked rows (Name is <a>), read name from the link text if row.name is empty.
+              const name    = (row.name    || (_nameLink ? _nameLink.textContent.trim() : '') || '').trim();
+              const company = (row.company || '').trim();
+              if (!name || !company) continue;
               const res = await fetch('http://localhost:4000/generate-email', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ provider, name: row.name, company: row.company, country: row.country || '' }),
+                body: JSON.stringify({ provider, name, company, country: row.country || '' }),
                 credentials: 'include'
               });
               if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3545,15 +3557,17 @@
                   : [data.email, data.work_email, data.personal_email].filter(Boolean);
               if (emails.length) {
                 row.email = emails[0];
-                const tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
-                if (tr) { const inp = tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
+                if (_tr) { const inp = _tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
                 foundEmails.push(...emails);
               }
             } else {
-              // LinkedIn-based providers: use row.linkedinUrl, fall back to DOM <a> href
-              const tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
-              const nameLink = tr ? tr.querySelector('a.crm-name-link') : null;
-              const linkedinurl = (row.linkedinUrl || (nameLink ? nameLink.href : '') || '').trim();
+              // LinkedIn-based providers: use row.linkedinUrl, fall back to DOM <a> href,
+              // then try to extract a LinkedIn URL embedded in the row.name text.
+              let linkedinurl = (row.linkedinUrl || (_nameLink ? _nameLink.href : '') || '').trim();
+              if (!linkedinurl && row.name) {
+                const m = row.name.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[^\s,;<>")\]]+/i);
+                if (m) linkedinurl = m[0].replace(/[.,;]+$/, '');
+              }
               if (!linkedinurl) continue;
               const res = await fetch('http://localhost:4000/generate-email', {
                 method: 'POST',
@@ -3569,7 +3583,7 @@
                 : [data.email, data.work_email, data.personal_email].filter(Boolean);
               if (emails.length) {
                 row.email = emails[0];
-                if (tr) { const inp = tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
+                if (_tr) { const inp = _tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
                 foundEmails.push(...emails);
               }
             }
