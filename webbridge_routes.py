@@ -2848,11 +2848,20 @@ def prospect_crm_get_profile():
         profile.get("company_name"),
     )
 
+    # If headline was used as the job title and it contains " at ", it may encode
+    # both the job title and the company (e.g. "Sales Manager at Acme Corp").
+    # Split it so the table shows the correct values.
+    if crm_job_title and not crm_company and ' at ' in crm_job_title.lower():
+        _hl_job, _hl_co = _parse_linkedin_description(crm_job_title)
+        if _hl_job and _hl_co:
+            crm_job_title = _hl_job
+            crm_company   = _hl_co
+
     # BrightData SERP zone returns Google search results — the LinkedIn profile
     # data is not present as structured fields (positions, experience, etc.).
-    # Instead the organic result title follows the pattern:
-    #   "Name - Job Title at Company | LinkedIn"
-    # Parse that with parse_linkedin_title as a fallback when direct fields fail.
+    # The organic result title follows: "Name - Job Title at Company | LinkedIn"
+    # and the description/snippet often says: "Job Title at Company · connections".
+    # Parse both with fallback helpers when direct fields fail.
     if not crm_job_title or not crm_company:
         # Build a list of SERP organic candidates.
         # Case 1: raw_data is a bare list of organic items (each item is a result dict).
@@ -2870,16 +2879,24 @@ def prospect_crm_get_profile():
         for _cand in _serp_candidates:
             _cand_url   = (_cand.get("url") or _cand.get("link") or "").strip()
             _cand_title = (_cand.get("title") or "").strip()
+            _cand_desc  = (_cand.get("description") or _cand.get("snippet") or "").strip()
             # Skip non-LinkedIn URLs when a URL is present.
             if _cand_url and not is_linkedin_profile(_cand_url):
                 continue
-            if not _cand_title:
-                continue
-            _, _parsed_job, _parsed_company = parse_linkedin_title(_cand_title)
-            if not crm_job_title and _parsed_job:
-                crm_job_title = _parsed_job
-            if not crm_company and _parsed_company:
-                crm_company = _parsed_company
+            # Try title field first (format: "Name - Job Title at Company | LinkedIn")
+            if _cand_title:
+                _, _parsed_job, _parsed_company = parse_linkedin_title(_cand_title)
+                if not crm_job_title and _parsed_job:
+                    crm_job_title = _parsed_job
+                if not crm_company and _parsed_company:
+                    crm_company = _parsed_company
+            # Try description/snippet field (format: "Job Title at Company · connections")
+            if (not crm_job_title or not crm_company) and _cand_desc:
+                _desc_job, _desc_co = _parse_linkedin_description(_cand_desc)
+                if not crm_job_title and _desc_job:
+                    crm_job_title = _desc_job
+                if not crm_company and _desc_co:
+                    crm_company = _desc_co
             if crm_job_title and crm_company:
                 break
 
@@ -2959,6 +2976,45 @@ def parse_linkedin_title(title: str):
     jobtitle=MULTI_SPACE_RE.sub(' ',jobtitle)
     company=MULTI_SPACE_RE.sub(' ',company)
     return name or None, jobtitle or None, company or None
+
+
+_SERP_DESC_DELIMITERS = (' · ', ' | ', ' - ', ' • ', '\n', ',')
+
+def _parse_linkedin_description(text: str):
+    """Extract (job_title, company) from a LinkedIn SERP description/snippet.
+
+    Handles patterns such as:
+      "Sales Manager at Acme Corp · 500+ connections"
+      "Head of Sales at TechCorp | LinkedIn"
+      "View John's profile: Sales Director at Acme | 200 connections"
+    Returns (job_title, company) strings, or (None, None) on failure.
+    """
+    if not text:
+        return None, None
+    # Strip trailing LinkedIn suffix before parsing
+    text = CLEAN_LINKEDIN_SUFFIX_RE.sub('', text).strip()
+    # If the text starts with "View ... profile" noise, skip that preamble
+    _colon = text.find(':')
+    if _colon != -1 and _colon < 60:
+        text = text[_colon + 1:].strip()
+    at_idx = text.lower().find(' at ')
+    if at_idx == -1:
+        return None, None
+    jobtitle_part = text[:at_idx].strip()
+    company_part = text[at_idx + 4:].strip()
+    # Truncate company at the first recognised delimiter
+    for delim in _SERP_DESC_DELIMITERS:
+        idx = company_part.find(delim)
+        if idx != -1:
+            company_part = company_part[:idx].strip()
+    # Sanity limits — avoid capturing whole paragraphs
+    if not jobtitle_part or not company_part:
+        return None, None
+    if len(jobtitle_part) > 120 or len(company_part) > 120:
+        return None, None
+    jobtitle_part = MULTI_SPACE_RE.sub(' ', jobtitle_part)
+    company_part  = MULTI_SPACE_RE.sub(' ', company_part)
+    return jobtitle_part or None, company_part or None
 
 # ── LLM provider adapters ─────────────────────────────────────────────────────
 

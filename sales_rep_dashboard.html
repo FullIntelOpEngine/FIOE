@@ -3037,167 +3037,58 @@
       // Sync any in-progress cell edits back to _crmRows before building the export.
       _crmSyncFromTable();
 
-      // Build a proper XLSX (Office Open XML / ZIP) workbook with two sheets:
-      // Sheet 1 "Prospect" — human-editable columns (visible)
-      // Sheet 2 "Raw"      — full JSON rows for lossless reimport (hidden)
+      // Build a SpreadsheetML XML workbook (same format as DB Dock Out in App.js)
+      // with two sheets:
+      // Sheet 1 "Prospect" — human-editable columns (visible, working file)
+      // Sheet 2 "Raw"      — full JSON rows for lossless reimport (hidden, data copy)
 
       const MAX_LEN = 32767;
-      const enc = new TextEncoder();
 
       // ── XML-escape helper ──────────────────────────────────────────────────
       const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-      // ── CRC-32 (ISO 3309) ─────────────────────────────────────────────────
-      const _crcT = (() => {
-        const t = new Uint32Array(256);
-        for (let i = 0; i < 256; i++) {
-          let c = i;
-          for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-          t[i] = c >>> 0;
-        }
-        return t;
-      })();
-      const crc32 = buf => {
-        let c = 0xFFFFFFFF;
-        for (let i = 0; i < buf.length; i++) c = _crcT[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-        return (c ^ 0xFFFFFFFF) >>> 0;
-      };
+      const cell    = v => `<Cell><Data ss:Type="String">${ex(v)}</Data></Cell>`;
+      const hdrCell = v => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(v)}</Data></Cell>`;
+      const rowXml  = cells => `<Row>${cells}</Row>\n`;
 
-      // ── Minimal ZIP builder (Store / uncompressed) ────────────────────────
-      const buildZip = files => {
-        const entries = files.map(f => {
-          const name = enc.encode(f.name);
-          const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
-          return { name, data, crc: crc32(data) };
-        });
-        let localSz = 0;
-        for (const e of entries) localSz += 30 + e.name.length + e.data.length;
-        let cdSz = 0;
-        for (const e of entries) cdSz += 46 + e.name.length;
-        const buf = new Uint8Array(localSz + cdSz + 22);
-        const dv  = new DataView(buf.buffer);
-        let pos = 0;
-        const w16 = v => { dv.setUint16(pos, v, true); pos += 2; };
-        const w32 = v => { dv.setUint32(pos, v, true); pos += 4; };
-        const offsets = [];
-        for (const e of entries) {
-          offsets.push(pos);
-          w32(0x04034b50); w16(20); w16(0); w16(0); w16(0); w16(0);
-          w32(e.crc); w32(e.data.length); w32(e.data.length);
-          w16(e.name.length); w16(0);
-          buf.set(e.name, pos); pos += e.name.length;
-          buf.set(e.data, pos); pos += e.data.length;
-        }
-        const cdStart = pos;
-        for (let i = 0; i < entries.length; i++) {
-          const e = entries[i];
-          w32(0x02014b50); w16(20); w16(20); w16(0); w16(0); w16(0); w16(0);
-          w32(e.crc); w32(e.data.length); w32(e.data.length);
-          w16(e.name.length); w16(0); w16(0); w16(0); w16(0); w32(0); w32(offsets[i]);
-          buf.set(e.name, pos); pos += e.name.length;
-        }
-        const cdLen = pos - cdStart;
-        w32(0x06054b50); w16(0); w16(0); w16(entries.length); w16(entries.length);
-        w32(cdLen); w32(cdStart); w16(0);
-        return buf;
-      };
-
-      // ── OOXML helpers ──────────────────────────────────────────────────────
-      const colLetter = n => {
-        let s = '';
-        while (n > 0) { s = String.fromCharCode(64 + (n % 26 || 26)) + s; n = Math.floor((n - 1) / 26); }
-        return s;
-      };
-      const cellXml = (col, row, val, bold) => {
-        const s = String(val == null ? '' : val);
-        const v = s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s;
-        return `<c r="${colLetter(col)}${row}" t="inlineStr"${bold ? ' s="1"' : ''}><is><t>${ex(v)}</t></is></c>`;
-      };
-      const buildSheetXml = (headers, dataRows) => {
-        let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
-          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n<sheetData>\n`;
-        xml += `<row r="1">` + headers.map((h, i) => cellXml(i + 1, 1, h, true)).join('') + `</row>\n`;
-        dataRows.forEach((cells, ri) => {
-          xml += `<row r="${ri + 2}">` + cells.map((v, ci) => cellXml(ci + 1, ri + 2, v, false)).join('') + `</row>\n`;
-        });
-        return xml + `</sheetData>\n</worksheet>`;
-      };
-
-      // ── Sheet 1 — Prospect ────────────────────────────────────────────────
+      // ── Sheet 1 — Prospect (working sheet) ───────────────────────────────
       const S1_FIELDS  = ['name','jobTitle','company','country','sector','seniority','email','mobile','linkedinUrl','comment','status'];
       const S1_HEADERS = ['Name','Job Title','Company','Country','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
-      const sheet1Xml = buildSheetXml(S1_HEADERS, _crmRows.map(row => S1_FIELDS.map(f => row[f] || '')));
+      let s1Rows = rowXml(S1_HEADERS.map(hdrCell).join(''));
+      for (const r of _crmRows) {
+        s1Rows += rowXml(S1_FIELDS.map(f => cell(r[f] || '')).join(''));
+      }
 
-      // ── Sheet 2 — Raw (hidden) ────────────────────────────────────────────
-      const rawRows = _crmRows.map(row => {
-        const s = JSON.stringify(row);
-        const chunks = [];
-        for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
-        return chunks;
-      });
-      const sheet2Xml = buildSheetXml(['__crm_json_export_v1__'], rawRows);
+      // ── Sheet 2 — Raw (hidden, data copy) ────────────────────────────────
+      let s2Rows = rowXml(hdrCell('__crm_json_export_v1__'));
+      for (const r of _crmRows) {
+        const s = JSON.stringify(r);
+        let cells = '';
+        for (let i = 0; i < s.length; i += MAX_LEN) cells += cell(s.slice(i, i + MAX_LEN));
+        s2Rows += rowXml(cells);
+      }
 
-      // ── Static XLSX package parts ──────────────────────────────────────────
-      const NS_PKG  = 'http://schemas.openxmlformats.org/package/2006/';
-      const NS_OFF  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
-      const NS_SS   = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-      // ContentType values are MIME types; NS_PKG is used only for XML namespaces.
-      const contentTypes =
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-        `<Types xmlns="${NS_PKG}content-types">` +
-        `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
-        `<Default Extension="xml" ContentType="application/xml"/>` +
-        `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
-        `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
-        `<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
-        `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
-        `</Types>`;
-      const rootRels =
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-        `<Relationships xmlns="${NS_PKG}relationships">` +
-        `<Relationship Id="rId1" Type="${NS_OFF}officeDocument" Target="xl/workbook.xml"/>` +
-        `</Relationships>`;
-      const workbookXml =
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-        `<workbook xmlns="${NS_SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-        `<sheets>` +
-        `<sheet name="Prospect" sheetId="1" r:id="rId1"/>` +
-        `<sheet name="Raw" sheetId="2" r:id="rId2" state="hidden"/>` +
-        `</sheets></workbook>`;
-      const workbookRels =
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-        `<Relationships xmlns="${NS_PKG}relationships">` +
-        `<Relationship Id="rId1" Type="${NS_OFF}worksheet" Target="worksheets/sheet1.xml"/>` +
-        `<Relationship Id="rId2" Type="${NS_OFF}worksheet" Target="worksheets/sheet2.xml"/>` +
-        `<Relationship Id="rId3" Type="${NS_OFF}styles" Target="styles.xml"/>` +
-        `</Relationships>`;
-      const stylesXml =
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-        `<styleSheet xmlns="${NS_SS}">` +
-        `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
-        `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
-        `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
-        `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
-        `<cellXfs count="2">` +
-        `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
-        `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>` +
-        `</cellXfs></styleSheet>`;
+      const xml =
+        `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
+        `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+        ` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
+        ` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
+        ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+        ` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
+        ` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n` +
+        ` <Worksheet ss:Name="Prospect">\n` +
+        `  <Table ss:DefaultColumnWidth="110">${s1Rows}</Table>\n` +
+        ` </Worksheet>\n` +
+        ` <Worksheet ss:Name="Raw" ss:Visible="SheetHidden">\n` +
+        `  <Table>${s2Rows}</Table>\n` +
+        ` </Worksheet>\n` +
+        `</Workbook>`;
 
-      const xlsxBytes = buildZip([
-        { name: '[Content_Types].xml',        data: contentTypes },
-        { name: '_rels/.rels',                 data: rootRels },
-        { name: 'xl/workbook.xml',             data: workbookXml },
-        { name: 'xl/_rels/workbook.xml.rels',  data: workbookRels },
-        { name: 'xl/worksheets/sheet1.xml',    data: sheet1Xml },
-        { name: 'xl/worksheets/sheet2.xml',    data: sheet2Xml },
-        { name: 'xl/styles.xml',               data: stylesXml },
-      ]);
-
-      const blob = new Blob([xlsxBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;
-      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xlsx';
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xls';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
 
