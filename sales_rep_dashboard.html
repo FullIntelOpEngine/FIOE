@@ -3581,22 +3581,68 @@
       _crmSyncFromTable();
       if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
       try {
+        // Fetch authoritative CRM data directly from CRM.json via the server.
+        // This ensures name, company, and linkedinUrl are always read from the
+        // saved CRM record rather than potentially stale in-memory state.
+        const serverByUrl  = new Map(); // linkedinUrl (lower) → profile
+        const serverByName = new Map(); // "name|company" (lower) → profile
+        try {
+          const crmResp = await fetch('/prospect/crm-data', {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+          });
+          if (crmResp.ok) {
+            const crmData = await crmResp.json();
+            (crmData.profiles || []).forEach(p => {
+              const url = (p.linkedinUrl || p.linkedin_url || '').trim();
+              if (url) serverByUrl.set(url.toLowerCase(), p);
+              const nk = ((p.name || '').toLowerCase() + '|' + (p.company || '').toLowerCase()).trim();
+              if (nk !== '|') serverByName.set(nk, p);
+            });
+          }
+        } catch (e) { /* network issue — fall back to in-memory data */ }
+
         const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
         const foundEmails = [];
         for (const row of selectedRows) {
           try {
-            const _tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
-            const _nameLink = _tr ? _tr.querySelector('a.crm-name-link') : null;
+            const _tr          = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+            const _nameLink    = _tr ? _tr.querySelector('a.crm-name-link')             : null;
+            const _nameInput   = _tr ? _tr.querySelector('input[data-field="name"]')    : null;
+            const _coInput     = _tr ? _tr.querySelector('input[data-field="company"]') : null;
+
+            // Resolve values from in-memory row (already synced from DOM) + raw DOM fallbacks.
+            const memUrl     = (row.linkedinUrl
+                                 || (_nameLink ? (_nameLink.getAttribute('href') || _nameLink.href) : '')
+                                 || '').trim();
+            const memName    = (row.name
+                                 || (_nameLink  ? _nameLink.textContent.trim() : '')
+                                 || (_nameInput ? _nameInput.value.trim()      : '')
+                                 || '').trim();
+            const memCompany = (row.company
+                                 || (_coInput ? _coInput.value.trim() : '')
+                                 || '').trim();
+
+            // Find authoritative server record from CRM.json (by URL, then by name+company).
+            const srv = (memUrl ? serverByUrl.get(memUrl.toLowerCase()) : null)
+                     || (memName && memCompany
+                          ? serverByName.get((memName + '|' + memCompany).toLowerCase())
+                          : null)
+                     || null;
+
+            // Final resolved values: server CRM.json takes precedence over in-memory/DOM.
+            const name       = ((srv && srv.name)                          || memName    || '').trim();
+            const company    = ((srv && srv.company)                       || memCompany || '').trim();
+            const country    = ((srv && srv.country)                       || row.country || '').trim();
+            let   linkedinurl = ((srv && (srv.linkedinUrl || srv.linkedin_url)) || memUrl || '').trim();
+
             if (provider === 'fioe') {
-              // FIOE: generate from name + company.
-              // For linked rows (Name is <a>), use _nameLink text as additional fallback.
-              const name    = (row.name    || (_nameLink ? _nameLink.textContent.trim() : '') || '').trim();
-              const company = (row.company || '').trim();
+              // FIOE generator uses name + company (no LinkedIn URL required).
               if (!name || !company) continue;
               const res = await fetch('http://localhost:4000/generate-email', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ provider, name, company, country: row.country || '' }),
+                body: JSON.stringify({ provider, name, company, country }),
                 credentials: 'include'
               });
               if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -3614,12 +3660,14 @@
               }
             } else {
               // LinkedIn-based providers (contactout/apollo/rocketreach):
-              // Priority: row.linkedinUrl → DOM <a href> → URL embedded in row.name text.
-              // Regex handles www., country-specific (sg., kr., etc.) and bare linkedin.com subdomains.
-              let linkedinurl = (row.linkedinUrl || (_nameLink ? _nameLink.href : '') || '').trim();
-              if (!linkedinurl && row.name) {
-                const m = row.name.match(/https?:\/\/(?:[\w-]+\.)*linkedin\.com\/in\/[^\s,;<>")\]]+/i);
-                if (m) linkedinurl = m[0].replace(/[.,;]+$/, '');
+              // URL priority: CRM.json record → in-memory row → DOM <a> href →
+              //               URL embedded in name text (legacy format).
+              if (!linkedinurl) {
+                const nameText = name || memName;
+                if (nameText) {
+                  const m = nameText.match(/https?:\/\/(?:[\w-]+\.)*linkedin\.com\/in\/[^\s,;<>")\]]+/i);
+                  if (m) linkedinurl = m[0].replace(/[.,;]+$/, '');
+                }
               }
               if (!linkedinurl) continue;
               const res = await fetch('http://localhost:4000/generate-email', {
