@@ -2676,6 +2676,47 @@ def prospect_crm_data_delete():
         return jsonify({"ok": False, "error": "Could not delete CRM file."}), 500
 
 
+
+@app.post("/prospect/crm-save")
+@_require_session
+def prospect_crm_save():
+    """Overwrite the current user's CRM_{username}.json with the profiles sent from the frontend."""
+    username = request._session_user
+    safe = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    crm_file = os.path.join(_CRM_SALES_DIR, f"CRM_{safe}.json")
+    abs_crm_dir = os.path.abspath(_CRM_SALES_DIR)
+    abs_file = os.path.abspath(crm_file)
+    if not abs_file.startswith(abs_crm_dir + os.sep):
+        logger.error("[CRM save] Path traversal blocked: %s", crm_file)
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
+
+    body = request.get_json(silent=True) or {}
+    profiles = body.get("profiles")
+    if not isinstance(profiles, list):
+        return jsonify({"ok": False, "error": "profiles must be a list"}), 400
+
+    # Sanitise each profile: keep only known safe fields
+    _ALLOWED_FIELDS = {"name", "jobTitle", "company", "country", "sector", "seniority",
+                       "email", "mobile", "comment", "status", "linkedinUrl"}
+    clean = []
+    for p in profiles:
+        if not isinstance(p, dict):
+            continue
+        clean.append({k: str(v) for k, v in p.items() if k in _ALLOWED_FIELDS})
+
+    try:
+        os.makedirs(os.path.abspath(_CRM_SALES_DIR), exist_ok=True)
+        tmp = crm_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(clean, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, crm_file)
+        logger.info("[CRM save] Saved %d profile(s) to %s", len(clean), crm_file)
+        return jsonify({"ok": True, "saved": len(clean)}), 200
+    except Exception as exc:
+        logger.warning("[CRM save] Write failed for %s: %s", crm_file, exc)
+        return jsonify({"ok": False, "error": "Could not write CRM file."}), 500
+
+
 @app.post("/prospect/crm-email-draft")
 @_require_session
 def prospect_crm_email_draft():

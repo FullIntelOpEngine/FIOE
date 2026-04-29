@@ -987,6 +987,19 @@
       transition: background .15s;
     }
     .crm-add-row-btn:hover { background: #0a4baa; }
+    .crm-save-btn {
+      padding: 7px 16px;
+      background: #1a7a3c;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-save-btn:hover { background: #145e2e; }
     .crm-export-btn {
       padding: 7px 16px;
       background: var(--panel);
@@ -1474,6 +1487,7 @@
       <div class="crm-toolbar">
         <div class="crm-title">📋 CRM — Prospect Candidates</div>
         <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
+        <button class="crm-save-btn" id="crmSaveBtn" onclick="crmSaveCrm()" title="Save all CRM candidates to server">💾 Save</button>
         <button class="crm-export-btn" id="crmExportBtn" onclick="crmExportOrImport()">⬇ Export XLS</button>
         <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
@@ -2495,13 +2509,14 @@
             // Push directly to avoid per-row re-render; render once at end
             _crmRows.push(Object.assign({
               id: _crmNextId++,
-              name: '', jobTitle: '', company: '',
+              name: '', jobTitle: '', company: '', country: '',
               sector: '', seniority: '', email: '',
               mobile: '', comment: '', status: '', linkedinUrl: ''
             }, {
               name:        p.name        || '',
               jobTitle:    p.jobTitle    || p.job_title  || '',
               company:     p.company     || '',
+              country:     p.country     || '',
               sector:      p.sector      || '',
               seniority:   p.seniority   || '',
               email:       p.email       || '',
@@ -3025,11 +3040,14 @@
           row[inp.dataset.field] = inp.value;
         });
         // For rows where the Name column renders as a link (<a class="crm-name-link">),
-        // sync row.name from the link text and row.linkedinUrl from the href.
+        // always sync row.name from the link text and row.linkedinUrl from the href
+        // so that crmGenerateEmail() always has the latest values.
         const nameLink = tr.querySelector('a.crm-name-link');
         if (nameLink) {
-          if (!row.name) row.name = nameLink.textContent.trim();
-          if (!row.linkedinUrl) row.linkedinUrl = nameLink.href;
+          const linkName = nameLink.textContent.trim();
+          if (linkName) row.name = linkName;
+          const linkUrl = nameLink.href;
+          if (linkUrl) row.linkedinUrl = linkUrl;
         }
         const sel = tr.querySelector('select.crm-status-select');
         if (sel) row.status = sel.value;
@@ -3037,6 +3055,40 @@
     }
 
 
+
+    async function crmSaveCrm() {
+      const btn = document.getElementById('crmSaveBtn');
+      _crmSyncFromTable();
+      const profiles = _crmRows.map(r => ({
+        name:        r.name        || '',
+        jobTitle:    r.jobTitle    || '',
+        company:     r.company     || '',
+        country:     r.country     || '',
+        sector:      r.sector      || '',
+        seniority:   r.seniority   || '',
+        email:       r.email       || '',
+        mobile:      r.mobile      || '',
+        comment:     r.comment     || '',
+        status:      r.status      || '',
+        linkedinUrl: r.linkedinUrl || '',
+      }));
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+      try {
+        const res = await fetch('/prospect/crm-save', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ profiles }),
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Save failed');
+        if (btn) { btn.textContent = '✅ Saved'; setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; } }, 2000); }
+      } catch (e) {
+        alert('❌ Save failed: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
+      }
+    }
 
     function crmExportOrImport() {
       const btn = document.getElementById('crmExportBtn');
@@ -3536,8 +3588,8 @@
             const _tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
             const _nameLink = _tr ? _tr.querySelector('a.crm-name-link') : null;
             if (provider === 'fioe') {
-              // FIOE: generate from name + company — same as App.js.
-              // For linked rows (Name is <a>), read name from the link text if row.name is empty.
+              // FIOE: generate from name + company.
+              // For linked rows (Name is <a>), use _nameLink text as additional fallback.
               const name    = (row.name    || (_nameLink ? _nameLink.textContent.trim() : '') || '').trim();
               const company = (row.company || '').trim();
               if (!name || !company) continue;
@@ -3561,11 +3613,12 @@
                 foundEmails.push(...emails);
               }
             } else {
-              // LinkedIn-based providers: use row.linkedinUrl, fall back to DOM <a> href,
-              // then try to extract a LinkedIn URL embedded in the row.name text.
+              // LinkedIn-based providers (contactout/apollo/rocketreach):
+              // Priority: row.linkedinUrl → DOM <a href> → URL embedded in row.name text.
+              // Regex handles www., country-specific (sg., kr., etc.) and bare linkedin.com subdomains.
               let linkedinurl = (row.linkedinUrl || (_nameLink ? _nameLink.href : '') || '').trim();
               if (!linkedinurl && row.name) {
-                const m = row.name.match(/https?:\/\/(?:www\.)?linkedin\.com\/in\/[^\s,;<>")\]]+/i);
+                const m = row.name.match(/https?:\/\/(?:[\w-]+\.)*linkedin\.com\/in\/[^\s,;<>")\]]+/i);
                 if (m) linkedinurl = m[0].replace(/[.,;]+$/, '');
               }
               if (!linkedinurl) continue;
