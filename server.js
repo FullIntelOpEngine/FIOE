@@ -8364,7 +8364,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
 
       try {
         const apolloRes = await apolloPost(
-          '/api/v1/mixed_people/api_search',
+          '/api/v1/mixed_people/search',
           { person_linkedin_urls: [apolloUrl], per_page: 1, page: 1 }
         );
 
