@@ -1529,6 +1529,7 @@
         <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
         <button class="crm-send-email-btn" id="crmSendEmailBtn" style="display:none;" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+        <button class="crm-send-email-btn" id="crmLookupBtn" style="display:none;" disabled onclick="crmLookupClients()" title="Check if selected companies already exist as clients">🔍 Client Lookup</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
@@ -1661,7 +1662,7 @@
       </div>
       <!-- ICS URL input row (shown when ICS Connect is clicked) -->
       <div id="crmCalIcsRow" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
-        <input type="url" id="crmCalIcsUrl" class="fioe-modal-input" style="margin:0;flex:1;min-width:220px;" placeholder="https://…/calendar.ics or webcal://…" />
+        <input type="url" id="crmCalIcsUrl" class="fioe-modal-input" style="margin:0;flex:1;min-width:220px;" placeholder="https://…/calendar.ics or webcal://…" oninput="if(_crmCalIcsUrl!==this.value){_crmCalIcsUrl='';_crmCalIcsConnected=false;const s=document.getElementById('crmCalIcsStatus');if(s){s.textContent='';s.style.color='';}const b=document.getElementById('crmCalIcsBtn');if(b){b.style.background='';b.style.color='';b.style.borderColor='';}const cb=document.getElementById('crmCalIcsConnectBtn');if(cb)cb.textContent='🔗 Connect ICS';}" />
         <button class="crm-cal-btn" id="crmCalIcsConnectBtn" onclick="crmCalConnectIcs()">🔗 Connect ICS</button>
         <span id="crmCalIcsStatus" style="font-size:12px;font-weight:600;"></span>
       </div>
@@ -3060,11 +3061,16 @@
     }
 
     function _crmUpdateSendBtn() {
-      const sendBtn = document.getElementById('crmSendEmailBtn');
+      const sendBtn   = document.getElementById('crmSendEmailBtn');
+      const lookupBtn = document.getElementById('crmLookupBtn');
       const hasSelection = _crmSelected.size > 0;
       if (sendBtn) {
         sendBtn.disabled = !hasSelection;
         sendBtn.style.display = hasSelection ? '' : 'none';
+      }
+      if (lookupBtn) {
+        lookupBtn.disabled = !hasSelection;
+        lookupBtn.style.display = hasSelection ? '' : 'none';
       }
     }
 
@@ -3076,6 +3082,58 @@
     function _crmSetStatus(id, val) {
       const row = _crmRows.find(r => r.id === id);
       if (row) row.status = val;
+    }
+
+    /**
+     * For each selected CRM row, check whether the company name already exists as
+     * a client by calling the same /employee/check-client endpoint used in the
+     * Dashboard tab's Client Lookup widget.
+     * Existing companies are highlighted in red directly in the CRM table.
+     */
+    async function crmLookupClients() {
+      if (_crmSelected.size === 0) { alert('Select at least one row first.'); return; }
+      _crmSyncFromTable();
+      // Reset any previous lookup highlights before running a new check.
+      document.querySelectorAll('#crmBody input[data-field="company"]').forEach(inp => {
+        inp.style.color = '';
+        inp.style.fontWeight = '';
+        inp.title = '';
+      });
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      let checked = 0, found = 0;
+      for (const row of selectedRows) {
+        const company = (row.company || '').trim();
+        if (!company) continue;
+        checked++;
+        try {
+          const resp = await fetch(`/employee/check-client?corporation=${encodeURIComponent(company)}`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+          });
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          if (data.exists) {
+            found++;
+            // Highlight the company cell in the CRM table row.
+            const rowEl = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+            if (rowEl) {
+              const companyInput = rowEl.querySelector('input[data-field="company"]');
+              if (companyInput) {
+                companyInput.style.color = '#b91c1c';
+                companyInput.style.fontWeight = '700';
+                companyInput.title = `Existing client: ${data.match}`;
+              }
+            }
+          }
+        } catch (_) { /* network/parse errors — skip this row */ }
+      }
+      if (checked === 0) {
+        alert('No company data found for selected rows.');
+      } else if (found === 0) {
+        alert(`Checked ${checked} company name(s). No existing clients found.`);
+      } else {
+        alert(`Found ${found} existing client(s) out of ${checked} checked. Duplicate companies are highlighted in red.`);
+      }
     }
 
     function _crmSyncFromTable() {
@@ -3417,15 +3475,34 @@
       document.getElementById('crmCalSlots').style.display = 'none';
       document.getElementById('crmCalSlots').innerHTML = '';
       _crmCalSlots = [];
-      // Reset ICS connect state
-      _crmCalProvider = 'google';
-      _crmCalIcsConnected = false;
-      const _icsRow = document.getElementById('crmCalIcsRow');
-      if (_icsRow) _icsRow.style.display = 'none';
+      // Restore or reset ICS connect state.
+      // If a URL was previously saved in this session, keep the connection alive so the
+      // user doesn't have to reconnect every time they open the modal.
+      const _icsRow    = document.getElementById('crmCalIcsRow');
       const _icsStatus = document.getElementById('crmCalIcsStatus');
-      if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
-      const _icsBtn = document.getElementById('crmCalIcsBtn');
-      if (_icsBtn) { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
+      const _icsBtn    = document.getElementById('crmCalIcsBtn');
+      const _urlInput  = document.getElementById('crmCalIcsUrl');
+      if (_crmCalIcsUrl) {
+        // Restore ICS URL in the input and show the ICS row
+        if (_urlInput) _urlInput.value = _crmCalIcsUrl;
+        if (_icsRow)   _icsRow.style.display = 'flex';
+        if (_crmCalIcsConnected) {
+          if (_icsStatus) { _icsStatus.textContent = '✅ ICS Connected'; _icsStatus.style.color = '#065f46'; }
+          if (_icsBtn)    { _icsBtn.style.background = 'var(--ad)'; _icsBtn.style.color = '#fff'; _icsBtn.style.borderColor = 'var(--ad)'; }
+          const _connectBtn = document.getElementById('crmCalIcsConnectBtn');
+          if (_connectBtn) _connectBtn.textContent = '✅ Reconnect';
+        } else {
+          if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
+          if (_icsBtn)    { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
+        }
+      } else {
+        // No saved URL — fully reset ICS state
+        _crmCalProvider = 'google';
+        _crmCalIcsConnected = false;
+        if (_icsRow)    _icsRow.style.display = 'none';
+        if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
+        if (_icsBtn)    { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
+      }
       // Pre-fill from/to dates
       const today = new Date();
       const nextWeek = new Date(today.getTime() + 7 * 86400000);

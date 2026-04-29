@@ -496,6 +496,31 @@ function EmailVerificationModal({ data, onClose, email, service }) {
 
 /* ========================= EMAIL COMPOSE MODAL ========================= */
 
+/**
+ * Convert a YYYY-MM-DD date string to the UTC ISO timestamp that corresponds to
+ * midnight (00:00:00) in the given IANA timezone.
+ * Falls back to plain local-midnight if the timezone is unrecognised.
+ */
+function toTzMidnight(dateStr, timezone) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const naiveMs = Date.UTC(y, m - 1, d);
+  try {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(new Date(naiveMs));
+    const g = (t) => parseInt((parts.find((p) => p.type === t) || { value: '0' }).value, 10);
+    const h = g('hour') === 24 ? 0 : g('hour');
+    const localMs = Date.UTC(g('year'), g('month') - 1, g('day'), h, g('minute'), g('second'));
+    return new Date(naiveMs - (localMs - naiveMs)).toISOString();
+  } catch (_) {
+    return new Date(dateStr + 'T00:00:00').toISOString();
+  }
+}
+
 // Curated IANA timezone list for the timezone picker (both Calendar and Self-Scheduler).
 const COMMON_TIMEZONES = [
   { value: 'Pacific/Midway',        label: 'UTC-11 — Midway Island' },
@@ -861,21 +886,30 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   };
 
   const handleFindSlots = async () => {
+    // Guard: ICS provider requires a connected calendar before querying busy/free data.
+    if (calendarProvider === 'ics' && !icsCalendarConnected) {
+      setCalendarError('Please connect your ICS calendar first via the Connect ▾ menu.');
+      return;
+    }
     setSlotsLoading(true);
     setCalendarSlots([]);
     setSelectedSlotIndex(null);
     setCalendarError('');
     try {
       const now = new Date();
-      // Use user-selected dates if provided, otherwise default to next 3 days
+      // Use user-selected dates if provided, otherwise default to next 3 days.
+      // Dates are computed as midnight/end-of-day in the *display timezone* so that
+      // "Jan 15 in Singapore" covers Jan 15 SGT, not Jan 15 UTC.
       let startISO, endISO;
       if (slotStartDate) {
-        startISO = new Date(slotStartDate + 'T00:00:00').toISOString();
+        startISO = toTzMidnight(slotStartDate, displayTimezone);
       } else {
         startISO = now.toISOString();
       }
       if (slotEndDate) {
-        endISO = new Date(slotEndDate + 'T23:59:59').toISOString();
+        // End-of-day = midnight of the NEXT day minus 1 ms, in the display timezone.
+        const nextDayMs = new Date(toTzMidnight(slotEndDate, displayTimezone)).getTime() + 24 * 60 * 60 * 1000 - 1;
+        endISO = new Date(nextDayMs).toISOString();
       } else {
         endISO = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
       }
@@ -1396,7 +1430,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                             <input
                               type="url"
                               value={icsCalendarUrl}
-                              onChange={e => { setIcsCalendarUrl(e.target.value); setIcsCalendarConnected(false); }}
+                              onChange={e => { setIcsCalendarUrl(e.target.value); setIcsCalendarConnected(false); setCalendarSlots([]); setSelectedSlotIndex(null); }}
                               placeholder="https://…/calendar.ics or webcal://…"
                               style={{ width: '100%', padding: '5px 8px', border: '1px solid var(--cool-blue)', borderRadius: 6, fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }}
                               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleConnectIcs(); } }}
@@ -1495,8 +1529,9 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                   <button
                     type="button"
                     onClick={handleFindSlots}
-                    disabled={slotsLoading}
-                    style={{ padding: '5px 12px', background: 'var(--azure-dragon)', color: '#fff', border: 'none', borderRadius: 6, cursor: slotsLoading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: slotsLoading ? 0.7 : 1 }}
+                    disabled={slotsLoading || (calendarProvider === 'ics' && !icsCalendarConnected)}
+                    style={{ padding: '5px 12px', background: 'var(--azure-dragon)', color: '#fff', border: 'none', borderRadius: 6, cursor: (slotsLoading || (calendarProvider === 'ics' && !icsCalendarConnected)) ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, opacity: (slotsLoading || (calendarProvider === 'ics' && !icsCalendarConnected)) ? 0.5 : 1 }}
+                    title={calendarProvider === 'ics' && !icsCalendarConnected ? 'Connect your ICS calendar first' : 'Find available time slots'}
                   >
                     {slotsLoading ? '⏳ Finding…' : '🔍 Find Slots'}
                   </button>
@@ -1740,8 +1775,13 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
     setCleared(false);
     setStep2DayIndex(0);
     try {
-      const startISO = new Date(startDate + 'T00:00:00').toISOString();
-      const endISO = new Date(endDate + 'T23:59:59').toISOString();
+      // Compute start/end in the selected display timezone so that "Jan 15" covers
+      // the full day in Singapore (or whichever timezone the user has chosen),
+      // not just midnight-to-midnight UTC.
+      const startISO = toTzMidnight(startDate, displayTimezone);
+      const endISO = new Date(
+        new Date(toTzMidnight(endDate, displayTimezone)).getTime() + 24 * 60 * 60 * 1000 - 1
+      ).toISOString();
       const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
