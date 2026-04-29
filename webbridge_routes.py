@@ -2863,14 +2863,27 @@ def prospect_crm_get_profile():
     # and the description/snippet often says: "Job Title at Company · connections".
     # Parse both with fallback helpers when direct fields fail.
     if not crm_job_title or not crm_company:
-        # Build a list of SERP organic candidates.
-        # Case 1: raw_data is a bare list of organic items (each item is a result dict).
-        _serp_candidates: list = (
-            [e for e in raw_data if isinstance(e, dict)]
-            if isinstance(raw_data, list)
-            else []
-        )
-        # Case 2: raw_data (or profile) is wrapped as {"organic": [...], ...}.
+        # Build a flat list of SERP organic result candidates from all known BrightData
+        # response formats:
+        #   Format A: bare list of result dicts   [{title, url, desc, …}, …]
+        #   Format B: list wrapping a SERP dict   [{"organic": [{…}, …], …}]
+        #   Format C: SERP dict at top level       {"organic": [{…}, …], …}
+        _serp_candidates: list = []
+        if isinstance(raw_data, list):
+            for _item in raw_data:
+                if not isinstance(_item, dict):
+                    continue
+                # Format B: item is a SERP wrapper — unwrap its "organic" sublist
+                if isinstance(_item.get("organic"), list):
+                    _serp_candidates.extend(
+                        e for e in _item["organic"] if isinstance(e, dict)
+                    )
+                else:
+                    # Format A: item is a result dict directly
+                    _serp_candidates.append(_item)
+        # Format C (and fallback for Format B via profile = raw_data[0]):
+        # profile.get("organic") covers the dict-at-top-level case AND the case
+        # where raw_data[0] was the SERP wrapper (profile was already set to it above).
         if not _serp_candidates:
             _serp_candidates = [
                 e for e in (profile.get("organic") or [])

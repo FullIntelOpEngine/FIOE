@@ -1098,6 +1098,20 @@
       font-family: "Roboto Condensed", sans-serif;
     }
 
+    /* ── CRM column-width overrides ─────────────────────────────── */
+    /* Country (col 6), Sector (col 7), Seniority (col 8): autofit  */
+    .crm-table th:nth-child(6), .crm-table td:nth-child(6),
+    .crm-table th:nth-child(7), .crm-table td:nth-child(7),
+    .crm-table th:nth-child(8), .crm-table td:nth-child(8) {
+      width: 1%;
+      white-space: nowrap;
+    }
+    .crm-table td:nth-child(6) .crm-cell-input,
+    .crm-table td:nth-child(7) .crm-cell-input,
+    .crm-table td:nth-child(8) .crm-cell-input { min-width: 0; width: auto; }
+    /* Comment (col 11): wider                                       */
+    .crm-table th:nth-child(11), .crm-table td:nth-child(11) { min-width: 200px; }
+
     /* ── Email modal – template bar & glossary tags ───────────── */
     .crm-tpl-bar {
       display: flex; align-items: center; gap: 6px; margin-bottom: 10px;
@@ -2908,9 +2922,9 @@
         const st = row.status || '';
         html += `<td><select class="crm-status-select" onchange="_crmSetStatus(${row.id},this.value)">` +
           `<option value="">—</option>` +
-          `<option value="sad"${st==='sad'?' selected':''}>😢 :( Sad</option>` +
-          `<option value="neutral"${st==='neutral'?' selected':''}>😐 :| Neutral</option>` +
-          `<option value="happy"${st==='happy'?' selected':''}>😊 :) Happy</option>` +
+          `<option value="uninterested"${(st==='uninterested'||st==='sad')?' selected':''}>😢 :( Uninterested</option>` +
+          `<option value="considering"${(st==='considering'||st==='neutral')?' selected':''}>😐 :| Considering</option>` +
+          `<option value="prospected"${(st==='prospected'||st==='happy')?' selected':''}>😊 :) Prospected</option>` +
           `</select></td>`;
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
