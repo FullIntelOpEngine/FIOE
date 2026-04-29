@@ -2962,7 +2962,23 @@
       if (row) row.status = val;
     }
 
+    function _crmSyncFromTable() {
+      const tbody = document.getElementById('crmBody');
+      if (!tbody) return;
+      tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+        const id = Number(tr.dataset.id);
+        const row = _crmRows.find(r => r.id === id);
+        if (!row) return;
+        tr.querySelectorAll('input.crm-cell-input').forEach(inp => {
+          row[inp.dataset.field] = inp.value;
+        });
+        const sel = tr.querySelector('select.crm-status-select');
+        if (sel) row.status = sel.value;
+      });
+    }
+
     async function crmGetProfile() {
+      _crmSyncFromTable();
       const targets = _crmRows.filter(r => _crmSelected.has(r.id) && r.linkedinUrl);
       if (!targets.length) {
         alert('Select at least one candidate row that has a LinkedIn URL to fetch a profile.');
@@ -3069,7 +3085,7 @@
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;
-      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xml';
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xls';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
 
