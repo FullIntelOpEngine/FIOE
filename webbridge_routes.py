@@ -2509,7 +2509,8 @@ def _save_gp_tmp_file(username: str, linkedin_url: str, raw_data, profile: dict)
     except OSError as exc:
         logger.warning("[GPTMP] Cannot create dir %s: %s", tmp_dir, exc)
         return
-    fname = f"GPTMP_{safe_user}_{safe_slug}.json"
+    # os.path.basename ensures no directory-traversal even if sanitization misses something
+    fname = os.path.basename(f"GPTMP_{safe_user}_{safe_slug}.json")
     fpath = os.path.join(tmp_dir, fname)
     abs_dir = os.path.abspath(tmp_dir)
     abs_path = os.path.abspath(fpath)
