@@ -8552,14 +8552,15 @@ export default function App() {
             // Map original emails to their per-email probabilities before filtering duplicates
             const emailToProbMap = {};
             data.emails.forEach((e, i) => { emailToProbMap[e] = perProbs[i] != null ? perProbs[i] : null; });
-            const newEntries = newEmails.map(e => {
+            const newEntries = newEmails.map((e, idx) => {
                const prob = emailToProbMap[e];
                let conf;
                if (isVerified) {
                  const pct = prob != null ? prob + '%' : (data.confidence != null ? Math.round(data.confidence * 100) + '%' : '');
                  conf = 'FIOE' + (pct ? ' · ' + pct : '');
                } else {
-                 conf = prob != null ? Math.round(prob) + '%' : '~%';
+                 const geminiLabels = ['High', 'Medium', 'Low'];
+                 conf = geminiLabels[idx] || 'Low';
                }
                return { value: e, checked: false, confidence: conf };
             });

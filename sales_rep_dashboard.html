@@ -1654,6 +1654,7 @@
           <option value="60">60 min</option>
           <option value="90">90 min</option>
         </select>
+        <button class="crm-cal-btn" onclick="crmCalConnectGoogle()" title="Connect your Google Calendar account">🟢 Google Connect</button>
         <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
         <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
       </div>
@@ -3720,9 +3721,8 @@
                     tagLabel = 'FIOE' + (pct ? ' · ' + pct : '');
                     tagClass = 'tl-fioe';
                   } else {
-                    const prob = perProbs[idx] != null ? perProbs[idx] : (idx === 0 ? data.probability : null);
-                    const pct = prob != null ? Math.round(prob) + '%' : '~%';
-                    tagLabel = pct;
+                    const geminiLabels = ['High', 'Medium', 'Low'];
+                    tagLabel = geminiLabels[idx] || 'Low';
                     tagClass = 'tl-pct';
                   }
                   foundEmailEntries.push({ email: e, label: tagLabel, badgeClass: tagClass, source: data.source, confidence: data.confidence, probability: perProbs[idx] ?? data.probability });
@@ -3842,6 +3842,14 @@
       container.style.display = 'flex';
     }
 
+    function crmCalConnectGoogle() {
+      const url = 'http://localhost:4000/auth/google/calendar/connect';
+      const w = 600, h = 700;
+      const left = (window.screen.width / 2) - (w / 2);
+      const top  = (window.screen.height / 2) - (h / 2);
+      window.open(url, 'connect_google_calendar', `width=${w},height=${h},top=${top},left=${left}`);
+    }
+
     async function crmCalFindSlots() {
       const startISO = document.getElementById('crmCalFrom').value;
       const endISO   = document.getElementById('crmCalTo').value;
@@ -3856,7 +3864,7 @@
       try {
         const res = await fetch('http://localhost:4000/calendar/freebusy', {
           method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
           body: JSON.stringify({ startISO, endISO, durationMinutes: duration, provider: 'google' })
         });
         const data = await res.json();
