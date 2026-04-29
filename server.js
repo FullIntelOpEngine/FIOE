@@ -7653,8 +7653,11 @@ function computeFreeSlots(busyIntervals = [], timeMinISO, timeMaxISO, durationMi
 // Endpoint: query freebusy and return candidate slots (POST body: { startISO, endISO, durationMinutes })
 app.post('/calendar/freebusy', requireLogin, async (req, res) => {
   try {
-    const { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google' } = req.body;
+    let { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google' } = req.body;
     if (!startISO || !endISO) return res.status(400).json({ error: 'startISO and endISO required.' });
+    // Normalise plain date strings (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) startISO = new Date(startISO + 'T00:00:00Z').toISOString();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endISO))   endISO   = new Date(endISO   + 'T23:59:59Z').toISOString();
 
     let primaryBusy = [];
 

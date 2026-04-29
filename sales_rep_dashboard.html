@@ -3851,12 +3851,15 @@
     }
 
     async function crmCalFindSlots() {
-      const startISO = document.getElementById('crmCalFrom').value;
-      const endISO   = document.getElementById('crmCalTo').value;
+      const startRaw = document.getElementById('crmCalFrom').value;
+      const endRaw   = document.getElementById('crmCalTo').value;
       const duration = parseInt(document.getElementById('crmCalDuration').value, 10) || 30;
       const statusEl = document.getElementById('crmCalStatus');
       const slotsEl  = document.getElementById('crmCalSlots');
-      if (!startISO || !endISO) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      if (!startRaw || !endRaw) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      // Convert plain date values (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
+      const startISO = new Date(startRaw + 'T00:00:00').toISOString();
+      const endISO   = new Date(endRaw   + 'T23:59:59').toISOString();
       statusEl.textContent = '⏳ Finding available slots…';
       slotsEl.style.display = 'none';
       slotsEl.innerHTML = '';
