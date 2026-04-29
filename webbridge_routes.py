@@ -2908,7 +2908,7 @@ def prospect_crm_generate_email():
                 base_pct = round((verified_confidence or 0.95) * 100)
                 scale = [1.0, 0.85, 0.70]
                 email_probabilities = [
-                    min(100, round(base_pct * scale[i])) for i in range(len(email_list))
+                    min(100, round(base_pct * scale[min(i, len(scale) - 1)])) for i in range(len(email_list))
                 ]
                 top_probability = email_probabilities[0] if email_probabilities else None
 
