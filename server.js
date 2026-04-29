@@ -7581,6 +7581,145 @@ function buildICS({uid, startISO, endISO, summary, description = '', organizerEm
   return lines.filter(Boolean).join('\r\n');
 }
 
+// Helper: parse an ICS date/datetime string to a UTC timestamp (ms)
+function parseIcsDate(dateStr) {
+  if (!dateStr) return NaN;
+  const s = dateStr.trim();
+  // UTC: YYYYMMDDTHHMMSSZ
+  if (/^\d{8}T\d{6}Z$/i.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
+      parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
+    );
+  }
+  // Floating (no Z, no TZID in value): YYYYMMDDTHHMMSS — treat as UTC
+  if (/^\d{8}T\d{6}$/.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
+      parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
+    );
+  }
+  // All-day date: YYYYMMDD
+  if (/^\d{8}$/.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10)
+    );
+  }
+  // ISO 8601 fallback
+  return new Date(s).getTime();
+}
+
+// Helper: fetch an ICS URL and return busy [{start, end}] intervals overlapping [startISO, endISO]
+// Supports http://, https://, and webcal:// (remapped to https://).
+async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
+  // Validate and normalise the URL
+  const normalised = icsUrl.trim().replace(/^webcal:/i, 'https:');
+  let urlObj;
+  try { urlObj = new URL(normalised); } catch (_) { throw new Error('Invalid ICS URL.'); }
+  if (urlObj.protocol !== 'https:' && urlObj.protocol !== 'http:') {
+    throw new Error('ICS URL must use http, https, or webcal protocol.');
+  }
+  const rangeStart = new Date(startISO).getTime();
+  const rangeEnd   = new Date(endISO).getTime();
+
+  // Fetch with a redirect budget (max 3 hops)
+  async function doFetch(fetchUrl, hops) {
+    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
+    const u = new URL(fetchUrl);
+    const mod = u.protocol === 'https:' ? https : http;
+    return new Promise((resolve, reject) => {
+      const req = mod.request(
+        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+          path: u.pathname + (u.search || ''), method: 'GET',
+          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
+          timeout: 12000 },
+        (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
+          }
+          if (res.statusCode !== 200) {
+            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
+          }
+          let raw = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => { raw += chunk; if (raw.length > 5 * 1024 * 1024) { req.destroy(); reject(new Error('ICS feed too large (>5 MB).')); } });
+          res.on('end', () => resolve(raw));
+        }
+      );
+      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  const rawIcs = await doFetch(normalised, 3);
+
+  // Unfold continuation lines (RFC 5545 §3.1)
+  const unfolded = rawIcs.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const lines = unfolded.split(/\r\n|\n|\r/);
+
+  const busyIntervals = [];
+  let inVevent = false;
+  let evt = {};
+
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; continue; }
+    if (upper === 'END:VEVENT') {
+      inVevent = false;
+      if (evt.dtstart) {
+        const status = (evt.status || '').toUpperCase();
+        const transp  = (evt.transp  || 'OPAQUE').toUpperCase();
+        if (status !== 'CANCELLED' && transp !== 'TRANSPARENT') {
+          let startMs = parseIcsDate(evt.dtstart);
+          let endMs;
+          if (evt.dtend) {
+            endMs = parseIcsDate(evt.dtend);
+          } else if (evt.duration) {
+            // Rudimentary DURATION parser: P[nD][T[nH][nM][nS]]
+            const dur = evt.duration.toUpperCase();
+            let ms = 0;
+            const m = dur.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+            if (m) {
+              ms += ((parseInt(m[1], 10) || 0) * 7  * 86400
+                   + (parseInt(m[2], 10) || 0)       * 86400
+                   + (parseInt(m[3], 10) || 0)       * 3600
+                   + (parseInt(m[4], 10) || 0)       * 60
+                   + (parseInt(m[5], 10) || 0)) * 1000;
+            }
+            endMs = startMs + ms;
+          } else {
+            // All-day event with no DTEND: treat as 1 day
+            endMs = startMs + 86400000;
+          }
+          if (!isNaN(startMs) && !isNaN(endMs) && endMs > rangeStart && startMs < rangeEnd) {
+            busyIntervals.push({ start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() });
+          }
+        }
+      }
+      evt = {};
+      continue;
+    }
+    if (!inVevent) continue;
+
+    // Split into property name (+ params) and value
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    const rawProp = line.substring(0, colonIdx);
+    const value   = line.substring(colonIdx + 1);
+    const semiIdx = rawProp.indexOf(';');
+    const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
+
+    if      (propKey === 'DTSTART')  evt.dtstart  = value;
+    else if (propKey === 'DTEND')    evt.dtend    = value;
+    else if (propKey === 'DURATION') evt.duration = value;
+    else if (propKey === 'STATUS')   evt.status   = value;
+    else if (propKey === 'TRANSP')   evt.transp   = value;
+  }
+
+  return busyIntervals;
+}
+
 // Helper: compute simple free slots between timeMin/timeMax avoiding busy intervals
 function computeFreeSlots(busyIntervals = [], timeMinISO, timeMaxISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, businessHours = { startHour: 0, endHour: 24, timezone: 'UTC' }, maxResults = 6) {
   const start = new Date(timeMinISO).getTime();
@@ -7653,7 +7792,7 @@ function computeFreeSlots(busyIntervals = [], timeMinISO, timeMaxISO, durationMi
 // Endpoint: query freebusy and return candidate slots (POST body: { startISO, endISO, durationMinutes })
 app.post('/calendar/freebusy', requireLogin, async (req, res) => {
   try {
-    let { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google' } = req.body;
+    let { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google', icsUrl } = req.body;
     if (!startISO || !endISO) return res.status(400).json({ error: 'startISO and endISO required.' });
     // Normalise plain date strings (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
     if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) startISO = new Date(startISO + 'T00:00:00Z').toISOString();
@@ -7677,6 +7816,12 @@ app.post('/calendar/freebusy', requireLogin, async (req, res) => {
         start: ev.start.dateTime.includes('Z') ? ev.start.dateTime : ev.start.dateTime + 'Z',
         end:   ev.end.dateTime.includes('Z')   ? ev.end.dateTime   : ev.end.dateTime + 'Z'
       }));
+    } else if (provider === 'ics') {
+      // Fetch the user-supplied ICS feed and parse busy intervals from VEVENTs
+      if (!icsUrl || typeof icsUrl !== 'string' || !icsUrl.trim()) {
+        return res.status(400).json({ error: 'icsUrl is required for ICS calendar provider.' });
+      }
+      primaryBusy = await fetchAndParseIcsBusy(icsUrl, startISO, endISO);
     } else {
       if (!google) return res.status(500).json({ error: 'Google APIs module not available.' });
       const oauth2Client = await getOAuthClientForUser(req.user.username);
@@ -7713,7 +7858,12 @@ app.post('/calendar/create-event', requireLogin, async (req, res) => {
     let createdEventId = null;
     let organizerEmail = req.user.username || 'organizer@example.com';
 
-    if (provider === 'microsoft') {
+    if (provider === 'ics') {
+      // ICS feeds are read-only; we cannot write back to the external feed.
+      // Create a local calendar event (ICS file) for the organiser to attach to the email.
+      createdEventId = `ics-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+      // meetLink stays null — no conferencing service is provisioned for ICS
+    } else if (provider === 'microsoft') {
       // Create event via Microsoft Graph API with Teams meeting
       const accessToken = await getMicrosoftTokenForUser(req.user.username);
       const eventBody = {
