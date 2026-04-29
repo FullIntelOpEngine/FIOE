@@ -1561,13 +1561,20 @@
       <!-- Verified Email / Generate Email -->
       <div class="crm-vemail-bar">
         <span class="crm-vemail-label">✅ Verified Email</span>
-        <select id="crmEmailProviderSel" class="crm-vemail-provider-sel" title="Provider used to generate or verify the recipient email address">
-          <option value="fioe">FIOE (AI Draft)</option>
-          <option value="contactout">ContactOut</option>
-          <option value="apollo">Apollo</option>
-          <option value="rocketreach">RocketReach</option>
+        <select id="crmEmailProviderSel" class="crm-vemail-provider-sel" title="Provider used to generate or verify the recipient email address" onchange="_crmUpdateEmailBtn()">
+          <optgroup label="Generate Email Address">
+            <option value="fioe">FIOE</option>
+            <option value="contactout">ContactOut</option>
+            <option value="apollo">Apollo</option>
+            <option value="rocketreach">RocketReach</option>
+          </optgroup>
+          <optgroup label="Verify Email Address">
+            <option value="zerobounce">ZeroBounce</option>
+            <option value="neverbounce">NeverBounce</option>
+            <option value="bouncer">Bouncer</option>
+          </optgroup>
         </select>
-        <button class="crm-gen-email-btn" id="crmGenEmailBtn" onclick="crmGenerateEmail()" title="Generate email body (FIOE) or find recipient email address (ContactOut / Apollo / RocketReach)">✨ Generate Email</button>
+        <button class="crm-gen-email-btn" id="crmGenEmailBtn" onclick="crmGenerateEmail()" title="Generate or verify the recipient email address">✨ Generate Email</button>
       </div>
       <label class="fioe-modal-label">Subject</label>
       <input class="fioe-modal-input" id="crmEmailSubject" type="text" placeholder="Email subject…" />
@@ -3407,79 +3414,102 @@
       }
     }
 
-    // ── Generate Email (provider-aware) ─────────────────────
-    async function crmGenerateEmail() {
-      if (!_crmSelected.size) return;
-      _crmSyncFromTable();
+    // ── Email provider button label toggle ──────────────────────
+    function _crmUpdateEmailBtn() {
       const provider = (document.getElementById('crmEmailProviderSel')?.value || 'fioe');
       const btn = document.getElementById('crmGenEmailBtn');
+      if (!btn) return;
+      const isVerify = ['zerobounce', 'neverbounce', 'bouncer'].includes(provider);
+      btn.textContent = isVerify ? '🔍 Verify Email' : '✨ Generate Email';
+      btn.title = isVerify
+        ? 'Verify the email address in the Send Email Address field using ' + provider
+        : 'Generate recipient email addresses via ' + provider;
+    }
+
+    // ── Generate / Verify Email (provider-aware) ─────────────────────
+    async function crmGenerateEmail() {
+      const provider = (document.getElementById('crmEmailProviderSel')?.value || 'fioe');
+      const btn = document.getElementById('crmGenEmailBtn');
+      const isVerify = ['zerobounce', 'neverbounce', 'bouncer'].includes(provider);
+
+      if (isVerify) {
+        // ── Verify Email ─────────────────────────────────────────
+        const emailToVerify = (document.getElementById('crmEmailTo')?.value || '').trim().split(/[\s,;]+/)[0];
+        if (!emailToVerify) {
+          alert('⚠️ Enter an email address in the Send Email Address field before verifying.');
+          return;
+        }
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Verifying…'; }
+        try {
+          const res = await fetch('http://localhost:4000/verify-email-details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ email: emailToVerify, service: provider }),
+            credentials: 'include'
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          const status = data.status || data.result || data.verdict || 'unknown';
+          const isValid = /valid|deliverable|safe/i.test(status);
+          alert((isValid ? '✅' : '❌') + ' Verification result for ' + emailToVerify + ':\n'
+            + 'Status: ' + status
+            + (data.sub_status ? '\nSub-status: ' + data.sub_status : '')
+            + (data.reason ? '\nReason: ' + data.reason : ''));
+        } catch (e) {
+          alert('❌ Email verification failed: ' + e.message);
+        } finally {
+          if (btn) { btn.disabled = false; _crmUpdateEmailBtn(); }
+        }
+        return;
+      }
+
+      // ── Generate Email Address ────────────────────────────────
+      if (!_crmSelected.size) { alert('⚠️ Select at least one prospect.'); return; }
+      _crmSyncFromTable();
       if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
       try {
-        if (provider === 'fioe') {
-          // FIOE/Gemini: generate email body via /prospect/crm-email-draft
-          const subject    = (document.getElementById('crmEmailSubject')?.value || '').trim();
-          const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
-          const recipients = selectedRows.map(r => ({
-            name: r.name, jobTitle: r.jobTitle, company: r.company,
-            country: r.country, sector: r.sector, seniority: r.seniority
-          }));
-          const res = await fetch('/prospect/crm-email-draft', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            body: JSON.stringify({ subject, existingBody: '', recipients })
-          });
-          if (!res.ok) throw new Error('Server error ' + res.status);
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error || 'Generation failed');
-          if (data.body) document.getElementById('crmEmailBody').value = data.body;
-        } else {
-          // ContactOut / Apollo / RocketReach: find recipient email address via FIOE server
-          const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
-          const foundEmails = [];
-          for (const row of selectedRows) {
-            const linkedinurl = (row.linkedinUrl || '').trim();
-            if (!linkedinurl) continue;
-            try {
-              const res = await fetch('http://localhost:4000/generate-email', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ provider, linkedinurl }),
-                credentials: 'include'
-              });
-              if (!res.ok) throw new Error('HTTP ' + res.status);
-              const data = await res.json();
-              if (data.error) throw new Error(data.error);
-              const emails = (data.all_emails && data.all_emails.length)
-                ? data.all_emails
-                : [data.email, data.work_email, data.personal_email].filter(Boolean);
-              if (emails.length) {
-                // Update the CRM row's email field with the first found email
-                row.email = emails[0];
-                // Sync back to the table cell
-                const tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
-                if (tr) {
-                  const inp = tr.querySelector('input[data-field="email"]');
-                  if (inp) inp.value = emails[0];
-                }
-                foundEmails.push(...emails);
+        const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+        const foundEmails = [];
+        for (const row of selectedRows) {
+          const linkedinurl = (row.linkedinUrl || '').trim();
+          if (!linkedinurl) continue;
+          try {
+            const res = await fetch('http://localhost:4000/generate-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify({ provider, linkedinurl }),
+              credentials: 'include'
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+            const emails = (data.all_emails && data.all_emails.length)
+              ? data.all_emails
+              : [data.email, data.work_email, data.personal_email].filter(Boolean);
+            if (emails.length) {
+              row.email = emails[0];
+              const tr = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+              if (tr) {
+                const inp = tr.querySelector('input[data-field="email"]');
+                if (inp) inp.value = emails[0];
               }
-            } catch (e) {
-              console.warn('[Verified Email] lookup failed for', row.name, ':', e.message);
+              foundEmails.push(...emails);
             }
+          } catch (e) {
+            console.warn('[Generate Email] lookup failed for', row.name, ':', e.message);
           }
-          const unique = [...new Set(foundEmails)];
-          if (unique.length) {
-            document.getElementById('crmEmailTo').value = unique.join(', ');
-            alert('✅ ' + unique.length + ' email address(es) found:\n' + unique.join('\n'));
-          } else {
-            alert('❌ No email addresses found. Ensure selected candidates have LinkedIn URLs set.');
-          }
+        }
+        const unique = [...new Set(foundEmails)];
+        if (unique.length) {
+          document.getElementById('crmEmailTo').value = unique.join(', ');
+          alert('✅ ' + unique.length + ' email address(es) found:\n' + unique.join('\n'));
+        } else {
+          alert('❌ No email addresses found. Ensure selected candidates have LinkedIn URLs set.');
         }
       } catch (e) {
         alert('❌ Generate Email failed: ' + e.message);
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Email'; }
+        if (btn) { btn.disabled = false; _crmUpdateEmailBtn(); }
       }
     }
 
