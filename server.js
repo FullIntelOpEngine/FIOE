@@ -7581,6 +7581,25 @@ function buildICS({uid, startISO, endISO, summary, description = '', organizerEm
   return lines.filter(Boolean).join('\r\n');
 }
 
+// Helper: check if a hostname string is a private/loopback address (basic SSRF guard)
+function _isPrivateHost(hostname) {
+  // Reject loopback, link-local, and private RFC-1918 ranges
+  if (hostname === 'localhost') return true;
+  // IPv4 patterns
+  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [, a, b, c] = ipv4.map(Number);
+    if (a === 127 || a === 10) return true;                          // 127.x.x.x, 10.x.x.x
+    if (a === 172 && b >= 16 && b <= 31) return true;               // 172.16-31.x.x
+    if (a === 192 && b === 168) return true;                         // 192.168.x.x
+    if (a === 169 && b === 254) return true;                         // 169.254.x.x link-local
+    if (a === 0) return true;                                        // 0.x.x.x
+  }
+  // IPv6 loopback / link-local
+  if (hostname === '::1' || /^fe80:/i.test(hostname) || /^\[::1\]$/.test(hostname)) return true;
+  return false;
+}
+
 // Helper: parse an ICS date/datetime string to a UTC timestamp (ms)
 function parseIcsDate(dateStr) {
   if (!dateStr) return NaN;
@@ -7618,6 +7637,18 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   try { urlObj = new URL(normalised); } catch (_) { throw new Error('Invalid ICS URL.'); }
   if (urlObj.protocol !== 'https:' && urlObj.protocol !== 'http:') {
     throw new Error('ICS URL must use http, https, or webcal protocol.');
+  }
+  // SSRF guard: reject requests targeting private / loopback addresses
+  if (_isPrivateHost(urlObj.hostname)) {
+    throw new Error('ICS URL must point to a public host.');
+  }
+  // Resolve DNS and re-check the resolved IP to prevent DNS-rebinding SSRF
+  try {
+    const { address } = await dns.lookup(urlObj.hostname);
+    if (_isPrivateHost(address)) throw new Error('ICS URL resolves to a private address.');
+  } catch (dnsErr) {
+    if (dnsErr.message && dnsErr.message.includes('private')) throw dnsErr;
+    // DNS lookup may fail in some environments; proceed and let the HTTP layer error out
   }
   const rangeStart = new Date(startISO).getTime();
   const rangeEnd   = new Date(endISO).getTime();
