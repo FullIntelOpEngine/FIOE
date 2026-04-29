@@ -8548,14 +8548,18 @@ export default function App() {
          const newEmails = data.emails.filter(email => !currentEmails.includes(email));
          if (newEmails.length > 0) {
             const isVerified = data.source === 'verified';
-            const newEntries = newEmails.map((e, idx) => {
+            const perProbs = Array.isArray(data.email_probabilities) ? data.email_probabilities : [];
+            // Map original emails to their per-email probabilities before filtering duplicates
+            const emailToProbMap = {};
+            data.emails.forEach((e, i) => { emailToProbMap[e] = perProbs[i] != null ? perProbs[i] : null; });
+            const newEntries = newEmails.map(e => {
+               const prob = emailToProbMap[e];
                let conf;
                if (isVerified) {
-                 conf = 'FIOE';
+                 const pct = prob != null ? prob + '%' : (data.confidence != null ? Math.round(data.confidence * 100) + '%' : '');
+                 conf = 'FIOE' + (pct ? ' · ' + pct : '');
                } else {
-                 if (idx === 0) conf = 'High (~95%)';
-                 else if (idx === 1) conf = 'Medium (~75%)';
-                 else conf = 'Low (~50%)';
+                 conf = prob != null ? Math.round(prob) + '%' : '~%';
                }
                return { value: e, checked: false, confidence: conf };
             });

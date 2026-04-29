@@ -8717,12 +8717,22 @@ Phone: ...`;
     // Normalise: Gemini fallback returns [{email, probability}] objects; verified path returns strings.
     let candidates = [];
     let topProbability = null;
+    let emailProbabilities = [];
     const rawEmails = data.emails || [];
     if (emailSource === 'gemini' && rawEmails.length > 0 && typeof rawEmails[0] === 'object') {
       candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
-      topProbability = rawEmails[0] && rawEmails[0].probability != null ? rawEmails[0].probability : null;
+      emailProbabilities = rawEmails.map(e => (typeof e === 'object' && e.probability != null ? e.probability : null));
+      topProbability = emailProbabilities.length > 0 ? emailProbabilities[0] : null;
     } else {
       candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+      // For the verified path generate distinct declining probabilities per email so
+      // each selectable tag shows a unique confidence value.
+      if (emailSource === 'verified' && candidates.length > 0) {
+        const basePct = Math.round((verifiedConfidence || 0.95) * 100);
+        const scale = [1.0, 0.85, 0.70];
+        emailProbabilities = candidates.map((_, i) => Math.min(100, Math.round(basePct * (scale[i] || 0.70))));
+        topProbability = emailProbabilities[0];
+      }
     }
 
     res.json({
@@ -8730,6 +8740,7 @@ Phone: ...`;
       source: emailSource,
       confidence: verifiedConfidence,
       probability: topProbability,
+      email_probabilities: emailProbabilities,
     });
 
   } catch (err) {

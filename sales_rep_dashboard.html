@@ -3709,18 +3709,24 @@
               if (emails.length) {
                 row.email = emails[0];
                 if (_tr) { const inp = _tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
-                // Build per-email label and badge class
-                let tagLabel, tagClass;
-                if (data.source === 'verified') {
-                  const pct = data.confidence != null ? Math.round(data.confidence * 100) + '%' : '';
-                  tagLabel = 'FIOE' + (pct ? ' · ' + pct : '');
-                  tagClass = 'tl-fioe';
-                } else {
-                  const pct = data.probability != null ? Math.round(data.probability) + '%' : '';
-                  tagLabel = pct || '~%';
-                  tagClass = 'tl-pct';
-                }
-                emails.forEach(e => foundEmailEntries.push({ email: e, label: tagLabel, badgeClass: tagClass, source: data.source, confidence: data.confidence, probability: data.probability }));
+                // Build per-email label using per-email probabilities so each tag shows a distinct value
+                const isVerifiedSrc = data.source === 'verified';
+                const perProbs = Array.isArray(data.email_probabilities) ? data.email_probabilities : [];
+                emails.forEach((e, idx) => {
+                  let tagLabel, tagClass;
+                  if (isVerifiedSrc) {
+                    const prob = perProbs[idx] != null ? perProbs[idx] : (data.confidence != null ? Math.round(data.confidence * 100) : null);
+                    const pct = prob != null ? prob + '%' : '';
+                    tagLabel = 'FIOE' + (pct ? ' · ' + pct : '');
+                    tagClass = 'tl-fioe';
+                  } else {
+                    const prob = perProbs[idx] != null ? perProbs[idx] : (idx === 0 ? data.probability : null);
+                    const pct = prob != null ? Math.round(prob) + '%' : '~%';
+                    tagLabel = pct;
+                    tagClass = 'tl-pct';
+                  }
+                  foundEmailEntries.push({ email: e, label: tagLabel, badgeClass: tagClass, source: data.source, confidence: data.confidence, probability: perProbs[idx] ?? data.probability });
+                });
               }
             } else {
               // LinkedIn-based providers (contactout/apollo/rocketreach):

@@ -2895,17 +2895,29 @@ def prospect_crm_generate_email():
         # Normalise: Gemini fallback may return [{email, probability}] objects; verified path returns strings.
         raw_emails = data.get('emails') or []
         top_probability = None
+        email_probabilities = []
         if email_source == 'gemini' and raw_emails and isinstance(raw_emails[0], dict):
-            top_probability = raw_emails[0].get('probability')
             email_list = [e['email'] for e in raw_emails if isinstance(e, dict) and e.get('email')]
+            email_probabilities = [e.get('probability') for e in raw_emails if isinstance(e, dict) and e.get('email')]
+            top_probability = email_probabilities[0] if email_probabilities else None
         else:
             email_list = [e if isinstance(e, str) else e.get('email', '') for e in raw_emails if e]
+            # For the verified path generate distinct declining probabilities per email so
+            # each selectable tag shows a unique confidence value.
+            if email_source == 'verified' and email_list:
+                base_pct = round((verified_confidence or 0.95) * 100)
+                scale = [1.0, 0.85, 0.70]
+                email_probabilities = [
+                    min(100, round(base_pct * scale[i])) for i in range(len(email_list))
+                ]
+                top_probability = email_probabilities[0] if email_probabilities else None
 
         return jsonify({
             'emails': email_list,
             'source': email_source,
             'confidence': verified_confidence,
             'probability': top_probability,
+            'email_probabilities': email_probabilities,
         }), 200
 
     except Exception as exc:
