@@ -509,8 +509,11 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
   // Calendar / Google Meet state
   const [addMeet, setAddMeet] = useState(false);
-  const [calendarProvider, setCalendarProvider] = useState('google'); // 'google' | 'microsoft'
+  const [calendarProvider, setCalendarProvider] = useState('google'); // 'google' | 'microsoft' | 'ics'
   const [connectDropdownOpen, setConnectDropdownOpen] = useState(false);
+  const [showIcsInput, setShowIcsInput] = useState(false);
+  const [icsCalendarUrl, setIcsCalendarUrl] = useState('');
+  const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
   const [calendarSlots, setCalendarSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
@@ -590,6 +593,9 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       setAddMeet(false);
       setCalendarProvider('google');
       setConnectDropdownOpen(false);
+      setShowIcsInput(false);
+      setIcsCalendarUrl('');
+      setIcsCalendarConnected(false);
       setCalendarSlots([]);
       setSelectedSlotIndex(null);
       setMeetLink('');
@@ -766,6 +772,29 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     setSelectedSlotIndex(null);
     setMeetLink('');
     setIcsString('');
+    if (provider !== 'ics') {
+      setShowIcsInput(false);
+      setIcsCalendarUrl('');
+      setIcsCalendarConnected(false);
+    }
+  };
+
+  const validateIcsUrl = (url) => {
+    if (!url) return false;
+    const trimmed = url.trim();
+    if (!/^(https?|webcal):\/\/.+/i.test(trimmed)) return false;
+    return true;
+  };
+
+  const handleConnectIcs = () => {
+    if (!validateIcsUrl(icsCalendarUrl)) {
+      setCalendarError('Please enter a valid ICS URL starting with http://, https://, or webcal://');
+      return;
+    }
+    setCalendarError('');
+    setIcsCalendarConnected(true);
+    setConnectDropdownOpen(false);
+    setShowIcsInput(false);
   };
 
   const handleFindSlots = async () => {
@@ -790,7 +819,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider }),
+        body: JSON.stringify({ startISO, endISO, durationMinutes: interviewDuration, provider: calendarProvider, ...(calendarProvider === 'ics' ? { icsUrl: icsCalendarUrl } : {}) }),
         credentials: 'include'
       });
       if (!res.ok) {
@@ -830,7 +859,8 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         attendees,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         sendUpdates: 'none',
-        provider: calendarProvider
+        provider: calendarProvider,
+        ...(calendarProvider === 'ics' ? { icsUrl: icsCalendarUrl } : {})
       };
       const res = await fetch(`http://localhost:${API_PORT}/calendar/create-event`, {
         method: 'POST',
@@ -1252,10 +1282,11 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                   {onOpenSelfScheduler && (
                     <button
                       type="button"
-                      onClick={() => onOpenSelfScheduler(calendarProvider)}
+                      onClick={() => onOpenSelfScheduler(calendarProvider, calendarProvider === 'ics' ? icsCalendarUrl : undefined)}
                       className="btn-secondary"
-                      style={{ padding: '5px 10px', fontSize: 12 }}
-                      title="Publish available meeting slots for invitees"
+                      style={{ padding: '5px 10px', fontSize: 12, opacity: calendarProvider === 'ics' && !icsCalendarConnected ? 0.5 : 1, cursor: calendarProvider === 'ics' && !icsCalendarConnected ? 'not-allowed' : 'pointer' }}
+                      title={calendarProvider === 'ics' && !icsCalendarConnected ? 'Connect your ICS calendar first' : 'Publish available meeting slots for invitees'}
+                      disabled={calendarProvider === 'ics' && !icsCalendarConnected}
                     >
                       📅 Self-Scheduler
                     </button>
@@ -1268,12 +1299,12 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                       style={{ padding: '5px 10px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}
                       onClick={() => setConnectDropdownOpen(o => !o)}
                     >
-                      {calendarProvider === 'microsoft' ? '🟦 Microsoft' : '🟢 Google'} Connect ▾
+                      {calendarProvider === 'microsoft' ? '🟦 Microsoft' : calendarProvider === 'ics' ? '📆 ICS' : '🟢 Google'} Connect ▾
                     </button>
                     {connectDropdownOpen && (
                       <div
                         style={{ position: 'absolute', top: '110%', right: 0, zIndex: 9999, background: '#fff', border: '1px solid var(--cool-blue)', borderRadius: 8, boxShadow: '0 4px 16px rgba(34,37,41,0.18)', minWidth: 220, overflow: 'hidden' }}
-                        onMouseLeave={() => setConnectDropdownOpen(false)}
+                        onMouseLeave={() => { setConnectDropdownOpen(false); setShowIcsInput(false); }}
                       >
                         <button
                           type="button"
@@ -1289,6 +1320,34 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                         >
                           🟦 Connect Microsoft Outlook
                         </button>
+                        <button
+                          type="button"
+                          style={{ width: '100%', padding: '9px 14px', background: calendarProvider === 'ics' ? 'rgba(109,234,249,0.13)' : 'transparent', border: 'none', textAlign: 'left', fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontWeight: calendarProvider === 'ics' ? 700 : 400, color: 'var(--azure-dragon)', borderTop: '1px solid var(--desired-dawn)' }}
+                          onClick={() => { handleProviderChange('ics'); setShowIcsInput(true); }}
+                        >
+                          📆 ICS Connect
+                        </button>
+                        {showIcsInput && (
+                          <div style={{ padding: '10px 14px', borderTop: '1px solid var(--desired-dawn)', background: 'rgba(109,234,249,0.06)' }}>
+                            <div style={{ fontSize: 12, color: 'var(--cool-blue)', fontWeight: 600, marginBottom: 5 }}>Enter your ICS calendar URL:</div>
+                            <input
+                              type="url"
+                              value={icsCalendarUrl}
+                              onChange={e => { setIcsCalendarUrl(e.target.value); setIcsCalendarConnected(false); }}
+                              placeholder="https://…/calendar.ics or webcal://…"
+                              style={{ width: '100%', padding: '5px 8px', border: '1px solid var(--cool-blue)', borderRadius: 6, fontSize: 12, marginBottom: 6, boxSizing: 'border-box' }}
+                              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleConnectIcs(); } }}
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={handleConnectIcs}
+                              style={{ width: '100%', padding: '5px 10px', background: 'var(--azure-dragon)', color: '#fff', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+                            >
+                              {icsCalendarConnected ? '✅ Connected' : '🔗 Connect ICS'}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1297,10 +1356,25 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
               {/* Row 1: provider selector + checkbox + duration */}
               <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+                {calendarProvider === 'ics' && !icsCalendarConnected && (
+                  <span style={{ fontSize: 12, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 5, padding: '3px 8px', fontWeight: 600 }}>
+                    ⚠ Enter your ICS URL via Connect ▾ to enable calendar features
+                  </span>
+                )}
+                {calendarProvider === 'ics' && icsCalendarConnected && (
+                  <span style={{ fontSize: 12, color: '#065f46', background: '#d1fae5', border: '1px solid #6ee7b7', borderRadius: 5, padding: '3px 8px', fontWeight: 600 }}>
+                    ✅ ICS Calendar Connected
+                  </span>
+                )}
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input type="checkbox" checked={addMeet} onChange={e => setAddMeet(e.target.checked)} />
-                  <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--azure-dragon)' }}>
-                    {calendarProvider === 'microsoft' ? '🟦 Add Teams Meeting' : '🟢 Add Google Meet'}
+                  <input
+                    type="checkbox"
+                    checked={addMeet}
+                    onChange={e => setAddMeet(e.target.checked)}
+                    disabled={calendarProvider === 'ics' && !icsCalendarConnected}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: calendarProvider === 'ics' && !icsCalendarConnected ? '#9ca3af' : 'var(--azure-dragon)' }}>
+                    {calendarProvider === 'microsoft' ? '🟦 Add Teams Meeting' : calendarProvider === 'ics' ? '📆 Add ICS Calendar Event' : '🟢 Add Google Meet'}
                   </span>
                 </label>
                 {addMeet && (
@@ -1543,7 +1617,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 const getSchedulerBookingUrl = () =>
   `${window.location.protocol}//${window.location.hostname}:${API_PORT}/scheduler.html`;
 
-function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' }) {
+function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google', icsUrl = '' }) {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [duration, setDuration] = useState(30);
@@ -1592,7 +1666,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
       const res = await fetch(`http://localhost:${API_PORT}/calendar/freebusy`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-        body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider }),
+        body: JSON.stringify({ startISO, endISO, durationMinutes: Number(duration), provider, ...(provider === 'ics' ? { icsUrl } : {}) }),
         credentials: 'include'
       });
       if (!res.ok) {
@@ -1604,7 +1678,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
       setGeneratedSlots(slots);
       // Start with nothing selected — user confirms which slots to publish
     } catch (e) {
-      setError(e.message || `Failed to generate slots. Make sure your ${provider === 'microsoft' ? 'Microsoft Outlook' : 'Google'} Calendar is connected.`);
+      setError(e.message || `Failed to generate slots. Make sure your ${provider === 'microsoft' ? 'Microsoft Outlook' : provider === 'ics' ? 'ICS' : 'Google'} Calendar is connected.`);
     } finally {
       setGenerating(false);
     }
@@ -1696,12 +1770,12 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google' 
       <div style={{ background: 'var(--bg-body,#fff)', borderRadius: 12, width: 560, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto', padding: 28, boxShadow: '0 8px 40px rgba(0,0,0,0.25)' }}
            onClick={e => e.stopPropagation()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <h3 style={{ margin: 0, fontSize: 17, color: 'var(--azure-dragon,#073679)' }}>📅 Self-Scheduler <span style={{ fontSize: 12, fontWeight: 600, color: provider === 'microsoft' ? '#0078d4' : '#1a73e8', background: provider === 'microsoft' ? 'rgba(0,120,212,0.1)' : 'rgba(26,115,232,0.1)', borderRadius: 4, padding: '2px 7px', marginLeft: 6 }}>{provider === 'microsoft' ? '🟦 Outlook' : '🟢 Google'}</span></h3>
+          <h3 style={{ margin: 0, fontSize: 17, color: 'var(--azure-dragon,#073679)' }}>📅 Self-Scheduler <span style={{ fontSize: 12, fontWeight: 600, color: provider === 'microsoft' ? '#0078d4' : provider === 'ics' ? '#065f46' : '#1a73e8', background: provider === 'microsoft' ? 'rgba(0,120,212,0.1)' : provider === 'ics' ? 'rgba(6,95,70,0.1)' : 'rgba(26,115,232,0.1)', borderRadius: 4, padding: '2px 7px', marginLeft: 6 }}>{provider === 'microsoft' ? '🟦 Outlook' : provider === 'ics' ? '📆 ICS' : '🟢 Google'}</span></h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 20, cursor: 'pointer', color: 'var(--muted,#6b7280)' }}>✕</button>
         </div>
 
         <p style={{ fontSize: 13, color: 'var(--muted,#6b7280)', marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
-          Generate free slots from your {provider === 'microsoft' ? 'Outlook' : 'Google'} Calendar, select which ones to offer, then publish the booking link for invitees.
+          Generate free slots from your {provider === 'microsoft' ? 'Outlook' : provider === 'ics' ? 'ICS' : 'Google'} Calendar, select which ones to offer, then publish the booking link for invitees.
         </p>
 
         {/* Step 1: Configure */}
@@ -2340,6 +2414,7 @@ function CandidatesTable({
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
   const [schedulerModalOpen, setSchedulerModalOpen] = useState(false);
   const [schedulerProvider, setSchedulerProvider] = useState('google');
+  const [schedulerIcsUrl, setSchedulerIcsUrl] = useState('');
   // Link produced by SelfSchedulerModal on publish → auto-pasted into email body
   const [pendingSchedulerLink, setPendingSchedulerLink] = useState(null);
 
@@ -5412,7 +5487,7 @@ criteriaSheets.map((cf, idx) => {
         recipientCandidates={emailRecipients}
         onSendSuccess={handleEmailSendSuccess}
         statusOptions={statusOptions}
-        onOpenSelfScheduler={(provider) => { setSchedulerProvider(provider || 'google'); setSchedulerModalOpen(true); }}
+        onOpenSelfScheduler={(provider, icsUrl) => { setSchedulerProvider(provider || 'google'); setSchedulerIcsUrl(icsUrl || ''); setSchedulerModalOpen(true); }}
         schedulerLinkToInsert={pendingSchedulerLink}
         onSchedulerLinkConsumed={() => setPendingSchedulerLink(null)}
       />
@@ -5460,6 +5535,7 @@ criteriaSheets.map((cf, idx) => {
         onClose={() => setSchedulerModalOpen(false)}
         onPublished={(url) => setPendingSchedulerLink(url)}
         provider={schedulerProvider}
+        icsUrl={schedulerIcsUrl}
       />
 
       {/* ── DB Dock In wizard modal ── */}
