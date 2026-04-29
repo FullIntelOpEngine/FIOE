@@ -7738,12 +7738,177 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   const unfolded = rawIcs.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
   const lines = unfolded.split(/\r\n|\n|\r/);
 
+  // Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds
+  function _parseDurationMs(durStr) {
+    const d = (durStr || '').toUpperCase();
+    let ms = 0;
+    const m = d.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+    if (m) {
+      ms = ((parseInt(m[1], 10) || 0) * 7 * 86400
+           + (parseInt(m[2], 10) || 0) * 86400
+           + (parseInt(m[3], 10) || 0) * 3600
+           + (parseInt(m[4], 10) || 0) * 60
+           + (parseInt(m[5], 10) || 0)) * 1000;
+    }
+    return ms;
+  }
+
+  // Helper: expand a recurring event's occurrences within [rangeStart, rangeEnd]
+  // Supports RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with COUNT/UNTIL/INTERVAL/BYDAY.
+  // EXDATE entries (comma-separated) are excluded.
+  function _expandRecurrence(evt, durationMs) {
+    const rule = (evt.rrule || '').toUpperCase();
+    if (!rule) return [];
+    const intervals = [];
+
+    const freqMatch = rule.match(/FREQ=([A-Z]+)/);
+    if (!freqMatch) return [];
+    const freq = freqMatch[1]; // DAILY | WEEKLY | MONTHLY | YEARLY
+
+    const intervalMatch = rule.match(/INTERVAL=(\d+)/);
+    const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 1;
+
+    const countMatch = rule.match(/COUNT=(\d+)/);
+    const maxCount = countMatch ? parseInt(countMatch[1], 10) : Infinity;
+
+    const untilMatch = rule.match(/UNTIL=([^\s;]+)/);
+    const untilMs = untilMatch ? parseIcsDate(untilMatch[1]) : Infinity;
+
+    // BYDAY for WEEKLY: e.g. BYDAY=MO,WE,FR
+    const bydayMatch = rule.match(/BYDAY=([^;]+)/);
+    const byDays = bydayMatch
+      ? bydayMatch[1].split(',').map(d => d.trim().slice(-2).toUpperCase())
+      : null;
+    const dayMap = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+
+    // Build EXDATE set (UTC ms values to skip)
+    const exdateSet = new Set();
+    if (evt.exdate) {
+      const parts = evt.exdate.split(',');
+      for (const p of parts) {
+        const ms = parseIcsDateWithTzid(p.trim(), evt.exdate_tzid || evt.dtstart_tzid);
+        if (!isNaN(ms)) exdateSet.add(ms);
+      }
+    }
+
+    const dtStartMs = parseIcsDateWithTzid(evt.dtstart, evt.dtstart_tzid);
+    if (isNaN(dtStartMs)) return [];
+
+    let cursor = dtStartMs;
+    let count = 0;
+
+    // Advance cursor forward in steps until past rangeEnd or max iterations (safety limit)
+    const MAX_ITER = 1000;
+    let iter = 0;
+    while (cursor <= rangeEnd && count < maxCount && cursor <= untilMs && iter < MAX_ITER) {
+      iter++;
+      // Check if this occurrence is excluded
+      const isExcluded = exdateSet.has(cursor);
+      if (!isExcluded) {
+        const occEnd = cursor + durationMs;
+        // Emit if overlaps with the query range
+        if (occEnd > rangeStart && cursor < rangeEnd) {
+          intervals.push({ start: new Date(cursor).toISOString(), end: new Date(occEnd).toISOString() });
+        }
+      }
+      count++;
+
+      // Advance to next occurrence
+      const d = new Date(cursor);
+      if (freq === 'DAILY') {
+        cursor += interval * 86400000;
+      } else if (freq === 'WEEKLY') {
+        if (byDays && byDays.length > 1) {
+          // Multiple days per week: advance to the next listed weekday
+          let next = cursor + 86400000;
+          let safety = 0;
+          while (safety < 14) {
+            safety++;
+            const wd = new Date(next).getUTCDay();
+            const dayName = Object.keys(dayMap).find(k => dayMap[k] === wd);
+            if (dayName && byDays.includes(dayName)) break;
+            next += 86400000;
+          }
+          // After a full week cycle, apply the interval
+          if (new Date(next).getUTCDay() <= new Date(cursor).getUTCDay() && interval > 1) {
+            next += (interval - 1) * 7 * 86400000;
+          }
+          cursor = next;
+        } else {
+          cursor += interval * 7 * 86400000;
+        }
+      } else if (freq === 'MONTHLY') {
+        const nd = new Date(d);
+        nd.setUTCMonth(nd.getUTCMonth() + interval);
+        cursor = nd.getTime();
+      } else if (freq === 'YEARLY') {
+        const nd = new Date(d);
+        nd.setUTCFullYear(nd.getUTCFullYear() + interval);
+        cursor = nd.getTime();
+      } else {
+        break; // Unknown frequency
+      }
+    }
+    return intervals;
+  }
+
   const busyIntervals = [];
-  let inVevent = false;
+  let inVevent   = false;
+  let inVfreebusy = false;
   let evt = {};
+  let vfb = {};
 
   for (const line of lines) {
     const upper = line.toUpperCase();
+
+    // ── VFREEBUSY handling (RFC 5545 §3.6.4) ─────────────────────────────────
+    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; continue; }
+    if (upper === 'END:VFREEBUSY') {
+      inVfreebusy = false;
+      // FREEBUSY property contains one or more period values: start/end or start/duration
+      if (vfb.freebusy) {
+        for (const fbLine of vfb.freebusy) {
+          const periods = fbLine.split(',');
+          for (const period of periods) {
+            const parts = period.trim().split('/');
+            if (parts.length !== 2) continue;
+            const pStart = parseIcsDate(parts[0].trim());
+            let pEnd;
+            if (/^P/i.test(parts[1].trim())) {
+              pEnd = pStart + _parseDurationMs(parts[1].trim());
+            } else {
+              pEnd = parseIcsDate(parts[1].trim());
+            }
+            if (!isNaN(pStart) && !isNaN(pEnd) && pEnd > rangeStart && pStart < rangeEnd) {
+              busyIntervals.push({ start: new Date(pStart).toISOString(), end: new Date(pEnd).toISOString() });
+            }
+          }
+        }
+      }
+      vfb = {};
+      continue;
+    }
+    if (inVfreebusy) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx === -1) continue;
+      const rawProp = line.substring(0, colonIdx);
+      const value   = line.substring(colonIdx + 1);
+      const semiIdx = rawProp.indexOf(';');
+      const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
+      if (propKey === 'FREEBUSY') {
+        // Skip FREE periods; only collect BUSY (default when FBTYPE absent or FBTYPE=BUSY)
+        const fbType = semiIdx !== -1
+          ? (rawProp.substring(semiIdx + 1).match(/FBTYPE=([^;:]+)/i) || [])[1] || 'BUSY'
+          : 'BUSY';
+        if (fbType.toUpperCase() !== 'FREE') {
+          if (!vfb.freebusy) vfb.freebusy = [];
+          vfb.freebusy.push(value);
+        }
+      }
+      continue;
+    }
+
+    // ── VEVENT handling ───────────────────────────────────────────────────────
     if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; continue; }
     if (upper === 'END:VEVENT') {
       inVevent = false;
@@ -7752,28 +7917,26 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         const transp  = (evt.transp  || 'OPAQUE').toUpperCase();
         if (status !== 'CANCELLED' && transp !== 'TRANSPARENT') {
           let startMs = parseIcsDateWithTzid(evt.dtstart, evt.dtstart_tzid);
-          let endMs;
+          let durationMs;
           if (evt.dtend) {
-            endMs = parseIcsDateWithTzid(evt.dtend, evt.dtend_tzid || evt.dtstart_tzid);
+            durationMs = parseIcsDateWithTzid(evt.dtend, evt.dtend_tzid || evt.dtstart_tzid) - startMs;
           } else if (evt.duration) {
-            // Rudimentary DURATION parser: P[nD][T[nH][nM][nS]]
-            const dur = evt.duration.toUpperCase();
-            let ms = 0;
-            const m = dur.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
-            if (m) {
-              ms += ((parseInt(m[1], 10) || 0) * 7  * 86400
-                   + (parseInt(m[2], 10) || 0)       * 86400
-                   + (parseInt(m[3], 10) || 0)       * 3600
-                   + (parseInt(m[4], 10) || 0)       * 60
-                   + (parseInt(m[5], 10) || 0)) * 1000;
-            }
-            endMs = startMs + ms;
+            durationMs = _parseDurationMs(evt.duration);
           } else {
             // All-day event with no DTEND: treat as 1 day
-            endMs = startMs + 86400000;
+            durationMs = 86400000;
           }
-          if (!isNaN(startMs) && !isNaN(endMs) && endMs > rangeStart && startMs < rangeEnd) {
-            busyIntervals.push({ start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() });
+          if (!isNaN(startMs) && durationMs > 0) {
+            if (evt.rrule) {
+              // Expand recurring event occurrences within the query window
+              const occurrences = _expandRecurrence(evt, durationMs);
+              busyIntervals.push(...occurrences);
+            } else {
+              const endMs = startMs + durationMs;
+              if (endMs > rangeStart && startMs < rangeEnd) {
+                busyIntervals.push({ start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() });
+              }
+            }
           }
         }
       }
@@ -7802,9 +7965,23 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
         if (tzMatch) evt.dtend_tzid = tzMatch[1].trim();
       }
-    } else if (propKey === 'DURATION') evt.duration = value;
-    else if (propKey === 'STATUS')   evt.status   = value;
-    else if (propKey === 'TRANSP')   evt.transp   = value;
+    } else if (propKey === 'DURATION') {
+      evt.duration = value;
+    } else if (propKey === 'RRULE') {
+      evt.rrule = value;
+    } else if (propKey === 'EXDATE') {
+      // Multiple EXDATE lines are allowed; accumulate comma-separated values
+      const existing = evt.exdate ? evt.exdate + ',' : '';
+      evt.exdate = existing + value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.exdate_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'STATUS') {
+      evt.status = value;
+    } else if (propKey === 'TRANSP') {
+      evt.transp = value;
+    }
   }
 
   return busyIntervals;

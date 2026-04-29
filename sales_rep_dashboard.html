@@ -1655,8 +1655,15 @@
           <option value="90">90 min</option>
         </select>
         <button class="crm-cal-btn" onclick="crmCalConnectGoogle()" title="Connect your Google Calendar account">🟢 Google Connect</button>
+        <button class="crm-cal-btn" id="crmCalIcsBtn" onclick="crmCalToggleIcsInput()" title="Connect via ICS feed URL">📆 ICS Connect</button>
         <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
         <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+      </div>
+      <!-- ICS URL input row (shown when ICS Connect is clicked) -->
+      <div id="crmCalIcsRow" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+        <input type="url" id="crmCalIcsUrl" class="fioe-modal-input" style="margin:0;flex:1;min-width:220px;" placeholder="https://…/calendar.ics or webcal://…" />
+        <button class="crm-cal-btn" id="crmCalIcsConnectBtn" onclick="crmCalConnectIcs()">🔗 Connect ICS</button>
+        <span id="crmCalIcsStatus" style="font-size:12px;font-weight:600;"></span>
       </div>
       <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
       <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
@@ -3381,9 +3388,12 @@
     }
 
     // ── CRM Email Compose Modal ──────────────────────────────
-    let _crmCalSlots = [];
-    let _crmCalPage  = 0;
+    let _crmCalSlots    = [];
+    let _crmCalPage     = 0;
     const _SLOTS_PER_PAGE = 20;
+    let _crmCalProvider = 'google'; // 'google' | 'ics'
+    let _crmCalIcsUrl   = '';
+    let _crmCalIcsConnected = false;
 
     function crmOpenEmailModal() {
       if (_crmSelected.size === 0) return;
@@ -3407,6 +3417,15 @@
       document.getElementById('crmCalSlots').style.display = 'none';
       document.getElementById('crmCalSlots').innerHTML = '';
       _crmCalSlots = [];
+      // Reset ICS connect state
+      _crmCalProvider = 'google';
+      _crmCalIcsConnected = false;
+      const _icsRow = document.getElementById('crmCalIcsRow');
+      if (_icsRow) _icsRow.style.display = 'none';
+      const _icsStatus = document.getElementById('crmCalIcsStatus');
+      if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
+      const _icsBtn = document.getElementById('crmCalIcsBtn');
+      if (_icsBtn) { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
       // Pre-fill from/to dates
       const today = new Date();
       const nextWeek = new Date(today.getTime() + 7 * 86400000);
@@ -3845,11 +3864,60 @@
     }
 
     function crmCalConnectGoogle() {
+      _crmCalProvider = 'google';
       const url = 'http://localhost:4000/auth/google/calendar/connect';
       const w = 600, h = 700;
       const left = (window.screen.width / 2) - (w / 2);
       const top  = (window.screen.height / 2) - (h / 2);
       window.open(url, 'connect_google_calendar', `width=${w},height=${h},top=${top},left=${left}`);
+    }
+
+    function crmCalToggleIcsInput() {
+      const row = document.getElementById('crmCalIcsRow');
+      if (!row) return;
+      const isVisible = row.style.display !== 'none';
+      row.style.display = isVisible ? 'none' : 'flex';
+      if (!isVisible) {
+        const urlInput = document.getElementById('crmCalIcsUrl');
+        if (urlInput) urlInput.focus();
+      }
+    }
+
+    async function crmCalConnectIcs() {
+      const urlInput  = document.getElementById('crmCalIcsUrl');
+      const statusEl  = document.getElementById('crmCalIcsStatus');
+      const connectBtn = document.getElementById('crmCalIcsConnectBtn');
+      const icsUrl = (urlInput ? urlInput.value : '').trim();
+      if (!icsUrl || !/^(https?|webcal):\/\//i.test(icsUrl)) {
+        if (statusEl) { statusEl.textContent = '⚠ Enter a valid ICS URL.'; statusEl.style.color = '#b45309'; }
+        return;
+      }
+      if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = '⏳ Verifying…'; }
+      if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+      try {
+        const now = new Date();
+        const startISO = now.toISOString();
+        const endISO   = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+        const res = await fetch('http://localhost:4000/calendar/freebusy', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ startISO, endISO, durationMinutes: 30, provider: 'ics', icsUrl })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not read ICS calendar.');
+        // Success
+        _crmCalProvider = 'ics';
+        _crmCalIcsUrl   = icsUrl;
+        _crmCalIcsConnected = true;
+        if (statusEl) { statusEl.textContent = '✅ ICS Connected'; statusEl.style.color = '#065f46'; }
+        const icsBtn = document.getElementById('crmCalIcsBtn');
+        if (icsBtn) { icsBtn.style.background = 'var(--ad)'; icsBtn.style.color = '#fff'; icsBtn.style.borderColor = 'var(--ad)'; }
+      } catch(e) {
+        _crmCalIcsConnected = false;
+        if (statusEl) { statusEl.textContent = '❌ ' + (e.message || 'Failed to connect ICS.'); statusEl.style.color = '#b91c1c'; }
+      } finally {
+        if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = _crmCalIcsConnected ? '✅ Reconnect' : '🔗 Connect ICS'; }
+      }
     }
 
     async function crmCalFindSlots() {
@@ -3859,6 +3927,10 @@
       const statusEl = document.getElementById('crmCalStatus');
       const slotsEl  = document.getElementById('crmCalSlots');
       if (!startRaw || !endRaw) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      if (_crmCalProvider === 'ics' && !_crmCalIcsConnected) {
+        statusEl.textContent = '⚠ Connect your ICS calendar first using the 📆 ICS Connect button.';
+        return;
+      }
       // Convert plain date values (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
       const startISO = new Date(startRaw + 'T00:00:00').toISOString();
       const endISO   = new Date(endRaw   + 'T23:59:59').toISOString();
@@ -3867,10 +3939,12 @@
       slotsEl.innerHTML = '';
       _crmCalSlots = [];
       try {
+        const body = { startISO, endISO, durationMinutes: duration, provider: _crmCalProvider };
+        if (_crmCalProvider === 'ics') body.icsUrl = _crmCalIcsUrl;
         const res = await fetch('http://localhost:4000/calendar/freebusy', {
           method: 'POST', credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          body: JSON.stringify({ startISO, endISO, durationMinutes: duration, provider: 'google' })
+          body: JSON.stringify(body)
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to query calendar');
