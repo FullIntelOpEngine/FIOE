@@ -7628,8 +7628,17 @@ function parseIcsDate(dateStr) {
   return new Date(s).getTime();
 }
 
-// Helper: parse an ICS YYYYMMDDTHHMMSS floating date in the named IANA timezone and return UTC ms.
-// Falls back to parseIcsDate (treat as UTC) when tzid is absent or unrecognised.
+/**
+ * Parse an ICS datetime string that carries a TZID parameter (e.g. the value of
+ * `DTSTART;TZID=America/New_York:20240101T090000`) and return the corresponding
+ * UTC millisecond timestamp.
+ *
+ * @param {string} dateStr - The datetime value portion (after the colon), e.g. "20240101T090000".
+ * @param {string|undefined} tzid  - IANA timezone identifier extracted from the TZID param,
+ *                                   e.g. "America/New_York".  If absent, falls back to
+ *                                   parseIcsDate() which treats floating times as UTC.
+ * @returns {number} UTC milliseconds, or NaN on parse failure.
+ */
 function parseIcsDateWithTzid(dateStr, tzid) {
   if (!tzid) return parseIcsDate(dateStr);
   const s = (dateStr || '').trim();
