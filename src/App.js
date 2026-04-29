@@ -8895,32 +8895,41 @@ export default function App() {
       const data = await res.json();
       
       if (data.emails && Array.isArray(data.emails) && data.emails.length > 0) {
-         // Merge unique generated emails into current list
          const currentEmails = resumeEmailList.map(item => item.value);
          const newEmails = data.emails.filter(email => !currentEmails.includes(email));
-         
          if (newEmails.length > 0) {
-            // Since backend returns ranked list (1, 2, 3...), we infer confidence
-            // Index 0: High, 1: Medium, 2+: Low
+            const isVerified = data.source === 'verified';
+            const perProbs = Array.isArray(data.email_probabilities) ? data.email_probabilities : [];
+            // Map original emails to their per-email probabilities before filtering duplicates
+            const emailToProbMap = {};
+            data.emails.forEach((e, i) => { emailToProbMap[e] = perProbs[i] != null ? perProbs[i] : null; });
             const newEntries = newEmails.map((e, idx) => {
-               let conf = 'Low (~50%)';
-               if (idx === 0) conf = 'High (~95%)';
-               else if (idx === 1) conf = 'Medium (~75%)';
+               const prob = emailToProbMap[e];
+               let conf;
+               if (isVerified) {
+                 const pct = prob != null ? prob + '%' : (data.confidence != null ? Math.round(data.confidence * 100) + '%' : '');
+                 conf = 'FIOE' + (pct ? ' · ' + pct : '');
+               } else {
+                 const geminiLabels = ['High', 'Medium', 'Low'];
+                 conf = geminiLabels[idx] || 'Low';
+               }
                return { value: e, checked: false, confidence: conf };
             });
-
             setResumeEmailList(prev => [...prev, ...newEntries]);
          } else {
             alert('No new emails were generated (duplicates found).');
          }
+         return true;
       } else if (data.error) {
          alert(data.error);
       } else {
          alert('No valid generated emails found.');
       }
+      return false;
     } catch (e) {
       console.error(e);
       alert('Failed to generate emails.');
+      return false;
     } finally {
       setGeneratingEmails(false);
     }
