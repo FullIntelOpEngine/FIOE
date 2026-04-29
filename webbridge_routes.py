@@ -2576,10 +2576,17 @@ def _gemini_batch_extract_job_company(profiles: list) -> list:
         parts.append('\n'.join(lines))
     prompt = (
         "You are a LinkedIn data extraction assistant. "
-        "For each profile below, determine the current Job Title and Company.\n\n"
-        "Return ONLY a JSON object in this exact format:\n"
+        "For each profile below, extract the current Job Title and Company ONLY from the "
+        "provided SERP titles and snippets.\n\n"
+        "CRITICAL RULES:\n"
+        "- Extract ONLY from the data provided. Do NOT guess, hallucinate, or use prior knowledge.\n"
+        "- If a field cannot be confidently determined from the provided data, return an empty string \"\".\n"
+        "- SERP Title format is typically: \"Name - Job Title at Company | LinkedIn\"\n"
+        "- SERP Snippet format is typically: \"Job Title at Company · N connections\"\n"
+        "- Return the most current/recent job title and company found.\n\n"
+        "Return ONLY a JSON object in this exact format (no markdown, no commentary):\n"
         "{\"results\": [{\"linkedinUrl\": \"...\", \"jobTitle\": \"...\", \"company\": \"...\"}, ...]}\n\n"
-        "Profiles:\n---\n" + "\n---\n".join(parts) + "\n---\n\nJSON only, no commentary:"
+        "Profiles:\n---\n" + "\n---\n".join(parts) + "\n---\n\nJSON only:"
     )
     try:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=1024)

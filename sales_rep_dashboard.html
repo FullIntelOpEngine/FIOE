@@ -852,6 +852,20 @@
     }
     .crm-gp-btn:hover { background: #1d4d9a; }
     .crm-gp-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .crm-gen-email-btn {
+      padding: 7px 16px;
+      background: #5a1a6b;
+      color: #fff;
+      border: 1px solid #8a3aaa;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-gen-email-btn:hover { background: #7d2da0; }
+    .crm-gen-email-btn:disabled { opacity: .4; cursor: not-allowed; }
     /* per-row checkbox column */
     .crm-check-col { width: 32px; text-align: center; }
     /* overlay modal shared style */
@@ -1460,8 +1474,9 @@
         <button class="crm-export-btn" id="crmExportBtn" onclick="crmExportOrImport()">⬇ Export XLS</button>
         <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
-        <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
-        <button class="crm-gp-btn" id="crmGpBtn" onclick="crmGetProfile()" title="Fetch full profile via BrightData API for selected candidates with a LinkedIn URL">👤 Get Profile</button>
+        <button class="crm-send-email-btn" id="crmSendEmailBtn" style="display:none;" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+        <button class="crm-gen-email-btn" id="crmGenEmailBtn" style="display:none;" onclick="crmGenerateEmail()" title="Generate email for selected candidates using FIOE">✨ Generate Email</button>
+        <button class="crm-gp-btn" id="crmGpBtn" style="display:none;" onclick="crmGetProfile()" title="Fetch full profile via BrightData API for selected candidates with a LinkedIn URL">👤 Get Profile</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
@@ -2962,8 +2977,16 @@
     }
 
     function _crmUpdateSendBtn() {
-      const btn = document.getElementById('crmSendEmailBtn');
-      if (btn) btn.disabled = _crmSelected.size === 0;
+      const sendBtn = document.getElementById('crmSendEmailBtn');
+      const gpBtn   = document.getElementById('crmGpBtn');
+      const genBtn  = document.getElementById('crmGenEmailBtn');
+      const hasSelection = _crmSelected.size > 0;
+      if (sendBtn) {
+        sendBtn.disabled = !hasSelection;
+        sendBtn.style.display = hasSelection ? '' : 'none';
+      }
+      if (gpBtn)  gpBtn.style.display  = hasSelection ? '' : 'none';
+      if (genBtn) genBtn.style.display = hasSelection ? '' : 'none';
     }
 
     function _crmCellChange(id, input) {
@@ -3426,6 +3449,43 @@
       } finally {
         btn.disabled = false;
         btn.textContent = origTxt;
+      }
+    }
+
+    // ── Generate Email (FIOE) ────────────────────────────────
+    async function crmGenerateEmail() {
+      if (!_crmSelected.size) return;
+      _crmSyncFromTable();
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      const firstRow = selectedRows[0] || {};
+      const candidateName = firstRow.name || 'Candidate';
+      const prompt = selectedRows.length === 1
+        ? `Write a concise, personalised sales outreach email for ${candidateName}` +
+          (firstRow.jobTitle ? `, ${firstRow.jobTitle}` : '') +
+          (firstRow.company  ? ` at ${firstRow.company}` : '') +
+          '. Use tags [Name], [Job Title], [Company Name], [Country], [Sector], [Seniority], [Your Name] for personalisation.'
+        : `Write a concise, professional sales outreach email suitable for ${selectedRows.length} candidates. ` +
+          'Use tags [Name], [Job Title], [Company Name], [Country], [Sector], [Seniority], [Your Name] for personalisation.';
+      const btn = document.getElementById('crmGenEmailBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+      try {
+        const res = await fetch('http://localhost:4000/draft-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({
+            prompt,
+            context: { candidateName, myEmail: (_crmSmtpConfig || {}).user || '' }
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        crmOpenEmailModal();
+        if (data.subject) document.getElementById('crmEmailSubject').value = data.subject;
+        if (data.body)    document.getElementById('crmEmailBody').value    = data.body;
+      } catch (e) {
+        alert('❌ Generate Email failed: ' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ Generate Email'; }
       }
     }
 
