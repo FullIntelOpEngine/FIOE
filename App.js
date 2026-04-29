@@ -8547,10 +8547,16 @@ export default function App() {
          const currentEmails = resumeEmailList.map(item => item.value);
          const newEmails = data.emails.filter(email => !currentEmails.includes(email));
          if (newEmails.length > 0) {
+            const isVerified = data.source === 'verified';
             const newEntries = newEmails.map((e, idx) => {
-               let conf = 'Low (~50%)';
-               if (idx === 0) conf = 'High (~95%)';
-               else if (idx === 1) conf = 'Medium (~75%)';
+               let conf;
+               if (isVerified) {
+                 conf = 'FIOE';
+               } else {
+                 if (idx === 0) conf = 'High (~95%)';
+                 else if (idx === 1) conf = 'Medium (~75%)';
+                 else conf = 'Low (~50%)';
+               }
                return { value: e, checked: false, confidence: conf };
             });
             setResumeEmailList(prev => [...prev, ...newEntries]);

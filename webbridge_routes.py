@@ -3791,7 +3791,7 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
     prompt = (
         "You are a search-query translator. Convert the Google Xray boolean search "
         "query below into a JSON object suitable for the Apollo People Search API "
-        "(POST https://api.apollo.io/api/v1/mixed_people/api_search).\n\n"
+        "(POST https://api.apollo.io/api/v1/mixed_people/search).\n\n"
         "Rules:\n"
         "1. Extract job titles into \"person_titles\" (array of strings).\n"
         "2. Extract location hints into \"person_locations\" (array of strings).\n"
@@ -3845,10 +3845,10 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
     params = dict(raw_params) if raw_params else _translate_xray_to_apollo_params(query)
     params["page"] = page
     params["per_page"] = num
-    logger.debug(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
+    logger.debug(f"[Apollo] Calling mixed_people/search — page={page} per_page={num} params={params}")
     try:
         r = requests.post(
-            "https://api.apollo.io/api/v1/mixed_people/api_search",
+            "https://api.apollo.io/api/v1/mixed_people/search",
             headers={
                 "x-api-key": api_key,
                 "Content-Type": "application/json",
