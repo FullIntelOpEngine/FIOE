@@ -1,15 +1,107 @@
 {
-  "abbvie": {
+  "unknown": {
     "Domain": [
       {
-        "company": "abbvie",
-        "domain": "hotmail.com",
-        "format": "first_initial_of_first_name + first_initial_of_middle_name + first_initial_of_last_name + first_initial_of_another_part_of_name",
-        "fake_example": "johnd@hotmail.com",
-        "fake_local_part": "johnd",
-        "saved_at": "2026-04-29T16:08:17.964707Z",
+        "domain": "astellas.com",
+        "format": "first_name.last_name",
+        "fake_example": "oliver.chen@astellas.com",
+        "fake_local_part": "oliver.chen",
+        "saved_at": "2026-04-25T07:10:50.366Z",
+        "candidateId": "19306",
+        "company": "unknown",
+        "confidence": 1,
+        "count": 1
+      }
+    ],
+    "Confidence_threshold": 1
+  },
+  "bristol_myers_squibb": {
+    "Domain": [
+      {
+        "company": "bristol_myers_squibb",
+        "domain": "bms.com",
+        "format": "first_name.last_name",
+        "fake_example": "oliver.chan@bms.com",
+        "fake_local_part": "oliver.chan",
+        "saved_at": "2026-04-25T15:41:54.351Z",
+        "candidateId": "19305",
+        "confidence": 0.67,
+        "count": 2
+      },
+      {
+        "company": "bristol_myers_squibb",
+        "domain": "bms.co.jp",
+        "format": "first_name.last_name",
+        "fake_example": "kenji.inoue@bms.co.jp",
+        "fake_local_part": "kenji.inoue",
+        "saved_at": "2026-04-25T15:43:11.181Z",
+        "candidateId": "19305",
         "count": 1,
-        "confidence": 1.0
+        "confidence": 0.33
+      }
+    ],
+    "Confidence_threshold": 1
+  },
+  "medpace": {
+    "Domain": [
+      {
+        "company": "medpace",
+        "domain": "medpace.jp",
+        "format": "firstnamelastname",
+        "fake_example": "sarahwang@medpace.jp",
+        "fake_local_part": "sarahwang",
+        "saved_at": "2026-04-25T15:24:00.145Z",
+        "candidateId": "19304",
+        "confidence": 1,
+        "count": 1
+      }
+    ],
+    "Confidence_threshold": 1
+  },
+  "iqvia": {
+    "Domain": [
+      {
+        "company": "iqvia",
+        "domain": "iqvia.com",
+        "format": "first_name.last_name",
+        "fake_example": "oliver.lee@iqvia.com",
+        "fake_local_part": "oliver.lee",
+        "saved_at": "2026-04-27T04:36:57.740Z",
+        "candidateId": "19313",
+        "count": 2,
+        "confidence": 1
+      }
+    ],
+    "Confidence_threshold": 1
+  },
+  "ubisoft": {
+    "Domain": [
+      {
+        "company": "ubisoft",
+        "domain": "ubisoft.com",
+        "format": "first_name.last_name",
+        "fake_example": "emily.chen@ubisoft.com",
+        "fake_local_part": "emily.chen",
+        "saved_at": "2026-04-28T12:53:40.306Z",
+        "candidateId": "19426",
+        "count": 1,
+        "confidence": 1
+      }
+    ],
+    "Confidence_threshold": 1
+  },
+  "shopee": {
+    "Domain": [
+      {
+        "company": "shopee",
+        "domain": "shopee.com",
+        "format": "first_name.last_name",
+        "fake_example": "alex.lim@shopee.com",
+        "fake_local_part": "alex.lim",
+        "saved_at": "2026-04-29T19:37:43.457Z",
+        "candidateId": "19444",
+        "count": 1,
+        "confidence": 1
       }
     ],
     "Confidence_threshold": 1

@@ -7581,6 +7581,412 @@ function buildICS({uid, startISO, endISO, summary, description = '', organizerEm
   return lines.filter(Boolean).join('\r\n');
 }
 
+// Helper: check if a hostname string is a private/loopback address (basic SSRF guard)
+function _isPrivateHost(hostname) {
+  // Reject loopback, link-local, and private RFC-1918 ranges
+  if (hostname === 'localhost') return true;
+  // IPv4 patterns
+  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [, a, b, c] = ipv4.map(Number);
+    if (a === 127 || a === 10) return true;                          // 127.x.x.x, 10.x.x.x
+    if (a === 172 && b >= 16 && b <= 31) return true;               // 172.16-31.x.x
+    if (a === 192 && b === 168) return true;                         // 192.168.x.x
+    if (a === 169 && b === 254) return true;                         // 169.254.x.x link-local
+    if (a === 0) return true;                                        // 0.x.x.x
+  }
+  // IPv6 loopback / link-local
+  if (hostname === '::1' || /^fe80:/i.test(hostname) || /^\[::1\]$/.test(hostname)) return true;
+  return false;
+}
+
+// Helper: parse an ICS date/datetime string to a UTC timestamp (ms)
+function parseIcsDate(dateStr) {
+  if (!dateStr) return NaN;
+  const s = dateStr.trim();
+  // UTC: YYYYMMDDTHHMMSSZ
+  if (/^\d{8}T\d{6}Z$/i.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
+      parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
+    );
+  }
+  // Floating (no Z, no TZID in value): YYYYMMDDTHHMMSS — treat as UTC
+  if (/^\d{8}T\d{6}$/.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
+      parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
+    );
+  }
+  // All-day date: YYYYMMDD
+  if (/^\d{8}$/.test(s)) {
+    return Date.UTC(
+      parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10)
+    );
+  }
+  // ISO 8601 fallback
+  return new Date(s).getTime();
+}
+
+/**
+ * Parse an ICS datetime string that carries a TZID parameter (e.g. the value of
+ * `DTSTART;TZID=America/New_York:20240101T090000`) and return the corresponding
+ * UTC millisecond timestamp.
+ *
+ * @param {string} dateStr - The datetime value portion (after the colon), e.g. "20240101T090000".
+ * @param {string|undefined} tzid  - IANA timezone identifier extracted from the TZID param,
+ *                                   e.g. "America/New_York".  If absent, falls back to
+ *                                   parseIcsDate() which treats floating times as UTC.
+ * @returns {number} UTC milliseconds, or NaN on parse failure.
+ */
+function parseIcsDateWithTzid(dateStr, tzid) {
+  if (!tzid) return parseIcsDate(dateStr);
+  const s = (dateStr || '').trim();
+  // Already UTC — no timezone adjustment needed
+  if (/^\d{8}T\d{6}Z$/i.test(s)) return parseIcsDate(s);
+  // Floating datetime: YYYYMMDDTHHMMSS — convert from tzid to UTC via Intl
+  if (/^\d{8}T\d{6}$/.test(s)) {
+    try {
+      const y  = parseInt(s.slice(0, 4), 10);
+      const mo = parseInt(s.slice(4, 6), 10) - 1;
+      const d  = parseInt(s.slice(6, 8), 10);
+      const h  = parseInt(s.slice(9, 11), 10);
+      const mi = parseInt(s.slice(11, 13), 10);
+      const sc = parseInt(s.slice(13, 15), 10);
+      // Use the Intl API: find what UTC timestamp shows the given local time in tzid.
+      // Method: take the "naive UTC" equivalent, ask what local time the timezone shows
+      // at that UTC instant, then compute the offset and adjust.
+      const naiveUtcMs = Date.UTC(y, mo, d, h, mi, sc);
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tzid,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      });
+      const parts = fmt.formatToParts(new Date(naiveUtcMs));
+      const get = (t) => parseInt((parts.find(p => p.type === t) || { value: '0' }).value, 10);
+      // hour12:false may return 24 for midnight — normalise
+      const localH = get('hour') === 24 ? 0 : get('hour');
+      const localMs = Date.UTC(get('year'), get('month') - 1, get('day'), localH, get('minute'), get('second'));
+      const offsetMs = localMs - naiveUtcMs; // tz offset at naiveUtcMs
+      return naiveUtcMs - offsetMs;
+    } catch (_) {
+      return parseIcsDate(dateStr); // unknown timezone — fall back to UTC
+    }
+  }
+  return parseIcsDate(dateStr);
+}
+
+// Helper: fetch an ICS URL and return busy [{start, end}] intervals overlapping [startISO, endISO]
+// Supports http://, https://, and webcal:// (remapped to https://).
+async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
+  // Validate and normalise the URL
+  const normalised = icsUrl.trim().replace(/^webcal:/i, 'https:');
+  let urlObj;
+  try { urlObj = new URL(normalised); } catch (_) { throw new Error('Invalid ICS URL.'); }
+  if (urlObj.protocol !== 'https:' && urlObj.protocol !== 'http:') {
+    throw new Error('ICS URL must use http, https, or webcal protocol.');
+  }
+  // SSRF guard: reject requests targeting private / loopback addresses
+  if (_isPrivateHost(urlObj.hostname)) {
+    throw new Error('ICS URL must point to a public host.');
+  }
+  // Resolve DNS and re-check the resolved IP to prevent DNS-rebinding SSRF
+  try {
+    const { address } = await dns.lookup(urlObj.hostname);
+    if (_isPrivateHost(address)) throw new Error('ICS URL resolves to a private address.');
+  } catch (dnsErr) {
+    if (dnsErr.message && dnsErr.message.includes('private')) throw dnsErr;
+    // DNS lookup may fail in some environments; proceed and let the HTTP layer error out
+  }
+  const rangeStart = new Date(startISO).getTime();
+  const rangeEnd   = new Date(endISO).getTime();
+
+  // Fetch with a redirect budget (max 3 hops)
+  async function doFetch(fetchUrl, hops) {
+    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
+    const u = new URL(fetchUrl);
+    const mod = u.protocol === 'https:' ? https : http;
+    return new Promise((resolve, reject) => {
+      const req = mod.request(
+        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+          path: u.pathname + (u.search || ''), method: 'GET',
+          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
+          timeout: 12000 },
+        (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
+          }
+          if (res.statusCode !== 200) {
+            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
+          }
+          let raw = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => { raw += chunk; if (raw.length > 5 * 1024 * 1024) { req.destroy(); reject(new Error('ICS feed too large (>5 MB).')); } });
+          res.on('end', () => resolve(raw));
+        }
+      );
+      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  const rawIcs = await doFetch(normalised, 3);
+
+  // Unfold continuation lines (RFC 5545 §3.1)
+  const unfolded = rawIcs.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
+  const lines = unfolded.split(/\r\n|\n|\r/);
+
+  // Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds
+  function _parseDurationMs(durStr) {
+    const d = (durStr || '').toUpperCase();
+    let ms = 0;
+    const m = d.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+    if (m) {
+      ms = ((parseInt(m[1], 10) || 0) * 7 * 86400
+           + (parseInt(m[2], 10) || 0) * 86400
+           + (parseInt(m[3], 10) || 0) * 3600
+           + (parseInt(m[4], 10) || 0) * 60
+           + (parseInt(m[5], 10) || 0)) * 1000;
+    }
+    return ms;
+  }
+
+  // Helper: expand a recurring event's occurrences within [rangeStart, rangeEnd]
+  // Supports RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with COUNT/UNTIL/INTERVAL/BYDAY.
+  // EXDATE entries (comma-separated) are excluded.
+  function _expandRecurrence(evt, durationMs) {
+    const rule = (evt.rrule || '').toUpperCase();
+    if (!rule) return [];
+    const intervals = [];
+
+    const freqMatch = rule.match(/FREQ=([A-Z]+)/);
+    if (!freqMatch) return [];
+    const freq = freqMatch[1]; // DAILY | WEEKLY | MONTHLY | YEARLY
+
+    const intervalMatch = rule.match(/INTERVAL=(\d+)/);
+    const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 1;
+
+    const countMatch = rule.match(/COUNT=(\d+)/);
+    const maxCount = countMatch ? parseInt(countMatch[1], 10) : Infinity;
+
+    const untilMatch = rule.match(/UNTIL=([^\s;]+)/);
+    const untilMs = untilMatch ? parseIcsDate(untilMatch[1]) : Infinity;
+
+    // BYDAY for WEEKLY: e.g. BYDAY=MO,WE,FR
+    const bydayMatch = rule.match(/BYDAY=([^;]+)/);
+    const byDays = bydayMatch
+      ? bydayMatch[1].split(',').map(d => d.trim().slice(-2).toUpperCase())
+      : null;
+    const dayMap = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+
+    // Build EXDATE set (UTC ms values to skip)
+    const exdateSet = new Set();
+    if (evt.exdate) {
+      const parts = evt.exdate.split(',');
+      for (const p of parts) {
+        const ms = parseIcsDateWithTzid(p.trim(), evt.exdate_tzid || evt.dtstart_tzid);
+        if (!isNaN(ms)) exdateSet.add(ms);
+      }
+    }
+
+    const dtStartMs = parseIcsDateWithTzid(evt.dtstart, evt.dtstart_tzid);
+    if (isNaN(dtStartMs)) return [];
+
+    let cursor = dtStartMs;
+    let count = 0;
+
+    // Advance cursor forward in steps until past rangeEnd or max iterations (safety limit)
+    const MAX_ITER = 1000;
+    let iter = 0;
+    while (cursor <= rangeEnd && count < maxCount && cursor <= untilMs && iter < MAX_ITER) {
+      iter++;
+      // Check if this occurrence is excluded
+      const isExcluded = exdateSet.has(cursor);
+      if (!isExcluded) {
+        const occEnd = cursor + durationMs;
+        // Emit if overlaps with the query range
+        if (occEnd > rangeStart && cursor < rangeEnd) {
+          intervals.push({ start: new Date(cursor).toISOString(), end: new Date(occEnd).toISOString() });
+        }
+      }
+      count++;
+
+      // Advance to next occurrence
+      const d = new Date(cursor);
+      if (freq === 'DAILY') {
+        cursor += interval * 86400000;
+      } else if (freq === 'WEEKLY') {
+        if (byDays && byDays.length > 1) {
+          // Multiple days per week: advance to the next listed weekday
+          let next = cursor + 86400000;
+          let safety = 0;
+          while (safety < 14) {
+            safety++;
+            const wd = new Date(next).getUTCDay();
+            const dayName = Object.keys(dayMap).find(k => dayMap[k] === wd);
+            if (dayName && byDays.includes(dayName)) break;
+            next += 86400000;
+          }
+          // After a full week cycle, apply the interval
+          if (new Date(next).getUTCDay() <= new Date(cursor).getUTCDay() && interval > 1) {
+            next += (interval - 1) * 7 * 86400000;
+          }
+          cursor = next;
+        } else {
+          cursor += interval * 7 * 86400000;
+        }
+      } else if (freq === 'MONTHLY') {
+        const nd = new Date(d);
+        nd.setUTCMonth(nd.getUTCMonth() + interval);
+        cursor = nd.getTime();
+      } else if (freq === 'YEARLY') {
+        const nd = new Date(d);
+        nd.setUTCFullYear(nd.getUTCFullYear() + interval);
+        cursor = nd.getTime();
+      } else {
+        break; // Unknown frequency
+      }
+    }
+    return intervals;
+  }
+
+  const busyIntervals = [];
+  let inVevent   = false;
+  let inVfreebusy = false;
+  let evt = {};
+  let vfb = {};
+
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+
+    // ── VFREEBUSY handling (RFC 5545 §3.6.4) ─────────────────────────────────
+    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; continue; }
+    if (upper === 'END:VFREEBUSY') {
+      inVfreebusy = false;
+      // FREEBUSY property contains one or more period values: start/end or start/duration
+      if (vfb.freebusy) {
+        for (const fbLine of vfb.freebusy) {
+          const periods = fbLine.split(',');
+          for (const period of periods) {
+            const parts = period.trim().split('/');
+            if (parts.length !== 2) continue;
+            const pStart = parseIcsDate(parts[0].trim());
+            let pEnd;
+            if (/^P/i.test(parts[1].trim())) {
+              pEnd = pStart + _parseDurationMs(parts[1].trim());
+            } else {
+              pEnd = parseIcsDate(parts[1].trim());
+            }
+            if (!isNaN(pStart) && !isNaN(pEnd) && pEnd > rangeStart && pStart < rangeEnd) {
+              busyIntervals.push({ start: new Date(pStart).toISOString(), end: new Date(pEnd).toISOString() });
+            }
+          }
+        }
+      }
+      vfb = {};
+      continue;
+    }
+    if (inVfreebusy) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx === -1) continue;
+      const rawProp = line.substring(0, colonIdx);
+      const value   = line.substring(colonIdx + 1);
+      const semiIdx = rawProp.indexOf(';');
+      const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
+      if (propKey === 'FREEBUSY') {
+        // Skip FREE periods; only collect BUSY (default when FBTYPE absent or FBTYPE=BUSY)
+        const fbType = semiIdx !== -1
+          ? (rawProp.substring(semiIdx + 1).match(/FBTYPE=([^;:]+)/i) || [])[1] || 'BUSY'
+          : 'BUSY';
+        if (fbType.toUpperCase() !== 'FREE') {
+          if (!vfb.freebusy) vfb.freebusy = [];
+          vfb.freebusy.push(value);
+        }
+      }
+      continue;
+    }
+
+    // ── VEVENT handling ───────────────────────────────────────────────────────
+    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; continue; }
+    if (upper === 'END:VEVENT') {
+      inVevent = false;
+      if (evt.dtstart) {
+        const status = (evt.status || '').toUpperCase();
+        const transp  = (evt.transp  || 'OPAQUE').toUpperCase();
+        if (status !== 'CANCELLED' && transp !== 'TRANSPARENT') {
+          let startMs = parseIcsDateWithTzid(evt.dtstart, evt.dtstart_tzid);
+          let durationMs;
+          if (evt.dtend) {
+            durationMs = parseIcsDateWithTzid(evt.dtend, evt.dtend_tzid || evt.dtstart_tzid) - startMs;
+          } else if (evt.duration) {
+            durationMs = _parseDurationMs(evt.duration);
+          } else {
+            // All-day event with no DTEND: treat as 1 day
+            durationMs = 86400000;
+          }
+          if (!isNaN(startMs) && durationMs > 0) {
+            if (evt.rrule) {
+              // Expand recurring event occurrences within the query window
+              const occurrences = _expandRecurrence(evt, durationMs);
+              busyIntervals.push(...occurrences);
+            } else {
+              const endMs = startMs + durationMs;
+              if (endMs > rangeStart && startMs < rangeEnd) {
+                busyIntervals.push({ start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() });
+              }
+            }
+          }
+        }
+      }
+      evt = {};
+      continue;
+    }
+    if (!inVevent) continue;
+
+    // Split into property name (+ params) and value
+    const colonIdx = line.indexOf(':');
+    if (colonIdx === -1) continue;
+    const rawProp = line.substring(0, colonIdx);
+    const value   = line.substring(colonIdx + 1);
+    const semiIdx = rawProp.indexOf(';');
+    const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
+
+    if (propKey === 'DTSTART') {
+      evt.dtstart = value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.dtstart_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'DTEND') {
+      evt.dtend = value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.dtend_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'DURATION') {
+      evt.duration = value;
+    } else if (propKey === 'RRULE') {
+      evt.rrule = value;
+    } else if (propKey === 'EXDATE') {
+      // Multiple EXDATE lines are allowed; accumulate comma-separated values
+      const existing = evt.exdate ? evt.exdate + ',' : '';
+      evt.exdate = existing + value;
+      if (semiIdx !== -1) {
+        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        if (tzMatch) evt.exdate_tzid = tzMatch[1].trim();
+      }
+    } else if (propKey === 'STATUS') {
+      evt.status = value;
+    } else if (propKey === 'TRANSP') {
+      evt.transp = value;
+    }
+  }
+
+  return busyIntervals;
+}
+
 // Helper: compute simple free slots between timeMin/timeMax avoiding busy intervals
 function computeFreeSlots(busyIntervals = [], timeMinISO, timeMaxISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, businessHours = { startHour: 0, endHour: 24, timezone: 'UTC' }, maxResults = 6) {
   const start = new Date(timeMinISO).getTime();
@@ -7653,8 +8059,11 @@ function computeFreeSlots(busyIntervals = [], timeMinISO, timeMaxISO, durationMi
 // Endpoint: query freebusy and return candidate slots (POST body: { startISO, endISO, durationMinutes })
 app.post('/calendar/freebusy', requireLogin, async (req, res) => {
   try {
-    const { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google' } = req.body;
+    let { startISO, endISO, durationMinutes = _SCHEDULER_DEFAULT_DURATION, attendees = [], provider = 'google', icsUrl } = req.body;
     if (!startISO || !endISO) return res.status(400).json({ error: 'startISO and endISO required.' });
+    // Normalise plain date strings (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) startISO = new Date(startISO + 'T00:00:00Z').toISOString();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(endISO))   endISO   = new Date(endISO   + 'T23:59:59Z').toISOString();
 
     let primaryBusy = [];
 
@@ -7674,6 +8083,12 @@ app.post('/calendar/freebusy', requireLogin, async (req, res) => {
         start: ev.start.dateTime.includes('Z') ? ev.start.dateTime : ev.start.dateTime + 'Z',
         end:   ev.end.dateTime.includes('Z')   ? ev.end.dateTime   : ev.end.dateTime + 'Z'
       }));
+    } else if (provider === 'ics') {
+      // Fetch the user-supplied ICS feed and parse busy intervals from VEVENTs
+      if (!icsUrl || typeof icsUrl !== 'string' || !icsUrl.trim()) {
+        return res.status(400).json({ error: 'icsUrl is required for ICS calendar provider.' });
+      }
+      primaryBusy = await fetchAndParseIcsBusy(icsUrl, startISO, endISO);
     } else {
       if (!google) return res.status(500).json({ error: 'Google APIs module not available.' });
       const oauth2Client = await getOAuthClientForUser(req.user.username);
@@ -7710,7 +8125,12 @@ app.post('/calendar/create-event', requireLogin, async (req, res) => {
     let createdEventId = null;
     let organizerEmail = req.user.username || 'organizer@example.com';
 
-    if (provider === 'microsoft') {
+    if (provider === 'ics') {
+      // ICS feeds are read-only; we cannot write back to the external feed.
+      // Create a local calendar event (ICS file) for the organiser to attach to the email.
+      createdEventId = `ics-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+      // meetLink stays null — no conferencing service is provisioned for ICS
+    } else if (provider === 'microsoft') {
       // Create event via Microsoft Graph API with Teams meeting
       const accessToken = await getMicrosoftTokenForUser(req.user.username);
       const eventBody = {
@@ -8396,7 +8816,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
         try {
           console.log('[Apollo] people/match fallback for linkedin_url:', apolloUrl);
           const matchRes = await apolloPost(
-            '/v1/people/match',
+            '/api/v1/people/match',
             { linkedin_url: apolloUrl, reveal_personal_emails: true, reveal_phone_number: true }
           );
           if (matchRes._http_status === 401) {
@@ -8415,7 +8835,7 @@ app.post('/generate-email', requireLogin, dashboardRateLimit, async (req, res) =
       }
 
       if (!contact) {
-        return res.status(404).json({ error: 'No matching contact found in Apollo' });
+        return res.status(200).json({ emails: [], all_emails: [], error: 'No matching contact found in Apollo. Verify the LinkedIn URL is correct and the contact exists in Apollo\'s database.' });
       }
 
       console.log('[Apollo] person fields — keys:', Object.keys(contact));
@@ -8666,12 +9086,16 @@ Phone: ...`;
     const companyEntry = verifiedEmailData[companyKey];
 
     let genPrompt;
+    let emailSource = 'gemini';
+    let verifiedConfidence = null;
     if (companyEntry && Array.isArray(companyEntry.Domain) && companyEntry.Domain.length > 0) {
       // Find the entry with the highest confidence value
       const topEntry = companyEntry.Domain.reduce((best, e) =>
         (e.confidence || 0) > (best.confidence || 0) ? e : best,
         companyEntry.Domain[0]
       );
+      emailSource = 'verified';
+      verifiedConfidence = topEntry.confidence;
       // Ask Gemini to generate 3 variations using the verified domain structure
       genPrompt = `
         You are an email address generator. The following verified email domain structure has been confirmed for the company "${company}":
@@ -8685,11 +9109,13 @@ Phone: ...`;
         Do not include markdown formatting.
       `;
     } else {
-      // No verified data — fall back to Gemini's own LLM knowledge, 1 email only
+      // No verified data — fall back to Gemini's own LLM knowledge with probability estimates
       genPrompt = `
-        Generate the single most likely business email address for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
+        Generate the most likely business email addresses for a person named "${name}" working at the company "${company}"${country ? ` (located in ${country})` : ''}.
         Infer the likely domain name based on the company name.
-        Return strictly a JSON object: { "emails": ["email1"] }
+        For each email address candidate, estimate a probability (0–100) that it is the correct active email.
+        Return strictly a JSON object: { "emails": [{ "email": "addr1", "probability": 85 }, { "email": "addr2", "probability": 10 }] }
+        Sort by highest probability first. Include at least 1 and at most 3 candidates.
         Do not include markdown formatting.
       `;
     }
@@ -8707,11 +9133,35 @@ Phone: ...`;
        if (match) data = { emails: JSON.parse(match[0]) };
        else throw new Error("Failed to parse LLM email generation response");
     }
-    
-    const candidates = data.emails || [];
-    
-    // RETURN IMMEDIATELY, NO VERIFICATION
-    res.json({ emails: candidates });
+
+    // Normalise: Gemini fallback returns [{email, probability}] objects; verified path returns strings.
+    let candidates = [];
+    let topProbability = null;
+    let emailProbabilities = [];
+    const rawEmails = data.emails || [];
+    if (emailSource === 'gemini' && rawEmails.length > 0 && typeof rawEmails[0] === 'object') {
+      candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+      emailProbabilities = rawEmails.map(e => (typeof e === 'object' && e.probability != null ? e.probability : null));
+      topProbability = emailProbabilities.length > 0 ? emailProbabilities[0] : null;
+    } else {
+      candidates = rawEmails.map(e => (typeof e === 'object' ? e.email : e)).filter(Boolean);
+      // For the verified path generate distinct declining probabilities per email so
+      // each selectable tag shows a unique confidence value.
+      if (emailSource === 'verified' && candidates.length > 0) {
+        const basePct = Math.round((verifiedConfidence || 0.95) * 100);
+        const scale = [1.0, 0.85, 0.70];
+        emailProbabilities = candidates.map((_, i) => Math.min(100, Math.round(basePct * (scale[i] || 0.70))));
+        topProbability = emailProbabilities[0];
+      }
+    }
+
+    res.json({
+      emails: candidates,
+      source: emailSource,
+      confidence: verifiedConfidence,
+      probability: topProbability,
+      email_probabilities: emailProbabilities,
+    });
 
   } catch (err) {
     console.error('[generate-email] Unhandled error:', err.message || err);
