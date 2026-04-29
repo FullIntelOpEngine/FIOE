@@ -2395,6 +2395,33 @@ _CRM_SALES_DIR = os.getenv(
 )
 _CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# Load countrycode.JSON once at startup for LinkedIn URL country resolution
+_COUNTRYCODE_MAP: dict = {}
+try:
+    _cc_path = os.path.join(os.path.dirname(__file__), "countrycode.JSON")
+    with open(_cc_path, "r", encoding="utf-8") as _cc_fh:
+        _COUNTRYCODE_MAP = json.load(_cc_fh)
+except Exception as _cc_exc:
+    logger.warning("[CRM] Could not load countrycode.JSON: %s", _cc_exc)
+
+_LINKEDIN_COUNTRY_RE = re.compile(r'https?://([a-z]{2})\.linkedin\.com/in/', re.I)
+
+
+def _country_from_linkedin_url(url: str) -> str:
+    """Infer the full country name from a LinkedIn URL subdomain.
+
+    e.g. ``https://kr.linkedin.com/in/username`` → ``"Korea"``
+    Returns empty string when the URL uses the global ``www`` subdomain or
+    when the 2-letter code is not found in countrycode.JSON.
+    """
+    if not url:
+        return ""
+    m = _LINKEDIN_COUNTRY_RE.match(url)
+    if not m:
+        return ""
+    code = m.group(1).lower()
+    return _COUNTRYCODE_MAP.get(code, "")
+
 
 def _build_prospect_query(job_titles, companies, sectors, country, seniority):
     """Build an X-ray LinkedIn people-search query from Prospect tab parameters."""
@@ -2586,6 +2613,7 @@ def prospect_source():
             "name":        name        or "",
             "jobTitle":    job_title_parsed or "",
             "company":     company_parsed   or "",
+            "country":     _country_from_linkedin_url(url),
             "linkedinUrl": url,
             "sector":      assessed.get("sector")    or "",
             "seniority":   assessed.get("seniority") or seniority,
@@ -2690,6 +2718,115 @@ def prospect_crm_email_draft():
     except Exception as exc:
         logger.warning("[CRM email draft] LLM call failed: %s", exc)
         return jsonify({"ok": False, "error": "AI draft failed. Check server logs for details."}), 500
+
+
+@app.post("/prospect/crm-get-profile")
+@_require_session
+def prospect_crm_get_profile():
+    """Fetch a LinkedIn profile via the configured Get Profile service (BrightData/Scrapingdog/Linkdapi)
+    and return CRM-friendly fields for updating a CRM row.
+
+    Accepts JSON: {linkedin_url, name}
+    Returns: {ok, name, jobTitle, company, country, email, mobile, linkedinUrl}
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    linkedin_url = (body.get("linkedin_url") or "").strip()
+    name_hint    = (body.get("name") or "").strip()
+    if not linkedin_url:
+        return jsonify({"ok": False, "error": "linkedin_url is required"}), 400
+
+    req_user = getattr(request, "_session_user", "") or ""
+    _user_gp = _load_user_gp_cfg(req_user)
+    gp_cfg   = _load_get_profiles_config()
+    bd_cfg   = gp_cfg.get("brightdata", {})
+
+    # Determine active GP provider (same priority order as SourcingVerify)
+    if _user_gp.get("provider") == "brightdata":
+        provider = "brightdata"
+    elif bd_cfg.get("enabled") == "enabled" and bd_cfg.get("api_key"):
+        provider = "brightdata"
+    else:
+        provider = "brightdata"   # default to BrightData per directive
+
+    if provider == "brightdata":
+        if _user_gp.get("provider") == "brightdata":
+            api_key = (_user_gp.get("GP_BRIGHTDATA_API_KEY") or "").strip()
+            zone    = (_user_gp.get("GP_BRIGHTDATA_ZONE") or "").strip()
+        else:
+            api_key = (bd_cfg.get("api_key") or "").strip()
+            zone    = (bd_cfg.get("zone") or "").strip()
+
+        if not api_key:
+            return jsonify({"ok": False, "error": "BrightData API key is not configured"}), 503
+        if not zone:
+            return jsonify({"ok": False, "error": "BrightData zone is not configured"}), 503
+
+        import urllib.parse as _uparse  # noqa: PLC0415
+        if name_hint:
+            search_q = f'"{name_hint}" site:linkedin.com/in/{linkedin_url.rstrip("/").split("/")[-1]}'
+        else:
+            slug = linkedin_url.rstrip("/").split("/")[-1]
+            search_q = f'site:linkedin.com/in/{slug}'
+        serp_url = f"https://www.google.com/search?q={_uparse.quote(search_q)}"
+
+        body_str, status_code = _brightdata_fetch_profile(serp_url, api_key, zone)
+        if status_code == 401:
+            return jsonify({"ok": False, "error": "BrightData authentication failed (HTTP 401)"}), 401
+        if status_code >= 400 or status_code == 0:
+            return jsonify({"ok": False, "error": f"BrightData returned an error (HTTP {status_code})"}), 502
+
+        try:
+            raw_data = json.loads(body_str)
+        except ValueError:
+            return jsonify({"ok": False, "error": "Invalid JSON from BrightData"}), 502
+
+        if isinstance(raw_data, list):
+            profile = raw_data[0] if raw_data and isinstance(raw_data[0], dict) else {}
+        elif isinstance(raw_data, dict):
+            profile = raw_data
+        else:
+            profile = {}
+    else:
+        return jsonify({"ok": False, "error": f"Provider '{provider}' not supported for CRM Get Profile"}), 503
+
+    # Extract CRM-relevant fields from the profile JSON
+    first = (profile.get("firstName") or profile.get("first_name") or "").strip()
+    last  = (profile.get("lastName")  or profile.get("last_name")  or "").strip()
+    crm_name = (
+        profile.get("fullName") or profile.get("full_name")
+        or (f"{first} {last}".strip()) or name_hint
+    )
+
+    positions = profile.get("positions") or profile.get("experience") or []
+    current_pos = next(
+        (p for p in positions
+         if p.get("isCurrent") or p.get("is_current") or not (p.get("endDate") or p.get("end_date"))),
+        positions[0] if positions else {}
+    )
+    crm_job_title = (current_pos.get("title") or profile.get("headline") or "").strip()
+    crm_company = (
+        current_pos.get("companyName") or current_pos.get("company") or
+        current_pos.get("company_name") or profile.get("company") or ""
+    ).strip()
+
+    crm_email  = (profile.get("email") or "").strip()
+    crm_mobile = (profile.get("phone") or profile.get("mobile") or profile.get("phoneNumber") or "").strip()
+
+    # Infer country from the LinkedIn URL subdomain first; fall back to profile location field
+    crm_country = _country_from_linkedin_url(linkedin_url)
+    if not crm_country:
+        crm_country = (profile.get("location") or (profile.get("geo") or {}).get("full") or "").strip()
+
+    return jsonify({
+        "ok":          True,
+        "name":        crm_name,
+        "jobTitle":    crm_job_title,
+        "company":     crm_company,
+        "country":     crm_country,
+        "email":       crm_email,
+        "mobile":      crm_mobile,
+        "linkedinUrl": linkedin_url,
+    }), 200
 
 
 JOBS = {}

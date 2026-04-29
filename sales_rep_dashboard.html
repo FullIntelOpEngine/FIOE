@@ -838,6 +838,20 @@
     }
     .crm-send-email-btn:disabled { opacity: .4; cursor: not-allowed; }
     .crm-send-email-btn:not(:disabled):hover { background: #0e7d22; }
+    .crm-gp-btn {
+      padding: 7px 16px;
+      background: #1a3a6b;
+      color: #fff;
+      border: 1px solid #2a5aa0;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-gp-btn:hover { background: #1d4d9a; }
+    .crm-gp-btn:disabled { opacity: .4; cursor: not-allowed; }
     /* per-row checkbox column */
     .crm-check-col { width: 32px; text-align: center; }
     /* overlay modal shared style */
@@ -1433,6 +1447,7 @@
         <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
         <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+        <button class="crm-gp-btn" id="crmGpBtn" onclick="crmGetProfile()" title="Fetch full profile via BrightData API for selected candidates with a LinkedIn URL">👤 Get Profile</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
@@ -2808,6 +2823,7 @@
             name:        p.name      || p.fullName      || '',
             jobTitle:    p.job_title || p.jobTitle      || p.title || '',
             company:     p.company   || p.organization  || '',
+            country:     p.country   || '',
             sector:      p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
             seniority:   p.seniority || seniority        || '',
             email:       p.email     || p.emailAddress  || '',
@@ -2841,7 +2857,7 @@
     function crmAddRow(data) {
       const row = Object.assign({
         id: _crmNextId++,
-        name: '', jobTitle: '', company: '',
+        name: '', jobTitle: '', company: '', country: '',
         sector: '', seniority: '', email: '',
         mobile: '', comment: '', status: '', linkedinUrl: ''
       }, data || {});
@@ -2946,7 +2962,52 @@
       if (row) row.status = val;
     }
 
-    function crmExportOrImport() {
+    async function crmGetProfile() {
+      const targets = _crmRows.filter(r => _crmSelected.has(r.id) && r.linkedinUrl);
+      if (!targets.length) {
+        alert('Select at least one candidate row that has a LinkedIn URL to fetch a profile.');
+        return;
+      }
+      const btn = document.getElementById('crmGpBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Fetching…'; }
+      let ok = 0, failed = 0;
+      for (const row of targets) {
+        try {
+          const res = await fetch('/prospect/crm-get-profile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ linkedin_url: row.linkedinUrl, name: row.name }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) {
+            console.warn('[CRM GetProfile]', row.linkedinUrl, data.error || res.status);
+            failed++;
+            continue;
+          }
+          // Update only non-empty fields returned from the API
+          const map = { name: 'name', jobTitle: 'jobTitle', company: 'company',
+                        country: 'country', email: 'email', mobile: 'mobile' };
+          for (const [src, dest] of Object.entries(map)) {
+            if (data[src]) row[dest] = data[src];
+          }
+          ok++;
+        } catch (e) {
+          console.warn('[CRM GetProfile] fetch error:', e);
+          failed++;
+        }
+      }
+      if (btn) { btn.disabled = false; btn.textContent = '👤 Get Profile'; }
+      if (ok || failed) {
+        _crmRenderTable();
+        const msg = ok
+          ? `✅ ${ok} profile(s) updated${failed ? '; ' + failed + ' failed' : ''}.`
+          : `❌ All ${failed} profile fetch(es) failed. Check server logs.`;
+        alert(msg);
+      }
+    }
+
+
       const btn = document.getElementById('crmExportBtn');
       if (btn && btn.dataset.mode === 'import') {
         document.getElementById('crmImportFileInput').click();
@@ -2958,7 +3019,7 @@
     function crmExportXls() {
       // Build XML Spreadsheet 2003 workbook with two sheets:
       // Sheet 1 "Prospect" — human-editable columns
-      // Sheet 2 "DB Copy"  — full JSON rows for lossless reimport
+      // Sheet 2 "Raw"      — full JSON rows for lossless reimport
       const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
       const MAX_LEN = 32767;
       const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
@@ -2972,7 +3033,7 @@
         '<Row>' + S1_FIELDS.map(f => `<Cell><Data ss:Type="String">${ex(cellStr(row[f] || ''))}</Data></Cell>`).join('') + '</Row>'
       ).join('');
 
-      // Sheet 2 — DB Copy (hidden), one JSON object per row
+      // Sheet 2 — Raw (hidden), one JSON object per row
       const jsonHeaderRow = '<Row><Cell><Data ss:Type="String">__crm_json_export_v1__</Data></Cell></Row>';
       const jsonRows = _crmRows.map(row => {
         const s = JSON.stringify(row);
@@ -2998,7 +3059,7 @@
         `   <ActivePane>2</ActivePane>\n` +
         `  </WorksheetOptions>\n` +
         ` </Worksheet>\n` +
-        ` <Worksheet ss:Name="DB Copy" ss:Visible="SheetHidden">\n` +
+        ` <Worksheet ss:Name="Raw" ss:Visible="SheetHidden">\n` +
         `  <Table>${jsonHeaderRow}${jsonRows}</Table>\n` +
         ` </Worksheet>\n` +
         `</Workbook>`;
@@ -3041,14 +3102,14 @@
           let dbCopyWs = null;
           for (const ws of wsNodes) {
             const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
-            if (name === 'DB Copy') { dbCopyWs = ws; break; }
+            if (name === 'Raw' || name === 'DB Copy') { dbCopyWs = ws; break; }
           }
-          if (!dbCopyWs) throw new Error('DB Copy sheet not found. Only CRM exports from this system can be imported.');
+          if (!dbCopyWs) throw new Error('Raw sheet not found. Only CRM exports from this system can be imported.');
 
           const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
           // Skip sentinel row (row 0)
           const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
-          if (!dataRows.length) throw new Error('DB Copy sheet contains no data rows.');
+          if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
 
           const imported = [];
           for (const row of dataRows) {
@@ -3058,7 +3119,7 @@
               if (s) imported.push(JSON.parse(s));
             } catch(e) { /* skip malformed row */ }
           }
-          if (!imported.length) throw new Error('Could not parse any rows from DB Copy sheet.');
+          if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
 
           _crmRows = [];
           _crmNextId = 1;
