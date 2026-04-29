@@ -3034,58 +3034,166 @@
     }
 
     function crmExportXls() {
-      // Build XML Spreadsheet 2003 workbook with two sheets:
-      // Sheet 1 "Prospect" — human-editable columns
-      // Sheet 2 "Raw"      — full JSON rows for lossless reimport
-      const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-      const MAX_LEN = 32767;
-      const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
+      // Build a proper XLSX (Office Open XML / ZIP) workbook with two sheets:
+      // Sheet 1 "Prospect" — human-editable columns (visible)
+      // Sheet 2 "Raw"      — full JSON rows for lossless reimport (hidden)
 
-      // Sheet 1 — Prospect (visible)
+      const MAX_LEN = 32767;
+      const enc = new TextEncoder();
+
+      // ── XML-escape helper ──────────────────────────────────────────────────
+      const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      // ── CRC-32 (ISO 3309) ─────────────────────────────────────────────────
+      const _crcT = (() => {
+        const t = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          t[i] = c >>> 0;
+        }
+        return t;
+      })();
+      const crc32 = buf => {
+        let c = 0xFFFFFFFF;
+        for (let i = 0; i < buf.length; i++) c = _crcT[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+        return (c ^ 0xFFFFFFFF) >>> 0;
+      };
+
+      // ── Minimal ZIP builder (Store / uncompressed) ────────────────────────
+      const buildZip = files => {
+        const entries = files.map(f => {
+          const name = enc.encode(f.name);
+          const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
+          return { name, data, crc: crc32(data) };
+        });
+        let localSz = 0;
+        for (const e of entries) localSz += 30 + e.name.length + e.data.length;
+        let cdSz = 0;
+        for (const e of entries) cdSz += 46 + e.name.length;
+        const buf = new Uint8Array(localSz + cdSz + 22);
+        const dv  = new DataView(buf.buffer);
+        let pos = 0;
+        const w16 = v => { dv.setUint16(pos, v, true); pos += 2; };
+        const w32 = v => { dv.setUint32(pos, v, true); pos += 4; };
+        const offsets = [];
+        for (const e of entries) {
+          offsets.push(pos);
+          w32(0x04034b50); w16(20); w16(0); w16(0); w16(0); w16(0);
+          w32(e.crc); w32(e.data.length); w32(e.data.length);
+          w16(e.name.length); w16(0);
+          buf.set(e.name, pos); pos += e.name.length;
+          buf.set(e.data, pos); pos += e.data.length;
+        }
+        const cdStart = pos;
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i];
+          w32(0x02014b50); w16(20); w16(20); w16(0); w16(0); w16(0); w16(0);
+          w32(e.crc); w32(e.data.length); w32(e.data.length);
+          w16(e.name.length); w16(0); w16(0); w16(0); w16(0); w32(0); w32(offsets[i]);
+          buf.set(e.name, pos); pos += e.name.length;
+        }
+        const cdLen = pos - cdStart;
+        w32(0x06054b50); w16(0); w16(0); w16(entries.length); w16(entries.length);
+        w32(cdLen); w32(cdStart); w16(0);
+        return buf;
+      };
+
+      // ── OOXML helpers ──────────────────────────────────────────────────────
+      const colLetter = n => {
+        let s = '';
+        while (n > 0) { s = String.fromCharCode(64 + (n % 26 || 26)) + s; n = Math.floor((n - 1) / 26); }
+        return s;
+      };
+      const cellXml = (col, row, val, bold) => {
+        const s = String(val == null ? '' : val);
+        const v = s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s;
+        return `<c r="${colLetter(col)}${row}" t="inlineStr"${bold ? ' s="1"' : ''}><is><t>${ex(v)}</t></is></c>`;
+      };
+      const buildSheetXml = (headers, dataRows) => {
+        let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
+          `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\n<sheetData>\n`;
+        xml += `<row r="1">` + headers.map((h, i) => cellXml(i + 1, 1, h, true)).join('') + `</row>\n`;
+        dataRows.forEach((cells, ri) => {
+          xml += `<row r="${ri + 2}">` + cells.map((v, ci) => cellXml(ci + 1, ri + 2, v, false)).join('') + `</row>\n`;
+        });
+        return xml + `</sheetData>\n</worksheet>`;
+      };
+
+      // ── Sheet 1 — Prospect ────────────────────────────────────────────────
       const S1_FIELDS  = ['name','jobTitle','company','country','sector','seniority','email','mobile','linkedinUrl','comment','status'];
       const S1_HEADERS = ['Name','Job Title','Company','Country','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
-      const colDefs  = S1_FIELDS.map(() => '<Column ss:Width="120"/>').join('');
-      const hdrRow   = '<Row>' + S1_HEADERS.map(h => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(h)}</Data></Cell>`).join('') + '</Row>';
-      const dataRows = _crmRows.map(row =>
-        '<Row>' + S1_FIELDS.map(f => `<Cell><Data ss:Type="String">${ex(cellStr(row[f] || ''))}</Data></Cell>`).join('') + '</Row>'
-      ).join('');
+      const sheet1Xml = buildSheetXml(S1_HEADERS, _crmRows.map(row => S1_FIELDS.map(f => row[f] || '')));
 
-      // Sheet 2 — Raw (hidden), one JSON object per row
-      const jsonHeaderRow = '<Row><Cell><Data ss:Type="String">__crm_json_export_v1__</Data></Cell></Row>';
-      const jsonRows = _crmRows.map(row => {
+      // ── Sheet 2 — Raw (hidden) ────────────────────────────────────────────
+      const rawRows = _crmRows.map(row => {
         const s = JSON.stringify(row);
         const chunks = [];
         for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
-        const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
-        return `<Row>${cells}</Row>`;
-      }).join('');
+        return chunks;
+      });
+      const sheet2Xml = buildSheetXml(['__crm_json_export_v1__'], rawRows);
 
-      const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
-        `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
-        ` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
-        ` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
-        ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n` +
-        ` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
-        ` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n` +
-        ` <Worksheet ss:Name="Prospect">\n` +
-        `  <Table ss:DefaultColumnWidth="110">${colDefs}${hdrRow}${dataRows}</Table>\n` +
-        `  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">\n` +
-        `   <FreezePanes/><FrozenNoSplit/>\n` +
-        `   <SplitHorizontal>1</SplitHorizontal>\n` +
-        `   <TopRowBottomPane>1</TopRowBottomPane>\n` +
-        `   <ActivePane>2</ActivePane>\n` +
-        `  </WorksheetOptions>\n` +
-        ` </Worksheet>\n` +
-        ` <Worksheet ss:Name="Raw" ss:Visible="SheetHidden">\n` +
-        `  <Table>${jsonHeaderRow}${jsonRows}</Table>\n` +
-        ` </Worksheet>\n` +
-        `</Workbook>`;
+      // ── Static XLSX package parts ──────────────────────────────────────────
+      const NS_PKG  = 'http://schemas.openxmlformats.org/package/2006/';
+      const NS_OFF  = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
+      const NS_SS   = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+      const contentTypes =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Types xmlns="${NS_PKG}content-types">` +
+        `<Default Extension="rels" ContentType="${NS_PKG}relationships+xml"/>` +
+        `<Default Extension="xml" ContentType="application/xml"/>` +
+        `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>` +
+        `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+        `<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>` +
+        `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>` +
+        `</Types>`;
+      const rootRels =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Relationships xmlns="${NS_PKG}relationships">` +
+        `<Relationship Id="rId1" Type="${NS_OFF}officeDocument" Target="xl/workbook.xml"/>` +
+        `</Relationships>`;
+      const workbookXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<workbook xmlns="${NS_SS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+        `<sheets>` +
+        `<sheet name="Prospect" sheetId="1" r:id="rId1"/>` +
+        `<sheet name="Raw" sheetId="2" r:id="rId2" state="hidden"/>` +
+        `</sheets></workbook>`;
+      const workbookRels =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<Relationships xmlns="${NS_PKG}relationships">` +
+        `<Relationship Id="rId1" Type="${NS_OFF}worksheet" Target="worksheets/sheet1.xml"/>` +
+        `<Relationship Id="rId2" Type="${NS_OFF}worksheet" Target="worksheets/sheet2.xml"/>` +
+        `<Relationship Id="rId3" Type="${NS_OFF}styles" Target="styles.xml"/>` +
+        `</Relationships>`;
+      const stylesXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+        `<styleSheet xmlns="${NS_SS}">` +
+        `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>` +
+        `<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>` +
+        `<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>` +
+        `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>` +
+        `<cellXfs count="2">` +
+        `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>` +
+        `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>` +
+        `</cellXfs></styleSheet>`;
 
-      const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const xlsxBytes = buildZip([
+        { name: '[Content_Types].xml',        data: contentTypes },
+        { name: '_rels/.rels',                 data: rootRels },
+        { name: 'xl/workbook.xml',             data: workbookXml },
+        { name: 'xl/_rels/workbook.xml.rels',  data: workbookRels },
+        { name: 'xl/worksheets/sheet1.xml',    data: sheet1Xml },
+        { name: 'xl/worksheets/sheet2.xml',    data: sheet2Xml },
+        { name: 'xl/styles.xml',               data: stylesXml },
+      ]);
+
+      const blob = new Blob([xlsxBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;
-      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xls';
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xlsx';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
 
@@ -3098,7 +3206,7 @@
 
       const btn = document.getElementById('crmExportBtn');
       if (btn) {
-        btn.textContent = '⬆ Import CSV';
+        btn.textContent = '⬆ Import XLS';
         btn.dataset.mode = 'import';
       }
     }
@@ -3109,43 +3217,110 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         try {
-          const text = new TextDecoder('utf-8').decode(new Uint8Array(e.target.result));
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(text, 'application/xml');
-          if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+          const raw = new Uint8Array(e.target.result);
 
-          // Find the DB Copy worksheet
-          const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
-          let dbCopyWs = null;
-          for (const ws of wsNodes) {
-            const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
-            if (name === 'Raw' || name === 'DB Copy') { dbCopyWs = ws; break; }
+          // ── Detect format: XLSX (ZIP) starts with PK magic bytes 0x50 0x4B ──
+          const isXlsx = raw.length > 4 && raw[0] === 0x50 && raw[1] === 0x4B;
+
+          if (isXlsx) {
+            // ── XLSX import: read Raw sheet from the ZIP ──────────────────────
+            const dv = new DataView(raw.buffer);
+            const u16 = off => dv.getUint16(off, true);
+            const u32 = off => dv.getUint32(off, true);
+
+            // Locate End of Central Directory (signature 0x06054b50)
+            let eocdPos = -1;
+            for (let i = raw.length - 22; i >= 0; i--) {
+              if (u32(i) === 0x06054b50) { eocdPos = i; break; }
+            }
+            if (eocdPos < 0) throw new Error('Not a valid XLSX file (EOCD not found).');
+
+            const cdCount  = u16(eocdPos + 10);
+            const cdOffset = u32(eocdPos + 16);
+
+            // Read a file from the ZIP given its path
+            const dec = new TextDecoder();
+            const readEntry = target => {
+              let cdPos = cdOffset;
+              for (let i = 0; i < cdCount; i++) {
+                if (u32(cdPos) !== 0x02014b50) break;
+                const fnLen  = u16(cdPos + 28);
+                const exLen  = u16(cdPos + 30);
+                const cmLen  = u16(cdPos + 32);
+                const lhOff  = u32(cdPos + 42);
+                const fn     = dec.decode(raw.slice(cdPos + 46, cdPos + 46 + fnLen));
+                if (fn === target) {
+                  if (u32(lhOff) !== 0x04034b50) throw new Error('Bad local header in XLSX.');
+                  const lFnLen = u16(lhOff + 26);
+                  const lExLen = u16(lhOff + 28);
+                  const method = u16(lhOff + 8);
+                  if (method !== 0) throw new Error('XLSX uses compression; only Store method is supported for import.');
+                  const dataOff  = lhOff + 30 + lFnLen + lExLen;
+                  const dataLen  = u32(lhOff + 18);
+                  return raw.slice(dataOff, dataOff + dataLen);
+                }
+                cdPos += 46 + fnLen + exLen + cmLen;
+              }
+              return null;
+            };
+
+            const sheet2Bytes = readEntry('xl/worksheets/sheet2.xml');
+            if (!sheet2Bytes) throw new Error('Raw sheet not found in XLSX. Only CRM exports from this system can be imported.');
+
+            const sheetXml = dec.decode(sheet2Bytes);
+            const xmlDoc = new DOMParser().parseFromString(sheetXml, 'application/xml');
+            if (xmlDoc.querySelector('parsererror')) throw new Error('Raw sheet XML is corrupt.');
+
+            const rows = Array.from(xmlDoc.querySelectorAll('sheetData > row'));
+            // Skip sentinel/header row (row index 0)
+            const dataRows = rows.slice(1);
+            if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
+
+            const imported = [];
+            for (const row of dataRows) {
+              try {
+                // Inline strings: <c t="inlineStr"><is><t>value</t></is></c>
+                const cells = Array.from(row.querySelectorAll('c')).map(c => {
+                  const t = c.querySelector('is > t');
+                  return t ? t.textContent : (c.querySelector('v') || { textContent: '' }).textContent;
+                });
+                const s = cells.join('');
+                if (s) imported.push(JSON.parse(s));
+              } catch(e) { /* skip malformed row */ }
+            }
+            if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
+            _crmFinishImport(imported, file.name);
+
+          } else {
+            // ── Legacy SpreadsheetML (XML Spreadsheet 2003) import ────────────
+            const text = new TextDecoder('utf-8').decode(raw);
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(text, 'application/xml');
+            if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+
+            const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
+            let dbCopyWs = null;
+            for (const ws of wsNodes) {
+              const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
+              if (name === 'Raw' || name === 'DB Copy') { dbCopyWs = ws; break; }
+            }
+            if (!dbCopyWs) throw new Error('Raw sheet not found. Only CRM exports from this system can be imported.');
+
+            const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
+            const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
+            if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
+
+            const imported = [];
+            for (const row of dataRows) {
+              try {
+                const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
+                const s = cells.join('');
+                if (s) imported.push(JSON.parse(s));
+              } catch(e) { /* skip malformed row */ }
+            }
+            if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
+            _crmFinishImport(imported, file.name);
           }
-          if (!dbCopyWs) throw new Error('Raw sheet not found. Only CRM exports from this system can be imported.');
-
-          const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
-          // Skip sentinel row (row 0)
-          const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
-          if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
-
-          const imported = [];
-          for (const row of dataRows) {
-            try {
-              const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
-              const s = cells.join('');
-              if (s) imported.push(JSON.parse(s));
-            } catch(e) { /* skip malformed row */ }
-          }
-          if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
-
-          _crmRows = [];
-          _crmNextId = 1;
-          _crmSelected.clear();
-          imported.forEach(r => crmAddRow(r));
-
-          const btn = document.getElementById('crmExportBtn');
-          if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
-          alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + file.name);
         } catch(err) {
           alert('❌ Import failed: ' + (err && err.message ? err.message : 'Unknown error'));
         } finally {
@@ -3153,6 +3328,16 @@
         }
       };
       reader.readAsArrayBuffer(file);
+    }
+
+    function _crmFinishImport(imported, filename) {
+      _crmRows = [];
+      _crmNextId = 1;
+      _crmSelected.clear();
+      imported.forEach(r => crmAddRow(r));
+      const btn = document.getElementById('crmExportBtn');
+      if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
+      alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + filename);
     }
 
     // ── SMTP Config Modal ────────────────────────────────────

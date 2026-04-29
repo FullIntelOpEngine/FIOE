@@ -2797,17 +2797,56 @@ def prospect_crm_get_profile():
         or (f"{first} {last}".strip()) or name_hint
     )
 
-    positions = profile.get("positions") or profile.get("experience") or []
+    # BrightData may return positions as a list OR as a dict with a nested list
+    # (e.g. {"positionHistory": [...]}).  Normalise to a flat list of dicts.
+    pos_raw = profile.get("positions") or profile.get("experience") or []
+    if isinstance(pos_raw, dict):
+        positions = (
+            pos_raw.get("positionHistory") or pos_raw.get("position_history")
+            or next((v for v in pos_raw.values() if isinstance(v, list)), [])
+        )
+        if not isinstance(positions, list):
+            positions = []
+    elif isinstance(pos_raw, list):
+        positions = pos_raw
+    else:
+        positions = []
+
     current_pos = next(
         (p for p in positions
-         if p.get("isCurrent") or p.get("is_current") or not (p.get("endDate") or p.get("end_date"))),
-        positions[0] if positions else {}
+         if isinstance(p, dict) and (
+             p.get("isCurrent") or p.get("is_current")
+             or not (p.get("endDate") or p.get("end_date"))
+         )),
+        positions[0] if positions and isinstance(positions[0], dict) else {}
     )
-    crm_job_title = (current_pos.get("title") or profile.get("headline") or "").strip()
-    crm_company = (
-        current_pos.get("companyName") or current_pos.get("company") or
-        current_pos.get("company_name") or profile.get("company") or ""
-    ).strip()
+
+    # Company may be a bare string or an object like {"name": "Acme Corp", "link": "..."}.
+    def _coerce_str(val):
+        if isinstance(val, dict):
+            return str(val.get("name") or val.get("companyName") or "").strip()
+        return str(val).strip() if val is not None else ""
+
+    def _first_company(*candidates):
+        for c in candidates:
+            s = _coerce_str(c)
+            if s:
+                return s
+        return ""
+
+    crm_job_title = (
+        (current_pos.get("title") or "").strip()
+        or (profile.get("position") or "").strip()
+        or (profile.get("job_title") or "").strip()
+        or (profile.get("occupation") or "").strip()
+        or (profile.get("headline") or "").strip()
+    )
+    crm_company = _first_company(
+        current_pos.get("companyName"), current_pos.get("company"),
+        current_pos.get("company_name"),
+        profile.get("company"), profile.get("current_company"),
+        profile.get("company_name"),
+    )
 
     crm_email  = (profile.get("email") or "").strip()
     crm_mobile = (profile.get("phone") or profile.get("mobile") or profile.get("phoneNumber") or "").strip()
