@@ -838,20 +838,6 @@
     }
     .crm-send-email-btn:disabled { opacity: .4; cursor: not-allowed; }
     .crm-send-email-btn:not(:disabled):hover { background: #0e7d22; }
-    .crm-gp-btn {
-      padding: 7px 16px;
-      background: #1a3a6b;
-      color: #fff;
-      border: 1px solid #2a5aa0;
-      border-radius: 7px;
-      font-size: 12px;
-      font-weight: 700;
-      font-family: "Roboto Condensed", sans-serif;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    .crm-gp-btn:hover { background: #1d4d9a; }
-    .crm-gp-btn:disabled { opacity: .4; cursor: not-allowed; }
     .crm-gen-email-btn {
       padding: 7px 16px;
       background: #5a1a6b;
@@ -1476,7 +1462,6 @@
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
         <button class="crm-send-email-btn" id="crmSendEmailBtn" style="display:none;" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
         <button class="crm-gen-email-btn" id="crmGenEmailBtn" style="display:none;" onclick="crmGenerateEmail()" title="Generate email for selected candidates using FIOE">✨ Generate Email</button>
-        <button class="crm-gp-btn" id="crmGpBtn" style="display:none;" onclick="crmGetProfile()" title="Fetch full profile via BrightData API for selected candidates with a LinkedIn URL">👤 Get Profile</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
@@ -2978,14 +2963,12 @@
 
     function _crmUpdateSendBtn() {
       const sendBtn = document.getElementById('crmSendEmailBtn');
-      const gpBtn   = document.getElementById('crmGpBtn');
       const genBtn  = document.getElementById('crmGenEmailBtn');
       const hasSelection = _crmSelected.size > 0;
       if (sendBtn) {
         sendBtn.disabled = !hasSelection;
         sendBtn.style.display = hasSelection ? '' : 'none';
       }
-      if (gpBtn)  gpBtn.style.display  = hasSelection ? '' : 'none';
       if (genBtn) genBtn.style.display = hasSelection ? '' : 'none';
     }
 
@@ -3014,73 +2997,6 @@
       });
     }
 
-    async function crmGetProfile() {
-      _crmSyncFromTable();
-      const targets = _crmRows.filter(r => _crmSelected.has(r.id) && r.linkedinUrl);
-      if (!targets.length) {
-        alert('Select at least one candidate row that has a LinkedIn URL to fetch a profile.');
-        return;
-      }
-      const btn = document.getElementById('crmGpBtn');
-      if (btn) { btn.disabled = true; btn.textContent = '⏳ Fetching…'; }
-      let ok = 0, failed = 0;
-      for (const row of targets) {
-        try {
-          const res = await fetch('/prospect/crm-get-profile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            credentials: 'same-origin',
-            body: JSON.stringify({ linkedin_url: row.linkedinUrl, name: row.name }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || !data.ok) {
-            console.warn('[CRM GetProfile]', row.linkedinUrl, data.error || res.status);
-            failed++;
-            continue;
-          }
-          // Update only non-empty fields returned from the API
-          const map = { name: 'name', jobTitle: 'jobTitle', company: 'company',
-                        country: 'country', email: 'email', mobile: 'mobile' };
-          for (const [src, dest] of Object.entries(map)) {
-            if (data[src]) row[dest] = data[src];
-          }
-          ok++;
-        } catch (e) {
-          console.warn('[CRM GetProfile] fetch error:', e);
-          failed++;
-        }
-      }
-      if (btn) { btn.disabled = false; btn.textContent = '👤 Get Profile'; }
-      if (ok || failed) {
-        // After all individual profile fetches, call Gemini batch endpoint to extract
-        // jobTitle and company from the temp JSON files saved by each fetch.
-        try {
-          const gemRes = await fetch('/prospect/crm-gemini-profile-assess', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-            credentials: 'same-origin',
-            body: JSON.stringify({}),
-          });
-          const gemData = await gemRes.json().catch(() => ({}));
-          if (gemData.ok && Array.isArray(gemData.results) && gemData.results.length) {
-            for (const item of gemData.results) {
-              const row = _crmRows.find(r => r.linkedinUrl === item.linkedinUrl);
-              if (row) {
-                if (item.jobTitle) row.jobTitle = item.jobTitle;
-                if (item.company)  row.company  = item.company;
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('[CRM Gemini assess]', e);
-        }
-        _crmRenderTable();
-        const msg = ok
-          ? `✅ ${ok} profile(s) updated${failed ? '; ' + failed + ' failed' : ''}.`
-          : `❌ All ${failed} profile fetch(es) failed. Check server logs.`;
-        alert(msg);
-      }
-    }
 
 
     function crmExportOrImport() {
@@ -3457,31 +3373,26 @@
       if (!_crmSelected.size) return;
       _crmSyncFromTable();
       const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
-      const firstRow = selectedRows[0] || {};
-      const candidateName = firstRow.name || 'Candidate';
-      const prompt = selectedRows.length === 1
-        ? `Write a concise, personalised sales outreach email for ${candidateName}` +
-          (firstRow.jobTitle ? `, ${firstRow.jobTitle}` : '') +
-          (firstRow.company  ? ` at ${firstRow.company}` : '') +
-          '. Use tags [Name], [Job Title], [Company Name], [Country], [Sector], [Seniority], [Your Name] for personalisation.'
-        : `Write a concise, professional sales outreach email suitable for ${selectedRows.length} candidates. ` +
-          'Use tags [Name], [Job Title], [Company Name], [Country], [Sector], [Seniority], [Your Name] for personalisation.';
       const btn = document.getElementById('crmGenEmailBtn');
       if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+      const subjectEl = document.getElementById('crmEmailSubject');
+      const subject = subjectEl ? subjectEl.value.trim() : '';
+      const recipients = selectedRows.map(r => ({
+        name: r.name, jobTitle: r.jobTitle, company: r.company,
+        country: r.country, sector: r.sector, seniority: r.seniority
+      }));
       try {
-        const res = await fetch('http://localhost:4000/draft-email', {
+        const res = await fetch('/prospect/crm-email-draft', {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-          credentials: 'include',
-          body: JSON.stringify({
-            prompt,
-            context: { candidateName, myEmail: (_crmSmtpConfig || {}).user || '' }
-          })
+          body: JSON.stringify({ subject, existingBody: '', recipients })
         });
-        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Generation failed');
         crmOpenEmailModal();
-        if (data.subject) document.getElementById('crmEmailSubject').value = data.subject;
-        if (data.body)    document.getElementById('crmEmailBody').value    = data.body;
+        if (data.body) document.getElementById('crmEmailBody').value = data.body;
       } catch (e) {
         alert('❌ Generate Email failed: ' + e.message);
       } finally {
