@@ -3219,7 +3219,7 @@ _CSP = (
     # connect-src: API calls go through the same origin; CDN source-map fetches
     # (leaflet.js.map, chart.umd.js.map) require the same CDN origins that are
     # already trusted in script-src.
-    "connect-src 'self' https://unpkg.com https://cdn.jsdelivr.net https://nominatim.openstreetmap.org; "
+    "connect-src 'self' http://localhost:4000 https://unpkg.com https://cdn.jsdelivr.net https://nominatim.openstreetmap.org; "
     "worker-src 'self' blob:; "
     # frame-ancestors 'self' is consistent with X-Frame-Options: SAMEORIGIN.
     "frame-ancestors 'self';"

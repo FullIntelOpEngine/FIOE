@@ -2395,6 +2395,33 @@ _CRM_SALES_DIR = os.getenv(
 )
 _CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# Load countrycode.JSON once at startup for LinkedIn URL country resolution
+_COUNTRYCODE_MAP: dict = {}
+try:
+    _cc_path = os.path.join(os.path.dirname(__file__), "countrycode.JSON")
+    with open(_cc_path, "r", encoding="utf-8") as _cc_fh:
+        _COUNTRYCODE_MAP = json.load(_cc_fh)
+except Exception as _cc_exc:
+    logger.warning("[CRM] Could not load countrycode.JSON: %s", _cc_exc)
+
+_LINKEDIN_COUNTRY_RE = re.compile(r'https?://([a-z]{2})\.linkedin\.com/in/', re.I)
+
+
+def _country_from_linkedin_url(url: str) -> str:
+    """Infer the full country name from a LinkedIn URL subdomain.
+
+    e.g. ``https://kr.linkedin.com/in/username`` → ``"Korea"``
+    Returns empty string when the URL uses the global ``www`` subdomain or
+    when the 2-letter code is not found in countrycode.JSON.
+    """
+    if not url:
+        return ""
+    m = _LINKEDIN_COUNTRY_RE.match(url)
+    if not m:
+        return ""
+    code = m.group(1).lower()
+    return _COUNTRYCODE_MAP.get(code, "")
+
 
 def _build_prospect_query(job_titles, companies, sectors, country, seniority):
     """Build an X-ray LinkedIn people-search query from Prospect tab parameters."""
@@ -2463,6 +2490,7 @@ def _gemini_assess_crm_profile(name, job_title, company, snippet, sectors_hint, 
         "sector": sectors_hint[0] if sectors_hint else "",
         "seniority": seniority_hint or "",
     }
+
 
 
 def _save_crm_json(username, profiles):
@@ -2586,6 +2614,7 @@ def prospect_source():
             "name":        name        or "",
             "jobTitle":    job_title_parsed or "",
             "company":     company_parsed   or "",
+            "country":     _country_from_linkedin_url(url),
             "linkedinUrl": url,
             "sector":      assessed.get("sector")    or "",
             "seniority":   assessed.get("seniority") or seniority,
@@ -2647,6 +2676,47 @@ def prospect_crm_data_delete():
         return jsonify({"ok": False, "error": "Could not delete CRM file."}), 500
 
 
+
+@app.post("/prospect/crm-save")
+@_require_session
+def prospect_crm_save():
+    """Overwrite the current user's CRM_{username}.json with the profiles sent from the frontend."""
+    username = request._session_user
+    safe = _CRM_USERNAME_SAFE_RE.sub('_', username).strip('_') or 'user'
+    crm_file = os.path.join(_CRM_SALES_DIR, f"CRM_{safe}.json")
+    abs_crm_dir = os.path.abspath(_CRM_SALES_DIR)
+    abs_file = os.path.abspath(crm_file)
+    if not abs_file.startswith(abs_crm_dir + os.sep):
+        logger.error("[CRM save] Path traversal blocked: %s", crm_file)
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
+
+    body = request.get_json(silent=True) or {}
+    profiles = body.get("profiles")
+    if not isinstance(profiles, list):
+        return jsonify({"ok": False, "error": "profiles must be a list"}), 400
+
+    # Sanitise each profile: keep only known safe fields
+    _ALLOWED_FIELDS = {"name", "jobTitle", "company", "country", "sector", "seniority",
+                       "email", "mobile", "comment", "status", "linkedinUrl"}
+    clean = []
+    for p in profiles:
+        if not isinstance(p, dict):
+            continue
+        clean.append({k: str(v) for k, v in p.items() if k in _ALLOWED_FIELDS})
+
+    try:
+        os.makedirs(os.path.abspath(_CRM_SALES_DIR), exist_ok=True)
+        tmp = crm_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(clean, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, crm_file)
+        logger.info("[CRM save] Saved %d profile(s) to %s", len(clean), crm_file)
+        return jsonify({"ok": True, "saved": len(clean)}), 200
+    except Exception as exc:
+        logger.warning("[CRM save] Write failed for %s: %s", crm_file, exc)
+        return jsonify({"ok": False, "error": "Could not write CRM file."}), 500
+
+
 @app.post("/prospect/crm-email-draft")
 @_require_session
 def prospect_crm_email_draft():
@@ -2690,6 +2760,277 @@ def prospect_crm_email_draft():
     except Exception as exc:
         logger.warning("[CRM email draft] LLM call failed: %s", exc)
         return jsonify({"ok": False, "error": "AI draft failed. Check server logs for details."}), 500
+
+
+# ── Verified Email helpers (mirrors server.js logic) ─────────────────────────
+
+_VERIFIED_EMAIL_PATH = os.path.join(BASE_DIR, 'verified_email.json')
+_verified_email_lock = threading.Lock()
+
+
+def _load_verified_email():
+    """Load verified_email.json, migrating legacy flat-array format if needed."""
+    try:
+        with open(_VERIFIED_EMAIL_PATH, 'r', encoding='utf-8') as _f:
+            _data = json.load(_f)
+        if isinstance(_data, list):
+            _converted = {}
+            for _entry in _data:
+                _ck = re.sub(r'[^a-z0-9]', '_', (_entry.get('company') or 'unknown').lower())
+                if _ck not in _converted:
+                    _converted[_ck] = {'Domain': [], 'Confidence_threshold': 1}
+                _converted[_ck]['Domain'].append({
+                    **_entry,
+                    'company': _ck,
+                    'count': _entry.get('count') or 1,
+                    'confidence': _entry.get('confidence') if _entry.get('confidence') is not None else 1,
+                })
+            return _converted
+        for _ck, _cd in _data.items():
+            if isinstance(_cd.get('Domain'), list):
+                for _e in _cd['Domain']:
+                    if _e.get('count') is None:
+                        _e['count'] = 1
+        return _data
+    except Exception:
+        return {}
+
+
+def _save_verified_email(data):
+    """Atomically save data to verified_email.json."""
+    _tmp = _VERIFIED_EMAIL_PATH + '.tmp'
+    with open(_tmp, 'w', encoding='utf-8') as _f:
+        json.dump(data, _f, indent=2)
+    os.replace(_tmp, _VERIFIED_EMAIL_PATH)
+
+
+def _recalculate_confidences(company_data):
+    """Redistribute confidence values proportionally based on each domain entry's count."""
+    entries = company_data.get('Domain') or []
+    if not entries:
+        return
+    total = sum(e.get('count') or 1 for e in entries)
+    if not total:
+        return
+    sum_so_far = 0.0
+    for i, e in enumerate(entries):
+        if i == len(entries) - 1:
+            e['confidence'] = round(max(0.0, 1.0 - sum_so_far), 2)
+        else:
+            e['confidence'] = round((e.get('count') or 1) / total, 2)
+            sum_so_far += e['confidence']
+
+
+@app.post("/prospect/crm-generate-email")
+@_require_session
+def prospect_crm_generate_email():
+    """Generate email addresses for a CRM prospect.
+
+    Checks verified_email.json for a known domain structure first; falls back
+    to a plain Gemini inference prompt when no verified data is available.
+    Mirrors the FIOE path in server.js /generate-email.
+    """
+    body = request.get_json(silent=True) or {}
+    name    = str(body.get('name')    or '').strip()
+    company = str(body.get('company') or '').strip()
+    country = str(body.get('country') or '').strip()
+
+    if not name or not company:
+        return jsonify({'error': 'Name and Company are required.'}), 400
+
+    try:
+        company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+        verified_data  = _load_verified_email()
+        company_entry  = verified_data.get(company_key)
+
+        email_source = 'gemini'
+        verified_confidence = None
+
+        if (company_entry
+                and isinstance(company_entry.get('Domain'), list)
+                and company_entry['Domain']):
+            top_entry = max(company_entry['Domain'], key=lambda e: e.get('confidence') or 0)
+            email_source = 'verified'
+            verified_confidence = top_entry.get('confidence')
+            gen_prompt = (
+                f'You are an email address generator. The following verified email domain '
+                f'structure has been confirmed for the company "{company}":\n'
+                f'- Domain: {top_entry.get("domain", "")}\n'
+                f'- Format: {top_entry.get("format", "")}\n'
+                f'- Example: {top_entry.get("fake_example") or "(not available)"}\n\n'
+                f'Using exactly this domain and format, generate 3 realistic email address '
+                f'variations for a person named "{name}"'
+                + (f' (located in {country})' if country else '') + '.\n'
+                'Sort the list by highest probability of being the correct active email to lowest.\n'
+                'Return strictly a JSON object: { "emails": ["email1", "email2", "email3"] }\n'
+                'Do not include markdown formatting.'
+            )
+        else:
+            gen_prompt = (
+                f'Generate the most likely business email addresses for a person named '
+                f'"{name}" working at the company "{company}"'
+                + (f' (located in {country})' if country else '') + '.\n'
+                'Infer the likely domain name based on the company name.\n'
+                'For each email address candidate, estimate a probability (0–100) that it is the correct active email.\n'
+                'Return strictly a JSON object: { "emails": [{ "email": "addr1", "probability": 85 }, { "email": "addr2", "probability": 10 }] }\n'
+                'Sort by highest probability first. Include at least 1 and at most 3 candidates.\n'
+                'Do not include markdown formatting.'
+            )
+
+        raw = (unified_llm_call_text(gen_prompt, temperature=0.3, max_output_tokens=256) or '').strip()
+        _increment_gemini_query_count(request._session_user)
+
+        cleaned = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+        cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE).strip()
+
+        try:
+            data = json.loads(cleaned)
+        except Exception:
+            m = re.search(r'\[.*?\]', cleaned, re.DOTALL)
+            if m:
+                data = {'emails': json.loads(m.group(0))}
+            else:
+                raise ValueError('Failed to parse LLM email generation response')
+
+        # Normalise: Gemini fallback may return [{email, probability}] objects; verified path returns strings.
+        raw_emails = data.get('emails') or []
+        top_probability = None
+        email_probabilities = []
+        if email_source == 'gemini' and raw_emails and isinstance(raw_emails[0], dict):
+            email_list = [e['email'] for e in raw_emails if isinstance(e, dict) and e.get('email')]
+            email_probabilities = [e.get('probability') for e in raw_emails if isinstance(e, dict) and e.get('email')]
+            top_probability = email_probabilities[0] if email_probabilities else None
+        else:
+            email_list = [e if isinstance(e, str) else e.get('email', '') for e in raw_emails if e]
+            # For the verified path generate distinct declining probabilities per email so
+            # each selectable tag shows a unique confidence value.
+            if email_source == 'verified' and email_list:
+                base_pct = round((verified_confidence or 0.95) * 100)
+                scale = [1.0, 0.85, 0.70]
+                email_probabilities = [
+                    min(100, round(base_pct * scale[min(i, len(scale) - 1)])) for i in range(len(email_list))
+                ]
+                top_probability = email_probabilities[0] if email_probabilities else None
+
+        return jsonify({
+            'emails': email_list,
+            'source': email_source,
+            'confidence': verified_confidence,
+            'probability': top_probability,
+            'email_probabilities': email_probabilities,
+        }), 200
+
+    except Exception as exc:
+        logger.warning('[CRM generate-email] failed: %s', exc)
+        return jsonify({'error': 'Email generation failed.'}), 500
+
+
+@app.post("/prospect/crm-save-verified-email")
+@_require_session
+def prospect_crm_save_verified_email():
+    """Persist a confirmed email address into verified_email.json.
+
+    Uses the LLM to infer the email format pattern and generate a normalised
+    fake example, then recalculates per-domain confidence scores.
+    Mirrors the /save-verified-email endpoint in server.js.
+    """
+    body     = request.get_json(silent=True) or {}
+    emails   = body.get('emails') or []
+    name     = str(body.get('name')    or '').strip()
+    company  = str(body.get('company') or '').strip()
+
+    if not isinstance(emails, list) or not emails:
+        return jsonify({'error': 'emails array is required.'}), 400
+    if not name or not company:
+        return jsonify({'error': 'name and company are required.'}), 400
+
+    try:
+        with _verified_email_lock:
+            existing    = _load_verified_email()
+            company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+            if company_key not in existing:
+                existing[company_key] = {'Domain': [], 'Confidence_threshold': 1}
+            company_data = existing[company_key]
+
+            new_entries = []
+            for email in emails:
+                if not email or not isinstance(email, str):
+                    continue
+                at_idx = email.rfind('@')
+                if at_idx < 0:
+                    continue
+                local_part = email[:at_idx]
+                domain     = email[at_idx + 1:].lower()
+
+                existing_entry = next(
+                    (e for e in company_data['Domain'] if e.get('domain') == domain), None
+                )
+                if existing_entry:
+                    existing_entry['count']    = (existing_entry.get('count') or 1) + 1
+                    existing_entry['saved_at'] = datetime.utcnow().isoformat() + 'Z'
+                    new_entries.append(existing_entry)
+                    continue
+
+                norm_prompt = (
+                    f'You are an email format analyst. Given:\n'
+                    f'- Real name: "{name}"\n'
+                    f'- Company: "{company}"\n'
+                    f'- Observed email local part: "{local_part}"\n'
+                    f'- Domain: "{domain}"\n\n'
+                    'Analyze the format used for the local part of the email. Then:\n'
+                    '1. Identify the format pattern (e.g. "first_name.last_name", '
+                    '"firstnamelastname", "f.lastname", "firstlastname" etc.)\n'
+                    '2. Generate a completely fake example email using a generic made-up name '
+                    '(NOT the real name) that follows the same format.\n'
+                    '   The fake name must be realistic-sounding but entirely fictional '
+                    '(e.g. "John Tan", "Oliver Chan").\n'
+                    '3. Return ONLY a JSON object with these fields:\n'
+                    '   {\n'
+                    '     "format": "<pattern string>",\n'
+                    f'     "fake_example": "<fake_local_part>@{domain}",\n'
+                    '     "fake_local_part": "<fake_local_part_only>"\n'
+                    '   }\n'
+                    'No markdown, no explanation.'
+                )
+
+                fmt = local_part
+                fake_example    = ''
+                fake_local_part = ''
+                try:
+                    llm_text = (
+                        unified_llm_call_text(norm_prompt, temperature=0.2, max_output_tokens=128)
+                        or ''
+                    ).strip()
+                    json_str = re.sub(r'```(?:json)?', '', llm_text).strip()
+                    parsed   = json.loads(json_str)
+                    fmt             = parsed.get('format')        or local_part
+                    fake_example    = parsed.get('fake_example')    or ''
+                    fake_local_part = parsed.get('fake_local_part') or ''
+                except Exception as _e:
+                    logger.debug('[crm-save-verified-email] LLM normalisation failed (non-fatal): %s', _e)
+
+                new_entry = {
+                    'company':        company_key,
+                    'domain':         domain,
+                    'format':         fmt,
+                    'fake_example':   fake_example,
+                    'fake_local_part': fake_local_part,
+                    'saved_at':       datetime.utcnow().isoformat() + 'Z',
+                    'count':          1,
+                    'confidence':     1,
+                }
+                company_data['Domain'].append(new_entry)
+                new_entries.append(new_entry)
+
+            _recalculate_confidences(company_data)
+            if new_entries:
+                _save_verified_email(existing)
+
+        return jsonify({'ok': True, 'added': len(new_entries)}), 200
+
+    except Exception as exc:
+        logger.warning('[CRM save-verified-email] failed: %s', exc)
+        return jsonify({'error': 'Failed to save verified email.'}), 500
 
 
 JOBS = {}
@@ -2748,6 +3089,45 @@ def parse_linkedin_title(title: str):
     jobtitle=MULTI_SPACE_RE.sub(' ',jobtitle)
     company=MULTI_SPACE_RE.sub(' ',company)
     return name or None, jobtitle or None, company or None
+
+
+_SERP_DESC_DELIMITERS = (' · ', ' | ', ' - ', ' • ', '\n', ',')
+
+def _parse_linkedin_description(text: str):
+    """Extract (job_title, company) from a LinkedIn SERP description/snippet.
+
+    Handles patterns such as:
+      "Sales Manager at Acme Corp · 500+ connections"
+      "Head of Sales at TechCorp | LinkedIn"
+      "View John's profile: Sales Director at Acme | 200 connections"
+    Returns (job_title, company) strings, or (None, None) on failure.
+    """
+    if not text:
+        return None, None
+    # Strip trailing LinkedIn suffix before parsing
+    text = CLEAN_LINKEDIN_SUFFIX_RE.sub('', text).strip()
+    # If the text starts with "View ... profile" noise, skip that preamble
+    _colon = text.find(':')
+    if _colon != -1 and _colon < 60:
+        text = text[_colon + 1:].strip()
+    at_idx = text.lower().find(' at ')
+    if at_idx == -1:
+        return None, None
+    jobtitle_part = text[:at_idx].strip()
+    company_part = text[at_idx + 4:].strip()
+    # Truncate company at the first recognised delimiter
+    for delim in _SERP_DESC_DELIMITERS:
+        idx = company_part.find(delim)
+        if idx != -1:
+            company_part = company_part[:idx].strip()
+    # Sanity limits — avoid capturing whole paragraphs
+    if not jobtitle_part or not company_part:
+        return None, None
+    if len(jobtitle_part) > 120 or len(company_part) > 120:
+        return None, None
+    jobtitle_part = MULTI_SPACE_RE.sub(' ', jobtitle_part)
+    company_part  = MULTI_SPACE_RE.sub(' ', company_part)
+    return jobtitle_part or None, company_part or None
 
 # ── LLM provider adapters ─────────────────────────────────────────────────────
 
@@ -3423,7 +3803,7 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
     prompt = (
         "You are a search-query translator. Convert the Google Xray boolean search "
         "query below into a JSON object suitable for the Apollo People Search API "
-        "(POST https://api.apollo.io/api/v1/mixed_people/api_search).\n\n"
+        "(POST https://api.apollo.io/api/v1/mixed_people/search).\n\n"
         "Rules:\n"
         "1. Extract job titles into \"person_titles\" (array of strings).\n"
         "2. Extract location hints into \"person_locations\" (array of strings).\n"
@@ -3477,10 +3857,10 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
     params = dict(raw_params) if raw_params else _translate_xray_to_apollo_params(query)
     params["page"] = page
     params["per_page"] = num
-    logger.debug(f"[Apollo] Calling mixed_people/api_search — page={page} per_page={num} params={params}")
+    logger.debug(f"[Apollo] Calling mixed_people/search — page={page} per_page={num} params={params}")
     try:
         r = requests.post(
-            "https://api.apollo.io/api/v1/mixed_people/api_search",
+            "https://api.apollo.io/api/v1/mixed_people/search",
             headers={
                 "x-api-key": api_key,
                 "Content-Type": "application/json",

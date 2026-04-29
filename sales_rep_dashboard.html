@@ -838,6 +838,74 @@
     }
     .crm-send-email-btn:disabled { opacity: .4; cursor: not-allowed; }
     .crm-send-email-btn:not(:disabled):hover { background: #0e7d22; }
+    .crm-gen-email-btn {
+      padding: 6px 14px;
+      background: #5a1a6b;
+      color: #fff;
+      border: 1px solid #8a3aaa;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+      white-space: nowrap;
+    }
+    .crm-gen-email-btn:hover { background: #7d2da0; }
+    .crm-gen-email-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #crmEmailSourceBadge.badge-verified {
+      background: rgba(34,197,94,0.15); color: #16a34a;
+      border: 1px solid rgba(34,197,94,0.4);
+    }
+    #crmEmailSourceBadge.badge-gemini {
+      background: rgba(99,102,241,0.15); color: #818cf8;
+      border: 1px solid rgba(99,102,241,0.4);
+    }
+    #crmEmailTagsContainer {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px;
+    }
+    .crm-email-tag {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: 14px; cursor: pointer;
+      font-size: 11px; font-weight: 600; white-space: nowrap;
+      border: 1px solid rgba(138,58,170,0.45);
+      background: rgba(90,26,107,0.13); color: var(--dd);
+      transition: background .15s, border-color .15s;
+    }
+    .crm-email-tag:hover { background: rgba(138,58,170,0.28); border-color: var(--cb); }
+    .crm-email-tag.active { background: rgba(138,58,170,0.40); border-color: var(--cb); }
+    .crm-email-tag .tag-label {
+      font-size: 10px; font-weight: 700; padding: 1px 5px;
+      border-radius: 3px; white-space: nowrap;
+    }
+    .crm-email-tag .tag-label.tl-fioe {
+      background: rgba(34,197,94,0.18); color: #16a34a;
+      border: 1px solid rgba(34,197,94,0.35);
+    }
+    .crm-email-tag .tag-label.tl-pct {
+      background: rgba(99,102,241,0.15); color: #818cf8;
+      border: 1px solid rgba(99,102,241,0.35);
+    }
+    .crm-email-tag .tag-label.tl-provider {
+      background: rgba(59,130,246,0.15); color: #60a5fa;
+      border: 1px solid rgba(59,130,246,0.35);
+    }
+    .crm-vemail-bar {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+      padding: 8px 12px;
+      background: rgba(90,26,107,0.15);
+      border: 1px solid rgba(138,58,170,0.4); border-radius: 7px;
+    }
+    .crm-vemail-bar .crm-vemail-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+      text-transform: uppercase; color: var(--cb); white-space: nowrap;
+    }
+    .crm-vemail-provider-sel {
+      flex: 1; padding: 5px 8px; border-radius: 6px;
+      background: var(--panel2); border: 1px solid var(--border);
+      color: var(--dd); font-size: 12px;
+      font-family: "Roboto Condensed", sans-serif; outline: none;
+    }
     /* per-row checkbox column */
     .crm-check-col { width: 32px; text-align: center; }
     /* overlay modal shared style */
@@ -956,6 +1024,19 @@
       transition: background .15s;
     }
     .crm-add-row-btn:hover { background: #0a4baa; }
+    .crm-save-btn {
+      padding: 7px 16px;
+      background: #1a7a3c;
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 12px;
+      font-weight: 700;
+      font-family: "Roboto Condensed", sans-serif;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .crm-save-btn:hover { background: #145e2e; }
     .crm-export-btn {
       padding: 7px 16px;
       background: var(--panel);
@@ -1083,6 +1164,20 @@
       outline: none;
       font-family: "Roboto Condensed", sans-serif;
     }
+
+    /* ── CRM column-width overrides ─────────────────────────────── */
+    /* Country (col 6), Sector (col 7), Seniority (col 8): autofit  */
+    .crm-table th:nth-child(6), .crm-table td:nth-child(6),
+    .crm-table th:nth-child(7), .crm-table td:nth-child(7),
+    .crm-table th:nth-child(8), .crm-table td:nth-child(8) {
+      width: 1%;
+      white-space: nowrap;
+    }
+    .crm-table td:nth-child(6) .crm-cell-input,
+    .crm-table td:nth-child(7) .crm-cell-input,
+    .crm-table td:nth-child(8) .crm-cell-input { min-width: 0; width: auto; }
+    /* Comment (col 11): wider                                       */
+    .crm-table th:nth-child(11), .crm-table td:nth-child(11) { min-width: 200px; }
 
     /* ── Email modal – template bar & glossary tags ───────────── */
     .crm-tpl-bar {
@@ -1429,10 +1524,12 @@
       <div class="crm-toolbar">
         <div class="crm-title">📋 CRM — Prospect Candidates</div>
         <button class="crm-add-row-btn" onclick="crmAddRow()">+ Add Candidate</button>
+        <button class="crm-save-btn" id="crmSaveBtn" onclick="crmSaveCrm()" title="Save all CRM candidates to server">💾 Save</button>
         <button class="crm-export-btn" id="crmExportBtn" onclick="crmExportOrImport()">⬇ Export XLS</button>
         <input type="file" id="crmImportFileInput" accept=".xml" style="display:none;" onchange="crmImportXls(this)" />
         <button class="crm-smtp-btn" id="crmSmtpBtn" onclick="crmOpenSmtpModal()" title="Configure SMTP for outbound email">⚙ Configure SMTP</button>
-        <button class="crm-send-email-btn" id="crmSendEmailBtn" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+        <button class="crm-send-email-btn" id="crmSendEmailBtn" style="display:none;" disabled onclick="crmOpenEmailModal()" title="Send email to selected candidates">✉ Send Email</button>
+        <button class="crm-send-email-btn" id="crmLookupBtn" style="display:none;" disabled onclick="crmLookupClients()" title="Check if selected companies already exist as clients">🔍 Client Lookup</button>
       </div>
       <div class="crm-table-wrap">
         <table class="crm-table" id="crmTable">
@@ -1501,10 +1598,32 @@
         <button class="crm-tpl-btn" onclick="crmSaveTemplate()">💾 Save Template</button>
         <button class="crm-tpl-btn" onclick="crmDeleteTemplate()" title="Delete selected template">🗑</button>
       </div>
-      <label class="fioe-modal-label">From</label>
-      <input class="fioe-modal-input" id="crmEmailFrom" type="email" placeholder="you@example.com" />
+      <div class="fioe-modal-row" style="gap:14px;">
+        <div style="flex:1;">
+          <label class="fioe-modal-label">From</label>
+          <input class="fioe-modal-input" id="crmEmailFrom" type="email" placeholder="you@example.com" />
+        </div>
+        <div style="flex:1;">
+          <label class="fioe-modal-label">Send Email Address</label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input class="fioe-modal-input" id="crmEmailTo" type="text" placeholder="recipient@example.com, …" style="flex:1;min-width:0;" />
+            <span id="crmEmailSourceBadge" style="display:none;flex-shrink:0;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;white-space:nowrap;"></span>
+          </div>
+          <div id="crmEmailTagsContainer" style="display:none;"></div>
+        </div>
+      </div>
       <label class="fioe-modal-label">CC</label>
       <input class="fioe-modal-input" id="crmEmailCc" type="text" placeholder="cc@example.com" />
+      <!-- Verified Email / Generate Email -->
+      <div class="crm-vemail-bar">
+        <span class="crm-vemail-label">✅ Verified Email</span>
+        <select id="crmEmailProviderSel" class="crm-vemail-provider-sel" title="Provider used to generate or verify the recipient email address" onchange="_crmUpdateEmailBtn()">
+          <optgroup label="Generate Email Address" id="crmEmailGenOptGroup">
+            <option value="fioe">FIOE</option>
+          </optgroup>
+        </select>
+        <button class="crm-gen-email-btn" id="crmGenEmailBtn" onclick="crmGenerateEmail()" title="Generate or verify the recipient email address">✨ Generate Email</button>
+      </div>
       <label class="fioe-modal-label">Subject</label>
       <input class="fioe-modal-input" id="crmEmailSubject" type="text" placeholder="Email subject…" />
       <label class="fioe-modal-label">Message</label>
@@ -1536,8 +1655,16 @@
           <option value="60">60 min</option>
           <option value="90">90 min</option>
         </select>
+        <button class="crm-cal-btn" onclick="crmCalConnectGoogle()" title="Connect your Google Calendar account">🟢 Google Connect</button>
+        <button class="crm-cal-btn" id="crmCalIcsBtn" onclick="crmCalToggleIcsInput()" title="Connect via ICS feed URL">📆 ICS Connect</button>
         <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
         <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+      </div>
+      <!-- ICS URL input row (shown when ICS Connect is clicked) -->
+      <div id="crmCalIcsRow" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
+        <input type="url" id="crmCalIcsUrl" class="fioe-modal-input" style="margin:0;flex:1;min-width:220px;" placeholder="https://…/calendar.ics or webcal://…" oninput="if(_crmCalIcsUrl!==this.value){_crmCalIcsUrl='';_crmCalIcsConnected=false;const s=document.getElementById('crmCalIcsStatus');if(s){s.textContent='';s.style.color='';}const b=document.getElementById('crmCalIcsBtn');if(b){b.style.background='';b.style.color='';b.style.borderColor='';}const cb=document.getElementById('crmCalIcsConnectBtn');if(cb)cb.textContent='🔗 Connect ICS';}" />
+        <button class="crm-cal-btn" id="crmCalIcsConnectBtn" onclick="crmCalConnectIcs()">🔗 Connect ICS</button>
+        <span id="crmCalIcsStatus" style="font-size:12px;font-weight:600;"></span>
       </div>
       <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
       <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
@@ -2432,13 +2559,14 @@
             // Push directly to avoid per-row re-render; render once at end
             _crmRows.push(Object.assign({
               id: _crmNextId++,
-              name: '', jobTitle: '', company: '',
+              name: '', jobTitle: '', company: '', country: '',
               sector: '', seniority: '', email: '',
               mobile: '', comment: '', status: '', linkedinUrl: ''
             }, {
               name:        p.name        || '',
               jobTitle:    p.jobTitle    || p.job_title  || '',
               company:     p.company     || '',
+              country:     p.country     || '',
               sector:      p.sector      || '',
               seniority:   p.seniority   || '',
               email:       p.email       || '',
@@ -2808,6 +2936,7 @@
             name:        p.name      || p.fullName      || '',
             jobTitle:    p.job_title || p.jobTitle      || p.title || '',
             company:     p.company   || p.organization  || '',
+            country:     p.country   || '',
             sector:      p.sector    || (_prospectSectors.length === 1 ? _prospectSectors[0] : ''),
             seniority:   p.seniority || seniority        || '',
             email:       p.email     || p.emailAddress  || '',
@@ -2841,7 +2970,7 @@
     function crmAddRow(data) {
       const row = Object.assign({
         id: _crmNextId++,
-        name: '', jobTitle: '', company: '',
+        name: '', jobTitle: '', company: '', country: '',
         sector: '', seniority: '', email: '',
         mobile: '', comment: '', status: '', linkedinUrl: ''
       }, data || {});
@@ -2892,9 +3021,9 @@
         const st = row.status || '';
         html += `<td><select class="crm-status-select" onchange="_crmSetStatus(${row.id},this.value)">` +
           `<option value="">—</option>` +
-          `<option value="sad"${st==='sad'?' selected':''}>😢 :( Sad</option>` +
-          `<option value="neutral"${st==='neutral'?' selected':''}>😐 :| Neutral</option>` +
-          `<option value="happy"${st==='happy'?' selected':''}>😊 :) Happy</option>` +
+          `<option value="uninterested"${(st==='uninterested'||st==='sad')?' selected':''}>🙁</option>` +
+          `<option value="considering"${(st==='considering'||st==='neutral')?' selected':''}>😐</option>` +
+          `<option value="prospected"${(st==='prospected'||st==='happy')?' selected':''}>🙂</option>` +
           `</select></td>`;
         html += `<td><button class="crm-del-btn" onclick="crmDeleteRow(${row.id})" title="Remove">✕</button></td>`;
         tr.innerHTML = html;
@@ -2932,8 +3061,17 @@
     }
 
     function _crmUpdateSendBtn() {
-      const btn = document.getElementById('crmSendEmailBtn');
-      if (btn) btn.disabled = _crmSelected.size === 0;
+      const sendBtn   = document.getElementById('crmSendEmailBtn');
+      const lookupBtn = document.getElementById('crmLookupBtn');
+      const hasSelection = _crmSelected.size > 0;
+      if (sendBtn) {
+        sendBtn.disabled = !hasSelection;
+        sendBtn.style.display = hasSelection ? '' : 'none';
+      }
+      if (lookupBtn) {
+        lookupBtn.disabled = !hasSelection;
+        lookupBtn.style.display = hasSelection ? '' : 'none';
+      }
     }
 
     function _crmCellChange(id, input) {
@@ -2946,6 +3084,119 @@
       if (row) row.status = val;
     }
 
+    /**
+     * For each selected CRM row, check whether the company name already exists as
+     * a client by calling the same /employee/check-client endpoint used in the
+     * Dashboard tab's Client Lookup widget.
+     * Existing companies are highlighted in red directly in the CRM table.
+     */
+    async function crmLookupClients() {
+      if (_crmSelected.size === 0) { alert('Select at least one row first.'); return; }
+      _crmSyncFromTable();
+      // Reset any previous lookup highlights before running a new check.
+      document.querySelectorAll('#crmBody input[data-field="company"]').forEach(inp => {
+        inp.style.color = '';
+        inp.style.fontWeight = '';
+        inp.title = '';
+      });
+      const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+      let checked = 0, found = 0;
+      for (const row of selectedRows) {
+        const company = (row.company || '').trim();
+        if (!company) continue;
+        checked++;
+        try {
+          const resp = await fetch(`/employee/check-client?corporation=${encodeURIComponent(company)}`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            credentials: 'same-origin'
+          });
+          if (!resp.ok) continue;
+          const data = await resp.json();
+          if (data.exists) {
+            found++;
+            // Highlight the company cell in the CRM table row.
+            const rowEl = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+            if (rowEl) {
+              const companyInput = rowEl.querySelector('input[data-field="company"]');
+              if (companyInput) {
+                companyInput.style.color = '#b91c1c';
+                companyInput.style.fontWeight = '700';
+                companyInput.title = `Existing client: ${data.match}`;
+              }
+            }
+          }
+        } catch (_) { /* network/parse errors — skip this row */ }
+      }
+      if (checked === 0) {
+        alert('No company data found for selected rows.');
+      } else if (found === 0) {
+        alert(`Checked ${checked} company name(s). No existing clients found.`);
+      } else {
+        alert(`Found ${found} existing client(s) out of ${checked} checked. Duplicate companies are highlighted in red.`);
+      }
+    }
+
+    function _crmSyncFromTable() {
+      const tbody = document.getElementById('crmBody');
+      if (!tbody) return;
+      tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+        const id = Number(tr.dataset.id);
+        const row = _crmRows.find(r => r.id === id);
+        if (!row) return;
+        tr.querySelectorAll('input.crm-cell-input').forEach(inp => {
+          row[inp.dataset.field] = inp.value;
+        });
+        // For rows where the Name column renders as a link (<a class="crm-name-link">),
+        // always sync row.name from the link text and row.linkedinUrl from the href
+        // so that crmGenerateEmail() always has the latest values.
+        const nameLink = tr.querySelector('a.crm-name-link');
+        if (nameLink) {
+          const linkName = nameLink.textContent.trim();
+          if (linkName) row.name = linkName;
+          const linkUrl = nameLink.href;
+          if (linkUrl) row.linkedinUrl = linkUrl;
+        }
+        const sel = tr.querySelector('select.crm-status-select');
+        if (sel) row.status = sel.value;
+      });
+    }
+
+
+
+    async function crmSaveCrm() {
+      const btn = document.getElementById('crmSaveBtn');
+      _crmSyncFromTable();
+      const profiles = _crmRows.map(r => ({
+        name:        r.name        || '',
+        jobTitle:    r.jobTitle    || '',
+        company:     r.company     || '',
+        country:     r.country     || '',
+        sector:      r.sector      || '',
+        seniority:   r.seniority   || '',
+        email:       r.email       || '',
+        mobile:      r.mobile      || '',
+        comment:     r.comment     || '',
+        status:      r.status      || '',
+        linkedinUrl: r.linkedinUrl || '',
+      }));
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+      try {
+        const res = await fetch('/prospect/crm-save', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ profiles }),
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Save failed');
+        if (btn) { btn.textContent = '✅ Saved'; setTimeout(() => { if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; } }, 2000); }
+      } catch (e) {
+        alert('❌ Save failed: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = '💾 Save'; }
+      }
+    }
+
     function crmExportOrImport() {
       const btn = document.getElementById('crmExportBtn');
       if (btn && btn.dataset.mode === 'import') {
@@ -2956,33 +3207,42 @@
     }
 
     function crmExportXls() {
-      // Build XML Spreadsheet 2003 workbook with two sheets:
-      // Sheet 1 "Prospect" — human-editable columns
-      // Sheet 2 "DB Copy"  — full JSON rows for lossless reimport
-      const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-      const MAX_LEN = 32767;
-      const cellStr = v => { const s = String(v == null ? '' : v); return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s; };
+      // Sync any in-progress cell edits back to _crmRows before building the export.
+      _crmSyncFromTable();
 
-      // Sheet 1 — Prospect (visible)
+      // Build a SpreadsheetML XML workbook (same format as DB Dock Out in App.js)
+      // with two sheets:
+      // Sheet 1 "Prospect" — human-editable columns (visible, working file)
+      // Sheet 2 "Raw"      — full JSON rows for lossless reimport (hidden, data copy)
+
+      const MAX_LEN = 32767;
+
+      // ── XML-escape helper ──────────────────────────────────────────────────
+      const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+      const cell    = v => `<Cell><Data ss:Type="String">${ex(v)}</Data></Cell>`;
+      const hdrCell = v => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(v)}</Data></Cell>`;
+      const rowXml  = cells => `<Row>${cells}</Row>\n`;
+
+      // ── Sheet 1 — Prospect (working sheet) ───────────────────────────────
       const S1_FIELDS  = ['name','jobTitle','company','country','sector','seniority','email','mobile','linkedinUrl','comment','status'];
       const S1_HEADERS = ['Name','Job Title','Company','Country','Sector','Seniority','Email','Mobile','LinkedIn URL','Comment','Status'];
-      const colDefs  = S1_FIELDS.map(() => '<Column ss:Width="120"/>').join('');
-      const hdrRow   = '<Row>' + S1_HEADERS.map(h => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(h)}</Data></Cell>`).join('') + '</Row>';
-      const dataRows = _crmRows.map(row =>
-        '<Row>' + S1_FIELDS.map(f => `<Cell><Data ss:Type="String">${ex(cellStr(row[f] || ''))}</Data></Cell>`).join('') + '</Row>'
-      ).join('');
+      let s1Rows = rowXml(S1_HEADERS.map(hdrCell).join(''));
+      for (const r of _crmRows) {
+        s1Rows += rowXml(S1_FIELDS.map(f => cell(r[f] || '')).join(''));
+      }
 
-      // Sheet 2 — DB Copy (hidden), one JSON object per row
-      const jsonHeaderRow = '<Row><Cell><Data ss:Type="String">__crm_json_export_v1__</Data></Cell></Row>';
-      const jsonRows = _crmRows.map(row => {
-        const s = JSON.stringify(row);
-        const chunks = [];
-        for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
-        const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
-        return `<Row>${cells}</Row>`;
-      }).join('');
+      // ── Sheet 2 — Raw (hidden, data copy) ────────────────────────────────
+      let s2Rows = rowXml(hdrCell('__crm_json_export_v1__'));
+      for (const r of _crmRows) {
+        const s = JSON.stringify(r);
+        let cells = '';
+        for (let i = 0; i < s.length; i += MAX_LEN) cells += cell(s.slice(i, i + MAX_LEN));
+        s2Rows += rowXml(cells);
+      }
 
-      const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
+      const xml =
+        `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
         `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
         ` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
         ` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
@@ -2990,24 +3250,18 @@
         ` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
         ` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n` +
         ` <Worksheet ss:Name="Prospect">\n` +
-        `  <Table ss:DefaultColumnWidth="110">${colDefs}${hdrRow}${dataRows}</Table>\n` +
-        `  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">\n` +
-        `   <FreezePanes/><FrozenNoSplit/>\n` +
-        `   <SplitHorizontal>1</SplitHorizontal>\n` +
-        `   <TopRowBottomPane>1</TopRowBottomPane>\n` +
-        `   <ActivePane>2</ActivePane>\n` +
-        `  </WorksheetOptions>\n` +
+        `  <Table ss:DefaultColumnWidth="110">${s1Rows}</Table>\n` +
         ` </Worksheet>\n` +
-        ` <Worksheet ss:Name="DB Copy" ss:Visible="SheetHidden">\n` +
-        `  <Table>${jsonHeaderRow}${jsonRows}</Table>\n` +
+        ` <Worksheet ss:Name="Raw" ss:Visible="SheetHidden">\n` +
+        `  <Table>${s2Rows}</Table>\n` +
         ` </Worksheet>\n` +
         `</Workbook>`;
 
-      const blob = new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+      const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href = url;
-      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xml';
+      a.download = 'crm_candidates_' + new Date().toISOString().slice(0,10) + '.xls';
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
 
@@ -3020,7 +3274,7 @@
 
       const btn = document.getElementById('crmExportBtn');
       if (btn) {
-        btn.textContent = '⬆ Import CSV';
+        btn.textContent = '⬆ Import XLS';
         btn.dataset.mode = 'import';
       }
     }
@@ -3031,43 +3285,110 @@
       const reader = new FileReader();
       reader.onload = function(e) {
         try {
-          const text = new TextDecoder('utf-8').decode(new Uint8Array(e.target.result));
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(text, 'application/xml');
-          if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+          const raw = new Uint8Array(e.target.result);
 
-          // Find the DB Copy worksheet
-          const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
-          let dbCopyWs = null;
-          for (const ws of wsNodes) {
-            const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
-            if (name === 'DB Copy') { dbCopyWs = ws; break; }
+          // ── Detect format: XLSX (ZIP) starts with PK magic bytes 0x50 0x4B ──
+          const isXlsx = raw.length > 4 && raw[0] === 0x50 && raw[1] === 0x4B;
+
+          if (isXlsx) {
+            // ── XLSX import: read Raw sheet from the ZIP ──────────────────────
+            const dv = new DataView(raw.buffer);
+            const u16 = off => dv.getUint16(off, true);
+            const u32 = off => dv.getUint32(off, true);
+
+            // Locate End of Central Directory (signature 0x06054b50)
+            let eocdPos = -1;
+            for (let i = raw.length - 22; i >= 0; i--) {
+              if (u32(i) === 0x06054b50) { eocdPos = i; break; }
+            }
+            if (eocdPos < 0) throw new Error('Not a valid XLSX file (EOCD not found).');
+
+            const cdCount  = u16(eocdPos + 10);
+            const cdOffset = u32(eocdPos + 16);
+
+            // Read a file from the ZIP given its path
+            const dec = new TextDecoder();
+            const readEntry = target => {
+              let cdPos = cdOffset;
+              for (let i = 0; i < cdCount; i++) {
+                if (u32(cdPos) !== 0x02014b50) break;
+                const fnLen  = u16(cdPos + 28);
+                const exLen  = u16(cdPos + 30);
+                const cmLen  = u16(cdPos + 32);
+                const lhOff  = u32(cdPos + 42);
+                const fn     = dec.decode(raw.slice(cdPos + 46, cdPos + 46 + fnLen));
+                if (fn === target) {
+                  if (u32(lhOff) !== 0x04034b50) throw new Error('Bad local header in XLSX.');
+                  const lFnLen = u16(lhOff + 26);
+                  const lExLen = u16(lhOff + 28);
+                  const method = u16(lhOff + 8);
+                  if (method !== 0) throw new Error('XLSX uses compression; only Store method is supported for import.');
+                  const dataOff  = lhOff + 30 + lFnLen + lExLen;
+                  const dataLen  = u32(lhOff + 18);
+                  return raw.slice(dataOff, dataOff + dataLen);
+                }
+                cdPos += 46 + fnLen + exLen + cmLen;
+              }
+              return null;
+            };
+
+            const sheet2Bytes = readEntry('xl/worksheets/sheet2.xml');
+            if (!sheet2Bytes) throw new Error('Raw sheet not found in XLSX. Only CRM exports from this system can be imported.');
+
+            const sheetXml = dec.decode(sheet2Bytes);
+            const xmlDoc = new DOMParser().parseFromString(sheetXml, 'application/xml');
+            if (xmlDoc.querySelector('parsererror')) throw new Error('Raw sheet XML is corrupt.');
+
+            const rows = Array.from(xmlDoc.querySelectorAll('sheetData > row'));
+            // Skip sentinel/header row (row index 0)
+            const dataRows = rows.slice(1);
+            if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
+
+            const imported = [];
+            for (const row of dataRows) {
+              try {
+                // Inline strings: <c t="inlineStr"><is><t>value</t></is></c>
+                const cells = Array.from(row.querySelectorAll('c')).map(c => {
+                  const t = c.querySelector('is > t');
+                  return t ? t.textContent : (c.querySelector('v') || { textContent: '' }).textContent;
+                });
+                const s = cells.join('');
+                if (s) imported.push(JSON.parse(s));
+              } catch(e) { /* skip malformed row */ }
+            }
+            if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
+            _crmFinishImport(imported, file.name);
+
+          } else {
+            // ── Legacy SpreadsheetML (XML Spreadsheet 2003) import ────────────
+            const text = new TextDecoder('utf-8').decode(raw);
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(text, 'application/xml');
+            if (xmlDoc.querySelector('parsererror')) throw new Error('The file is not valid XML. Only CRM exports from this system can be imported.');
+
+            const wsNodes = Array.from(xmlDoc.querySelectorAll('Worksheet'));
+            let dbCopyWs = null;
+            for (const ws of wsNodes) {
+              const name = ws.getAttribute('ss:Name') || ws.getAttributeNS('urn:schemas-microsoft-com:office:spreadsheet', 'Name');
+              if (name === 'Raw' || name === 'DB Copy') { dbCopyWs = ws; break; }
+            }
+            if (!dbCopyWs) throw new Error('Raw sheet not found. Only CRM exports from this system can be imported.');
+
+            const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
+            const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
+            if (!dataRows.length) throw new Error('Raw sheet contains no data rows.');
+
+            const imported = [];
+            for (const row of dataRows) {
+              try {
+                const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
+                const s = cells.join('');
+                if (s) imported.push(JSON.parse(s));
+              } catch(e) { /* skip malformed row */ }
+            }
+            if (!imported.length) throw new Error('Could not parse any rows from Raw sheet.');
+            _crmFinishImport(imported, file.name);
           }
-          if (!dbCopyWs) throw new Error('DB Copy sheet not found. Only CRM exports from this system can be imported.');
-
-          const rows = Array.from(dbCopyWs.querySelectorAll('Row'));
-          // Skip sentinel row (row 0)
-          const dataRows = rows.slice(1).filter(r => r.querySelector('Data'));
-          if (!dataRows.length) throw new Error('DB Copy sheet contains no data rows.');
-
-          const imported = [];
-          for (const row of dataRows) {
-            try {
-              const cells = Array.from(row.querySelectorAll('Data')).map(d => d.textContent || '');
-              const s = cells.join('');
-              if (s) imported.push(JSON.parse(s));
-            } catch(e) { /* skip malformed row */ }
-          }
-          if (!imported.length) throw new Error('Could not parse any rows from DB Copy sheet.');
-
-          _crmRows = [];
-          _crmNextId = 1;
-          _crmSelected.clear();
-          imported.forEach(r => crmAddRow(r));
-
-          const btn = document.getElementById('crmExportBtn');
-          if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
-          alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + file.name);
         } catch(err) {
           alert('❌ Import failed: ' + (err && err.message ? err.message : 'Unknown error'));
         } finally {
@@ -3075,6 +3396,16 @@
         }
       };
       reader.readAsArrayBuffer(file);
+    }
+
+    function _crmFinishImport(imported, filename) {
+      _crmRows = [];
+      _crmNextId = 1;
+      _crmSelected.clear();
+      imported.forEach(r => crmAddRow(r));
+      const btn = document.getElementById('crmExportBtn');
+      if (btn) { btn.textContent = '⬇ Export XLS'; btn.dataset.mode = ''; }
+      alert('✅ Imported ' + _crmRows.length + ' candidate(s) from ' + filename);
     }
 
     // ── SMTP Config Modal ────────────────────────────────────
@@ -3115,25 +3446,70 @@
     }
 
     // ── CRM Email Compose Modal ──────────────────────────────
-    let _crmCalSlots = [];
+    let _crmCalSlots    = [];
+    let _crmCalPage     = 0;
+    const _SLOTS_PER_PAGE = 20;
+    let _crmCalProvider = 'google'; // 'google' | 'ics'
+    let _crmCalIcsUrl   = '';
+    let _crmCalIcsConnected = false;
 
     function crmOpenEmailModal() {
       if (_crmSelected.size === 0) return;
+      _crmSyncFromTable();
       const cfg = _crmSmtpConfig || {};
       document.getElementById('crmEmailFrom').value    = cfg.user || '';
       document.getElementById('crmEmailCc').value      = '';
       document.getElementById('crmEmailSubject').value = '';
       document.getElementById('crmEmailBody').value    = '';
+      // Pre-fill To field with selected rows' email addresses (non-empty only)
+      const selectedEmails = _crmRows
+        .filter(r => _crmSelected.has(r.id) && (r.email || '').trim())
+        .map(r => r.email.trim());
+      document.getElementById('crmEmailTo').value = selectedEmails.join(', ');
+      // Clear source badge when modal is opened/reset
+      const _sb = document.getElementById('crmEmailSourceBadge');
+      if (_sb) { _sb.style.display = 'none'; _sb.textContent = ''; _sb.className = ''; }
+      const _tc = document.getElementById('crmEmailTagsContainer');
+      if (_tc) { _tc.innerHTML = ''; _tc.style.display = 'none'; }
       document.getElementById('crmCalStatus').textContent = '';
       document.getElementById('crmCalSlots').style.display = 'none';
       document.getElementById('crmCalSlots').innerHTML = '';
       _crmCalSlots = [];
+      // Restore or reset ICS connect state.
+      // If a URL was previously saved in this session, keep the connection alive so the
+      // user doesn't have to reconnect every time they open the modal.
+      const _icsRow    = document.getElementById('crmCalIcsRow');
+      const _icsStatus = document.getElementById('crmCalIcsStatus');
+      const _icsBtn    = document.getElementById('crmCalIcsBtn');
+      const _urlInput  = document.getElementById('crmCalIcsUrl');
+      if (_crmCalIcsUrl) {
+        // Restore ICS URL in the input and show the ICS row
+        if (_urlInput) _urlInput.value = _crmCalIcsUrl;
+        if (_icsRow)   _icsRow.style.display = 'flex';
+        if (_crmCalIcsConnected) {
+          if (_icsStatus) { _icsStatus.textContent = '✅ ICS Connected'; _icsStatus.style.color = '#065f46'; }
+          if (_icsBtn)    { _icsBtn.style.background = 'var(--ad)'; _icsBtn.style.color = '#fff'; _icsBtn.style.borderColor = 'var(--ad)'; }
+          const _connectBtn = document.getElementById('crmCalIcsConnectBtn');
+          if (_connectBtn) _connectBtn.textContent = '✅ Reconnect';
+        } else {
+          if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
+          if (_icsBtn)    { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
+        }
+      } else {
+        // No saved URL — fully reset ICS state
+        _crmCalProvider = 'google';
+        _crmCalIcsConnected = false;
+        if (_icsRow)    _icsRow.style.display = 'none';
+        if (_icsStatus) { _icsStatus.textContent = ''; _icsStatus.style.color = ''; }
+        if (_icsBtn)    { _icsBtn.style.background = ''; _icsBtn.style.color = ''; _icsBtn.style.borderColor = ''; }
+      }
       // Pre-fill from/to dates
       const today = new Date();
       const nextWeek = new Date(today.getTime() + 7 * 86400000);
       document.getElementById('crmCalFrom').value = today.toISOString().slice(0,10);
       document.getElementById('crmCalTo').value   = nextWeek.toISOString().slice(0,10);
       _crmRefreshTemplateDropdown();
+      _crmRefreshEmailProviders().catch(() => {});
       document.getElementById('crmEmailModal').style.display = 'flex';
     }
 
@@ -3235,43 +3611,474 @@
       }
     }
 
+    // ── Email provider button label toggle ──────────────────────
+    function _crmUpdateEmailBtn() {
+      const provider = (document.getElementById('crmEmailProviderSel')?.value || 'fioe');
+      const btn = document.getElementById('crmGenEmailBtn');
+      if (!btn) return;
+      const isVerify = ['zerobounce', 'neverbounce', 'bouncer'].includes(provider);
+      btn.textContent = isVerify ? '🔍 Verify Email' : '✨ Generate Email';
+      btn.title = isVerify
+        ? 'Verify the email address in the Send Email Address field using ' + provider
+        : 'Generate recipient email addresses via ' + provider;
+    }
+
+    // ── Populate email provider dropdown from configured services ─────────
+    async function _crmRefreshEmailProviders() {
+      const sel = document.getElementById('crmEmailProviderSel');
+      if (!sel) return;
+      const currentVal = sel.value;
+
+      const [contactData, verifData] = await Promise.all([
+        fetch('/contact-gen-services',  { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/email-verif-services',  { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } }).then(r => r.ok ? r.json() : null).catch(() => null),
+      ]);
+      const contactSvcs = (contactData && Array.isArray(contactData.services)) ? contactData.services : [];
+      const verifSvcs   = (verifData   && Array.isArray(verifData.services))   ? verifData.services   : [];
+
+      // ── Generate Email optgroup (always has FIOE, adds configured providers) ─
+      const GEN_LABELS = { contactout: 'ContactOut', apollo: 'Apollo', rocketreach: 'RocketReach' };
+      let genOg = document.getElementById('crmEmailGenOptGroup');
+      if (!genOg) {
+        genOg = document.createElement('optgroup');
+        genOg.label = 'Generate Email Address';
+        genOg.id = 'crmEmailGenOptGroup';
+        sel.insertBefore(genOg, sel.firstChild);
+      }
+      genOg.innerHTML = '<option value="fioe">FIOE</option>';
+      contactSvcs.forEach(svc => {
+        if (GEN_LABELS[svc]) {
+          const opt = document.createElement('option');
+          opt.value = svc;
+          opt.textContent = GEN_LABELS[svc];
+          genOg.appendChild(opt);
+        }
+      });
+
+      // ── Verify Email optgroup (only when services are configured) ─────────
+      const VERIF_LABELS = { zerobounce: 'ZeroBounce', neverbounce: 'NeverBounce', bouncer: 'Bouncer' };
+      let verifOg = document.getElementById('crmEmailVerifOptGroup');
+      if (verifSvcs.length) {
+        if (!verifOg) {
+          verifOg = document.createElement('optgroup');
+          verifOg.label = 'Verify Email Address';
+          verifOg.id = 'crmEmailVerifOptGroup';
+          sel.appendChild(verifOg);
+        }
+        verifOg.innerHTML = '';
+        verifSvcs.forEach(svc => {
+          if (VERIF_LABELS[svc]) {
+            const opt = document.createElement('option');
+            opt.value = svc;
+            opt.textContent = VERIF_LABELS[svc];
+            verifOg.appendChild(opt);
+          }
+        });
+      } else if (verifOg) {
+        sel.removeChild(verifOg);
+      }
+
+      // Restore previous selection, fall back to fioe
+      sel.value = currentVal;
+      if (!sel.value) sel.value = 'fioe';
+      _crmUpdateEmailBtn();
+    }
+
+    // ── Generate / Verify Email (provider-aware) ─────────────────────────
+    async function crmGenerateEmail() {
+      const provider = (document.getElementById('crmEmailProviderSel')?.value || 'fioe');
+      const btn = document.getElementById('crmGenEmailBtn');
+      const isVerify = ['zerobounce', 'neverbounce', 'bouncer'].includes(provider);
+
+      if (isVerify) {
+        // ── Verify Email ─────────────────────────────────────────
+        const emailToVerify = (document.getElementById('crmEmailTo')?.value || '').trim().split(/[\s,;]+/)[0];
+        if (!emailToVerify) {
+          alert('⚠️ Enter an email address in the Send Email Address field before verifying.');
+          return;
+        }
+        if (btn) { btn.disabled = true; btn.textContent = '⏳ Verifying…'; }
+        try {
+          const res = await fetch('http://localhost:4000/verify-email-details', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ email: emailToVerify, service: provider }),
+            credentials: 'include'
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          const status = data.status || data.result || data.verdict || 'unknown';
+          const isValid = /valid|deliverable|safe/i.test(status);
+          alert((isValid ? '✅' : '❌') + ' Verification result for ' + emailToVerify + ':\n'
+            + 'Status: ' + status
+            + (data.sub_status ? '\nSub-status: ' + data.sub_status : '')
+            + (data.reason ? '\nReason: ' + data.reason : ''));
+        } catch (e) {
+          alert('❌ Email verification failed: ' + e.message);
+        } finally {
+          if (btn) { btn.disabled = false; _crmUpdateEmailBtn(); }
+        }
+        return;
+      }
+
+      // ── Generate Email Address ────────────────────────────────
+      if (!_crmSelected.size) { alert('⚠️ Select at least one prospect.'); return; }
+      _crmSyncFromTable();
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ Generating…'; }
+      // Clear any previous source badge and tags
+      const _badge = document.getElementById('crmEmailSourceBadge');
+      if (_badge) { _badge.style.display = 'none'; _badge.textContent = ''; _badge.className = ''; }
+      const _tagsC = document.getElementById('crmEmailTagsContainer');
+      if (_tagsC) { _tagsC.innerHTML = ''; _tagsC.style.display = 'none'; }
+      try {
+        // Fetch authoritative CRM data directly from CRM.json via the server.
+        // This ensures name, company, and linkedinUrl are always read from the
+        // saved CRM record rather than potentially stale in-memory state.
+        const serverByUrl  = new Map(); // linkedinUrl (lower) → profile
+        const serverByName = new Map(); // "name|company" (lower) → profile
+        try {
+          const crmResp = await fetch('/prospect/crm-data', {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+          });
+          if (crmResp.ok) {
+            const crmData = await crmResp.json();
+            (crmData.profiles || []).forEach(p => {
+              const url = (p.linkedinUrl || p.linkedin_url || '').trim();
+              if (url) serverByUrl.set(url.toLowerCase(), p);
+              const nk = ((p.name || '').toLowerCase() + '|' + (p.company || '').toLowerCase()).trim();
+              if (nk !== '|') serverByName.set(nk, p);
+            });
+          }
+        } catch (e) { /* network issue — fall back to in-memory data */ }
+
+        const selectedRows = _crmRows.filter(r => _crmSelected.has(r.id));
+        const foundEmailEntries = []; // [{email, label, badgeClass}]
+        for (const row of selectedRows) {
+          try {
+            const _tr          = document.querySelector(`#crmBody tr[data-id="${row.id}"]`);
+            const _nameLink    = _tr ? _tr.querySelector('a.crm-name-link')             : null;
+            const _nameInput   = _tr ? _tr.querySelector('input[data-field="name"]')    : null;
+            const _coInput     = _tr ? _tr.querySelector('input[data-field="company"]') : null;
+
+            // Resolve values from in-memory row (already synced from DOM) + raw DOM fallbacks.
+            const memUrl     = (row.linkedinUrl
+                                 || (_nameLink ? (_nameLink.getAttribute('href') || _nameLink.href) : '')
+                                 || '').trim();
+            const memName    = (row.name
+                                 || (_nameLink  ? _nameLink.textContent.trim() : '')
+                                 || (_nameInput ? _nameInput.value.trim()      : '')
+                                 || '').trim();
+            const memCompany = (row.company
+                                 || (_coInput ? _coInput.value.trim() : '')
+                                 || '').trim();
+
+            // Find authoritative server record from CRM.json (by URL, then by name+company).
+            const srv = (memUrl ? serverByUrl.get(memUrl.toLowerCase()) : null)
+                     || (memName && memCompany
+                          ? serverByName.get((memName + '|' + memCompany).toLowerCase())
+                          : null)
+                     || null;
+
+            // Final resolved values: server CRM.json takes precedence over in-memory/DOM.
+            const name       = ((srv && srv.name)                          || memName    || '').trim();
+            const company    = ((srv && srv.company)                       || memCompany || '').trim();
+            const country    = ((srv && srv.country)                       || row.country || '').trim();
+            let   linkedinurl = ((srv && (srv.linkedinUrl || srv.linkedin_url)) || memUrl || '').trim();
+
+            if (provider === 'fioe') {
+              // FIOE generator uses name + company (no LinkedIn URL required).
+              // Routes through the Flask backend so the same-origin CSP is satisfied
+              // and verified_email.json lookup logic is applied.
+              if (!name || !company) continue;
+              const res = await fetch('/prospect/crm-generate-email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ name, company, country }),
+                credentials: 'include'
+              });
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              const data = await res.json();
+              if (data.error) throw new Error(data.error);
+              const emails = (data.emails && data.emails.length)
+                ? data.emails
+                : (data.all_emails && data.all_emails.length)
+                  ? data.all_emails
+                  : [data.email, data.work_email, data.personal_email].filter(Boolean);
+              if (emails.length) {
+                row.email = emails[0];
+                if (_tr) { const inp = _tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
+                // Build per-email label using per-email probabilities so each tag shows a distinct value
+                const isVerifiedSrc = data.source === 'verified';
+                const perProbs = Array.isArray(data.email_probabilities) ? data.email_probabilities : [];
+                emails.forEach((e, idx) => {
+                  let tagLabel, tagClass;
+                  if (isVerifiedSrc) {
+                    const prob = perProbs[idx] != null ? perProbs[idx] : (data.confidence != null ? Math.round(data.confidence * 100) : null);
+                    const pct = prob != null ? prob + '%' : '';
+                    tagLabel = 'FIOE' + (pct ? ' · ' + pct : '');
+                    tagClass = 'tl-fioe';
+                  } else {
+                    const geminiLabels = ['High', 'Medium', 'Low'];
+                    tagLabel = geminiLabels[idx] || 'Low';
+                    tagClass = 'tl-pct';
+                  }
+                  foundEmailEntries.push({ email: e, label: tagLabel, badgeClass: tagClass, source: data.source, confidence: data.confidence, probability: perProbs[idx] ?? data.probability });
+                });
+              }
+            } else {
+              // LinkedIn-based providers (contactout/apollo/rocketreach):
+              // URL priority: CRM.json record → in-memory row → DOM <a> href →
+              //               URL embedded in name text (legacy format).
+              if (!linkedinurl) {
+                const nameText = name || memName;
+                if (nameText) {
+                  const m = nameText.match(/https?:\/\/(?:[\w-]+\.)*linkedin\.com\/in\/[^\s,;<>")\]]+/i);
+                  if (m) linkedinurl = m[0].replace(/[.,;]+$/, '');
+                }
+              }
+              if (!linkedinurl) continue;
+              const res = await fetch('http://localhost:4000/generate-email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ provider, linkedinurl }),
+                credentials: 'include'
+              });
+              if (!res.ok) throw new Error('HTTP ' + res.status);
+              const data = await res.json();
+              if (data.error) throw new Error(data.error);
+              const emails = (data.all_emails && data.all_emails.length)
+                ? data.all_emails
+                : [data.email, data.work_email, data.personal_email].filter(Boolean);
+              if (emails.length) {
+                row.email = emails[0];
+                if (_tr) { const inp = _tr.querySelector('input[data-field="email"]'); if (inp) inp.value = emails[0]; }
+                const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
+                emails.forEach(e => foundEmailEntries.push({ email: e, label: providerLabel, badgeClass: 'tl-provider', source: provider }));
+              }
+            }
+          } catch (e) {
+            console.warn('[Generate Email] lookup failed for', row.name, ':', e.message);
+          }
+        }
+        // De-duplicate by email address (keep first occurrence)
+        const seen = new Set();
+        const uniqueEntries = foundEmailEntries.filter(entry => {
+          if (seen.has(entry.email)) return false;
+          seen.add(entry.email);
+          return true;
+        });
+        if (uniqueEntries.length) {
+          if (uniqueEntries.length === 1) {
+            // Single result — populate To field directly and update badge
+            document.getElementById('crmEmailTo').value = uniqueEntries[0].email;
+            if (_badge) {
+              _badge.textContent = uniqueEntries[0].label;
+              _badge.className = uniqueEntries[0].badgeClass === 'tl-fioe' ? 'badge-verified' : uniqueEntries[0].badgeClass === 'tl-pct' ? 'badge-gemini' : 'badge-gemini';
+              _badge.style.display = '';
+            }
+          } else {
+            // Multiple results — render selectable tags; clear To field
+            document.getElementById('crmEmailTo').value = '';
+            if (_badge) { _badge.style.display = 'none'; _badge.textContent = ''; _badge.className = ''; }
+            _crmRenderEmailTags(uniqueEntries);
+          }
+          alert('✅ ' + uniqueEntries.length + ' email address(es) found:\n' + uniqueEntries.map(e => e.email).join('\n'));
+        } else {
+          const hint = provider === 'fioe'
+            ? 'Ensure selected candidates have Name and Company set.'
+            : 'Ensure selected candidates have LinkedIn URLs set.';
+          alert('❌ No email addresses found. ' + hint);
+        }
+      } catch (e) {
+        alert('❌ Generate Email failed: ' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; _crmUpdateEmailBtn(); }
+      }
+    }
+
+    // ── Email address tag helpers ───────────────────────────────────────────────
+    // Renders clickable email tags below the Send Email Address field.
+    // Each entry is {email, label, badgeClass} where label is e.g. "FIOE · 90%" or "75%".
+    function _crmRenderEmailTags(entries) {
+      const container = document.getElementById('crmEmailTagsContainer');
+      const badge     = document.getElementById('crmEmailSourceBadge');
+      if (!container) return;
+      container.innerHTML = '';
+      entries.forEach(entry => {
+        const btn = document.createElement('button');
+        btn.className = 'crm-email-tag';
+        btn.type = 'button';
+        btn.title = 'Click to use this email address';
+
+        const emailSpan = document.createElement('span');
+        emailSpan.textContent = entry.email;
+
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'tag-label ' + entry.badgeClass;
+        labelSpan.textContent = entry.label;
+
+        btn.appendChild(emailSpan);
+        btn.appendChild(labelSpan);
+
+        btn.onclick = function() {
+          // Mark active
+          container.querySelectorAll('.crm-email-tag').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          // Populate To field
+          document.getElementById('crmEmailTo').value = entry.email;
+          // Update source badge to reflect selection
+          if (badge) {
+            badge.textContent = entry.label;
+            badge.className = entry.badgeClass === 'tl-fioe' ? 'badge-verified' : 'badge-gemini';
+            badge.style.display = '';
+          }
+        };
+
+        container.appendChild(btn);
+      });
+      container.style.display = 'flex';
+    }
+
+    function crmCalConnectGoogle() {
+      _crmCalProvider = 'google';
+      const url = 'http://localhost:4000/auth/google/calendar/connect';
+      const w = 600, h = 700;
+      const left = (window.screen.width / 2) - (w / 2);
+      const top  = (window.screen.height / 2) - (h / 2);
+      window.open(url, 'connect_google_calendar', `width=${w},height=${h},top=${top},left=${left}`);
+    }
+
+    function crmCalToggleIcsInput() {
+      const row = document.getElementById('crmCalIcsRow');
+      if (!row) return;
+      const isVisible = row.style.display !== 'none';
+      row.style.display = isVisible ? 'none' : 'flex';
+      if (!isVisible) {
+        const urlInput = document.getElementById('crmCalIcsUrl');
+        if (urlInput) urlInput.focus();
+      }
+    }
+
+    async function crmCalConnectIcs() {
+      const urlInput  = document.getElementById('crmCalIcsUrl');
+      const statusEl  = document.getElementById('crmCalIcsStatus');
+      const connectBtn = document.getElementById('crmCalIcsConnectBtn');
+      const icsUrl = (urlInput ? urlInput.value : '').trim();
+      if (!icsUrl || !/^(https?|webcal):\/\//i.test(icsUrl)) {
+        if (statusEl) { statusEl.textContent = '⚠ Enter a valid ICS URL.'; statusEl.style.color = '#b45309'; }
+        return;
+      }
+      if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = '⏳ Verifying…'; }
+      if (statusEl) { statusEl.textContent = ''; statusEl.style.color = ''; }
+      try {
+        const now = new Date();
+        const startISO = now.toISOString();
+        const endISO   = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+        const res = await fetch('http://localhost:4000/calendar/freebusy', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ startISO, endISO, durationMinutes: 30, provider: 'ics', icsUrl })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not read ICS calendar.');
+        // Success
+        _crmCalProvider = 'ics';
+        _crmCalIcsUrl   = icsUrl;
+        _crmCalIcsConnected = true;
+        if (statusEl) { statusEl.textContent = '✅ ICS Connected'; statusEl.style.color = '#065f46'; }
+        const icsBtn = document.getElementById('crmCalIcsBtn');
+        if (icsBtn) { icsBtn.style.background = 'var(--ad)'; icsBtn.style.color = '#fff'; icsBtn.style.borderColor = 'var(--ad)'; }
+      } catch(e) {
+        _crmCalIcsConnected = false;
+        if (statusEl) { statusEl.textContent = '❌ ' + (e.message || 'Failed to connect ICS.'); statusEl.style.color = '#b91c1c'; }
+      } finally {
+        if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = _crmCalIcsConnected ? '✅ Reconnect' : '🔗 Connect ICS'; }
+      }
+    }
+
     async function crmCalFindSlots() {
-      const startISO = document.getElementById('crmCalFrom').value;
-      const endISO   = document.getElementById('crmCalTo').value;
+      const startRaw = document.getElementById('crmCalFrom').value;
+      const endRaw   = document.getElementById('crmCalTo').value;
       const duration = parseInt(document.getElementById('crmCalDuration').value, 10) || 30;
       const statusEl = document.getElementById('crmCalStatus');
       const slotsEl  = document.getElementById('crmCalSlots');
-      if (!startISO || !endISO) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      if (!startRaw || !endRaw) { statusEl.textContent = '⚠ Select date range first.'; return; }
+      if (_crmCalProvider === 'ics' && !_crmCalIcsConnected) {
+        statusEl.textContent = '⚠ Connect your ICS calendar first using the 📆 ICS Connect button.';
+        return;
+      }
+      // Convert plain date values (YYYY-MM-DD) to full RFC 3339 timestamps required by Google Calendar API
+      const startISO = new Date(startRaw + 'T00:00:00').toISOString();
+      const endISO   = new Date(endRaw   + 'T23:59:59').toISOString();
       statusEl.textContent = '⏳ Finding available slots…';
       slotsEl.style.display = 'none';
       slotsEl.innerHTML = '';
       _crmCalSlots = [];
       try {
+        const body = { startISO, endISO, durationMinutes: duration, provider: _crmCalProvider };
+        if (_crmCalProvider === 'ics') body.icsUrl = _crmCalIcsUrl;
         const res = await fetch('http://localhost:4000/calendar/freebusy', {
           method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ startISO, endISO, durationMinutes: duration, provider: 'google' })
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(body)
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to query calendar');
         _crmCalSlots = Array.isArray(data.slots) ? data.slots : [];
         if (!_crmCalSlots.length) { statusEl.textContent = 'No free slots found in selected range.'; return; }
-        statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.';
-        slotsEl.innerHTML = '';
-        _crmCalSlots.forEach((slot, i) => {
-          const d = new Date(slot.start);
-          const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
-          const btn = document.createElement('button');
-          btn.className = 'crm-cal-btn';
-          btn.style.cssText = 'margin:3px;';
-          btn.textContent = lbl;
-          btn.onclick = function() { _crmInsertSlotTag(slot, i); btn.classList.add('active'); };
-          slotsEl.appendChild(btn);
-        });
-        slotsEl.style.display = 'block';
+        _crmCalPage = 0;
+        _crmRenderSlotPage();
       } catch(e) {
         statusEl.textContent = '❌ ' + (e.message || 'Could not find slots. Connect your calendar first.');
       }
+    }
+
+    function _crmRenderSlotPage() {
+      const statusEl   = document.getElementById('crmCalStatus');
+      const slotsEl    = document.getElementById('crmCalSlots');
+      const totalPages = Math.ceil(_crmCalSlots.length / _SLOTS_PER_PAGE);
+      const pageSlots  = _crmCalSlots.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
+      statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.' +
+        (totalPages > 1 ? ' (Page ' + (_crmCalPage + 1) + ' of ' + totalPages + ')' : '');
+      slotsEl.innerHTML = '';
+      pageSlots.forEach(function(slot, i) {
+        const globalIdx = _crmCalPage * _SLOTS_PER_PAGE + i;
+        const d   = new Date(slot.start);
+        const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const btn = document.createElement('button');
+        btn.className = 'crm-cal-btn';
+        btn.style.cssText = 'margin:3px;';
+        btn.textContent = lbl;
+        btn.onclick = (function(s, idx) {
+          return function() { _crmInsertSlotTag(s, idx); btn.classList.add('active'); };
+        })(slot, globalIdx);
+        slotsEl.appendChild(btn);
+      });
+      if (totalPages > 1) {
+        const nav = document.createElement('div');
+        nav.style.cssText = 'margin-top:8px;display:flex;gap:6px;align-items:center;';
+        if (_crmCalPage > 0) {
+          const prev = document.createElement('button');
+          prev.className = 'crm-cal-btn';
+          prev.textContent = '‹ Prev';
+          prev.onclick = function() { _crmCalPage--; _crmRenderSlotPage(); };
+          nav.appendChild(prev);
+        }
+        const pg = document.createElement('span');
+        pg.style.cssText = 'font-size:12px;color:var(--cb);padding:0 4px;';
+        pg.textContent = (_crmCalPage + 1) + ' / ' + totalPages;
+        nav.appendChild(pg);
+        if (_crmCalPage < totalPages - 1) {
+          const next = document.createElement('button');
+          next.className = 'crm-cal-btn';
+          next.textContent = 'Next ›';
+          next.onclick = function() { _crmCalPage++; _crmRenderSlotPage(); };
+          nav.appendChild(next);
+        }
+        slotsEl.appendChild(nav);
+      }
+      slotsEl.style.display = 'block';
     }
 
     function _crmInsertSlotTag(slot, i) {
@@ -3305,6 +4112,7 @@
     async function crmSendEmail() {
       if (_crmSelected.size === 0) return;
       const from    = document.getElementById('crmEmailFrom').value.trim();
+      const toField = (document.getElementById('crmEmailTo')?.value || '').trim();
       const cc      = document.getElementById('crmEmailCc').value.trim();
       const subject = document.getElementById('crmEmailSubject').value.trim();
       const bodyTpl = document.getElementById('crmEmailBody').value;
@@ -3321,33 +4129,70 @@
       sendBtn.innerHTML = '<span class="crm-send-spinner"></span>Sending…';
 
       let sent = 0, failed = 0;
-      for (const row of selectedRows) {
-        const to = (row.email || '').trim();
-        if (!to) { failed++; continue; }
-        // Resolve glossary tags per-recipient
-        let body = bodyTpl
-          .replace(/\[Name\]/gi, row.name || to)
-          .replace(/\[Candidate Name\]/gi, row.name || to)
-          .replace(/\[Job Title\]/gi, row.jobTitle || '')
-          .replace(/\[Company Name\]/gi, row.company || '')
-          .replace(/\[Country\]/gi, row.country || '')
-          .replace(/\[Sector\]/gi, row.sector || '')
-          .replace(/\[Seniority\]/gi, row.seniority || '')
-          .replace(/\[Your Name\]/gi, from);
-        try {
-          const payload = {
-            from, to, cc, subject, body,
-            smtp: _crmSmtpConfig || {}
-          };
-          const res = await fetch('http://localhost:4000/draft-email', {
+
+      // If the To field has been populated (e.g. via Verified Email lookup or manual entry),
+      // use those addresses and resolve tags from the first selected row.
+      // Otherwise fall back to per-row sending using each row's stored email.
+      const toAddresses = toField
+        ? toField.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+      if (toAddresses.length) {
+        const refRow = selectedRows[0] || {};
+        for (const to of toAddresses) {
+          let body = bodyTpl
+            .replace(/\[Name\]/gi, refRow.name || to)
+            .replace(/\[Candidate Name\]/gi, refRow.name || to)
+            .replace(/\[Job Title\]/gi, refRow.jobTitle || '')
+            .replace(/\[Company Name\]/gi, refRow.company || '')
+            .replace(/\[Country\]/gi, refRow.country || '')
+            .replace(/\[Sector\]/gi, refRow.sector || '')
+            .replace(/\[Seniority\]/gi, refRow.seniority || '')
+            .replace(/\[Your Name\]/gi, from);
+          try {
+            const payload = { from, to, cc, subject, body, smtpConfig: _crmSmtpConfig || {} };
+            const res = await fetch('http://localhost:4000/send-email', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            sent++;
+          } catch(e) { failed++; }
+        }
+        // Persist generated email addresses to verified_email.json so the FIOE
+        // domain-pattern learning improves over time.
+        if (sent > 0 && refRow.name && refRow.company) {
+          fetch('/prospect/crm-save-verified-email', {
             method: 'POST', credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          sent++;
-        } catch(e) {
-          failed++;
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+            body: JSON.stringify({ emails: toAddresses, name: refRow.name, company: refRow.company })
+          }).catch(err => console.warn('[crm-save-verified-email] failed (non-fatal):', err));
+        }
+      } else {
+        // Per-row sending (uses each row's individual email from the CRM)
+        for (const row of selectedRows) {
+          const to = (row.email || '').trim();
+          if (!to) { failed++; continue; }
+          let body = bodyTpl
+            .replace(/\[Name\]/gi, row.name || to)
+            .replace(/\[Candidate Name\]/gi, row.name || to)
+            .replace(/\[Job Title\]/gi, row.jobTitle || '')
+            .replace(/\[Company Name\]/gi, row.company || '')
+            .replace(/\[Country\]/gi, row.country || '')
+            .replace(/\[Sector\]/gi, row.sector || '')
+            .replace(/\[Seniority\]/gi, row.seniority || '')
+            .replace(/\[Your Name\]/gi, from);
+          try {
+            const payload = { from, to, cc, subject, body, smtpConfig: _crmSmtpConfig || {} };
+            const res = await fetch('http://localhost:4000/send-email', {
+              method: 'POST', credentials: 'include',
+              headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+              body: JSON.stringify(payload)
+            });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            sent++;
+          } catch(e) { failed++; }
         }
       }
 
