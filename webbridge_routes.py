@@ -2494,6 +2494,27 @@ def bd_activity_reply(thread_id):
         logger.warning("[bd-activity reply POST] %s", exc)
         return jsonify({"ok": False, "error": "Could not save reply."}), 500
 
+
+# DELETE /api/bd-activity/<thread_id> — remove a thread; only the owner may delete
+@app.delete("/api/bd-activity/<thread_id>")
+@_require_session
+def bd_activity_delete(thread_id):
+    username = request._session_user
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            match = next((t for t in threads if t.get("id") == thread_id), None)
+            if match is None:
+                return jsonify({"ok": False, "error": "Thread not found."}), 404
+            if match.get("username") != username:
+                return jsonify({"ok": False, "error": "Not authorised to delete this thread."}), 403
+            threads = [t for t in threads if t.get("id") != thread_id]
+            _bd_save(threads)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logger.warning("[bd-activity DELETE] %s", exc)
+        return jsonify({"ok": False, "error": "Could not delete thread."}), 500
+
 # Load countrycode.JSON once at startup for LinkedIn URL country resolution
 _COUNTRYCODE_MAP: dict = {}
 try:

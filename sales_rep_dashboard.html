@@ -624,6 +624,62 @@
     .bda-reply-btn:hover { background: var(--cb); }
     .bda-empty { color: var(--arg); padding: 40px 0; text-align: center; font-size: 14px; }
     .bda-load-status { color: var(--arg); font-size: 12px; margin-bottom: 10px; }
+    .bda-filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 18px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .bda-filter-bar label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--arg);
+      margin-right: 4px;
+    }
+    :root[data-theme="light"] .bda-filter-bar label { color: var(--ad); }
+    .bda-filter-input {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 9px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+    }
+    :root[data-theme="light"] .bda-filter-input { background: #fff; border-color: #c0cbda; color: #222; }
+    .bda-filter-input:focus { border-color: var(--cb); }
+    .bda-filter-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 10px;
+      color: var(--arg);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .bda-filter-clear:hover { color: var(--dd); border-color: var(--cb); }
+    .bda-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--danger);
+      font-size: 13px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+    .bda-del-btn:hover { opacity: 1; background: rgba(224,82,82,0.12); }
 
 
     .prospect-layout {
@@ -1690,6 +1746,16 @@
   <div id="mainTabContentBdactivity" style="display:none;">
     <div class="bda-layout">
       <div class="bda-title">📊 BD Activity — Status Update Feed</div>
+      <!-- Filters -->
+      <div class="bda-filter-bar">
+        <label>Company</label>
+        <input class="bda-filter-input" id="bdaFilterCompany" type="text" placeholder="Filter by company…" oninput="_bdaApplyFilters()" />
+        <label style="margin-left:10px;">From</label>
+        <input class="bda-filter-input" id="bdaFilterDateFrom" type="date" oninput="_bdaApplyFilters()" />
+        <label>To</label>
+        <input class="bda-filter-input" id="bdaFilterDateTo" type="date" oninput="_bdaApplyFilters()" />
+        <button class="bda-filter-clear" onclick="_bdaClearFilters()">✕ Clear</button>
+      </div>
       <div class="bda-load-status" id="bdaLoadStatus"></div>
       <div id="bdaThreads"><div class="bda-empty">Loading…</div></div>
     </div>
@@ -1724,7 +1790,7 @@
   </div>
 
   <!-- ── CRM Email Compose Modal ────────────────────────── -->
-  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseEmailModal()">
+  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;">
     <div class="fioe-modal-box crm-email-modal-box" onclick="event.stopPropagation()">
       <h3>✉ Send Email to Selected Candidates</h3>
       <!-- Template bar -->
@@ -1796,6 +1862,7 @@
         <button class="crm-cal-btn" id="crmCalIcsBtn" onclick="crmCalToggleIcsInput()" title="Connect via ICS feed URL">📆 ICS Connect</button>
         <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
         <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+        <button class="crm-cal-btn" onclick="crmInsertMeetLink()" title="Generate and insert a Google Meet link into the message">🎥 Insert Meet Link</button>
       </div>
       <!-- ICS URL input row (shown when ICS Connect is clicked) -->
       <div id="crmCalIcsRow" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
@@ -4469,6 +4536,8 @@
     });
 
     // ── BD Activity ───────────────────────────────────────────
+    let _bdaAllThreads = [];
+
     function _bdaFmtTime(iso) {
       try {
         const d = new Date(iso);
@@ -4485,6 +4554,33 @@
       return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function _bdaApplyFilters() {
+      const company  = (document.getElementById('bdaFilterCompany')?.value  || '').trim().toLowerCase();
+      const dateFrom = (document.getElementById('bdaFilterDateFrom')?.value || '').trim();
+      const dateTo   = (document.getElementById('bdaFilterDateTo')?.value   || '').trim();
+      let filtered = _bdaAllThreads;
+      if (company) {
+        filtered = filtered.filter(t => (t.company || '').toLowerCase().includes(company));
+      }
+      if (dateFrom) {
+        filtered = filtered.filter(t => t.timestamp && t.timestamp.slice(0,10) >= dateFrom);
+      }
+      if (dateTo) {
+        filtered = filtered.filter(t => t.timestamp && t.timestamp.slice(0,10) <= dateTo);
+      }
+      _bdaRender(filtered);
+    }
+
+    function _bdaClearFilters() {
+      const fc = document.getElementById('bdaFilterCompany');
+      const ff = document.getElementById('bdaFilterDateFrom');
+      const ft = document.getElementById('bdaFilterDateTo');
+      if (fc) fc.value = '';
+      if (ff) ff.value = '';
+      if (ft) ft.value = '';
+      _bdaRender(_bdaAllThreads);
+    }
+
     function _bdaRender(threads) {
       const container = document.getElementById('bdaThreads');
       if (!container) return;
@@ -4499,6 +4595,10 @@
             <span class="bda-reply-text">${_bdaEsc(r.text)}</span>
             <span class="bda-reply-time">${_bdaFmtTime(r.timestamp)}</span>
           </div>`).join('');
+        const isOwner = t.username === empUsername;
+        const delBtn  = isOwner
+          ? `<button class="bda-del-btn" onclick="_bdaDeleteThread('${_bdaEsc(t.id)}')" title="Delete this thread">✕</button>`
+          : '';
         return `
         <div class="bda-thread" id="bdaThread_${_bdaEsc(t.id)}">
           <div class="bda-thread-header">
@@ -4513,6 +4613,7 @@
                 <span>${_bdaFmtTime(t.timestamp)}</span>
               </div>
             </div>
+            ${delBtn}
           </div>
           ${t.comment ? `<div class="bda-thread-comment">${_bdaEsc(t.comment)}</div>` : ''}
           <div class="bda-replies">${replies}</div>
@@ -4534,7 +4635,8 @@
         });
         const data = res.ok ? await res.json() : null;
         if (statusEl) statusEl.textContent = '';
-        _bdaRender(data ? data.threads : []);
+        _bdaAllThreads = (data && data.threads) ? data.threads : [];
+        _bdaApplyFilters();
       } catch (e) {
         if (statusEl) statusEl.textContent = '⚠ Could not load BD Activity.';
       }
@@ -4569,6 +4671,37 @@
         }
       } catch (_) { /* non-fatal */ }
       if (input) input.disabled = false;
+    }
+
+    async function _bdaDeleteThread(threadId) {
+      if (!confirm('Delete this thread and all its replies?')) return;
+      try {
+        const res = await fetch('/api/bd-activity/' + encodeURIComponent(threadId), {
+          method: 'DELETE',
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = res.ok ? await res.json() : null;
+        if (data && data.ok) {
+          _bdaAllThreads = _bdaAllThreads.filter(t => t.id !== threadId);
+          _bdaApplyFilters();
+        } else {
+          alert((data && data.error) || 'Could not delete thread.');
+        }
+      } catch (_) {
+        alert('Could not delete thread.');
+      }
+    }
+
+    // ── Google Meet link insertion ────────────────────────────
+    function crmInsertMeetLink() {
+      const meetUrl = prompt(
+        'Paste your Google Meet link (or leave blank to insert a placeholder):',
+        'https://meet.google.com/'
+      );
+      if (meetUrl === null) return; // cancelled
+      const link = (meetUrl.trim() || 'https://meet.google.com/').replace(/[<>"]/g, '');
+      crmInsertTag(link);
     }
   </script>
 </body>
