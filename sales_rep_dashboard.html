@@ -501,7 +501,8 @@
     /* ── BD Activity tab ──────────────────────────────────────── */
     .bda-layout {
       padding: 28px 32px 52px;
-      max-width: 900px;
+      width: 100%;
+      box-sizing: border-box;
     }
     .bda-title {
       font-family: "Orbitron", "Roboto Condensed", sans-serif;
@@ -667,6 +668,40 @@
       font-family: inherit;
     }
     .bda-filter-clear:hover { color: var(--dd); border-color: var(--cb); }
+    .bda-pagination, .crm-pagination {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .bda-page-btn, .crm-page-btn {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 12px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      cursor: pointer;
+      min-width: 34px;
+      text-align: center;
+      font-weight: 600;
+    }
+    :root[data-theme="light"] .bda-page-btn,
+    :root[data-theme="light"] .crm-page-btn { background: #f2f5fa; border-color: #c0cbda; color: #222; }
+    .bda-page-btn:hover, .crm-page-btn:hover { border-color: var(--cb); color: var(--cb); }
+    .bda-page-btn.active, .crm-page-btn.active {
+      background: var(--cb);
+      border-color: var(--cb);
+      color: #fff;
+    }
+    .bda-page-btn:disabled, .crm-page-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+    .bda-page-info, .crm-page-info {
+      color: var(--arg);
+      font-size: 12px;
+      margin-left: 4px;
+    }
     .bda-del-btn {
       background: transparent;
       border: none;
@@ -1740,6 +1775,7 @@
         </table>
       </div>
     </div>
+    <div class="crm-pagination" id="crmPagination"></div>
   </div><!-- /#mainTabContentCrm -->
 
   <!-- ── BD Activity tab content ──────────────────────────── -->
@@ -1758,6 +1794,7 @@
       </div>
       <div class="bda-load-status" id="bdaLoadStatus"></div>
       <div id="bdaThreads"><div class="bda-empty">Loading…</div></div>
+      <div class="bda-pagination" id="bdaPagination"></div>
     </div>
   </div><!-- /#mainTabContentBdactivity -->
 
@@ -3185,6 +3222,8 @@
     let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, status, linkedinUrl}
     let _crmNextId = 1;
     let _crmSelected = new Set();  // set of row ids currently checked
+    let _crmPage = 0;
+    const _CRM_PAGE_SIZE = 20;
 
     function crmAddRow(data) {
       const row = Object.assign({
@@ -3194,12 +3233,17 @@
         mobile: '', comment: '', status: '', linkedinUrl: ''
       }, data || {});
       _crmRows.push(row);
+      // Navigate to last page so the new row is visible
+      _crmPage = Math.max(0, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE) - 1);
       _crmRenderTable();
     }
 
     function crmDeleteRow(id) {
       _crmRows = _crmRows.filter(r => r.id !== id);
       _crmSelected.delete(id);
+      // Clamp page if needed
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      if (_crmPage >= totalPages) _crmPage = totalPages - 1;
       _crmUpdateSendBtn();
       _crmRenderTable();
     }
@@ -3210,14 +3254,21 @@
       if (!_crmRows.length) {
         tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="13" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
         _crmUpdateSendBtn();
+        _crmRenderPagination();
         return;
       }
       // Prune stale selected ids
       const validIds = new Set(_crmRows.map(r => r.id));
       _crmSelected.forEach(id => { if (!validIds.has(id)) _crmSelected.delete(id); });
 
+      // Paginate
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      if (_crmPage >= totalPages) _crmPage = totalPages - 1;
+      const start = _crmPage * _CRM_PAGE_SIZE;
+      const pageRows = _crmRows.slice(start, start + _CRM_PAGE_SIZE);
+
       tbody.innerHTML = '';
-      _crmRows.forEach((row, idx) => {
+      pageRows.forEach((row, idx) => {
         const tr = document.createElement('tr');
         tr.dataset.id = row.id;
         const isChecked = _crmSelected.has(row.id);
@@ -3228,7 +3279,7 @@
           mobile: '+65 9000 0000', comment: 'Notes…'
         };
         let html = `<td class="crm-check-col"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="_crmRowCheck(${row.id},this.checked)" /></td>`;
-        html += `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
+        html += `<td class="muted" style="font-size:11px;text-align:center;">${start + idx + 1}</td>`;
         fields.forEach(f => {
           if (f === 'name' && row.linkedinUrl) {
             html += `<td><a href="${esc(row.linkedinUrl)}" target="_blank" rel="noopener noreferrer" class="crm-name-link" title="Open LinkedIn profile">${esc(row.name) || '<em>Unknown</em>'}</a></td>`;
@@ -3250,6 +3301,30 @@
       });
       _crmSyncSelectAllState();
       _crmUpdateSendBtn();
+      _crmRenderPagination();
+    }
+
+    function _crmRenderPagination() {
+      const bar = document.getElementById('crmPagination');
+      if (!bar) return;
+      const total = _crmRows.length;
+      const totalPages = Math.max(1, Math.ceil(total / _CRM_PAGE_SIZE));
+      if (totalPages <= 1) { bar.innerHTML = ''; return; }
+      const start = _crmPage * _CRM_PAGE_SIZE;
+      let html = `<button class="crm-page-btn" onclick="_crmGoPage(${_crmPage - 1})" ${_crmPage === 0 ? 'disabled' : ''}>‹</button>`;
+      for (let i = 0; i < totalPages; i++) {
+        html += `<button class="crm-page-btn${i === _crmPage ? ' active' : ''}" onclick="_crmGoPage(${i})">${i + 1}</button>`;
+      }
+      html += `<button class="crm-page-btn" onclick="_crmGoPage(${_crmPage + 1})" ${_crmPage === totalPages - 1 ? 'disabled' : ''}>›</button>`;
+      html += `<span class="crm-page-info">${start + 1}–${Math.min(start + _CRM_PAGE_SIZE, total)} of ${total}</span>`;
+      bar.innerHTML = html;
+    }
+
+    function _crmGoPage(p) {
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      _crmPage = Math.max(0, Math.min(p, totalPages - 1));
+      _crmRenderTable();
+      document.getElementById('crmTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function _crmRowCheck(id, checked) {
@@ -4537,6 +4612,9 @@
 
     // ── BD Activity ───────────────────────────────────────────
     let _bdaAllThreads = [];
+    let _bdaFilteredThreads = [];
+    let _bdaPage = 0;
+    const _BDA_PAGE_SIZE = 15;
 
     function _bdaFmtTime(iso) {
       try {
@@ -4568,7 +4646,9 @@
       if (dateTo) {
         filtered = filtered.filter(t => t.timestamp && t.timestamp.slice(0,10) <= dateTo);
       }
-      _bdaRender(filtered);
+      _bdaFilteredThreads = filtered;
+      _bdaPage = 0;
+      _bdaRenderPage();
     }
 
     function _bdaClearFilters() {
@@ -4578,7 +4658,36 @@
       if (fc) fc.value = '';
       if (ff) ff.value = '';
       if (ft) ft.value = '';
-      _bdaRender(_bdaAllThreads);
+      _bdaFilteredThreads = _bdaAllThreads;
+      _bdaPage = 0;
+      _bdaRenderPage();
+    }
+
+    function _bdaRenderPage() {
+      const total = _bdaFilteredThreads.length;
+      const totalPages = Math.max(1, Math.ceil(total / _BDA_PAGE_SIZE));
+      if (_bdaPage >= totalPages) _bdaPage = totalPages - 1;
+      const start = _bdaPage * _BDA_PAGE_SIZE;
+      const slice = _bdaFilteredThreads.slice(start, start + _BDA_PAGE_SIZE);
+      _bdaRender(slice);
+      // Build pagination bar
+      const bar = document.getElementById('bdaPagination');
+      if (!bar) return;
+      if (totalPages <= 1) { bar.innerHTML = ''; return; }
+      let html = `<button class="bda-page-btn" onclick="_bdaGoPage(${_bdaPage - 1})" ${_bdaPage === 0 ? 'disabled' : ''}>‹</button>`;
+      for (let i = 0; i < totalPages; i++) {
+        html += `<button class="bda-page-btn${i === _bdaPage ? ' active' : ''}" onclick="_bdaGoPage(${i})">${i + 1}</button>`;
+      }
+      html += `<button class="bda-page-btn" onclick="_bdaGoPage(${_bdaPage + 1})" ${_bdaPage === totalPages - 1 ? 'disabled' : ''}>›</button>`;
+      html += `<span class="bda-page-info">${start + 1}–${Math.min(start + _BDA_PAGE_SIZE, total)} of ${total}</span>`;
+      bar.innerHTML = html;
+    }
+
+    function _bdaGoPage(p) {
+      const totalPages = Math.max(1, Math.ceil(_bdaFilteredThreads.length / _BDA_PAGE_SIZE));
+      _bdaPage = Math.max(0, Math.min(p, totalPages - 1));
+      _bdaRenderPage();
+      document.getElementById('bdaThreads')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function _bdaRender(threads) {
@@ -4684,7 +4793,8 @@
         const data = res.ok ? await res.json() : null;
         if (data && data.ok) {
           _bdaAllThreads = _bdaAllThreads.filter(t => t.id !== threadId);
-          _bdaApplyFilters();
+          _bdaFilteredThreads = _bdaFilteredThreads.filter(t => t.id !== threadId);
+          _bdaRenderPage();
         } else {
           alert((data && data.error) || 'Could not delete thread.');
         }
