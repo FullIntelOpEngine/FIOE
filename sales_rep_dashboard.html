@@ -1666,6 +1666,18 @@
         <button class="crm-cal-btn" id="crmCalIcsConnectBtn" onclick="crmCalConnectIcs()">🔗 Connect ICS</button>
         <span id="crmCalIcsStatus" style="font-size:12px;font-weight:600;"></span>
       </div>
+      <!-- Timezone + business-hours filter row -->
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
+        <label style="font-size:12px;font-weight:600;color:var(--cb,#073679);display:flex;align-items:center;gap:6px;">
+          🕐 Timezone:
+          <select id="crmCalTimezone" class="fioe-modal-input" style="margin:0;font-size:12px;padding:3px 6px;" onchange="_crmCalTimezone=this.value;_crmRenderSlotPage();">
+          </select>
+        </label>
+        <label style="font-size:12px;font-weight:600;color:var(--cb,#073679);display:flex;align-items:center;gap:5px;cursor:pointer;" title="Uncheck to view slots outside 8 AM – 6 PM.">
+          <input type="checkbox" id="crmCalFilterBusiness" checked onchange="_crmCalFilterBusiness=this.checked;_crmCalPage=0;_crmRenderSlotPage();" style="cursor:pointer;accent-color:var(--azure-dragon,#073679);" />
+          8 AM–6 PM only
+        </label>
+      </div>
       <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
       <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
       <div class="fioe-modal-actions">
@@ -3452,6 +3464,63 @@
     let _crmCalProvider = 'google'; // 'google' | 'ics'
     let _crmCalIcsUrl   = '';
     let _crmCalIcsConnected = false;
+    let _crmCalFilterBusiness = true;
+    let _crmCalTimezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch(_) { return 'UTC'; } })();
+
+    const _CRM_CAL_TIMEZONES = [
+      { value: 'Pacific/Midway',         label: 'UTC-11 — Midway Island' },
+      { value: 'Pacific/Honolulu',       label: 'UTC-10 — Hawaii' },
+      { value: 'America/Anchorage',      label: 'UTC-9  — Alaska' },
+      { value: 'America/Los_Angeles',    label: 'UTC-8  — Pacific Time (US)' },
+      { value: 'America/Denver',         label: 'UTC-7  — Mountain Time (US)' },
+      { value: 'America/Phoenix',        label: 'UTC-7  — Arizona (no DST)' },
+      { value: 'America/Chicago',        label: 'UTC-6  — Central Time (US)' },
+      { value: 'America/New_York',       label: 'UTC-5  — Eastern Time (US)' },
+      { value: 'America/Toronto',        label: 'UTC-5  — Toronto' },
+      { value: 'America/Halifax',        label: 'UTC-4  — Atlantic Time (CA)' },
+      { value: 'America/Sao_Paulo',      label: 'UTC-3  — São Paulo' },
+      { value: 'America/Buenos_Aires',   label: 'UTC-3  — Buenos Aires' },
+      { value: 'Atlantic/South_Georgia', label: 'UTC-2  — South Georgia' },
+      { value: 'Atlantic/Azores',        label: 'UTC-1  — Azores' },
+      { value: 'UTC',                    label: 'UTC+0  — UTC' },
+      { value: 'Europe/London',          label: 'UTC+0  — London' },
+      { value: 'Europe/Paris',           label: 'UTC+1  — Paris / Berlin' },
+      { value: 'Europe/Helsinki',        label: 'UTC+2  — Helsinki / Kyiv' },
+      { value: 'Europe/Moscow',          label: 'UTC+3  — Moscow' },
+      { value: 'Asia/Dubai',             label: 'UTC+4  — Dubai' },
+      { value: 'Asia/Karachi',           label: 'UTC+5  — Karachi' },
+      { value: 'Asia/Kolkata',           label: 'UTC+5:30 — India' },
+      { value: 'Asia/Dhaka',             label: 'UTC+6  — Dhaka' },
+      { value: 'Asia/Bangkok',           label: 'UTC+7  — Bangkok / Jakarta' },
+      { value: 'Asia/Singapore',         label: 'UTC+8  — Singapore' },
+      { value: 'Asia/Shanghai',          label: 'UTC+8  — China (Beijing)' },
+      { value: 'Asia/Tokyo',             label: 'UTC+9  — Tokyo' },
+      { value: 'Asia/Seoul',             label: 'UTC+9  — Seoul' },
+      { value: 'Australia/Brisbane',     label: 'UTC+10 — Brisbane' },
+      { value: 'Australia/Sydney',       label: 'UTC+10/11 — Sydney' },
+      { value: 'Pacific/Auckland',       label: 'UTC+12/13 — Auckland' },
+    ];
+
+    // Populate the timezone dropdown once DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+      const sel = document.getElementById('crmCalTimezone');
+      if (!sel) return;
+      _CRM_CAL_TIMEZONES.forEach(function(tz) {
+        const opt = document.createElement('option');
+        opt.value = tz.value;
+        opt.textContent = tz.label;
+        if (tz.value === _crmCalTimezone) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      // If local timezone not in list, insert it at top
+      if (!_CRM_CAL_TIMEZONES.some(function(tz) { return tz.value === _crmCalTimezone; })) {
+        const opt = document.createElement('option');
+        opt.value = _crmCalTimezone;
+        opt.textContent = _crmCalTimezone;
+        opt.selected = true;
+        sel.insertBefore(opt, sel.firstChild);
+      }
+    });
 
     // Load saved ICS URL from server (ICS_.json) on page init
     fetch('http://localhost:4000/api/ics-url', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -4048,15 +4117,29 @@
     function _crmRenderSlotPage() {
       const statusEl   = document.getElementById('crmCalStatus');
       const slotsEl    = document.getElementById('crmCalSlots');
-      const totalPages = Math.ceil(_crmCalSlots.length / _SLOTS_PER_PAGE);
-      const pageSlots  = _crmCalSlots.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
-      statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.' +
+      const tz         = _crmCalTimezone || 'UTC';
+
+      // Apply business-hours filter (8 AM–6 PM in selected timezone)
+      const filtered = _crmCalFilterBusiness
+        ? _crmCalSlots.filter(function(slot) {
+            const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz }).formatToParts(new Date(slot.start));
+            const hourPart = parts.find(function(p) { return p.type === 'hour'; });
+            const h = hourPart ? parseInt(hourPart.value, 10) : 0;
+            return h >= 8 && h < 18;
+          })
+        : _crmCalSlots;
+
+      const totalPages = Math.ceil(filtered.length / _SLOTS_PER_PAGE);
+      // Clamp page index after filtering
+      if (_crmCalPage >= totalPages && totalPages > 0) _crmCalPage = totalPages - 1;
+      const pageSlots  = filtered.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
+      statusEl.textContent = filtered.length + ' slot(s) found. Click one to insert into message.' +
         (totalPages > 1 ? ' (Page ' + (_crmCalPage + 1) + ' of ' + totalPages + ')' : '');
       slotsEl.innerHTML = '';
       pageSlots.forEach(function(slot, i) {
         const globalIdx = _crmCalPage * _SLOTS_PER_PAGE + i;
         const d   = new Date(slot.start);
-        const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const lbl = d.toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone: tz });
         const btn = document.createElement('button');
         btn.className = 'crm-cal-btn';
         btn.style.cssText = 'margin:3px;';
@@ -4089,13 +4172,15 @@
         }
         slotsEl.appendChild(nav);
       }
-      slotsEl.style.display = 'block';
+      slotsEl.style.display = filtered.length > 0 ? 'block' : 'none';
+      if (filtered.length === 0) statusEl.textContent = 'No slots match the current filter. Uncheck "8 AM–6 PM only" to see all slots.';
     }
 
     function _crmInsertSlotTag(slot, i) {
       const d = new Date(slot.start);
-      const dateStr = d.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
-      const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+      const tz = _crmCalTimezone || 'UTC';
+      const dateStr = d.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', timeZone: tz });
+      const timeStr = d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', timeZone: tz });
       const bodyEl = document.getElementById('crmEmailBody');
       let text = bodyEl.value;
       text = text.replace(/\[Meeting Date\]/g, dateStr).replace(/\[Meeting Time\]/g, timeStr)

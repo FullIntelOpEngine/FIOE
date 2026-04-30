@@ -1168,19 +1168,6 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         {/* Body */}
         <div style={{ padding: 24, overflowY: 'auto' }}>
           <form id="email-form">
-            
-            {/* FROM Field - User can edit this */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={labelStyle}>From</label>
-              <input 
-                type="email" 
-                value={from} 
-                onChange={e => setFrom(e.target.value)}
-                style={inputStyle}
-                placeholder="your.email@example.com (Optional)"
-              />
-              <div style={{fontSize:11, color:'var(--argent)', marginTop:4}}>Note: This address is sent to the server. If backend uses SMTP auth, it might overwrite this.</div>
-            </div>
 
             <div style={{ marginBottom: 16 }}>
               <label style={labelStyle}>To</label>
