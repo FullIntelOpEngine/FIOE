@@ -679,8 +679,8 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   // Apply dynamic template tags from candidate and user data
   const getInterviewDateTimeStrings = () => {
     const selectedSlot = (selectedSlotIndex != null && calendarSlots[selectedSlotIndex]) ? calendarSlots[selectedSlotIndex] : null;
-    const interviewDate = selectedSlot ? new Date(selectedSlot.start).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : '';
-    const interviewTime = selectedSlot ? new Date(selectedSlot.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+    const interviewDate = selectedSlot ? new Date(selectedSlot.start).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: displayTimezone }) : '';
+    const interviewTime = selectedSlot ? new Date(selectedSlot.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', timeZone: displayTimezone }) : '';
     return { interviewDate, interviewTime };
   };
 
