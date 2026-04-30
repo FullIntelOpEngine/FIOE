@@ -1872,10 +1872,15 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
 
   // Group generated slots by date label for display
   // When filterBusinessHours is true, only show slots between 8 AM and 6 PM in displayTimezone
+  const getLocalHour = (isoStart, tz) => {
+    const part = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz })
+      .formatToParts(new Date(isoStart))
+      .find(p => p.type === 'hour');
+    return part ? parseInt(part.value, 10) : 0;
+  };
   const visibleSlots = filterBusinessHours
     ? generatedSlots.map((s, i) => ({ slot: s, idx: i })).filter(({ slot }) => {
-        const h = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: displayTimezone }).formatToParts(new Date(slot.start)).find(p => p.type === 'hour');
-        const hour = h ? parseInt(h.value, 10) : 0;
+        const hour = getLocalHour(slot.start, displayTimezone);
         return hour >= 8 && hour < 18;
       })
     : generatedSlots.map((s, i) => ({ slot: s, idx: i }));
