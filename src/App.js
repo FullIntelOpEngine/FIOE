@@ -587,6 +587,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [slotEndDate, setSlotEndDate] = useState('');
   const [interviewDuration, setInterviewDuration] = useState(30);
   const [slotDayIndex, setSlotDayIndex] = useState(0);
+  const [filterBusinessHours, setFilterBusinessHours] = useState(true); // checkbox: show only 8AM–6PM slots
   const [displayTimezone, setDisplayTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   );
@@ -669,6 +670,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       setSlotStartDate('');
       setSlotEndDate('');
       setInterviewDuration(30);
+      setFilterBusinessHours(true);
       setGlossaryCopied(false);
       setCopiedTag('');
     }
@@ -1543,10 +1545,23 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
               {/* Slots grouped by day */}
               {calendarSlots && calendarSlots.length > 0 && addMeet && (() => {
+                // Filter slots to business hours if checkbox is checked
+                const getLocalHourCal = (isoStart, tz) => {
+                  const part = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz })
+                    .formatToParts(new Date(isoStart))
+                    .find(p => p.type === 'hour');
+                  return part ? parseInt(part.value, 10) : 0;
+                };
+                const displayedSlots = filterBusinessHours
+                  ? calendarSlots.map((s, i) => ({ slot: s, idx: i })).filter(({ slot }) => {
+                      const hour = getLocalHourCal(slot.start, displayTimezone);
+                      return hour >= 8 && hour < 18;
+                    })
+                  : calendarSlots.map((s, i) => ({ slot: s, idx: i }));
                 // Group slots by date string, preserving order
                 const groups = [];
                 const groupMap = {};
-                calendarSlots.forEach((s, i) => {
+                displayedSlots.forEach(({ slot: s, idx: i }) => {
                   const day = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: displayTimezone });
                   if (!groupMap[day]) {
                     groupMap[day] = { day, entries: [] };
@@ -1561,8 +1576,23 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
                 return (
                   <div style={{ marginTop: 4 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                      <div style={{ fontSize: 12, color: 'var(--argent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        Select a slot ({interviewDuration} min) · {calendarSlots.length} available
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ fontSize: 12, color: 'var(--argent)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                          Select a slot ({interviewDuration} min) · {displayedSlots.length} available
+                        </div>
+                        {/* Business-hours filter checkbox */}
+                        <label
+                          title="Uncheck to view slots outside 8 AM – 6 PM."
+                          style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--muted,#6b7280)', fontWeight: 500, userSelect: 'none' }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={filterBusinessHours}
+                            onChange={e => { setFilterBusinessHours(e.target.checked); setSlotDayIndex(0); setSelectedSlotIndex(null); }}
+                            style={{ cursor: 'pointer', accentColor: 'var(--azure-dragon,#073679)' }}
+                          />
+                          8 AM–6 PM only
+                        </label>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                         <button
