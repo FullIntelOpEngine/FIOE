@@ -2395,6 +2395,105 @@ _CRM_SALES_DIR = os.getenv(
 )
 _CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# ── BD Activity store ─────────────────────────────────────────────────────────
+_BD_ACTIVITY_PATH = os.getenv(
+    "BD_ACTIVITY_PATH",
+    os.path.join(
+        os.getenv("CRM_SALES_DIR", r"F:\Recruiting Tools\Autosourcing\Sales"),
+        "BD_Activity.json",
+    ),
+)
+_bd_activity_lock = __import__("threading").Lock()
+
+
+def _bd_load():
+    """Return the BD Activity thread list (list of dicts). Never raises."""
+    try:
+        with open(_BD_ACTIVITY_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _bd_save(data):
+    """Atomically write *data* (list) to BD_Activity.json."""
+    os.makedirs(os.path.dirname(os.path.abspath(_BD_ACTIVITY_PATH)), exist_ok=True)
+    tmp = _BD_ACTIVITY_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, _BD_ACTIVITY_PATH)
+
+
+# GET /api/bd-activity — return all BD Activity threads (newest first)
+@app.get("/api/bd-activity")
+@_require_session
+def bd_activity_get():
+    with _bd_activity_lock:
+        threads = _bd_load()
+    threads_sorted = sorted(threads, key=lambda t: t.get("timestamp", ""), reverse=True)
+    return jsonify({"threads": threads_sorted}), 200
+
+
+# POST /api/bd-activity — create a new thread from a CRM status update
+# Body: { company, comment, status }
+@app.post("/api/bd-activity")
+@_require_session
+def bd_activity_post():
+    body = request.get_json(silent=True) or {}
+    company = str(body.get("company") or "").strip()[:200]
+    comment = str(body.get("comment") or "").strip()[:1000]
+    status  = str(body.get("status")  or "").strip()[:50]
+    if not company and not status:
+        return jsonify({"ok": False, "error": "company or status is required"}), 400
+    entry = {
+        "id":        __import__("uuid").uuid4().hex,
+        "username":  request._session_user,
+        "company":   company,
+        "comment":   comment,
+        "status":    status,
+        "timestamp": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "replies":   [],
+    }
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            threads.append(entry)
+            _bd_save(threads)
+        return jsonify({"ok": True, "thread": entry}), 200
+    except Exception as exc:
+        logger.warning("[bd-activity POST] %s", exc)
+        return jsonify({"ok": False, "error": "Could not save BD Activity entry."}), 500
+
+
+# POST /api/bd-activity/<thread_id>/reply — append a reply to a thread
+# Body: { text }
+@app.post("/api/bd-activity/<thread_id>/reply")
+@_require_session
+def bd_activity_reply(thread_id):
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "").strip()[:1000]
+    if not text:
+        return jsonify({"ok": False, "error": "text is required"}), 400
+    reply = {
+        "id":        __import__("uuid").uuid4().hex,
+        "username":  request._session_user,
+        "text":      text,
+        "timestamp": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            for t in threads:
+                if t.get("id") == thread_id:
+                    t.setdefault("replies", []).append(reply)
+                    _bd_save(threads)
+                    return jsonify({"ok": True, "reply": reply}), 200
+        return jsonify({"ok": False, "error": "Thread not found."}), 404
+    except Exception as exc:
+        logger.warning("[bd-activity reply POST] %s", exc)
+        return jsonify({"ok": False, "error": "Could not save reply."}), 500
+
 # Load countrycode.JSON once at startup for LinkedIn URL country resolution
 _COUNTRYCODE_MAP: dict = {}
 try:

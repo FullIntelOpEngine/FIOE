@@ -498,7 +498,134 @@
       background: rgba(7,54,121,0.10);
     }
 
-    /* ── Prospect tab ─────────────────────────────────────────── */
+    /* ── BD Activity tab ──────────────────────────────────────── */
+    .bda-layout {
+      padding: 28px 32px 52px;
+      max-width: 900px;
+    }
+    .bda-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+      margin-bottom: 20px;
+    }
+    :root[data-theme="light"] .bda-title { color: var(--ad); }
+    .bda-thread {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+    .bda-thread-header {
+      padding: 14px 18px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .bda-thread-meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--arg);
+      margin-bottom: 4px;
+    }
+    .bda-thread-user {
+      font-weight: 700;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .bda-thread-user { color: var(--ad); }
+    .bda-thread-company {
+      font-weight: 700;
+      color: var(--dd);
+    }
+    .bda-status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(109,234,249,0.12);
+      color: var(--re);
+      border: 1px solid rgba(109,234,249,0.3);
+    }
+    :root[data-theme="light"] .bda-status-badge {
+      background: rgba(7,54,121,0.10);
+      color: var(--ad);
+      border-color: rgba(7,54,121,0.3);
+    }
+    .bda-thread-comment {
+      padding: 10px 18px 12px;
+      color: var(--dd);
+      font-size: 13px;
+    }
+    .bda-replies {
+      border-top: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+    .bda-reply {
+      padding: 9px 18px 9px 28px;
+      border-bottom: 1px solid rgba(76,130,184,0.10);
+      font-size: 12.5px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .bda-reply:last-child { border-bottom: none; }
+    .bda-reply-user {
+      font-weight: 700;
+      color: var(--cb);
+      min-width: 80px;
+      flex-shrink: 0;
+    }
+    .bda-reply-text { color: var(--dd); flex: 1; }
+    .bda-reply-time { color: var(--arg); font-size: 11px; white-space: nowrap; }
+    .bda-reply-form {
+      display: flex;
+      gap: 8px;
+      padding: 10px 18px;
+      background: rgba(255,255,255,0.015);
+    }
+    .bda-reply-input {
+      flex: 1;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+    }
+    :root[data-theme="light"] .bda-reply-input {
+      background: #fff;
+      border-color: #c0cbda;
+      color: #222;
+    }
+    .bda-reply-input:focus { border-color: var(--cb); }
+    .bda-reply-btn {
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .bda-reply-btn:hover { background: var(--cb); }
+    .bda-empty { color: var(--arg); padding: 40px 0; text-align: center; font-size: 14px; }
+    .bda-load-status { color: var(--arg); font-size: 12px; margin-bottom: 10px; }
+
+
     .prospect-layout {
       display: grid;
       grid-template-columns: 360px 1fr;
@@ -1251,6 +1378,7 @@
     <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
     <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')" aria-label="Prospect tab">🔍 Prospect</button>
     <button class="main-tab-btn" id="mainTabBtnCrm" onclick="switchMainTab('crm')" aria-label="CRM tab">📋 CRM</button>
+    <button class="main-tab-btn" id="mainTabBtnBdactivity" onclick="switchMainTab('bdactivity')" aria-label="BD Activity tab">📊 BD Activity</button>
   </div>
 
   <!-- ── Dashboard tab content ────────────────────────────── -->
@@ -1557,6 +1685,15 @@
       </div>
     </div>
   </div><!-- /#mainTabContentCrm -->
+
+  <!-- ── BD Activity tab content ──────────────────────────── -->
+  <div id="mainTabContentBdactivity" style="display:none;">
+    <div class="bda-layout">
+      <div class="bda-title">📊 BD Activity — Status Update Feed</div>
+      <div class="bda-load-status" id="bdaLoadStatus"></div>
+      <div id="bdaThreads"><div class="bda-empty">Loading…</div></div>
+    </div>
+  </div><!-- /#mainTabContentBdactivity -->
 
   <!-- ── SMTP Config Modal ──────────────────────────────── -->
   <div id="crmSmtpModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseSmtpModal()">
@@ -2538,7 +2675,7 @@
 
     // ── Main tab switching ─────────────────────────────────────
     function switchMainTab(tab) {
-      const tabs = ['dashboard', 'prospect', 'crm'];
+      const tabs = ['dashboard', 'prospect', 'crm', 'bdactivity'];
       tabs.forEach(t => {
         const btn     = document.getElementById('mainTabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
         const content = document.getElementById('mainTabContent' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -2547,6 +2684,9 @@
       });
       if (tab === 'crm') {
         _crmLoadFromServer();
+      }
+      if (tab === 'bdactivity') {
+        _bdaLoad();
       }
     }
 
@@ -3093,7 +3233,16 @@
 
     function _crmSetStatus(id, val) {
       const row = _crmRows.find(r => r.id === id);
-      if (row) row.status = val;
+      if (row) {
+        row.status = val;
+        if (val) {
+          _bdaPostThread({
+            company: row.company || '',
+            comment: row.comment || '',
+            status:  val,
+          });
+        }
+      }
     }
 
     /**
@@ -4318,6 +4467,109 @@
       localStorage.setItem('fioe_dashboard_theme', theme);
       if (_allTxnsForCharts.length) renderFinancialCharts(_allTxnsForCharts, true);
     });
+
+    // ── BD Activity ───────────────────────────────────────────
+    function _bdaFmtTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      } catch (_) { return iso || ''; }
+    }
+
+    function _bdaStatusLabel(s) {
+      const map = { uninterested: '🙁 Uninterested', considering: '😐 Considering', prospected: '🙂 Prospected' };
+      return map[s] || s;
+    }
+
+    function _bdaEsc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _bdaRender(threads) {
+      const container = document.getElementById('bdaThreads');
+      if (!container) return;
+      if (!threads || !threads.length) {
+        container.innerHTML = '<div class="bda-empty">No activity yet. Status updates in the CRM tab will appear here.</div>';
+        return;
+      }
+      container.innerHTML = threads.map(t => {
+        const replies = (t.replies || []).map(r => `
+          <div class="bda-reply">
+            <span class="bda-reply-user">@${_bdaEsc(r.username)}</span>
+            <span class="bda-reply-text">${_bdaEsc(r.text)}</span>
+            <span class="bda-reply-time">${_bdaFmtTime(r.timestamp)}</span>
+          </div>`).join('');
+        return `
+        <div class="bda-thread" id="bdaThread_${_bdaEsc(t.id)}">
+          <div class="bda-thread-header">
+            <div style="flex:1">
+              <div class="bda-thread-meta">
+                <span class="bda-thread-user">@${_bdaEsc(t.username)}</span>
+                <span>·</span>
+                <span class="bda-thread-company">${_bdaEsc(t.company)}</span>
+                <span>·</span>
+                <span class="bda-status-badge">${_bdaStatusLabel(_bdaEsc(t.status))}</span>
+                <span>·</span>
+                <span>${_bdaFmtTime(t.timestamp)}</span>
+              </div>
+            </div>
+          </div>
+          ${t.comment ? `<div class="bda-thread-comment">${_bdaEsc(t.comment)}</div>` : ''}
+          <div class="bda-replies">${replies}</div>
+          <div class="bda-reply-form">
+            <input class="bda-reply-input" type="text" placeholder="Add a comment…" id="bdaReplyInput_${_bdaEsc(t.id)}" onkeydown="if(event.key==='Enter')_bdaPostReply('${_bdaEsc(t.id)}')" />
+            <button class="bda-reply-btn" onclick="_bdaPostReply('${_bdaEsc(t.id)}')">Reply</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function _bdaLoad() {
+      const statusEl = document.getElementById('bdaLoadStatus');
+      if (statusEl) statusEl.textContent = 'Loading…';
+      try {
+        const res = await fetch('/api/bd-activity', {
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = res.ok ? await res.json() : null;
+        if (statusEl) statusEl.textContent = '';
+        _bdaRender(data ? data.threads : []);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '⚠ Could not load BD Activity.';
+      }
+    }
+
+    async function _bdaPostThread(entry) {
+      try {
+        await fetch('/api/bd-activity', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(entry)
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+
+    async function _bdaPostReply(threadId) {
+      const input = document.getElementById('bdaReplyInput_' + threadId);
+      const text = input ? input.value.trim() : '';
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const res = await fetch('/api/bd-activity/' + encodeURIComponent(threadId) + '/reply', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ text })
+        });
+        if (res.ok) {
+          input.value = '';
+          _bdaLoad();
+        }
+      } catch (_) { /* non-fatal */ }
+      if (input) input.disabled = false;
+    }
   </script>
 </body>
 </html>
