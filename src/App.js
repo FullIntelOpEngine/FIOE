@@ -573,7 +573,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [calendarProvider, setCalendarProvider] = useState('ics'); // 'google' | 'microsoft' | 'ics'
   const [connectDropdownOpen, setConnectDropdownOpen] = useState(false);
   const [showIcsInput, setShowIcsInput] = useState(false);
-  const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_url') || '');
+  const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_') || '');
   const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
   const [icsConnecting, setIcsConnecting] = useState(false);
   const [calendarSlots, setCalendarSlots] = useState([]);
@@ -660,7 +660,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       setCalendarProvider('ics');
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
-      setIcsCalendarUrl(localStorage.getItem('ICS_url') || '');
+      setIcsCalendarUrl(localStorage.getItem('ICS_') || '');
       setIcsCalendarConnected(false);
       setCalendarSlots([]);
       setSelectedSlotIndex(null);
@@ -878,7 +878,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         throw new Error(err.error || 'Could not read ICS calendar. Please verify the URL is accessible.');
       }
       setIcsCalendarConnected(true);
-      localStorage.setItem('ICS_url', icsCalendarUrl);
+      localStorage.setItem('ICS_', icsCalendarUrl);
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
     } catch (e) {
