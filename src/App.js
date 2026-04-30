@@ -573,10 +573,9 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [calendarProvider, setCalendarProvider] = useState('ics'); // 'google' | 'microsoft' | 'ics'
   const [connectDropdownOpen, setConnectDropdownOpen] = useState(false);
   const [showIcsInput, setShowIcsInput] = useState(false);
-  const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_url') || '');
+  const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_') || '');
   const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
-  const [icsConnecting, setIcsConnecting] = useState(false);
-  const [calendarSlots, setCalendarSlots] = useState([]);
+  const [icsConnecting, setIcsConnecting] = useState(false);  const [calendarSlots, setCalendarSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
   const [creatingEvent, setCreatingEvent] = useState(false);
@@ -653,6 +652,19 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     }
   }, []);
 
+  // Load ICS URL from server on mount (ICS_.json) — overrides localStorage cache if present
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/api/ics-url`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && data.url) {
+          localStorage.setItem('ICS_', data.url);
+          setIcsCalendarUrl(data.url);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Reset calendar-related temporary state when modal opens/closes
   useEffect(() => {
     if (!isOpen) {
@@ -660,7 +672,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       setCalendarProvider('ics');
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
-      setIcsCalendarUrl(localStorage.getItem('ICS_url') || '');
+      setIcsCalendarUrl(localStorage.getItem('ICS_') || '');
       setIcsCalendarConnected(false);
       setCalendarSlots([]);
       setSelectedSlotIndex(null);
@@ -878,7 +890,13 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         throw new Error(err.error || 'Could not read ICS calendar. Please verify the URL is accessible.');
       }
       setIcsCalendarConnected(true);
-      localStorage.setItem('ICS_url', icsCalendarUrl);
+      localStorage.setItem('ICS_', icsCalendarUrl);
+      fetch(`http://localhost:${API_PORT}/api/ics-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ icsUrl: icsCalendarUrl }),
+        credentials: 'include'
+      }).catch(() => {});
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
     } catch (e) {
@@ -1150,19 +1168,6 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         {/* Body */}
         <div style={{ padding: 24, overflowY: 'auto' }}>
           <form id="email-form">
-            
-            {/* FROM Field - User can edit this */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={labelStyle}>From</label>
-              <input 
-                type="email" 
-                value={from} 
-                onChange={e => setFrom(e.target.value)}
-                style={inputStyle}
-                placeholder="your.email@example.com (Optional)"
-              />
-              <div style={{fontSize:11, color:'var(--argent)', marginTop:4}}>Note: This address is sent to the server. If backend uses SMTP auth, it might overwrite this.</div>
-            </div>
 
             <div style={{ marginBottom: 16 }}>
               <label style={labelStyle}>To</label>
