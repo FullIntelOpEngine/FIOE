@@ -2395,6 +2395,147 @@ _CRM_SALES_DIR = os.getenv(
 )
 _CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
+# ── BD Activity store ─────────────────────────────────────────────────────────
+_BD_ACTIVITY_PATH = os.getenv(
+    "BD_ACTIVITY_PATH",
+    os.path.join(
+        os.getenv("CRM_SALES_DIR", r"F:\Recruiting Tools\Autosourcing\Sales"),
+        "BD_Activity.json",
+    ),
+)
+_bd_activity_lock = __import__("threading").Lock()
+
+
+def _bd_load():
+    """Return the BD Activity thread list (list of dicts). Never raises."""
+    try:
+        with open(_BD_ACTIVITY_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _bd_save(data):
+    """Atomically write *data* (list) to BD_Activity.json."""
+    os.makedirs(os.path.dirname(os.path.abspath(_BD_ACTIVITY_PATH)), exist_ok=True)
+    tmp = _BD_ACTIVITY_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, _BD_ACTIVITY_PATH)
+
+
+# GET /api/bd-activity — return all BD Activity threads (newest first)
+@app.get("/api/bd-activity")
+def bd_activity_get():
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    with _bd_activity_lock:
+        threads = _bd_load()
+    threads_sorted = sorted(threads, key=lambda t: t.get("timestamp", ""), reverse=True)
+    return jsonify({"threads": threads_sorted}), 200
+
+
+# POST /api/bd-activity — create a new thread from a CRM status update
+# Body: { company, comment, status }
+@app.post("/api/bd-activity")
+def bd_activity_post():
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    # Validate emp_username exists in the employee table
+    try:
+        conn = _pg_connect()
+        _ensure_employee_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM employee WHERE username = %s LIMIT 1", (emp_username,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "Authentication required"}), 401
+    except Exception as exc:
+        logger.error("[bd-activity POST] employee check: %s", exc)
+        return jsonify({"error": "Authentication service temporarily unavailable"}), 500
+    body = request.get_json(silent=True) or {}
+    company = str(body.get("company") or "").strip()[:200]
+    comment = str(body.get("comment") or "").strip()[:1000]
+    status  = str(body.get("status")  or "").strip()[:50]
+    if not company and not status:
+        return jsonify({"ok": False, "error": "company or status is required"}), 400
+    entry = {
+        "id":        __import__("uuid").uuid4().hex,
+        "username":  emp_username,
+        "company":   company,
+        "comment":   comment,
+        "status":    status,
+        "timestamp": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "replies":   [],
+    }
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            threads.append(entry)
+            _bd_save(threads)
+        return jsonify({"ok": True, "thread": entry}), 200
+    except Exception as exc:
+        logger.warning("[bd-activity POST] %s", exc)
+        return jsonify({"ok": False, "error": "Could not save BD Activity entry."}), 500
+
+
+# POST /api/bd-activity/<thread_id>/reply — append a reply to a thread
+# Body: { text }
+@app.post("/api/bd-activity/<thread_id>/reply")
+def bd_activity_reply(thread_id):
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    body = request.get_json(silent=True) or {}
+    text = str(body.get("text") or "").strip()[:1000]
+    if not text:
+        return jsonify({"ok": False, "error": "text is required"}), 400
+    reply = {
+        "id":        __import__("uuid").uuid4().hex,
+        "username":  emp_username,
+        "text":      text,
+        "timestamp": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            for t in threads:
+                if t.get("id") == thread_id:
+                    t.setdefault("replies", []).append(reply)
+                    _bd_save(threads)
+                    return jsonify({"ok": True, "reply": reply}), 200
+        return jsonify({"ok": False, "error": "Thread not found."}), 404
+    except Exception as exc:
+        logger.warning("[bd-activity reply POST] %s", exc)
+        return jsonify({"ok": False, "error": "Could not save reply."}), 500
+
+
+# DELETE /api/bd-activity/<thread_id> — remove a thread; only the owner may delete
+@app.delete("/api/bd-activity/<thread_id>")
+def bd_activity_delete(thread_id):
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    username = emp_username
+    try:
+        with _bd_activity_lock:
+            threads = _bd_load()
+            match = next((t for t in threads if t.get("id") == thread_id), None)
+            if match is None:
+                return jsonify({"ok": False, "error": "Thread not found."}), 404
+            if match.get("username") != username:
+                return jsonify({"ok": False, "error": "Not authorised to delete this thread."}), 403
+            threads = [t for t in threads if t.get("id") != thread_id]
+            _bd_save(threads)
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        logger.warning("[bd-activity DELETE] %s", exc)
+        return jsonify({"ok": False, "error": "Could not delete thread."}), 500
+
 # Load countrycode.JSON once at startup for LinkedIn URL country resolution
 _COUNTRYCODE_MAP: dict = {}
 try:

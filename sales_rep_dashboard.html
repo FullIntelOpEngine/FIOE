@@ -498,7 +498,225 @@
       background: rgba(7,54,121,0.10);
     }
 
-    /* ── Prospect tab ─────────────────────────────────────────── */
+    /* ── BD Activity tab ──────────────────────────────────────── */
+    .bda-layout {
+      padding: 28px 32px 52px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .bda-title {
+      font-family: "Orbitron", "Roboto Condensed", sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--re);
+      margin-bottom: 20px;
+    }
+    :root[data-theme="light"] .bda-title { color: var(--ad); }
+    .bda-thread {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 18px;
+      overflow: hidden;
+    }
+    .bda-thread-header {
+      padding: 14px 18px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .bda-thread-meta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--arg);
+      margin-bottom: 4px;
+    }
+    .bda-thread-user {
+      font-weight: 700;
+      color: var(--re);
+    }
+    :root[data-theme="light"] .bda-thread-user { color: var(--ad); }
+    .bda-thread-company {
+      font-weight: 700;
+      color: var(--dd);
+    }
+    .bda-status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(109,234,249,0.12);
+      color: var(--re);
+      border: 1px solid rgba(109,234,249,0.3);
+    }
+    :root[data-theme="light"] .bda-status-badge {
+      background: rgba(7,54,121,0.10);
+      color: var(--ad);
+      border-color: rgba(7,54,121,0.3);
+    }
+    .bda-thread-comment {
+      padding: 10px 18px 12px;
+      color: var(--dd);
+      font-size: 13px;
+    }
+    .bda-replies {
+      border-top: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+    .bda-reply {
+      padding: 9px 18px 9px 28px;
+      border-bottom: 1px solid rgba(76,130,184,0.10);
+      font-size: 12.5px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .bda-reply:last-child { border-bottom: none; }
+    .bda-reply-user {
+      font-weight: 700;
+      color: var(--cb);
+      min-width: 80px;
+      flex-shrink: 0;
+    }
+    .bda-reply-text { color: var(--dd); flex: 1; }
+    .bda-reply-time { color: var(--arg); font-size: 11px; white-space: nowrap; }
+    .bda-reply-form {
+      display: flex;
+      gap: 8px;
+      padding: 10px 18px;
+      background: rgba(255,255,255,0.015);
+    }
+    .bda-reply-input {
+      flex: 1;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 10px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+    }
+    :root[data-theme="light"] .bda-reply-input {
+      background: #fff;
+      border-color: #c0cbda;
+      color: #222;
+    }
+    .bda-reply-input:focus { border-color: var(--cb); }
+    .bda-reply-btn {
+      background: var(--ad);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .bda-reply-btn:hover { background: var(--cb); }
+    .bda-empty { color: var(--arg); padding: 40px 0; text-align: center; font-size: 14px; }
+    .bda-load-status { color: var(--arg); font-size: 12px; margin-bottom: 10px; }
+    .bda-filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 18px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .bda-filter-bar label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--arg);
+      margin-right: 4px;
+    }
+    :root[data-theme="light"] .bda-filter-bar label { color: var(--ad); }
+    .bda-filter-input {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 9px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      outline: none;
+    }
+    :root[data-theme="light"] .bda-filter-input { background: #fff; border-color: #c0cbda; color: #222; }
+    .bda-filter-input:focus { border-color: var(--cb); }
+    .bda-filter-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 10px;
+      color: var(--arg);
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .bda-filter-clear:hover { color: var(--dd); border-color: var(--cb); }
+    .bda-pagination, .crm-pagination {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+    .bda-page-btn, .crm-page-btn {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 12px;
+      color: var(--dd);
+      font-size: 12.5px;
+      font-family: inherit;
+      cursor: pointer;
+      min-width: 34px;
+      text-align: center;
+      font-weight: 600;
+    }
+    :root[data-theme="light"] .bda-page-btn,
+    :root[data-theme="light"] .crm-page-btn { background: #f2f5fa; border-color: #c0cbda; color: #222; }
+    .bda-page-btn:hover, .crm-page-btn:hover { border-color: var(--cb); color: var(--cb); }
+    .bda-page-btn.active, .crm-page-btn.active {
+      background: var(--cb);
+      border-color: var(--cb);
+      color: #fff;
+    }
+    .bda-page-btn:disabled, .crm-page-btn:disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+    .bda-page-info, .crm-page-info {
+      color: var(--arg);
+      font-size: 12px;
+      margin-left: 4px;
+    }
+    .bda-del-btn {
+      background: transparent;
+      border: none;
+      color: var(--danger);
+      font-size: 13px;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+    .bda-del-btn:hover { opacity: 1; background: rgba(224,82,82,0.12); }
+
+
     .prospect-layout {
       display: grid;
       grid-template-columns: 360px 1fr;
@@ -1251,6 +1469,7 @@
     <button class="main-tab-btn active" id="mainTabBtnDashboard" onclick="switchMainTab('dashboard')">Dashboard</button>
     <button class="main-tab-btn" id="mainTabBtnProspect" onclick="switchMainTab('prospect')" aria-label="Prospect tab">🔍 Prospect</button>
     <button class="main-tab-btn" id="mainTabBtnCrm" onclick="switchMainTab('crm')" aria-label="CRM tab">📋 CRM</button>
+    <button class="main-tab-btn" id="mainTabBtnBdactivity" onclick="switchMainTab('bdactivity')" aria-label="BD Activity tab">📊 BD Activity</button>
   </div>
 
   <!-- ── Dashboard tab content ────────────────────────────── -->
@@ -1556,7 +1775,28 @@
         </table>
       </div>
     </div>
+    <div class="crm-pagination" id="crmPagination"></div>
   </div><!-- /#mainTabContentCrm -->
+
+  <!-- ── BD Activity tab content ──────────────────────────── -->
+  <div id="mainTabContentBdactivity" style="display:none;">
+    <div class="bda-layout">
+      <div class="bda-title">📊 BD Activity — Status Update Feed</div>
+      <!-- Filters -->
+      <div class="bda-filter-bar">
+        <label>Company</label>
+        <input class="bda-filter-input" id="bdaFilterCompany" type="text" placeholder="Filter by company…" oninput="_bdaApplyFilters()" />
+        <label style="margin-left:10px;">From</label>
+        <input class="bda-filter-input" id="bdaFilterDateFrom" type="date" oninput="_bdaApplyFilters()" />
+        <label>To</label>
+        <input class="bda-filter-input" id="bdaFilterDateTo" type="date" oninput="_bdaApplyFilters()" />
+        <button class="bda-filter-clear" onclick="_bdaClearFilters()">✕ Clear</button>
+      </div>
+      <div class="bda-load-status" id="bdaLoadStatus"></div>
+      <div id="bdaThreads"><div class="bda-empty">Loading…</div></div>
+      <div class="bda-pagination" id="bdaPagination"></div>
+    </div>
+  </div><!-- /#mainTabContentBdactivity -->
 
   <!-- ── SMTP Config Modal ──────────────────────────────── -->
   <div id="crmSmtpModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseSmtpModal()">
@@ -1587,7 +1827,7 @@
   </div>
 
   <!-- ── CRM Email Compose Modal ────────────────────────── -->
-  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;" onclick="if(event.target===this)crmCloseEmailModal()">
+  <div id="crmEmailModal" class="fioe-modal-backdrop" style="display:none;">
     <div class="fioe-modal-box crm-email-modal-box" onclick="event.stopPropagation()">
       <h3>✉ Send Email to Selected Candidates</h3>
       <!-- Template bar -->
@@ -1659,12 +1899,25 @@
         <button class="crm-cal-btn" id="crmCalIcsBtn" onclick="crmCalToggleIcsInput()" title="Connect via ICS feed URL">📆 ICS Connect</button>
         <button class="crm-cal-btn" onclick="crmCalFindSlots()">Find Slots</button>
         <button class="crm-cal-btn" onclick="crmInsertSchedulerLink()" title="Insert self-scheduler booking link into message">📆 Insert Scheduler Link</button>
+        <button class="crm-cal-btn" onclick="crmInsertMeetLink()" title="Generate and insert a Google Meet link into the message">🎥 Insert Meet Link</button>
       </div>
       <!-- ICS URL input row (shown when ICS Connect is clicked) -->
       <div id="crmCalIcsRow" style="display:none;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">
         <input type="url" id="crmCalIcsUrl" class="fioe-modal-input" style="margin:0;flex:1;min-width:220px;" placeholder="https://…/calendar.ics or webcal://…" oninput="if(_crmCalIcsUrl!==this.value){_crmCalIcsUrl='';_crmCalIcsConnected=false;const s=document.getElementById('crmCalIcsStatus');if(s){s.textContent='';s.style.color='';}const b=document.getElementById('crmCalIcsBtn');if(b){b.style.background='';b.style.color='';b.style.borderColor='';}const cb=document.getElementById('crmCalIcsConnectBtn');if(cb)cb.textContent='🔗 Connect ICS';}" />
         <button class="crm-cal-btn" id="crmCalIcsConnectBtn" onclick="crmCalConnectIcs()">🔗 Connect ICS</button>
         <span id="crmCalIcsStatus" style="font-size:12px;font-weight:600;"></span>
+      </div>
+      <!-- Timezone + business-hours filter row -->
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:8px;">
+        <label style="font-size:12px;font-weight:600;color:var(--cb,#073679);display:flex;align-items:center;gap:6px;">
+          🕐 Timezone:
+          <select id="crmCalTimezone" class="fioe-modal-input" style="margin:0;font-size:12px;padding:3px 6px;" onchange="_crmCalTimezone=this.value;_crmRenderSlotPage();">
+          </select>
+        </label>
+        <label style="font-size:12px;font-weight:600;color:var(--cb,#073679);display:flex;align-items:center;gap:5px;cursor:pointer;" title="Uncheck to view slots outside 8 AM – 6 PM.">
+          <input type="checkbox" id="crmCalFilterBusiness" checked onchange="_crmCalFilterBusiness=this.checked;_crmCalPage=0;_crmRenderSlotPage();" style="cursor:pointer;accent-color:var(--azure-dragon,#073679);" />
+          8 AM–6 PM only
+        </label>
       </div>
       <div id="crmCalStatus" style="font-size:12px;color:var(--re);min-height:18px;margin-bottom:8px;"></div>
       <div id="crmCalSlots" style="display:none;margin-bottom:12px;"></div>
@@ -2526,7 +2779,7 @@
 
     // ── Main tab switching ─────────────────────────────────────
     function switchMainTab(tab) {
-      const tabs = ['dashboard', 'prospect', 'crm'];
+      const tabs = ['dashboard', 'prospect', 'crm', 'bdactivity'];
       tabs.forEach(t => {
         const btn     = document.getElementById('mainTabBtn' + t.charAt(0).toUpperCase() + t.slice(1));
         const content = document.getElementById('mainTabContent' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -2535,6 +2788,9 @@
       });
       if (tab === 'crm') {
         _crmLoadFromServer();
+      }
+      if (tab === 'bdactivity') {
+        _bdaLoad();
       }
     }
 
@@ -2966,6 +3222,8 @@
     let _crmRows = [];   // array of {id, name, jobTitle, company, sector, seniority, email, mobile, comment, status, linkedinUrl}
     let _crmNextId = 1;
     let _crmSelected = new Set();  // set of row ids currently checked
+    let _crmPage = 0;
+    const _CRM_PAGE_SIZE = 20;
 
     function crmAddRow(data) {
       const row = Object.assign({
@@ -2975,12 +3233,17 @@
         mobile: '', comment: '', status: '', linkedinUrl: ''
       }, data || {});
       _crmRows.push(row);
+      // Navigate to last page so the new row is visible
+      _crmPage = Math.max(0, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE) - 1);
       _crmRenderTable();
     }
 
     function crmDeleteRow(id) {
       _crmRows = _crmRows.filter(r => r.id !== id);
       _crmSelected.delete(id);
+      // Clamp page if needed
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      if (_crmPage >= totalPages) _crmPage = totalPages - 1;
       _crmUpdateSendBtn();
       _crmRenderTable();
     }
@@ -2991,14 +3254,21 @@
       if (!_crmRows.length) {
         tbody.innerHTML = '<tr id="crmEmptyRow"><td colspan="13" class="crm-empty">No candidates yet. Source profiles in the Prospect tab or click <em>+ Add Candidate</em>.</td></tr>';
         _crmUpdateSendBtn();
+        _crmRenderPagination();
         return;
       }
       // Prune stale selected ids
       const validIds = new Set(_crmRows.map(r => r.id));
       _crmSelected.forEach(id => { if (!validIds.has(id)) _crmSelected.delete(id); });
 
+      // Paginate
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      if (_crmPage >= totalPages) _crmPage = totalPages - 1;
+      const start = _crmPage * _CRM_PAGE_SIZE;
+      const pageRows = _crmRows.slice(start, start + _CRM_PAGE_SIZE);
+
       tbody.innerHTML = '';
-      _crmRows.forEach((row, idx) => {
+      pageRows.forEach((row, idx) => {
         const tr = document.createElement('tr');
         tr.dataset.id = row.id;
         const isChecked = _crmSelected.has(row.id);
@@ -3009,7 +3279,7 @@
           mobile: '+65 9000 0000', comment: 'Notes…'
         };
         let html = `<td class="crm-check-col"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="_crmRowCheck(${row.id},this.checked)" /></td>`;
-        html += `<td class="muted" style="font-size:11px;text-align:center;">${idx + 1}</td>`;
+        html += `<td class="muted" style="font-size:11px;text-align:center;">${start + idx + 1}</td>`;
         fields.forEach(f => {
           if (f === 'name' && row.linkedinUrl) {
             html += `<td><a href="${esc(row.linkedinUrl)}" target="_blank" rel="noopener noreferrer" class="crm-name-link" title="Open LinkedIn profile">${esc(row.name) || '<em>Unknown</em>'}</a></td>`;
@@ -3031,6 +3301,30 @@
       });
       _crmSyncSelectAllState();
       _crmUpdateSendBtn();
+      _crmRenderPagination();
+    }
+
+    function _crmRenderPagination() {
+      const bar = document.getElementById('crmPagination');
+      if (!bar) return;
+      const total = _crmRows.length;
+      const totalPages = Math.max(1, Math.ceil(total / _CRM_PAGE_SIZE));
+      if (totalPages <= 1) { bar.innerHTML = ''; return; }
+      const start = _crmPage * _CRM_PAGE_SIZE;
+      let html = `<button class="crm-page-btn" onclick="_crmGoPage(${_crmPage - 1})" ${_crmPage === 0 ? 'disabled' : ''}>‹</button>`;
+      for (let i = 0; i < totalPages; i++) {
+        html += `<button class="crm-page-btn${i === _crmPage ? ' active' : ''}" onclick="_crmGoPage(${i})">${i + 1}</button>`;
+      }
+      html += `<button class="crm-page-btn" onclick="_crmGoPage(${_crmPage + 1})" ${_crmPage === totalPages - 1 ? 'disabled' : ''}>›</button>`;
+      html += `<span class="crm-page-info">${start + 1}–${Math.min(start + _CRM_PAGE_SIZE, total)} of ${total}</span>`;
+      bar.innerHTML = html;
+    }
+
+    function _crmGoPage(p) {
+      const totalPages = Math.max(1, Math.ceil(_crmRows.length / _CRM_PAGE_SIZE));
+      _crmPage = Math.max(0, Math.min(p, totalPages - 1));
+      _crmRenderTable();
+      document.getElementById('crmTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
     function _crmRowCheck(id, checked) {
@@ -3081,7 +3375,16 @@
 
     function _crmSetStatus(id, val) {
       const row = _crmRows.find(r => r.id === id);
-      if (row) row.status = val;
+      if (row) {
+        row.status = val;
+        if (val) {
+          _bdaPostThread({
+            company: row.company || '',
+            comment: row.comment || '',
+            status:  val,
+          });
+        }
+      }
     }
 
     /**
@@ -3450,8 +3753,76 @@
     let _crmCalPage     = 0;
     const _SLOTS_PER_PAGE = 20;
     let _crmCalProvider = 'google'; // 'google' | 'ics'
-    let _crmCalIcsUrl   = '';
+    let _crmCalIcsUrl   = (() => { try { return localStorage.getItem('ICS_') || ''; } catch(_) { return ''; } })();
     let _crmCalIcsConnected = false;
+    let _crmCalFilterBusiness = true;
+    let _crmCalTimezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch(_) { return 'UTC'; } })();
+
+    const _CRM_CAL_TIMEZONES = [
+      { value: 'Pacific/Midway',         label: 'UTC-11 — Midway Island' },
+      { value: 'Pacific/Honolulu',       label: 'UTC-10 — Hawaii' },
+      { value: 'America/Anchorage',      label: 'UTC-9  — Alaska' },
+      { value: 'America/Los_Angeles',    label: 'UTC-8  — Pacific Time (US)' },
+      { value: 'America/Denver',         label: 'UTC-7  — Mountain Time (US)' },
+      { value: 'America/Phoenix',        label: 'UTC-7  — Arizona (no DST)' },
+      { value: 'America/Chicago',        label: 'UTC-6  — Central Time (US)' },
+      { value: 'America/New_York',       label: 'UTC-5  — Eastern Time (US)' },
+      { value: 'America/Toronto',        label: 'UTC-5  — Toronto' },
+      { value: 'America/Halifax',        label: 'UTC-4  — Atlantic Time (CA)' },
+      { value: 'America/Sao_Paulo',      label: 'UTC-3  — São Paulo' },
+      { value: 'America/Buenos_Aires',   label: 'UTC-3  — Buenos Aires' },
+      { value: 'Atlantic/South_Georgia', label: 'UTC-2  — South Georgia' },
+      { value: 'Atlantic/Azores',        label: 'UTC-1  — Azores' },
+      { value: 'UTC',                    label: 'UTC+0  — UTC' },
+      { value: 'Europe/London',          label: 'UTC+0  — London' },
+      { value: 'Europe/Paris',           label: 'UTC+1  — Paris / Berlin' },
+      { value: 'Europe/Helsinki',        label: 'UTC+2  — Helsinki / Kyiv' },
+      { value: 'Europe/Moscow',          label: 'UTC+3  — Moscow' },
+      { value: 'Asia/Dubai',             label: 'UTC+4  — Dubai' },
+      { value: 'Asia/Karachi',           label: 'UTC+5  — Karachi' },
+      { value: 'Asia/Kolkata',           label: 'UTC+5:30 — India' },
+      { value: 'Asia/Dhaka',             label: 'UTC+6  — Dhaka' },
+      { value: 'Asia/Bangkok',           label: 'UTC+7  — Bangkok / Jakarta' },
+      { value: 'Asia/Singapore',         label: 'UTC+8  — Singapore' },
+      { value: 'Asia/Shanghai',          label: 'UTC+8  — China (Beijing)' },
+      { value: 'Asia/Tokyo',             label: 'UTC+9  — Tokyo' },
+      { value: 'Asia/Seoul',             label: 'UTC+9  — Seoul' },
+      { value: 'Australia/Brisbane',     label: 'UTC+10 — Brisbane' },
+      { value: 'Australia/Sydney',       label: 'UTC+10/11 — Sydney' },
+      { value: 'Pacific/Auckland',       label: 'UTC+12/13 — Auckland' },
+    ];
+
+    // Populate the timezone dropdown once DOM is ready
+    document.addEventListener('DOMContentLoaded', function() {
+      const sel = document.getElementById('crmCalTimezone');
+      if (!sel) return;
+      _CRM_CAL_TIMEZONES.forEach(function(tz) {
+        const opt = document.createElement('option');
+        opt.value = tz.value;
+        opt.textContent = tz.label;
+        if (tz.value === _crmCalTimezone) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      // If local timezone not in list, insert it at top
+      if (!_CRM_CAL_TIMEZONES.some(function(tz) { return tz.value === _crmCalTimezone; })) {
+        const opt = document.createElement('option');
+        opt.value = _crmCalTimezone;
+        opt.textContent = _crmCalTimezone;
+        opt.selected = true;
+        sel.insertBefore(opt, sel.firstChild);
+      }
+    });
+
+    // Load saved ICS URL from server (ICS_.json) on page init
+    fetch('http://localhost:4000/api/ics-url', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && data.url) {
+          _crmCalIcsUrl = data.url;
+          try { localStorage.setItem('ICS_', data.url); } catch(_) {}
+        }
+      })
+      .catch(() => {});
 
     function crmOpenEmailModal() {
       if (_crmSelected.size === 0) return;
@@ -3475,7 +3846,7 @@
       document.getElementById('crmCalSlots').style.display = 'none';
       document.getElementById('crmCalSlots').innerHTML = '';
       _crmCalSlots = [];
-      // Restore or reset ICS connect state.
+      _crmCalSelectedSlot = null;
       // If a URL was previously saved in this session, keep the connection alive so the
       // user doesn't have to reconnect every time they open the modal.
       const _icsRow    = document.getElementById('crmCalIcsRow');
@@ -3986,9 +4357,15 @@
         _crmCalProvider = 'ics';
         _crmCalIcsUrl   = icsUrl;
         _crmCalIcsConnected = true;
+        try { localStorage.setItem('ICS_', icsUrl); } catch(_) {}
         if (statusEl) { statusEl.textContent = '✅ ICS Connected'; statusEl.style.color = '#065f46'; }
         const icsBtn = document.getElementById('crmCalIcsBtn');
         if (icsBtn) { icsBtn.style.background = 'var(--ad)'; icsBtn.style.color = '#fff'; icsBtn.style.borderColor = 'var(--ad)'; }
+        fetch('http://localhost:4000/api/ics-url', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ icsUrl })
+        }).catch(() => {});
       } catch(e) {
         _crmCalIcsConnected = false;
         if (statusEl) { statusEl.textContent = '❌ ' + (e.message || 'Failed to connect ICS.'); statusEl.style.color = '#b91c1c'; }
@@ -4015,6 +4392,7 @@
       slotsEl.style.display = 'none';
       slotsEl.innerHTML = '';
       _crmCalSlots = [];
+      _crmCalSelectedSlot = null;
       try {
         const body = { startISO, endISO, durationMinutes: duration, provider: _crmCalProvider };
         if (_crmCalProvider === 'ics') body.icsUrl = _crmCalIcsUrl;
@@ -4037,15 +4415,29 @@
     function _crmRenderSlotPage() {
       const statusEl   = document.getElementById('crmCalStatus');
       const slotsEl    = document.getElementById('crmCalSlots');
-      const totalPages = Math.ceil(_crmCalSlots.length / _SLOTS_PER_PAGE);
-      const pageSlots  = _crmCalSlots.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
-      statusEl.textContent = _crmCalSlots.length + ' slot(s) found. Click one to insert into message.' +
+      const tz         = _crmCalTimezone || 'UTC';
+
+      // Apply business-hours filter (8 AM–6 PM in selected timezone)
+      const filtered = _crmCalFilterBusiness
+        ? _crmCalSlots.filter(function(slot) {
+            const parts = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: tz }).formatToParts(new Date(slot.start));
+            const hourPart = parts.find(function(p) { return p.type === 'hour'; });
+            const h = hourPart ? parseInt(hourPart.value, 10) : 0;
+            return h >= 8 && h < 18;
+          })
+        : _crmCalSlots;
+
+      const totalPages = Math.ceil(filtered.length / _SLOTS_PER_PAGE);
+      // Clamp page index after filtering
+      if (_crmCalPage >= totalPages && totalPages > 0) _crmCalPage = totalPages - 1;
+      const pageSlots  = filtered.slice(_crmCalPage * _SLOTS_PER_PAGE, (_crmCalPage + 1) * _SLOTS_PER_PAGE);
+      statusEl.textContent = filtered.length + ' slot(s) found. Click one to insert into message.' +
         (totalPages > 1 ? ' (Page ' + (_crmCalPage + 1) + ' of ' + totalPages + ')' : '');
       slotsEl.innerHTML = '';
       pageSlots.forEach(function(slot, i) {
         const globalIdx = _crmCalPage * _SLOTS_PER_PAGE + i;
         const d   = new Date(slot.start);
-        const lbl = d.toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        const lbl = d.toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone: tz });
         const btn = document.createElement('button');
         btn.className = 'crm-cal-btn';
         btn.style.cssText = 'margin:3px;';
@@ -4078,13 +4470,18 @@
         }
         slotsEl.appendChild(nav);
       }
-      slotsEl.style.display = 'block';
+      slotsEl.style.display = filtered.length > 0 ? 'block' : 'none';
+      if (filtered.length === 0) statusEl.textContent = 'No slots match the current filter. Uncheck "8 AM–6 PM only" to see all slots.';
     }
 
+    let _crmCalSelectedSlot = null; // tracks the most recently clicked calendar slot
+
     function _crmInsertSlotTag(slot, i) {
+      _crmCalSelectedSlot = slot;
       const d = new Date(slot.start);
-      const dateStr = d.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
-      const timeStr = d.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' });
+      const tz = _crmCalTimezone || 'UTC';
+      const dateStr = d.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', timeZone: tz });
+      const timeStr = d.toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', timeZone: tz });
       const bodyEl = document.getElementById('crmEmailBody');
       let text = bodyEl.value;
       text = text.replace(/\[Meeting Date\]/g, dateStr).replace(/\[Meeting Time\]/g, timeStr)
@@ -4216,6 +4613,266 @@
       localStorage.setItem('fioe_dashboard_theme', theme);
       if (_allTxnsForCharts.length) renderFinancialCharts(_allTxnsForCharts, true);
     });
+
+    // ── BD Activity ───────────────────────────────────────────
+    let _bdaAllThreads = [];
+    let _bdaFilteredThreads = [];
+    let _bdaPage = 0;
+    const _BDA_PAGE_SIZE = 15;
+
+    function _bdaFmtTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+      } catch (_) { return iso || ''; }
+    }
+
+    function _bdaStatusLabel(s) {
+      const map = { uninterested: '🙁 Uninterested', considering: '😐 Considering', prospected: '🙂 Prospected' };
+      return map[s] || s;
+    }
+
+    function _bdaEsc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _bdaApplyFilters() {
+      const company  = (document.getElementById('bdaFilterCompany')?.value  || '').trim().toLowerCase();
+      const dateFrom = (document.getElementById('bdaFilterDateFrom')?.value || '').trim();
+      const dateTo   = (document.getElementById('bdaFilterDateTo')?.value   || '').trim();
+      let filtered = _bdaAllThreads;
+      if (company) {
+        filtered = filtered.filter(t => (t.company || '').toLowerCase().includes(company));
+      }
+      if (dateFrom) {
+        filtered = filtered.filter(t => t.timestamp && t.timestamp.slice(0,10) >= dateFrom);
+      }
+      if (dateTo) {
+        filtered = filtered.filter(t => t.timestamp && t.timestamp.slice(0,10) <= dateTo);
+      }
+      _bdaFilteredThreads = filtered;
+      _bdaPage = 0;
+      _bdaRenderPage();
+    }
+
+    function _bdaClearFilters() {
+      const fc = document.getElementById('bdaFilterCompany');
+      const ff = document.getElementById('bdaFilterDateFrom');
+      const ft = document.getElementById('bdaFilterDateTo');
+      if (fc) fc.value = '';
+      if (ff) ff.value = '';
+      if (ft) ft.value = '';
+      _bdaFilteredThreads = _bdaAllThreads;
+      _bdaPage = 0;
+      _bdaRenderPage();
+    }
+
+    function _bdaRenderPage() {
+      const total = _bdaFilteredThreads.length;
+      const totalPages = Math.max(1, Math.ceil(total / _BDA_PAGE_SIZE));
+      if (_bdaPage >= totalPages) _bdaPage = totalPages - 1;
+      const start = _bdaPage * _BDA_PAGE_SIZE;
+      const slice = _bdaFilteredThreads.slice(start, start + _BDA_PAGE_SIZE);
+      _bdaRender(slice);
+      // Build pagination bar
+      const bar = document.getElementById('bdaPagination');
+      if (!bar) return;
+      if (totalPages <= 1) { bar.innerHTML = ''; return; }
+      let html = `<button class="bda-page-btn" onclick="_bdaGoPage(${_bdaPage - 1})" ${_bdaPage === 0 ? 'disabled' : ''}>‹</button>`;
+      for (let i = 0; i < totalPages; i++) {
+        html += `<button class="bda-page-btn${i === _bdaPage ? ' active' : ''}" onclick="_bdaGoPage(${i})">${i + 1}</button>`;
+      }
+      html += `<button class="bda-page-btn" onclick="_bdaGoPage(${_bdaPage + 1})" ${_bdaPage === totalPages - 1 ? 'disabled' : ''}>›</button>`;
+      html += `<span class="bda-page-info">${start + 1}–${Math.min(start + _BDA_PAGE_SIZE, total)} of ${total}</span>`;
+      bar.innerHTML = html;
+    }
+
+    function _bdaGoPage(p) {
+      const totalPages = Math.max(1, Math.ceil(_bdaFilteredThreads.length / _BDA_PAGE_SIZE));
+      _bdaPage = Math.max(0, Math.min(p, totalPages - 1));
+      _bdaRenderPage();
+      document.getElementById('bdaThreads')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function _bdaRender(threads) {
+      const container = document.getElementById('bdaThreads');
+      if (!container) return;
+      if (!threads || !threads.length) {
+        container.innerHTML = '<div class="bda-empty">No activity yet. Status updates in the CRM tab will appear here.</div>';
+        return;
+      }
+      container.innerHTML = threads.map(t => {
+        const replies = (t.replies || []).map(r => `
+          <div class="bda-reply">
+            <span class="bda-reply-user">@${_bdaEsc(r.username)}</span>
+            <span class="bda-reply-text">${_bdaEsc(r.text)}</span>
+            <span class="bda-reply-time">${_bdaFmtTime(r.timestamp)}</span>
+          </div>`).join('');
+        const isOwner = t.username === empUsername;
+        const delBtn  = isOwner
+          ? `<button class="bda-del-btn" onclick="_bdaDeleteThread('${_bdaEsc(t.id)}')" title="Delete this thread">✕</button>`
+          : '';
+        return `
+        <div class="bda-thread" id="bdaThread_${_bdaEsc(t.id)}">
+          <div class="bda-thread-header">
+            <div style="flex:1">
+              <div class="bda-thread-meta">
+                <span class="bda-thread-user">@${_bdaEsc(t.username)}</span>
+                <span>·</span>
+                <span class="bda-thread-company">${_bdaEsc(t.company)}</span>
+                <span>·</span>
+                <span class="bda-status-badge">${_bdaStatusLabel(_bdaEsc(t.status))}</span>
+                <span>·</span>
+                <span>${_bdaFmtTime(t.timestamp)}</span>
+              </div>
+            </div>
+            ${delBtn}
+          </div>
+          ${t.comment ? `<div class="bda-thread-comment">${_bdaEsc(t.comment)}</div>` : ''}
+          <div class="bda-replies">${replies}</div>
+          <div class="bda-reply-form">
+            <input class="bda-reply-input" type="text" placeholder="Add a comment…" id="bdaReplyInput_${_bdaEsc(t.id)}" onkeydown="if(event.key==='Enter')_bdaPostReply('${_bdaEsc(t.id)}')" />
+            <button class="bda-reply-btn" onclick="_bdaPostReply('${_bdaEsc(t.id)}')">Reply</button>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function _bdaLoad() {
+      const statusEl = document.getElementById('bdaLoadStatus');
+      if (statusEl) statusEl.textContent = 'Loading…';
+      try {
+        const res = await fetch('/api/bd-activity', {
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = res.ok ? await res.json() : null;
+        if (statusEl) statusEl.textContent = '';
+        _bdaAllThreads = (data && data.threads) ? data.threads : [];
+        _bdaApplyFilters();
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '⚠ Could not load BD Activity.';
+      }
+    }
+
+    async function _bdaPostThread(entry) {
+      try {
+        await fetch('/api/bd-activity', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify(entry)
+        });
+      } catch (_) { /* non-fatal */ }
+    }
+
+    async function _bdaPostReply(threadId) {
+      const input = document.getElementById('bdaReplyInput_' + threadId);
+      const text = input ? input.value.trim() : '';
+      if (!text) return;
+      input.disabled = true;
+      try {
+        const res = await fetch('/api/bd-activity/' + encodeURIComponent(threadId) + '/reply', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          body: JSON.stringify({ text })
+        });
+        if (res.ok) {
+          input.value = '';
+          _bdaLoad();
+        }
+      } catch (_) { /* non-fatal */ }
+      if (input) input.disabled = false;
+    }
+
+    async function _bdaDeleteThread(threadId) {
+      if (!confirm('Delete this thread and all its replies?')) return;
+      try {
+        const res = await fetch('/api/bd-activity/' + encodeURIComponent(threadId), {
+          method: 'DELETE',
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = res.ok ? await res.json() : null;
+        if (data && data.ok) {
+          _bdaAllThreads = _bdaAllThreads.filter(t => t.id !== threadId);
+          _bdaFilteredThreads = _bdaFilteredThreads.filter(t => t.id !== threadId);
+          _bdaRenderPage();
+        } else {
+          alert((data && data.error) || 'Could not delete thread.');
+        }
+      } catch (_) {
+        alert('Could not delete thread.');
+      }
+    }
+
+    // ── Google Meet link insertion ────────────────────────────
+    async function crmInsertMeetLink() {
+      if (_crmCalProvider !== 'google') {
+        alert('Google Meet links require a Google Calendar connection. Click "Google Connect" first, then find a slot.');
+        return;
+      }
+      if (!_crmCalSelectedSlot) {
+        alert('Please use "Find Slots" to find available slots and click one to select a meeting time first.');
+        return;
+      }
+      const statusEl = document.getElementById('crmCalStatus');
+      if (statusEl) statusEl.textContent = 'Creating Google Meet event…';
+      const toField  = (document.getElementById('crmEmailTo')?.value  || '').trim();
+      const subject  = (document.getElementById('crmEmailSubject')?.value || '').trim();
+      const bodyText = (document.getElementById('crmEmailBody')?.value || '').trim();
+      const attendees = toField ? toField.split(/[;,]+/).map(s => s.trim()).filter(Boolean) : [];
+      const durationMs = _crmCalSelectedSlot.end
+        ? (new Date(_crmCalSelectedSlot.end) - new Date(_crmCalSelectedSlot.start))
+        : 30 * 60 * 1000;
+      const endISO = _crmCalSelectedSlot.end || new Date(new Date(_crmCalSelectedSlot.start).getTime() + durationMs).toISOString();
+      try {
+        const res = await fetch('http://localhost:4000/calendar/create-event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({
+            summary:     subject || 'Meeting',
+            description: bodyText,
+            startISO:    _crmCalSelectedSlot.start,
+            endISO:      endISO,
+            attendees:   attendees,
+            timezone:    _crmCalTimezone || 'UTC',
+            sendUpdates: 'none',
+            provider:    'google',
+          })
+        });
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok || !data) {
+          const errMsg = (data && data.error) || 'Could not create Google Meet event. Check your Google Calendar connection.';
+          if (statusEl) statusEl.textContent = '⚠ ' + errMsg;
+          alert(errMsg);
+          return;
+        }
+        if (statusEl) statusEl.textContent = '';
+        const link = data.meetLink || '';
+        if (!link) {
+          alert('Event created but no Meet link was returned. Ensure your Google Calendar account allows Meet links.');
+          return;
+        }
+        // Insert the link into the body, replacing the placeholder tag if present
+        const bodyEl = document.getElementById('crmEmailBody');
+        if (bodyEl) {
+          let text = bodyEl.value;
+          text = text.replace(/\[Video Conference Link\]/gi, link);
+          if (!text.includes(link)) {
+            const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+            text += sep + 'Join meeting: ' + link;
+          }
+          bodyEl.value = text;
+        }
+        alert('Google Meet link inserted into the message.');
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '';
+        alert('Failed to create Google Meet event: ' + (e.message || 'unknown error'));
+      }
+    }
   </script>
 </body>
 </html>
