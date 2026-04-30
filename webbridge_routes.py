@@ -2427,8 +2427,10 @@ def _bd_save(data):
 
 # GET /api/bd-activity — return all BD Activity threads (newest first)
 @app.get("/api/bd-activity")
-@_require_session
 def bd_activity_get():
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
     with _bd_activity_lock:
         threads = _bd_load()
     threads_sorted = sorted(threads, key=lambda t: t.get("timestamp", ""), reverse=True)
@@ -2438,8 +2440,23 @@ def bd_activity_get():
 # POST /api/bd-activity — create a new thread from a CRM status update
 # Body: { company, comment, status }
 @app.post("/api/bd-activity")
-@_require_session
 def bd_activity_post():
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    # Validate emp_username exists in the employee table
+    try:
+        conn = _pg_connect()
+        _ensure_employee_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM employee WHERE username = %s LIMIT 1", (emp_username,))
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if not row:
+            return jsonify({"error": "Authentication required"}), 401
+    except Exception as exc:
+        logger.error("[bd-activity POST] employee check: %s", exc)
+        return jsonify({"error": "Authentication service temporarily unavailable"}), 500
     body = request.get_json(silent=True) or {}
     company = str(body.get("company") or "").strip()[:200]
     comment = str(body.get("comment") or "").strip()[:1000]
@@ -2448,7 +2465,7 @@ def bd_activity_post():
         return jsonify({"ok": False, "error": "company or status is required"}), 400
     entry = {
         "id":        __import__("uuid").uuid4().hex,
-        "username":  request._session_user,
+        "username":  emp_username,
         "company":   company,
         "comment":   comment,
         "status":    status,
@@ -2469,15 +2486,17 @@ def bd_activity_post():
 # POST /api/bd-activity/<thread_id>/reply — append a reply to a thread
 # Body: { text }
 @app.post("/api/bd-activity/<thread_id>/reply")
-@_require_session
 def bd_activity_reply(thread_id):
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
     body = request.get_json(silent=True) or {}
     text = str(body.get("text") or "").strip()[:1000]
     if not text:
         return jsonify({"ok": False, "error": "text is required"}), 400
     reply = {
         "id":        __import__("uuid").uuid4().hex,
-        "username":  request._session_user,
+        "username":  emp_username,
         "text":      text,
         "timestamp": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -2497,9 +2516,11 @@ def bd_activity_reply(thread_id):
 
 # DELETE /api/bd-activity/<thread_id> — remove a thread; only the owner may delete
 @app.delete("/api/bd-activity/<thread_id>")
-@_require_session
 def bd_activity_delete(thread_id):
-    username = request._session_user
+    emp_username = (request.cookies.get("emp_username") or "").strip()
+    if not emp_username:
+        return jsonify({"error": "Authentication required"}), 401
+    username = emp_username
     try:
         with _bd_activity_lock:
             threads = _bd_load()

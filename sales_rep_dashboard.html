@@ -3846,7 +3846,7 @@
       document.getElementById('crmCalSlots').style.display = 'none';
       document.getElementById('crmCalSlots').innerHTML = '';
       _crmCalSlots = [];
-      // Restore or reset ICS connect state.
+      _crmCalSelectedSlot = null;
       // If a URL was previously saved in this session, keep the connection alive so the
       // user doesn't have to reconnect every time they open the modal.
       const _icsRow    = document.getElementById('crmCalIcsRow');
@@ -4392,6 +4392,7 @@
       slotsEl.style.display = 'none';
       slotsEl.innerHTML = '';
       _crmCalSlots = [];
+      _crmCalSelectedSlot = null;
       try {
         const body = { startISO, endISO, durationMinutes: duration, provider: _crmCalProvider };
         if (_crmCalProvider === 'ics') body.icsUrl = _crmCalIcsUrl;
@@ -4473,7 +4474,10 @@
       if (filtered.length === 0) statusEl.textContent = 'No slots match the current filter. Uncheck "8 AM–6 PM only" to see all slots.';
     }
 
+    let _crmCalSelectedSlot = null; // tracks the most recently clicked calendar slot
+
     function _crmInsertSlotTag(slot, i) {
+      _crmCalSelectedSlot = slot;
       const d = new Date(slot.start);
       const tz = _crmCalTimezone || 'UTC';
       const dateStr = d.toLocaleDateString('en-US', { weekday:'long', year:'numeric', month:'long', day:'numeric', timeZone: tz });
@@ -4804,14 +4808,70 @@
     }
 
     // ── Google Meet link insertion ────────────────────────────
-    function crmInsertMeetLink() {
-      const meetUrl = prompt(
-        'Paste your Google Meet link (or leave blank to insert a placeholder):',
-        'https://meet.google.com/'
-      );
-      if (meetUrl === null) return; // cancelled
-      const link = (meetUrl.trim() || 'https://meet.google.com/').replace(/[<>"]/g, '');
-      crmInsertTag(link);
+    async function crmInsertMeetLink() {
+      if (_crmCalProvider !== 'google') {
+        alert('Google Meet links require a Google Calendar connection. Click "Google Connect" first, then find a slot.');
+        return;
+      }
+      if (!_crmCalSelectedSlot) {
+        alert('Please use "Find Slots" to find available slots and click one to select a meeting time first.');
+        return;
+      }
+      const statusEl = document.getElementById('crmCalStatus');
+      if (statusEl) statusEl.textContent = 'Creating Google Meet event…';
+      const toField  = (document.getElementById('crmEmailTo')?.value  || '').trim();
+      const subject  = (document.getElementById('crmEmailSubject')?.value || '').trim();
+      const bodyText = (document.getElementById('crmEmailBody')?.value || '').trim();
+      const attendees = toField ? toField.split(/[;,]+/).map(s => s.trim()).filter(Boolean) : [];
+      const durationMs = _crmCalSelectedSlot.end
+        ? (new Date(_crmCalSelectedSlot.end) - new Date(_crmCalSelectedSlot.start))
+        : 30 * 60 * 1000;
+      const endISO = _crmCalSelectedSlot.end || new Date(new Date(_crmCalSelectedSlot.start).getTime() + durationMs).toISOString();
+      try {
+        const res = await fetch('http://localhost:4000/calendar/create-event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+          body: JSON.stringify({
+            summary:     subject || 'Meeting',
+            description: bodyText,
+            startISO:    _crmCalSelectedSlot.start,
+            endISO:      endISO,
+            attendees:   attendees,
+            timezone:    _crmCalTimezone || 'UTC',
+            sendUpdates: 'none',
+            provider:    'google',
+          })
+        });
+        const data = res.ok ? await res.json() : null;
+        if (!res.ok || !data) {
+          const errMsg = (data && data.error) || 'Could not create Google Meet event. Check your Google Calendar connection.';
+          if (statusEl) statusEl.textContent = '⚠ ' + errMsg;
+          alert(errMsg);
+          return;
+        }
+        if (statusEl) statusEl.textContent = '';
+        const link = data.meetLink || '';
+        if (!link) {
+          alert('Event created but no Meet link was returned. Ensure your Google Calendar account allows Meet links.');
+          return;
+        }
+        // Insert the link into the body, replacing the placeholder tag if present
+        const bodyEl = document.getElementById('crmEmailBody');
+        if (bodyEl) {
+          let text = bodyEl.value;
+          text = text.replace(/\[Video Conference Link\]/gi, link);
+          if (!text.includes(link)) {
+            const sep = text && !text.endsWith('\n') ? '\n\n' : '';
+            text += sep + 'Join meeting: ' + link;
+          }
+          bodyEl.value = text;
+        }
+        alert('Google Meet link inserted into the message.');
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '';
+        alert('Failed to create Google Meet event: ' + (e.message || 'unknown error'));
+      }
     }
   </script>
 </body>
