@@ -3450,7 +3450,7 @@
     let _crmCalPage     = 0;
     const _SLOTS_PER_PAGE = 20;
     let _crmCalProvider = 'google'; // 'google' | 'ics'
-    let _crmCalIcsUrl   = '';
+    let _crmCalIcsUrl   = localStorage.getItem('ICS_url') || '';
     let _crmCalIcsConnected = false;
 
     function crmOpenEmailModal() {
@@ -3484,6 +3484,7 @@
       const _urlInput  = document.getElementById('crmCalIcsUrl');
       if (_crmCalIcsUrl) {
         // Restore ICS URL in the input and show the ICS row
+        _crmCalProvider = 'ics';
         if (_urlInput) _urlInput.value = _crmCalIcsUrl;
         if (_icsRow)   _icsRow.style.display = 'flex';
         if (_crmCalIcsConnected) {
@@ -3986,6 +3987,7 @@
         _crmCalProvider = 'ics';
         _crmCalIcsUrl   = icsUrl;
         _crmCalIcsConnected = true;
+        localStorage.setItem('ICS_url', icsUrl);
         if (statusEl) { statusEl.textContent = '✅ ICS Connected'; statusEl.style.color = '#065f46'; }
         const icsBtn = document.getElementById('crmCalIcsBtn');
         if (icsBtn) { icsBtn.style.background = 'var(--ad)'; icsBtn.style.color = '#fff'; icsBtn.style.borderColor = 'var(--ad)'; }
