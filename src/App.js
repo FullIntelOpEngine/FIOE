@@ -575,8 +575,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [showIcsInput, setShowIcsInput] = useState(false);
   const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_') || '');
   const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
-  const [icsConnecting, setIcsConnecting] = useState(false);
-  const [calendarSlots, setCalendarSlots] = useState([]);
+  const [icsConnecting, setIcsConnecting] = useState(false);  const [calendarSlots, setCalendarSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState(null);
   const [creatingEvent, setCreatingEvent] = useState(false);
@@ -651,6 +650,19 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     } catch (e) {
       console.error('Failed to load templates', e);
     }
+  }, []);
+
+  // Load ICS URL from server on mount (ICS_.json) — overrides localStorage cache if present
+  useEffect(() => {
+    fetch(`http://localhost:${API_PORT}/api/ics-url`, { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data && data.url) {
+          localStorage.setItem('ICS_', data.url);
+          setIcsCalendarUrl(data.url);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Reset calendar-related temporary state when modal opens/closes
@@ -879,6 +891,12 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
       }
       setIcsCalendarConnected(true);
       localStorage.setItem('ICS_', icsCalendarUrl);
+      fetch(`http://localhost:${API_PORT}/api/ics-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ icsUrl: icsCalendarUrl }),
+        credentials: 'include'
+      }).catch(() => {});
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
     } catch (e) {

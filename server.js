@@ -28,6 +28,16 @@ const RATE_LIMITS_PATH = (() => {
   return path.join(__dirname, '..', '..', 'rate_limits.json');
 })();
 
+// ── ICS URL store path: ICS_.json (same directory resolution as rate_limits.json) ─
+const ICS_URLS_PATH = (() => {
+  if (process.env.ICS_URLS_PATH) return process.env.ICS_URLS_PATH;
+  const local = path.join(__dirname, 'ICS_.json');
+  try { fs.accessSync(local, fs.constants.R_OK); return local; } catch (_) {}
+  const oneUp = path.join(__dirname, '..', 'ICS_.json');
+  try { fs.accessSync(oneUp, fs.constants.R_OK); return oneUp; } catch (_) {}
+  return local; // default to __dirname when file does not yet exist
+})();
+
 // ── System config: read once at startup from rate_limits.json (system section) ──
 // Priority: process.env override > rate_limits.json system section > hardcoded default.
 // This lets operators tune behaviour via admin_rate_limits.html without editing source.
@@ -8111,6 +8121,55 @@ app.post('/calendar/freebusy', requireLogin, async (req, res) => {
   } catch (err) {
     console.error('/calendar/freebusy error', err);
     res.status(500).json({ error: err.message || 'freebusy failed' });
+  }
+});
+
+// ── ICS URL persistence (ICS_.json) ──────────────────────────────────────────
+// loadIcsUrls() / saveIcsUrls() read and write ICS_.json which stores a mapping
+// of { username: icsUrl } so each user's ICS calendar URL survives server restarts.
+
+function loadIcsUrls() {
+  try { return JSON.parse(fs.readFileSync(ICS_URLS_PATH, 'utf8')); } catch (_) { return {}; }
+}
+
+function saveIcsUrls(data) {
+  const tmp = ICS_URLS_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, ICS_URLS_PATH);
+}
+
+// GET /api/ics-url — return the logged-in user's saved ICS URL (or empty string)
+app.get('/api/ics-url', requireLogin, dashboardRateLimit, (req, res) => {
+  try {
+    const data = loadIcsUrls();
+    res.json({ url: data[req.user.username] || '' });
+  } catch (err) {
+    console.error('[ics-url GET]', err.message);
+    res.status(500).json({ error: 'Could not read ICS URL.' });
+  }
+});
+
+// POST /api/ics-url — save (or clear) the logged-in user's ICS URL in ICS_.json
+// Body: { icsUrl: string }  — pass empty string to remove the stored URL.
+app.post('/api/ics-url', requireLogin, dashboardRateLimit, (req, res) => {
+  try {
+    const { icsUrl } = req.body || {};
+    if (typeof icsUrl !== 'string') return res.status(400).json({ error: 'icsUrl must be a string.' });
+    const url = icsUrl.trim();
+    if (url && !/^(https?:\/\/|webcal:\/\/)/i.test(url)) {
+      return res.status(400).json({ error: 'Invalid ICS URL scheme. Must start with http://, https://, or webcal://.' });
+    }
+    const data = loadIcsUrls();
+    if (url) {
+      data[req.user.username] = url;
+    } else {
+      delete data[req.user.username];
+    }
+    saveIcsUrls(data);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[ics-url POST]', err.message);
+    res.status(500).json({ error: 'Could not save ICS URL.' });
   }
 });
 
