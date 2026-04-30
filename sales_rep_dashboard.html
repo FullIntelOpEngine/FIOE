@@ -3462,7 +3462,7 @@
     let _crmCalPage     = 0;
     const _SLOTS_PER_PAGE = 20;
     let _crmCalProvider = 'google'; // 'google' | 'ics'
-    let _crmCalIcsUrl   = '';
+    let _crmCalIcsUrl   = (() => { try { return localStorage.getItem('ICS_') || ''; } catch(_) { return ''; } })();
     let _crmCalIcsConnected = false;
     let _crmCalFilterBusiness = true;
     let _crmCalTimezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch(_) { return 'UTC'; } })();
@@ -3525,7 +3525,12 @@
     // Load saved ICS URL from server (ICS_.json) on page init
     fetch('http://localhost:4000/api/ics-url', { credentials: 'include', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(r => r.ok ? r.json() : null)
-      .then(data => { if (data && data.url) { _crmCalIcsUrl = data.url; } })
+      .then(data => {
+        if (data && data.url) {
+          _crmCalIcsUrl = data.url;
+          try { localStorage.setItem('ICS_', data.url); } catch(_) {}
+        }
+      })
       .catch(() => {});
 
     function crmOpenEmailModal() {
@@ -4061,6 +4066,7 @@
         _crmCalProvider = 'ics';
         _crmCalIcsUrl   = icsUrl;
         _crmCalIcsConnected = true;
+        try { localStorage.setItem('ICS_', icsUrl); } catch(_) {}
         if (statusEl) { statusEl.textContent = '✅ ICS Connected'; statusEl.style.color = '#065f46'; }
         const icsBtn = document.getElementById('crmCalIcsBtn');
         if (icsBtn) { icsBtn.style.background = 'var(--ad)'; icsBtn.style.color = '#fff'; icsBtn.style.borderColor = 'var(--ad)'; }
