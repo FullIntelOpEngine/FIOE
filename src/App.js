@@ -570,10 +570,10 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
   // Calendar / Google Meet state
   const [addMeet, setAddMeet] = useState(false);
-  const [calendarProvider, setCalendarProvider] = useState('google'); // 'google' | 'microsoft' | 'ics'
+  const [calendarProvider, setCalendarProvider] = useState('ics'); // 'google' | 'microsoft' | 'ics'
   const [connectDropdownOpen, setConnectDropdownOpen] = useState(false);
   const [showIcsInput, setShowIcsInput] = useState(false);
-  const [icsCalendarUrl, setIcsCalendarUrl] = useState('');
+  const [icsCalendarUrl, setIcsCalendarUrl] = useState(() => localStorage.getItem('ICS_url') || '');
   const [icsCalendarConnected, setIcsCalendarConnected] = useState(false);
   const [icsConnecting, setIcsConnecting] = useState(false);
   const [calendarSlots, setCalendarSlots] = useState([]);
@@ -656,10 +656,10 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   useEffect(() => {
     if (!isOpen) {
       setAddMeet(false);
-      setCalendarProvider('google');
+      setCalendarProvider('ics');
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
-      setIcsCalendarUrl('');
+      setIcsCalendarUrl(localStorage.getItem('ICS_url') || '');
       setIcsCalendarConnected(false);
       setCalendarSlots([]);
       setSelectedSlotIndex(null);
@@ -876,6 +876,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         throw new Error(err.error || 'Could not read ICS calendar. Please verify the URL is accessible.');
       }
       setIcsCalendarConnected(true);
+      localStorage.setItem('ICS_url', icsCalendarUrl);
       setConnectDropdownOpen(false);
       setShowIcsInput(false);
     } catch (e) {
@@ -1741,6 +1742,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
   const [error, setError] = useState('');
   const [cleared, setCleared] = useState(false);
   const [step2DayIndex, setStep2DayIndex] = useState(0); // day-navigation for Step 2
+  const [filterBusinessHours, setFilterBusinessHours] = useState(true); // checkbox: show only 8AM–6PM slots
   const [displayTimezone, setDisplayTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   );
@@ -1758,6 +1760,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
     setError('');
     setCleared(false);
     setStep2DayIndex(0);
+    setFilterBusinessHours(true);
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -1868,13 +1871,22 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
   };
 
   // Group generated slots by date label for display
+  // When filterBusinessHours is true, only show slots between 8 AM and 6 PM in displayTimezone
+  const visibleSlots = filterBusinessHours
+    ? generatedSlots.map((s, i) => ({ slot: s, idx: i })).filter(({ slot }) => {
+        const h = new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: displayTimezone }).formatToParts(new Date(slot.start)).find(p => p.type === 'hour');
+        const hour = h ? parseInt(h.value, 10) : 0;
+        return hour >= 8 && hour < 18;
+      })
+    : generatedSlots.map((s, i) => ({ slot: s, idx: i }));
+
   const slotsByDay = [];
-  generatedSlots.forEach((s, i) => {
-    const label = new Date(s.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: displayTimezone });
+  visibleSlots.forEach(({ slot, idx }) => {
+    const label = new Date(slot.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone: displayTimezone });
     if (!slotsByDay.length || slotsByDay[slotsByDay.length - 1].label !== label) {
       slotsByDay.push({ label, slots: [] });
     }
-    slotsByDay[slotsByDay.length - 1].slots.push({ slot: s, idx: i });
+    slotsByDay[slotsByDay.length - 1].slots.push({ slot, idx });
   });
   const step2TotalDays = slotsByDay.length;
   const safeStep2Day = Math.min(step2DayIndex, Math.max(0, step2TotalDays - 1));
@@ -1946,7 +1958,22 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
           <div style={{ background: 'rgba(109,234,249,0.08)', border: '1px solid #6deaf9', borderRadius: 8, padding: '14px 16px', marginBottom: 14 }}>
             {/* Header row: title + day nav + select all */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--azure-dragon,#073679)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Step 2 — Select Slots to Publish</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--azure-dragon,#073679)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Step 2 — Select Slots to Publish</div>
+                {/* Business-hours filter checkbox */}
+                <label
+                  title="Uncheck to view slots outside 8 AM – 6 PM."
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', fontSize: 11, color: 'var(--muted,#6b7280)', fontWeight: 500, userSelect: 'none' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={filterBusinessHours}
+                    onChange={e => { setFilterBusinessHours(e.target.checked); setStep2DayIndex(0); }}
+                    style={{ cursor: 'pointer', accentColor: 'var(--azure-dragon,#073679)' }}
+                  />
+                  8 AM–6 PM only
+                </label>
+              </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 {/* Day navigation */}
                 <button type="button"
@@ -1987,7 +2014,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
 
             {/* Count of selected across all days */}
             <div style={{ fontSize: 11, color: 'var(--muted,#6b7280)', marginBottom: 10 }}>
-              {selectedIds.size} of {generatedSlots.length} slots selected in total
+              {selectedIds.size} of {generatedSlots.length} slots selected{filterBusinessHours && visibleSlots.length < generatedSlots.length ? ` (${visibleSlots.length} shown in 8 AM–6 PM window)` : ' in total'}
             </div>
 
             <div style={{ display: 'flex', gap: 8 }}>
