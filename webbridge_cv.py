@@ -229,26 +229,26 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
 
         future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
         result = future.result(timeout=effective_timeout)
-        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        elapsed_s = time.perf_counter() - t_start
         logger.info(
             '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
-                elapsed_ms, size_bytes
+                elapsed_s * 1000, size_bytes
             )
         )
-        _record_cv_cpu(elapsed_ms / 1000)
+        _record_cv_cpu(elapsed_s)
         return result
 
     except (
         concurrent.futures.TimeoutError,
         concurrent.futures.process.BrokenProcessPool,
-        concurrent.futures.CancelledFuture,
+        concurrent.futures.CancelledError,
         OSError,
         RuntimeError,
     ) as exc:
-        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        elapsed_s = time.perf_counter() - t_start
         logger.warning(
             '{"event":"cv_analysis_fallback_sync","reason":"%s","duration_ms":%.1f,'
-            '"size_bytes":%d}' % (type(exc).__name__, elapsed_ms, size_bytes)
+            '"size_bytes":%d}' % (type(exc).__name__, elapsed_s * 1000, size_bytes)
         )
         # If pool is broken, discard it so it is recreated on the next call
         if isinstance(exc, concurrent.futures.process.BrokenProcessPool):
@@ -258,10 +258,10 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
         _record_cv_cpu(time.perf_counter() - t_start)
         return result
     except Exception as exc:
-        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        elapsed_s = time.perf_counter() - t_start
         logger.warning(
             '{"event":"cv_analysis_fallback_sync","reason":"%s","duration_ms":%.1f,'
-            '"size_bytes":%d}' % (type(exc).__name__, elapsed_ms, size_bytes)
+            '"size_bytes":%d}' % (type(exc).__name__, elapsed_s * 1000, size_bytes)
         )
         result = _analyze_cv_bytes_sync(pdf_bytes)
         _record_cv_cpu(time.perf_counter() - t_start)
