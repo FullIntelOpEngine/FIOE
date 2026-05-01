@@ -258,8 +258,26 @@ def _is_pdf_bytes(b: bytes) -> bool:
     return isinstance(b, (bytes, bytearray)) and len(b) >= 5 and b[:5] == b'%PDF-'
 
 
-# Semaphore to cap concurrent background CV analysis threads (prevent CPU/memory exhaustion)
-_CV_ANALYZE_SEMAPHORE = threading.Semaphore(4)
+# ---------------------------------------------------------------------------
+# CV process-pool config — read once at startup so webbridge_cv.py can import
+# ---------------------------------------------------------------------------
+def _cv_default_workers() -> int:
+    cpu = os.cpu_count() or 2
+    return min(max(1, cpu - 1), 2)
+
+CV_ANALYZE_WORKERS: int = int(os.getenv("CV_ANALYZE_WORKERS", "") or _cv_default_workers())
+CV_ANALYZE_MAX_CONCURRENCY: int = int(
+    os.getenv("CV_ANALYZE_MAX_CONCURRENCY", "") or
+    min(CV_ANALYZE_WORKERS, max(1, (os.cpu_count() or 2) // 2))
+)
+CV_ANALYZE_OFFLOAD_TIMEOUT: float = float(os.getenv("CV_ANALYZE_OFFLOAD_TIMEOUT", "") or 60.0)
+CV_ANALYZE_USE_QUEUE: bool = os.getenv("CV_ANALYZE_USE_QUEUE", "0").strip() == "1"
+CV_ANALYZE_HOURLY_CPU_LIMIT: float = float(os.getenv("CV_ANALYZE_HOURLY_CPU_LIMIT", "") or 0.0)
+CV_ANALYZE_MAX_BATCH_SIZE: int = int(os.getenv("CV_ANALYZE_MAX_BATCH_SIZE", "") or 16)
+
+# Semaphore to cap concurrent CV analyses (process-pool *and* legacy thread path).
+# Reconfigured to CV_ANALYZE_MAX_CONCURRENCY; legacy default was 4.
+_CV_ANALYZE_SEMAPHORE = threading.Semaphore(CV_ANALYZE_MAX_CONCURRENCY)
 
 # Allowlist for credentialed CORS. Override with ALLOWED_ORIGINS env var (comma-separated).
 _ALLOWED_ORIGINS = {

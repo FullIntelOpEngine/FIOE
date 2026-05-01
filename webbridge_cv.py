@@ -83,6 +83,9 @@ from webbridge import (
     ASSESSMENT_EXCELLENT_THRESHOLD, ASSESSMENT_GOOD_THRESHOLD, ASSESSMENT_MODERATE_THRESHOLD,
     CITY_TO_COUNTRY_DATA,
     _CV_ANALYZE_SEMAPHORE, _SINGLE_FILE_MAX,
+    CV_ANALYZE_WORKERS, CV_ANALYZE_MAX_CONCURRENCY,
+    CV_ANALYZE_OFFLOAD_TIMEOUT, CV_ANALYZE_USE_QUEUE,
+    CV_ANALYZE_HOURLY_CPU_LIMIT, CV_ANALYZE_MAX_BATCH_SIZE,
     _rate, _check_user_rate, _csrf_required,
     _is_pdf_bytes,
     _extract_json_object, _extract_confirmed_skills,
@@ -120,6 +123,162 @@ from webbridge_routes import (
     unified_llm_call_text,
     _search_fallback_flag,
 )
+
+
+# ---------------------------------------------------------------------------
+# CV ProcessPoolExecutor — lazy init, cost-aware, safe synchronous fallback
+# ---------------------------------------------------------------------------
+import concurrent.futures  # stdlib, no new dep
+
+# Module-level pool (None until first use) and cost tracking
+_CV_ANALYZE_PROCESS_POOL: "concurrent.futures.ProcessPoolExecutor | None" = None
+_CV_POOL_LOCK = threading.Lock()
+
+# Cumulative CPU-seconds tracker (reset every hour)
+_cv_cpu_seconds_total: float = 0.0
+_cv_cpu_window_start: float = time.monotonic()
+_cv_cpu_lock = threading.Lock()
+
+
+def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
+    """Top-level (picklable) wrapper executed inside the process pool."""
+    # _analyze_cv_bytes_sync is defined later in this module; we re-import the
+    # symbol via the module so the worker process has a self-contained reference.
+    import webbridge_cv as _self
+    return _self._analyze_cv_bytes_sync(pdf_bytes)
+
+
+def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> dict:
+    """
+    Offload CV parsing to a process-pool worker if possible, with full
+    synchronous fallback on any failure.
+
+    Cost-aware behaviour:
+    - Pool capped at CV_ANALYZE_WORKERS workers (default ≤ 2).
+    - Concurrency further limited by _CV_ANALYZE_SEMAPHORE.
+    - If CV_ANALYZE_HOURLY_CPU_LIMIT is set and exceeded, falls back to sync.
+    - All results are logged as JSON-line telemetry.
+    """
+    global _CV_ANALYZE_PROCESS_POOL, _cv_cpu_seconds_total, _cv_cpu_window_start
+
+    effective_timeout = timeout if timeout is not None else CV_ANALYZE_OFFLOAD_TIMEOUT
+    size_bytes = len(pdf_bytes)
+    t_start = time.perf_counter()
+
+    # --- Cost guard: check hourly CPU budget ---
+    if CV_ANALYZE_HOURLY_CPU_LIMIT > 0:
+        _limit_exceeded = False
+        with _cv_cpu_lock:
+            now = time.monotonic()
+            if now - _cv_cpu_window_start >= 3600:
+                _cv_cpu_seconds_total = 0.0
+                _cv_cpu_window_start = now
+            if _cv_cpu_seconds_total >= CV_ANALYZE_HOURLY_CPU_LIMIT:
+                _limit_exceeded = True
+        if _limit_exceeded:
+            logger.warning(
+                '{"event":"cv_analysis_fallback_sync","reason":"hourly_cpu_limit_exceeded",'
+                f'"limit":{CV_ANALYZE_HOURLY_CPU_LIMIT},'
+                f'"size_bytes":{size_bytes}}}'
+            )
+            result = _analyze_cv_bytes_sync(pdf_bytes)
+            _record_cv_cpu(time.perf_counter() - t_start)
+            return result
+
+    # --- Acquire concurrency semaphore (brief timeout so we don't block forever) ---
+    acquired = _CV_ANALYZE_SEMAPHORE.acquire(timeout=1)
+    if not acquired:
+        if CV_ANALYZE_USE_QUEUE:
+            logger.info(
+                '{"event":"cv_analysis_queued","size_bytes":%d,'
+                '"reason":"semaphore_unavailable"}' % size_bytes
+            )
+        # Fall back synchronously whether queuing is enabled or not (queue is
+        # out-of-scope; the safe path is always sync).
+        logger.warning(
+            '{"event":"cv_analysis_fallback_sync","reason":"semaphore_timeout",'
+            '"size_bytes":%d}' % size_bytes
+        )
+        result = _analyze_cv_bytes_sync(pdf_bytes)
+        _record_cv_cpu(time.perf_counter() - t_start)
+        return result
+
+    try:
+        logger.info(
+            '{"event":"cv_analysis_start","size_bytes":%d}' % size_bytes
+        )
+        # Lazily create the pool (never at import time)
+        with _CV_POOL_LOCK:
+            if _CV_ANALYZE_PROCESS_POOL is None:
+                try:
+                    _CV_ANALYZE_PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=CV_ANALYZE_WORKERS
+                    )
+                    logger.info(
+                        '{"event":"cv_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
+                    )
+                except Exception as pool_err:
+                    logger.warning(
+                        '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
+                    )
+                    _CV_ANALYZE_PROCESS_POOL = None
+
+        pool = _CV_ANALYZE_PROCESS_POOL
+        if pool is None:
+            raise RuntimeError("ProcessPoolExecutor creation failed")
+
+        future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
+        result = future.result(timeout=effective_timeout)
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        logger.info(
+            '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
+                elapsed_ms, size_bytes
+            )
+        )
+        _record_cv_cpu(elapsed_ms / 1000)
+        return result
+
+    except (
+        concurrent.futures.TimeoutError,
+        concurrent.futures.process.BrokenProcessPool,
+        concurrent.futures.CancelledFuture,
+        OSError,
+        RuntimeError,
+    ) as exc:
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        logger.warning(
+            '{"event":"cv_analysis_fallback_sync","reason":"%s","duration_ms":%.1f,'
+            '"size_bytes":%d}' % (type(exc).__name__, elapsed_ms, size_bytes)
+        )
+        # If pool is broken, discard it so it is recreated on the next call
+        if isinstance(exc, concurrent.futures.process.BrokenProcessPool):
+            with _CV_POOL_LOCK:
+                _CV_ANALYZE_PROCESS_POOL = None
+        result = _analyze_cv_bytes_sync(pdf_bytes)
+        _record_cv_cpu(time.perf_counter() - t_start)
+        return result
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - t_start) * 1000
+        logger.warning(
+            '{"event":"cv_analysis_fallback_sync","reason":"%s","duration_ms":%.1f,'
+            '"size_bytes":%d}' % (type(exc).__name__, elapsed_ms, size_bytes)
+        )
+        result = _analyze_cv_bytes_sync(pdf_bytes)
+        _record_cv_cpu(time.perf_counter() - t_start)
+        return result
+    finally:
+        _CV_ANALYZE_SEMAPHORE.release()
+
+
+def _record_cv_cpu(duration_seconds: float) -> None:
+    """Add *duration_seconds* to the rolling hourly CPU counter."""
+    global _cv_cpu_seconds_total, _cv_cpu_window_start
+    with _cv_cpu_lock:
+        now = time.monotonic()
+        if now - _cv_cpu_window_start >= 3600:
+            _cv_cpu_seconds_total = 0.0
+            _cv_cpu_window_start = now
+        _cv_cpu_seconds_total += duration_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -4668,7 +4827,7 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
             obj = pre_parsed_obj
             logger.info(f"[CV BG] Using pre-parsed obj for {_id_label} (skipping Gemini re-parse)")
         else:
-            obj = _analyze_cv_bytes_sync(pdf_bytes)
+            obj = analyze_cv_bytes_offload(pdf_bytes)
         if not obj:
             logger.warning(f"[CV BG] Analysis returned None for {_id_label}")
             return
@@ -5078,10 +5237,10 @@ def process_parse_cv_and_update():
         pdf_bytes = bytes(row[0])
         cur.close(); conn.close()
         
-        obj = _analyze_cv_bytes_sync(pdf_bytes)
+        obj = analyze_cv_bytes_offload(pdf_bytes)
         if not obj:
              return jsonify({"error": "Analysis returned no data"}), 500
-             
+
         # Persist synchronously so DB fields are ready before bulk_assess runs.
         # (Background thread approach caused a race: bulk_assess read empty fields
         # because the thread hadn't finished writing when the next request arrived.)
