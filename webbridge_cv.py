@@ -7022,7 +7022,7 @@ def internal_run_job():
         )
     except Exception as exc:
         logger.error(f"[internal/run-job] Unhandled error for {job_id}: {exc}", exc_info=True)
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": "Job execution failed. Check worker logs."}), 500
 
     return jsonify({"ok": True, "job_id": job_id})
 
@@ -7141,7 +7141,7 @@ def internal_run_cv():
         pdf_bytes = blob.download_as_bytes()
     except Exception as exc:
         logger.error(f"[internal/run-cv] GCS download failed: {exc}")
-        return jsonify({"error": f"GCS download failed: {exc}"}), 500
+        return jsonify({"error": "GCS download failed. Check worker logs."}), 500
 
     try:
         analyze_cv_background(
@@ -7155,14 +7155,14 @@ def internal_run_cv():
         # Best-effort cleanup
         try:
             bucket.blob(object_name).delete()
-        except Exception:
-            pass
-        return jsonify({"error": str(exc)}), 500
+        except Exception as _cleanup_err:
+            logger.warning(f"[internal/run-cv] GCS cleanup failed: {_cleanup_err}")
+        return jsonify({"error": "CV analysis failed. Check worker logs."}), 500
 
     # Clean up the staged file on success
     try:
         bucket.blob(object_name).delete()
-    except Exception:
-        pass
+    except Exception as _cleanup_err:
+        logger.warning(f"[internal/run-cv] GCS cleanup after success failed: {_cleanup_err}")
 
     return jsonify({"ok": True})

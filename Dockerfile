@@ -32,7 +32,9 @@ FROM base AS web-deps
 
 COPY requirements.txt .
 
-# Install everything except the heavy ML/PDF deps
+# Install everything except the heavy ML/PDF deps.
+# Individual packages are pinned here for faster layer caching; requirements.txt
+# is also installed so any additions there are picked up automatically.
 RUN pip install \
         flask \
         flask-limiter \
@@ -46,8 +48,8 @@ RUN pip install \
         google-cloud-tasks \
         redis \
         werkzeug \
-        python-dotenv \
-    && pip install -r requirements.txt || true
+        python-dotenv
+RUN pip install -r requirements.txt
 
 # ── Worker: everything in web-deps + heavy deps ────────────
 FROM web-deps AS worker-deps
