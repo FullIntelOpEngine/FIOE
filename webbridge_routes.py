@@ -2727,6 +2727,7 @@ def _save_crm_json(username, profiles):
 
 
 @app.post("/prospect/source")
+@_csrf_required
 @_require_session
 def prospect_source():
     """Source LinkedIn profiles for the Sales Rep Prospect tab.
@@ -2861,6 +2862,7 @@ def prospect_crm_data_delete():
 
 
 @app.post("/prospect/crm-save")
+@_csrf_required
 @_require_session
 def prospect_crm_save():
     """Overwrite the current user's CRM_{username}.json with the profiles sent from the frontend."""
@@ -2901,6 +2903,7 @@ def prospect_crm_save():
 
 
 @app.post("/prospect/crm-email-draft")
+@_csrf_required
 @_require_session
 def prospect_crm_email_draft():
     """Generate an AI-drafted email body using LLM, based on subject and recipient context."""
@@ -3005,6 +3008,7 @@ def _recalculate_confidences(company_data):
 
 
 @app.post("/prospect/crm-generate-email")
+@_csrf_required
 @_require_session
 def prospect_crm_generate_email():
     """Generate email addresses for a CRM prospect.
@@ -3109,6 +3113,7 @@ def prospect_crm_generate_email():
 
 
 @app.post("/prospect/crm-save-verified-email")
+@_csrf_required
 @_require_session
 def prospect_crm_save_verified_email():
     """Persist a confirmed email address into verified_email.json.
