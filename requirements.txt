@@ -1,0 +1,36 @@
+# Core web framework
+flask>=3.0,<4.0
+flask-limiter>=3.5,<4.0
+
+# WSGI server (PR 5 — gunicorn + gevent workers)
+gunicorn[gevent]>=22.0,<24.0
+gevent>=24.0,<25.0
+
+# HTTP
+requests>=2.31,<3.0
+
+# Database
+psycopg2-binary>=2.9,<3.0
+
+# LLM providers
+google-generativeai>=0.7,<1.0
+
+# Excel / CSV output
+openpyxl>=3.1,<4.0
+
+# PDF processing (worker image only — heavy dep)
+pdfplumber>=0.11,<1.0
+
+# GCP services (PR 1, PR 2, PR 6)
+google-cloud-storage>=2.17,<3.0
+google-cloud-tasks>=2.16,<3.0
+
+# Cache backend (PR 3 — optional Redis)
+redis>=5.0,<6.0
+
+# Security / crypto
+werkzeug>=3.0,<4.0
+python-dotenv>=1.0,<2.0
+
+# Misc utilities
+openpyxl>=3.1,<4.0
