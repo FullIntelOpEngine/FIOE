@@ -675,14 +675,7 @@ def _require_admin(f):
         if not username:
             return jsonify({"error": "Authentication required"}), 401
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv("PGHOST", "localhost"),
-                port=int(os.getenv("PGPORT", "5432")),
-                user=os.getenv("PGUSER", "postgres"),
-                password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE", "candidate_db"),
-            )
+            conn = _pg_connect()
             cur = conn.cursor()
             if session_id:
                 cur.execute("SELECT useraccess FROM login WHERE username=%s AND session_id=%s LIMIT 1", (username, session_id))
@@ -729,14 +722,7 @@ def _require_session(f):
         if not username:
             return jsonify({"error": "Authentication required"}), 401
         try:
-            import psycopg2
-            conn = psycopg2.connect(
-                host=os.getenv("PGHOST", "localhost"),
-                port=int(os.getenv("PGPORT", "5432")),
-                user=os.getenv("PGUSER", "postgres"),
-                password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE", "candidate_db"),
-            )
+            conn = _pg_connect()
             cur = conn.cursor()
             if session_id:
                 cur.execute(
@@ -806,8 +792,133 @@ def _user_has_custom_providers(username: str) -> dict:
 
 # ── Admin: rate-limit management API ──────────────────────────────────────────
 
+# ── PostgreSQL connection pool ────────────────────────────────────────────────
+# Lazy-initialised ThreadedConnectionPool.  Each call to _pg_connect() checks
+# the pool first; on pool exhaustion or error it falls back to a direct connect
+# so the application never becomes unavailable due to pool misconfiguration.
+#
+# Pool size is tunable without code changes:
+#   PGPOOL_MIN_CONNS  (default 2)   — pre-created connections
+#   PGPOOL_MAX_CONNS  (default 20)  — hard cap (keep < pg max_connections)
+#
+# _PooledConn wraps a psycopg2 connection so that calling .close() returns the
+# connection to the pool instead of destroying it.  All other attribute accesses
+# delegate transparently to the underlying connection, so every existing
+# conn.cursor() / conn.commit() / conn.rollback() call continues to work without
+# modification.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PG_POOL = None           # type: ignore[assignment]
+_PG_POOL_LOCK = threading.Lock()
+_PGPOOL_MIN: int = int(os.getenv("PGPOOL_MIN_CONNS", "2"))
+_PGPOOL_MAX: int = int(os.getenv("PGPOOL_MAX_CONNS", "20"))
+
+
+class _PooledConn:
+    """Wraps a psycopg2 pool connection; .close() returns it to the pool."""
+
+    __slots__ = ("_conn", "_pool", "_closed")
+
+    def __init__(self, conn, pool):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_pool", pool)
+        object.__setattr__(self, "_closed", False)
+
+    # Delegate all attribute access to the underlying connection
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_conn"), name)
+
+    def __setattr__(self, name, value):
+        if name in ("_conn", "_pool", "_closed"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_conn"), name, value)
+
+    # Context-manager support: ``with conn:`` / ``with conn as cur:``
+    def __enter__(self):
+        return object.__getattribute__(self, "_conn").__enter__()
+
+    def __exit__(self, *args):
+        result = object.__getattribute__(self, "_conn").__exit__(*args)
+        self.close()
+        return result
+
+    def close(self):
+        if object.__getattribute__(self, "_closed"):
+            return
+        object.__setattr__(self, "_closed", True)
+        conn = object.__getattribute__(self, "_conn")
+        pool = object.__getattribute__(self, "_pool")
+        # Roll back any open transaction before returning to the pool so the
+        # next caller always starts with a clean state.
+        try:
+            if not conn.closed:
+                try:
+                    from psycopg2 import extensions as _pg_ext
+                    if conn.status == _pg_ext.STATUS_IN_TRANSACTION:
+                        conn.rollback()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            pool.putconn(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _get_pg_pool():
+    """Return the module-level ThreadedConnectionPool, creating it lazily."""
+    global _PG_POOL
+    if _PG_POOL is not None:
+        return _PG_POOL
+    with _PG_POOL_LOCK:
+        if _PG_POOL is not None:
+            return _PG_POOL
+        try:
+            import psycopg2
+            import psycopg2.pool
+            _PG_POOL = psycopg2.pool.ThreadedConnectionPool(
+                _PGPOOL_MIN,
+                _PGPOOL_MAX,
+                host=os.getenv("PGHOST", "localhost"),
+                port=int(os.getenv("PGPORT", "5432")),
+                user=os.getenv("PGUSER", "postgres"),
+                password=os.getenv("PGPASSWORD", ""),
+                dbname=os.getenv("PGDATABASE", "candidate_db"),
+            )
+            logger.info(
+                "[pgpool] ThreadedConnectionPool created (min=%d max=%d)",
+                _PGPOOL_MIN, _PGPOOL_MAX,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[pgpool] Failed to create pool: %s — falling back to direct connects",
+                exc,
+            )
+        return _PG_POOL
+
+
 def _pg_connect():
-    """Return a new psycopg2 connection using environment variables."""
+    """Return a psycopg2 connection backed by the module-level pool.
+
+    Attempts to obtain a connection from the ThreadedConnectionPool.  On pool
+    exhaustion or any pool error, falls back to a direct psycopg2 connect so
+    the application remains functional.
+
+    Callers should call ``conn.close()`` as normal; when the connection came
+    from the pool, ``close()`` returns it to the pool rather than destroying it.
+    """
+    pool = _get_pg_pool()
+    if pool is not None:
+        try:
+            raw = pool.getconn()
+            return _PooledConn(raw, pool)
+        except Exception as exc:
+            logger.warning("[pgpool] getconn() failed (%s) — direct connect fallback", exc)
     import psycopg2
     return psycopg2.connect(
         host=os.getenv("PGHOST", "localhost"),
@@ -4662,8 +4773,7 @@ def gemini_analyze_jd():
     # If no text but username provided, attempt to read JD from login.jd column (best-effort)
     if not text_input and username:
         try:
-            import psycopg2
-            conn = psycopg2.connect(host=os.getenv("PGHOST","localhost"), port=int(os.getenv("PGPORT","5432")), user=os.getenv("PGUSER","postgres"), password=os.getenv("PGPASSWORD", ""), dbname=os.getenv("PGDATABASE","candidate_db"))
+            conn = _pg_connect()
             cur = conn.cursor()
             cur.execute("SELECT jd FROM login WHERE username = %s", (username,))
             row = cur.fetchone()
@@ -5463,14 +5573,7 @@ def chat_upload_jd():
             return jsonify({"error": "Could not extract text from the uploaded file"}), 400
 
         # Persist JD text to login table
-        import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv("PGHOST", "localhost"),
-            port=int(os.getenv("PGPORT", "5432")),
-            user=os.getenv("PGUSER", "postgres"),
-            password=os.getenv("PGPASSWORD", ""),
-            dbname=os.getenv("PGDATABASE", "candidate_db"),
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         cur.execute("UPDATE login SET jd = %s WHERE username = %s", (extracted_text, username))
         if cur.rowcount == 0:
@@ -5576,17 +5679,9 @@ def _persist_jskillset(username: str, skills):
     final_skills = [str(s) for s in deduped]
 
     try:
-        import psycopg2
         from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_pg_connect()
         cur=conn.cursor()
-        
-        # Explicit check for jskillset existence to be safe
         cur.execute("""
             SELECT column_name
             FROM information_schema.columns
@@ -5632,17 +5727,9 @@ def _fetch_jskillset(username: str):
     if not username:
         return []
     try:
-        import psycopg2
         from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_pg_connect()
         cur = conn.cursor()
-        
-        # Check if jskillset column exists to prevent query errors
         cur.execute("""
             SELECT column_name FROM information_schema.columns 
             WHERE table_schema='public' AND table_name='login' AND column_name='jskillset'
@@ -5690,17 +5777,9 @@ def _fetch_jskillset_from_process(linkedinurl: str):
     if not linkedinurl:
         return []
     try:
-        import psycopg2
         from psycopg2 import sql as pgsql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_pg_connect()
         cur = conn.cursor()
-        
-        # Normalize LinkedIn URL
         normalized_url = linkedinurl.strip().rstrip('/').lower()
         if not normalized_url.startswith('http'):
             normalized_url = 'https://' + normalized_url
@@ -5771,17 +5850,9 @@ def _sync_login_jskillset_to_process(username: str, linkedinurl: str, normalized
     if available, to avoid overwriting candidate's own 'skillset' or 'skills' column.
     """
     try:
-        import psycopg2
         from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_pg_connect()
         cur=conn.cursor()
-
-        # 1. Find source column in login
         # Priority: jskillset > jskills > skills > skillset
         cur.execute("""
             SELECT column_name FROM information_schema.columns
@@ -5878,15 +5949,8 @@ def _sync_criteria_jskillset_to_process(username: str, role_tag: str, linkedinur
             if file_skills:
                 has_criteria = True
                 skill_csv = ",".join(str(s).strip() for s in file_skills if str(s).strip())
-                import psycopg2
                 from psycopg2 import sql as _sql
-                pg_host = os.getenv("PGHOST", "localhost")
-                pg_port = int(os.getenv("PGPORT", "5432"))
-                pg_user = os.getenv("PGUSER", "postgres")
-                pg_password = os.getenv("PGPASSWORD", "")
-                pg_db = os.getenv("PGDATABASE", "candidate_db")
-                conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user,
-                                        password=pg_password, dbname=pg_db)
+                conn = _pg_connect()
                 cur = conn.cursor()
                 try:
                     cur.execute("""
@@ -6160,14 +6224,8 @@ def gemini_rebate_validate():
     # When rebate assessment is triggered, ensure role_tag is persisted into 'process' table as 'jskill'.
     if role_tag and (linkedinurl or normalized_linkedin):
         try:
-            import psycopg2
             from psycopg2 import sql
-            pg_host=os.getenv("PGHOST","localhost")
-            pg_port=int(os.getenv("PGPORT","5432"))
-            pg_user=os.getenv("PGUSER","postgres")
-            pg_password=os.getenv("PGPASSWORD", "")
-            pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn_rt=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn_rt=_pg_connect()
             cur_rt=conn_rt.cursor()
             
             # Check for jskill and normalized_linkedin column existence
@@ -6618,12 +6676,7 @@ def gemini_assess_profile():
     # --- Idempotency pre-check: skip assessment if a rating already exists and policy forbids overwrite ---
     if linkedinurl:
         try:
-            import psycopg2 as _psycopg2_idem
-            _idem_conn = _psycopg2_idem.connect(
-                host=os.getenv("PGHOST","localhost"), port=int(os.getenv("PGPORT","5432")),
-                user=os.getenv("PGUSER","postgres"), password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE","candidate_db")
-            )
+            _idem_conn = _pg_connect()
             try:
                 _idem_cur = _idem_conn.cursor()
                 _ensure_rating_metadata_columns(_idem_cur, _idem_conn)
@@ -6671,12 +6724,7 @@ def gemini_assess_profile():
     # After resolution, write back to sourcing table so it is available for future assessments.
     if not role_tag and (linkedinurl or username):
         try:
-            import psycopg2
-            _pg_conn = psycopg2.connect(
-                host=os.getenv("PGHOST","localhost"), port=int(os.getenv("PGPORT","5432")),
-                user=os.getenv("PGUSER","postgres"), password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE","candidate_db")
-            )
+            _pg_conn = _pg_connect()
             try:
                 _pg_cur = _pg_conn.cursor()
                 # 1. Try sourcing by linkedinurl first, then by username (authoritative source)
@@ -6761,13 +6809,7 @@ def gemini_assess_profile():
         candidate_skills = data.get("skillset") or []
         if not candidate_skills and linkedinurl:
             normalized = _normalize_linkedin_to_path(linkedinurl)
-            import psycopg2
-            pg_host=os.getenv("PGHOST","localhost")
-            pg_port=int(os.getenv("PGPORT","5432"))
-            pg_user=os.getenv("PGUSER","postgres")
-            pg_password=os.getenv("PGPASSWORD", "")
-            pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn=_pg_connect()
             cur=conn.cursor()
             
             # Check if vskillset column exists (prioritize vskillset over skillset)
@@ -6847,14 +6889,8 @@ def gemini_assess_profile():
 
         # Fallback: if login has none, try the process table's jskill* hints (legacy)
         if not process_skills and linkedinurl:
-            import psycopg2
             from psycopg2 import sql as pgsql
-            pg_host=os.getenv("PGHOST","localhost")
-            pg_port=int(os.getenv("PGPORT","5432"))
-            pg_user=os.getenv("PGUSER","postgres")
-            pg_password=os.getenv("PGPASSWORD", "")
-            pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn=_pg_connect()
             cur=conn.cursor()
             
             # Determine available columns
@@ -6923,12 +6959,7 @@ def gemini_assess_profile():
     product = []
     if linkedinurl:
         try:
-            import psycopg2 as _psycopg2_fill
-            _pg_fill = _psycopg2_fill.connect(
-                host=os.getenv("PGHOST","localhost"), port=int(os.getenv("PGPORT","5432")),
-                user=os.getenv("PGUSER","postgres"), password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE","candidate_db")
-            )
+            _pg_fill = _pg_connect()
             try:
                 _cur_fill = _pg_fill.cursor()
                 _cur_fill.execute(
@@ -6975,15 +7006,8 @@ def gemini_assess_profile():
         elif not target_skills or len(target_skills) == 0:
             logger.info(f"[Gemini Assess -> vskillset] Skipped: No target_skills for linkedin='{linkedinurl}'")
         else:
-            import psycopg2
             from psycopg2 import sql as pgsql
-            pg_host = os.getenv("PGHOST", "localhost")
-            pg_port = int(os.getenv("PGPORT", "5432"))
-            pg_user = os.getenv("PGUSER", "postgres")
-            pg_password = os.getenv("PGPASSWORD", "")
-            pg_db = os.getenv("PGDATABASE", "candidate_db")
-            
-            conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn = _pg_connect()
             cur = conn.cursor()
             
             # Normalize linkedin URL
@@ -7264,17 +7288,9 @@ Return ONLY the JSON object, no other text."""
 
     # NEW: Persist Level 1 assessment into the 'rating' column of the process table (if present).
     try:
-        import psycopg2
         from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_pg_connect()
         cur=conn.cursor()
-
-        # Check if 'rating' column exists
         cur.execute("""
             SELECT column_name
             FROM information_schema.columns

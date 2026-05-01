@@ -175,10 +175,7 @@ def _startup_backfill_role_tag_session():
         pg_user = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(
-            host=pg_host, port=pg_port, user=pg_user,
-            password=pg_password, dbname=pg_db
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         try:
             # Ensure columns exist before touching them
@@ -3169,10 +3166,7 @@ def linkdapi_upload_profile_pdf():
         pg_user     = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db       = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(
-            host=pg_host, port=pg_port, user=pg_user,
-            password=pg_password, dbname=pg_db
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         binary_cv = psycopg2.Binary(pdf_bytes)
 
@@ -3733,14 +3727,7 @@ def process_update_tenure():
         return jsonify({"ok": False, "error": "invalid tenure"}), 400
 
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=os.getenv("PGHOST", "localhost"),
-            port=int(os.getenv("PGPORT", "5432")),
-            user=os.getenv("PGUSER", "postgres"),
-            password=os.getenv("PGPASSWORD", ""),
-            dbname=os.getenv("PGDATABASE", "candidate_db"),
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         cur.execute(
             "UPDATE process SET tenure = %s WHERE linkedinurl = %s",

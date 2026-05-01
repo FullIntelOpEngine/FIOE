@@ -655,13 +655,8 @@ def _write_outputs(job_id, rows):
                     if all((val is None or str(val).strip()=="" ) for val in row): continue
                     data_rows.append(row)
                 if data_rows:
-                    pg_host=os.getenv("PGHOST","localhost")
-                    pg_port=int(os.getenv("PGPORT","5432"))
-                    pg_user=os.getenv("PGUSER","postgres")
-                    pg_password=os.getenv("PGPASSWORD", "")
-                    pg_db=os.getenv("PGDATABASE","candidate_db")
-                    logger.info(f"[Ingest] Connecting to Postgres host={pg_host} port={pg_port} db={pg_db} user={pg_user}")
-                    conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                    logger.info("[Ingest] Connecting to Postgres via pool")
+                    conn=_get_pg_conn()
                     conn.autocommit=False
                     cur=conn.cursor()
 
@@ -946,13 +941,7 @@ def start_job():
             # job_titles is a list of strings
             role_tag_val = ", ".join([str(t).strip() for t in job_titles if t]).strip()
             if role_tag_val:
-                import psycopg2
-                pg_host_l = os.getenv("PGHOST", "localhost")
-                pg_port_l = int(os.getenv("PGPORT", "5432"))
-                pg_user_l = os.getenv("PGUSER", "postgres")
-                pg_password_l = os.getenv("PGPASSWORD", "")
-                pg_db_l = os.getenv("PGDATABASE", "candidate_db")
-                conn_l = psycopg2.connect(host=pg_host_l, port=pg_port_l, user=pg_user_l, password=pg_password_l, dbname=pg_db_l)
+                conn_l = _get_pg_conn()
                 cur_l = conn_l.cursor()
                 # Ensure role_tag_session column exists (reuse global flag; ADD COLUMN IF NOT EXISTS is idempotent)
                 if not _role_tag_session_column_ensured:
@@ -1201,15 +1190,15 @@ _search_indexes_lock = threading.Lock()
 
 
 def _get_pg_conn():
-    """Open and return a new psycopg2 connection using env vars."""
-    import psycopg2
-    return psycopg2.connect(
-        host=os.getenv("PGHOST", "localhost"),
-        port=int(os.getenv("PGPORT", "5432")),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", ""),
-        dbname=os.getenv("PGDATABASE", "candidate_db"),
-    )
+    """Open and return a psycopg2 connection, backed by the module-level pool.
+
+    Delegates to the shared ``_pg_connect()`` helper in the parent ``webbridge``
+    module so all modules share the same ThreadedConnectionPool.  Callers should
+    call ``conn.close()`` as normal; when the connection came from the pool,
+    close() returns it rather than destroying it.
+    """
+    from webbridge import _pg_connect as _wb_pg_connect
+    return _wb_pg_connect()
 
 
 def _lazy_ensure_search_indexes():
@@ -1656,14 +1645,8 @@ def sourcing_update():
     if field == "experience" and len(value) > 5000:
         value = value[:5000]
     try:
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
         col_identifier = sql.Identifier(allowed_fields[field])
         query = sql.SQL("UPDATE sourcing SET {col}=%s WHERE linkedinurl=%s").format(col=col_identifier)
@@ -1698,14 +1681,8 @@ def sourcing_delete():
         cleaned = [(x or "").strip() for x in arr if (x or "").strip()]
 
     try:
-        import psycopg2
-        from psycopg2 import sql as pgsql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql as pgsql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         if userid and not cleaned:
@@ -1769,8 +1746,7 @@ def sourcing_mark_ineligible():
         pg_user = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user,
-                                password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur = conn.cursor()
 
         # Ensure the ineligible column exists (ALTER TABLE is idempotent here)
@@ -1866,14 +1842,8 @@ def process_delete_entry():
          return jsonify({"error": "No valid URLs"}), 400
 
     try:
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         deleted_total = 0
@@ -1977,7 +1947,7 @@ def process_update():
         pg_user = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur = conn.cursor()
         
         # Check which columns exist in the process table
@@ -2047,13 +2017,7 @@ def sourcing_save_profile_json():
         return jsonify({"error": "linkedinurl required"}), 400
 
     try:
-        import psycopg2
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn=_get_pg_conn()
         cur=conn.cursor()
         
         # Determine query based on provided URL format
@@ -2156,14 +2120,8 @@ def sourcing_market_analysis():
 
     inserted_process = 0
     try:
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         # Discover available columns in process table
@@ -2552,14 +2510,8 @@ def process_geography():
     linkedin_norm_www = _standardize_host(linkedin_norm)
 
     try:
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         cur.execute("""
@@ -2763,15 +2715,8 @@ def process_upload_cv():
                 except Exception as _e:
                     logger.warning(f"[Upload CV] Name validation failed (non-fatal): {_e}")
 
-            import psycopg2
-            from psycopg2 import sql
-            pg_host=os.getenv("PGHOST","localhost")
-            pg_port=int(os.getenv("PGPORT","5432"))
-            pg_user=os.getenv("PGUSER","postgres")
-            pg_password=os.getenv("PGPASSWORD", "")
-            pg_db=os.getenv("PGDATABASE","candidate_db")
-            
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+            conn=_get_pg_conn()
             cur=conn.cursor()
             
             binary_cv = psycopg2.Binary(file_bytes)
@@ -2923,14 +2868,8 @@ def process_upload_multiple_cvs():
         to_process = [f for f in files if f and f.filename and f.filename.lower().endswith(allowed_ext)]
         rejected = [f.filename for f in files if f and f.filename and not f.filename.lower().endswith(allowed_ext)]
 
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         # Fetch context from sourcing
@@ -3223,14 +3162,8 @@ def process_download_cv():
     linkedin_norm_www = _standardize_host(linkedin_norm)
 
     try:
-        import psycopg2
-        from psycopg2 import sql
-        pg_host=os.getenv("PGHOST","localhost")
-        pg_port=int(os.getenv("PGPORT","5432"))
-        pg_user=os.getenv("PGUSER","postgres")
-        pg_password=os.getenv("PGPASSWORD", "")
-        pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+        conn=_get_pg_conn()
         cur=conn.cursor()
 
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='cv'")
@@ -4882,7 +4815,7 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
         pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
         pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur=conn.cursor()
         
         normalized = _normalize_linkedin_to_path(linkedinurl) if linkedinurl else None
@@ -5207,7 +5140,7 @@ def process_parse_cv_and_update():
         pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
         pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur=conn.cursor()
         
         linkedin_norm = linkedinurl.split('?')[0].rstrip('/')
@@ -5274,7 +5207,7 @@ def process_pending_assessments():
         pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
         pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur=conn.cursor()
         cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
         has_normalized = bool(cur.fetchone())
@@ -5316,7 +5249,7 @@ def _generate_vskillset_for_profile(linkedinurl, target_skills, experience_text=
         if linkedinurl:
             try:
                 _norm_gen = linkedinurl.lower().strip().rstrip('/')
-                _conn_idem = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                _conn_idem = _get_pg_conn()
                 _cur_idem = _conn_idem.cursor()
                 _cur_idem.execute("""
                     SELECT vskillset FROM process
@@ -5417,7 +5350,7 @@ Return ONLY the JSON object, no other text."""
         
         # Persist to database
         try:
-            conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn = _get_pg_conn()
             cur = conn.cursor()
             
             vskillset_json = json.dumps(results, ensure_ascii=False)
@@ -5533,14 +5466,8 @@ def process_bulk_assess():
     def _assess_and_persist(linkedinurl, candidate_name="", candidate_company="", candidate_process_id=None):
         try:
             # Fetch profile data from database
-            import psycopg2
-            from psycopg2 import sql
-            pg_host=os.getenv("PGHOST","localhost")
-            pg_port=int(os.getenv("PGPORT","5432"))
-            pg_user=os.getenv("PGUSER","postgres")
-            pg_password=os.getenv("PGPASSWORD", "")
-            pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+from psycopg2 import sql
+            conn=_get_pg_conn()
             cur=conn.cursor()
             
             # Fetch profile data from process table
@@ -5770,8 +5697,7 @@ def process_bulk_assess():
                     _pp_fields_found = False
                     for _ppoll in range(20):
                         try:
-                            _pp_conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user,
-                                                        password=pg_password, dbname=pg_db)
+                            _pp_conn = _get_pg_conn()
                             _pp_cur = _pp_conn.cursor()
                             try:
                                 if _id_for_poll:
@@ -5926,7 +5852,7 @@ def process_bulk_assess():
                     try:
                         _skill_csv = ",".join(str(s).strip() for s in target_skills if str(s).strip())
                         _norm_link_write = normalized_for_sync or _normalize_linkedin_to_path(linkedinurl) or ""
-                        _conn_jsk = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                        _conn_jsk = _get_pg_conn()
                         _cur_jsk = _conn_jsk.cursor()
                         try:
                             _cur_jsk.execute("""
@@ -6021,7 +5947,7 @@ def process_bulk_assess():
                     # Idempotency guard: reuse existing vskillset if already persisted
                     _existing_vs_bulk = None
                     try:
-                        conn_vsk_idem = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                        conn_vsk_idem = _get_pg_conn()
                         cur_vsk_idem = conn_vsk_idem.cursor()
                         if _nolinkedin_id and not linkedinurl:
                             # No-LinkedIn record: use primary key for exact match
@@ -6112,7 +6038,7 @@ def process_bulk_assess():
                             # Persist vskillset to DB
                             if vskillset_results:
                                 try:
-                                    conn_vsk = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                                    conn_vsk = _get_pg_conn()
                                     cur_vsk = conn_vsk.cursor()
                                     cur_vsk.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name IN ('vskillset','skillset')")
                                     avail_cols = {r[0] for r in cur_vsk.fetchall()}
@@ -6226,7 +6152,7 @@ def process_bulk_assess():
 
             # persist rating JSON into process.rating if column exists
             try:
-                conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+                conn = _get_pg_conn()
                 cur=conn.cursor()
 
                 cur.execute("""
@@ -6704,10 +6630,7 @@ def patch_profile_assessment(linkedinurl):
         conn = None
         cur = None
         try:
-            conn = psycopg2.connect(
-                host=pg_host, port=pg_port, user=pg_user, 
-                password=pg_password, dbname=pg_db
-            )
+            conn = _get_pg_conn()
             cur = conn.cursor()
             
             # Check if rating column exists
@@ -6798,7 +6721,7 @@ def user_upload_jd():
             pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
             pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
             pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn = _get_pg_conn()
             cur=conn.cursor()
             cur.execute("UPDATE login SET jd = %s WHERE username = %s", (extracted_text, username))
             updated = cur.rowcount
@@ -6998,7 +6921,7 @@ def gemini_jd_analyze():
             pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
             pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
             pg_db=os.getenv("PGDATABASE","candidate_db")
-            conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+            conn = _get_pg_conn()
             cur=conn.cursor()
             cur.execute("SELECT jd FROM login WHERE username = %s", (username,))
             row = cur.fetchone()
@@ -7063,7 +6986,7 @@ def process_scan_and_upload_cvs():
         pg_host=os.getenv("PGHOST","localhost"); pg_port=int(os.getenv("PGPORT","5432"))
         pg_user=os.getenv("PGUSER","postgres"); pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _get_pg_conn()
         cur=conn.cursor()
         cur.execute("SELECT id, name, linkedinurl FROM process WHERE name IS NOT NULL AND name != ''")
         candidates = cur.fetchall()

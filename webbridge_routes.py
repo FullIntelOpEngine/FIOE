@@ -114,7 +114,7 @@ def login_account():
         pg_user=os.getenv("PGUSER","postgres")
         pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _pg_connect()
         cur=conn.cursor()
         cur.execute("SELECT password, userid, cemail, fullname, role_tag, COALESCE(token,0) FROM login WHERE username=%s", (username,))
         row=cur.fetchone()
@@ -265,7 +265,7 @@ def register_account():
         pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
 
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _pg_connect()
         cur=conn.cursor()
 
         cur.execute("""
@@ -955,7 +955,7 @@ def user_resolve():
         pg_user=os.getenv("PGUSER","postgres")
         pg_password=os.getenv("PGPASSWORD", "")
         pg_db=os.getenv("PGDATABASE","candidate_db")
-        conn=psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _pg_connect()
         cur=conn.cursor()
         cur.execute("SELECT userid, fullname, role_tag, COALESCE(token,0), COALESCE(target_limit,10), COALESCE(useraccess,'') FROM login WHERE username=%s", (username,))
         row = cur.fetchone()
@@ -1027,8 +1027,7 @@ def user_token_update():
             pg_user = os.getenv("PGUSER", "postgres")
             pg_password = os.getenv("PGPASSWORD", "")
             pg_db = os.getenv("PGDATABASE", "candidate_db")
-            conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user,
-                                    password=pg_password, dbname=pg_db)
+            conn = _pg_connect()
             cur = conn.cursor()
             # Skip token deduction (negative delta) for BYOK users
             if delta_int < 0:
@@ -1097,10 +1096,7 @@ def user_token_update():
         pg_user = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(
-            host=pg_host, port=pg_port, user=pg_user,
-            password=pg_password, dbname=pg_db
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         # Skip token deduction for BYOK users (absolute set path)
         cur.execute("SELECT COALESCE(token, 0) AS t, useraccess FROM login WHERE userid = %s", (userid,))
@@ -1336,10 +1332,7 @@ def user_update_role_tag():
         pg_user = os.getenv("PGUSER", "postgres")
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
-        conn = psycopg2.connect(
-            host=pg_host, port=pg_port, user=pg_user,
-            password=pg_password, dbname=pg_db
-        )
+        conn = _pg_connect()
         cur = conn.cursor()
         # Ensure role_tag_session column exists in login and sourcing (once per process).
         # NOTE: This flag mirrors the _token_guard_column_ensured pattern; it is intentionally
@@ -1475,7 +1468,7 @@ def vskillset_infer():
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
         
-        conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _pg_connect()
         cur = conn.cursor()
         
         # Normalize linkedin URL
@@ -1729,7 +1722,7 @@ def get_process_skillsets():
         pg_password = os.getenv("PGPASSWORD", "")
         pg_db = os.getenv("PGDATABASE", "candidate_db")
         
-        conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_password, dbname=pg_db)
+        conn = _pg_connect()
         cur = conn.cursor()
         
         # Normalize linkedin URL
