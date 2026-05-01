@@ -1,6 +1,12 @@
 import logging
 import os
 
+# Configure the root logger and create the module-level logger as early as
+# possible so that every subsequent module-level call (flask-compress block,
+# pool helpers, decorator definitions, etc.) can use it safely.
+logging.basicConfig(level=logging.INFO, format="(%(asctime)s) | %(levelname)s | %(message)s")
+logger = logging.getLogger("AutoSourcingServer")
+
 # Structured activity logger (writes daily .txt / JSONL files to log dir)
 try:
     from app_logger import (
@@ -3456,9 +3462,6 @@ def _options(path):
     resp = app.make_response(('', 204))
     return _apply_cors_headers(resp)
 # End affected section (CORS)
-
-logging.basicConfig(level=logging.INFO, format="(%(asctime)s) | %(levelname)s | %(message)s")
-logger = logging.getLogger("AutoSourcingServer")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
