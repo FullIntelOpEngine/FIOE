@@ -14,6 +14,7 @@ import uuid
 import io
 import hashlib
 import requests
+from functools import lru_cache
 from csv import DictWriter
 from datetime import datetime
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
@@ -24,6 +25,19 @@ _HTTP_SESSION = requests.Session()
 
 # Sanitise username for use in filenames (allow only alphanumeric, _ and -)
 _CV_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
+
+# ── Hot-path compiled regexes ─────────────────────────────────────────────────
+_RE_CV_WHITESPACE   = re.compile(r'\s+')                  # normalise whitespace
+_RE_CV_TRAIL_PUNCT  = re.compile(r'[;,/]+$')             # strip trailing punctuation
+_RE_CV_UPPERCASE    = re.compile(r'[A-Z]')               # detect uppercase chars
+_RE_CV_COMPANY_SLUG = re.compile(r'[^a-zA-Z0-9]')       # sanitise candidate name
+_RE_CV_FENCE_OPEN   = re.compile(r'^```(?:json)?\s*', re.MULTILINE)  # LLM fence open
+_RE_CV_FENCE_CLOSE  = re.compile(r'\s*```$',            re.MULTILINE)  # LLM fence close
+_RE_CV_INTERN       = re.compile(r'\bintern\b|\binternship\b', re.IGNORECASE)  # intern detection
+_RE_CV_CORP_SUFFIX  = re.compile(                        # strip legal-entity suffixes
+    r'\s+(inc\.?|llc\.?|ltd\.?|corp\.?|corporation|company|co\.?|limited|group|plc)$',
+    re.IGNORECASE,
+)
 
 # Directory where a copy of every uploaded JD is archived and tagged.
 _JD_ARCHIVE_DIR = r"F:\Recruiting Tools\Autosourcing\JD"
@@ -2051,7 +2065,15 @@ def sourcing_save_profile_json():
         logger.error(f"[Save Profile JSON] {e}")
         return jsonify({"error": str(e)}), 500
 
+@lru_cache(maxsize=4096)
 def _normalize_linkedin_to_path(linkedin_url: str) -> str:
+    """Return the path component of a LinkedIn URL, lower-cased and stripped of trailing '/'.
+
+    Results are cached (LRU, up to 4096 entries) since this function is called on
+    every assessment and CV lookup with the same URL strings.  Callers must pass
+    a ``str`` (or ``None`` / empty string) — non-string types will bypass the cache
+    and raise a ``TypeError`` from ``str.split``.
+    """
     if not linkedin_url:
         return ""
     s = linkedin_url.split('?', 1)[0].strip()
@@ -2905,7 +2927,7 @@ def process_upload_multiple_cvs():
             
             result = ''.join(cleaned)
             # Normalize multiple spaces to single space
-            result = re.sub(r'\s+', ' ', result)
+            result = _RE_CV_WHITESPACE.sub(' ', result)
             return result.strip()
 
         candidate_map = {}
@@ -3178,7 +3200,7 @@ def process_download_cv():
         if row and row[0]:
             pdf_data = row[0]
             candidate_name = (row[1] or "candidate").strip().replace(" ", "_")
-            candidate_name = re.sub(r'[^a-zA-Z0-9_]', '', candidate_name)
+            candidate_name = _RE_CV_COMPANY_SLUG.sub('', candidate_name)
             
             from flask import make_response
             response = make_response(bytes(pdf_data))
@@ -3345,7 +3367,7 @@ def _is_internship_role(job_title):
     """
     if not job_title:
         return False
-    return bool(re.search(r'\bintern\b|\binternship\b', job_title, re.IGNORECASE))
+    return _RE_CV_INTERN.search(job_title) is not None
 
 def _normalize_company_name(company_name):
     """
@@ -3362,7 +3384,7 @@ def _normalize_company_name(company_name):
     
     # Convert to lowercase and remove common company suffixes
     normalized = company_name.lower().strip()
-    normalized = re.sub(r'\s+(inc\.?|llc\.?|ltd\.?|corp\.?|corporation|company|co\.?|limited|group|plc)$', '', normalized, flags=re.IGNORECASE)
+    normalized = _RE_CV_CORP_SUFFIX.sub('', normalized)
     normalized = normalized.strip()
     
     return normalized if normalized else None

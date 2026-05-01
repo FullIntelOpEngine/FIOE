@@ -1,6 +1,7 @@
 # Core web framework
 flask>=3.0,<4.0
 flask-limiter>=3.5,<4.0
+flask-compress>=1.15,<2.0
 
 # WSGI server (PR 5 — gunicorn + gevent workers)
 gunicorn[gevent]>=22.0,<24.0

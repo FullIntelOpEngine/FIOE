@@ -116,6 +116,16 @@ app.config['SESSION_COOKIE_SECURE'] = os.getenv("DISABLE_SECURE_COOKIES", "0") !
 app.config['MAX_CONTENT_LENGTH'] = 80 * 1024 * 1024  # 80 MB
 _SINGLE_FILE_MAX = 6 * 1024 * 1024  # 6 MB per-file limit for single uploads
 
+# ── HTTP response compression ─────────────────────────────────────────────────
+# flask-compress adds gzip/brotli/deflate compression to all responses ≥ 500 B.
+# This reduces JSON payload size by 70-90 % with negligible CPU overhead.
+try:
+    from flask_compress import Compress as _FlaskCompress
+    _FlaskCompress(app)
+    logger.info("[startup] flask-compress enabled")
+except ImportError:
+    logger.info("[startup] flask-compress not installed — responses are uncompressed")
+
 # ── Startup constants from rate_limits.json ──────────────────────────────────
 # Priority: env var > rate_limits.json system section > hardcoded default.
 # Read once at import time so the Limiter can use dynamic defaults below.

@@ -86,6 +86,27 @@ _search_fallback_flag = threading.local()
 # in headers/params so there is no security concern with a shared session.
 _HTTP_SESSION = requests.Session()
 
+# ── Module-level compiled regexes for hot-path operations ────────────────────
+# Python's re module caches compiled patterns internally, but the cache has a
+# fixed size (512 entries by default).  Explicitly compiling at module level
+# guarantees zero re-compilation overhead regardless of cache pressure.
+
+# Strip markdown code-fence wrappers emitted by some LLMs
+_RE_FENCE_OPEN  = re.compile(r'^```(?:json)?\s*', re.MULTILINE)
+_RE_FENCE_CLOSE = re.compile(r'\s*```$',           re.MULTILINE)
+_RE_FENCE_INLINE = re.compile(r'```(?:json)?')
+
+# Strip X-ray / site-scoped search operators so remaining text is a plain keyword
+_RE_XRAY_SITE   = re.compile(r'site:\S+',                                re.IGNORECASE)
+_RE_XRAY_OPS    = re.compile(r'-(?:intitle|inurl|intext|allinurl):\S*', re.IGNORECASE)
+_RE_BOOL_OPS    = re.compile(r'\b(?:AND|OR|NOT)\b')
+_RE_PARENS      = re.compile(r'[()"]')
+_RE_MULTISPACES = re.compile(r'\s+')
+
+# Company-key slugging: keep only lowercase alphanum, replace everything else with _
+_RE_NONALNUM    = re.compile(r'[^a-z0-9]')
+
+
 class ProviderSearchError(Exception):
     """Raised when a selected API provider (ContactOut/Apollo/RocketReach) search
     fails or has no key configured.  The message contains the specific reason so
@@ -2911,7 +2932,7 @@ def _load_verified_email():
         if isinstance(_data, list):
             _converted = {}
             for _entry in _data:
-                _ck = re.sub(r'[^a-z0-9]', '_', (_entry.get('company') or 'unknown').lower())
+                _ck = _RE_NONALNUM.sub('_', (_entry.get('company') or 'unknown').lower())
                 if _ck not in _converted:
                     _converted[_ck] = {'Domain': [], 'Confidence_threshold': 1}
                 _converted[_ck]['Domain'].append({
@@ -2974,7 +2995,7 @@ def prospect_crm_generate_email():
         return jsonify({'error': 'Name and Company are required.'}), 400
 
     try:
-        company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+        company_key = _RE_NONALNUM.sub('_', company.lower())
         verified_data  = _load_verified_email()
         company_entry  = verified_data.get(company_key)
 
@@ -3015,8 +3036,8 @@ def prospect_crm_generate_email():
         raw = (unified_llm_call_text(gen_prompt, temperature=0.3, max_output_tokens=256) or '').strip()
         _increment_gemini_query_count(request._session_user)
 
-        cleaned = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
-        cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE).strip()
+        cleaned = _RE_FENCE_OPEN.sub('', raw)
+        cleaned = _RE_FENCE_CLOSE.sub('', cleaned).strip()
 
         try:
             data = json.loads(cleaned)
@@ -3082,7 +3103,7 @@ def prospect_crm_save_verified_email():
     try:
         with _verified_email_lock:
             existing    = _load_verified_email()
-            company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+            company_key = _RE_NONALNUM.sub('_', company.lower())
             if company_key not in existing:
                 existing[company_key] = {'Domain': [], 'Confidence_threshold': 1}
             company_data = existing[company_key]
@@ -3136,7 +3157,7 @@ def prospect_crm_save_verified_email():
                         unified_llm_call_text(norm_prompt, temperature=0.2, max_output_tokens=128)
                         or ''
                     ).strip()
-                    json_str = re.sub(r'```(?:json)?', '', llm_text).strip()
+                    json_str = _RE_FENCE_INLINE.sub('', llm_text).strip()
                     parsed   = json.loads(json_str)
                     fmt             = parsed.get('format')        or local_part
                     fake_example    = parsed.get('fake_example')    or ''
@@ -3757,8 +3778,8 @@ def _llm_map_fields_to_provider_params(provider: str, job_titles: list,
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _RE_FENCE_OPEN.sub('', cleaned)
+            cleaned = _RE_FENCE_CLOSE.sub('', cleaned)
             cleaned = cleaned.strip()
             if cleaned:
                 mapped = json.loads(cleaned)
@@ -3877,8 +3898,8 @@ def _translate_xray_to_contactout_params(query: str) -> dict:
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
             # Remove any ```json``` fences
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _RE_FENCE_OPEN.sub('', cleaned)
+            cleaned = _RE_FENCE_CLOSE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[ContactOut] Xray→ContactOut params: {params}")
@@ -3887,11 +3908,11 @@ def _translate_xray_to_contactout_params(query: str) -> dict:
         logger.warning(f"[ContactOut] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
     # Strip obvious Google Xray operators before falling back
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _RE_XRAY_SITE.sub('', query)
+    kw = _RE_XRAY_OPS.sub('', kw)
+    kw = _RE_BOOL_OPS.sub(' ', kw)
+    kw = _RE_PARENS.sub(' ', kw)
+    kw = _RE_MULTISPACES.sub(' ', kw).strip()
     return {"keyword": kw} if kw else {}
 
 
@@ -4081,8 +4102,8 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _RE_FENCE_OPEN.sub('', cleaned)
+            cleaned = _RE_FENCE_CLOSE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[Apollo] Xray→Apollo params: {params}")
@@ -4090,11 +4111,11 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
     except Exception as exc:
         logger.warning(f"[Apollo] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _RE_XRAY_SITE.sub('', query)
+    kw = _RE_XRAY_OPS.sub('', kw)
+    kw = _RE_BOOL_OPS.sub(' ', kw)
+    kw = _RE_PARENS.sub(' ', kw)
+    kw = _RE_MULTISPACES.sub(' ', kw).strip()
     return {"q_keywords": kw} if kw else {}
 
 
@@ -4238,8 +4259,8 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _RE_FENCE_OPEN.sub('', cleaned)
+            cleaned = _RE_FENCE_CLOSE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[RocketReach] Xray→RocketReach params: {params}")
@@ -4247,11 +4268,11 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
     except Exception as exc:
         logger.warning(f"[RocketReach] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _RE_XRAY_SITE.sub('', query)
+    kw = _RE_XRAY_OPS.sub('', kw)
+    kw = _RE_BOOL_OPS.sub(' ', kw)
+    kw = _RE_PARENS.sub(' ', kw)
+    kw = _RE_MULTISPACES.sub(' ', kw).strip()
     return {"keyword": kw} if kw else {}
 
 
