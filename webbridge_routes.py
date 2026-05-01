@@ -182,15 +182,9 @@ def login_account():
         # backfills a userid for accounts that were created without one, so
         # AutoSourcing.html always has a valid activeUserid.
         new_session_id = secrets.token_hex(32)
+        _session_stored = False
         try:
-            import psycopg2 as _pg2
-            _sc = _pg2.connect(
-                host=os.getenv("PGHOST", "localhost"),
-                port=int(os.getenv("PGPORT", "5432")),
-                user=os.getenv("PGUSER", "postgres"),
-                password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE", "candidate_db"),
-            )
+            _sc = _pg_connect()
             _cc = _sc.cursor()
             # Ensure session_id column exists (idempotent — runs only when missing).
             _cc.execute("ALTER TABLE login ADD COLUMN IF NOT EXISTS session_id TEXT")
@@ -208,8 +202,16 @@ def login_account():
             _cc.execute("UPDATE login SET session_id = %s WHERE username = %s", (new_session_id, username))
             _sc.commit()
             _cc.close(); _sc.close()
+            _session_stored = True
         except Exception as _sess_err:
             logger.error("[login] Failed to store session_id: %s", _sess_err)
+
+        # Safety fallback: if the session block couldn't backfill userid (e.g. DB
+        # column missing), generate a transient one so AutoSourcing.html always
+        # receives a non-empty userid and doesn't redirect back to login.
+        if not userid:
+            userid = str(uuid.uuid4().int % 9000000 + 1000000)
+            logger.warning("[login] userid was empty after session block; using ephemeral userid for user='%s'", username)
 
         resp = jsonify({"ok": True, "userid": userid or "", "username": username, "cemail": cemail or "", "fullname": fullname or "", "role_tag": role_tag or "", "token": int(token_val or 0)})
         _is_secure = os.getenv("FORCE_HTTPS", "0") == "1"
@@ -219,10 +221,16 @@ def login_account():
                             secure=_is_secure)
         resp.set_cookie("username", username, **_cookie_opts)
         resp.set_cookie("userid", str(userid or ""), **_cookie_opts)
-        # session_id: httpOnly=True — not readable by JS, prevents forgery.
-        resp.set_cookie("session_id", new_session_id,
-                        max_age=2592000, path="/", httponly=True, samesite="lax",
-                        secure=_is_secure)
+        # session_id: httpOnly=True — only set when successfully persisted to DB
+        # so _require_session's session_id check matches what is actually stored.
+        # If session storage failed, the cookie is omitted and _require_session
+        # falls back to the legacy username-existence check.
+        if _session_stored:
+            resp.set_cookie("session_id", new_session_id,
+                            max_age=2592000, path="/", httponly=True, samesite="lax",
+                            secure=_is_secure)
+        else:
+            resp.delete_cookie("session_id", path="/")
         return resp, 200
     except Exception as e:
         log_error(source="login", message=str(e), severity="error",
@@ -236,14 +244,7 @@ def logout_account():
     username = (request.cookies.get("username") or "").strip()
     if username:
         try:
-            import psycopg2 as _pg2
-            _sc = _pg2.connect(
-                host=os.getenv("PGHOST", "localhost"),
-                port=int(os.getenv("PGPORT", "5432")),
-                user=os.getenv("PGUSER", "postgres"),
-                password=os.getenv("PGPASSWORD", ""),
-                dbname=os.getenv("PGDATABASE", "candidate_db"),
-            )
+            _sc = _pg_connect()
             _cc = _sc.cursor()
             _cc.execute("UPDATE login SET session_id = NULL WHERE username = %s", (username,))
             _sc.commit()
