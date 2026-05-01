@@ -1,0 +1,38 @@
+{
+  "status_html": "Starting search pipeline...",
+  "done": false,
+  "output_csv": null,
+  "output_xlsx": null,
+  "progress": {
+    "processed": 0,
+    "total": 0
+  },
+  "urls": [],
+  "messages": [
+    "Starting search pipeline..."
+  ],
+  "started": 1777671539.7983348,
+  "userid": "",
+  "username": "orlha",
+  "meta": {
+    "languages": [],
+    "language_query": "",
+    "auto_suggest_companies": [],
+    "user_companies": [],
+    "fallback_queries": [],
+    "selected_sectors": [],
+    "dynamic_target": null,
+    "seniority": null,
+    "deepMode": false,
+    "platform_queries": [],
+    "included_platforms": {
+      "gaming": false,
+      "media": false,
+      "technology": false
+    },
+    "channel_count": 0,
+    "platform_count": 0,
+    "userid": "",
+    "username": "orlha"
+  }
+}
