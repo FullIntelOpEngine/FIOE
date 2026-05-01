@@ -240,6 +240,16 @@ def logout_account():
     resp.delete_cookie("session_id", path="/")
     return resp
 
+@app.get("/auth/check")
+@_require_session
+def auth_check():
+    """Lightweight session validity check used by login.html.
+    Mirrors the GET /auth/check endpoint in server.js: returns 200+{ok,username}
+    when the session_id cookie is valid; 401 when invalid (handled by _require_session).
+    """
+    return jsonify({"ok": True, "username": request._session_user})
+
+
 @app.post("/register")
 @_rate(_make_flask_limit("register"))
 @_check_user_rate("register")
