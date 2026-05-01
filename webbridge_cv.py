@@ -13,6 +13,7 @@ import time
 import uuid
 import io
 import hashlib
+import requests
 from csv import DictWriter
 from datetime import datetime
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
@@ -111,7 +112,7 @@ from webbridge_routes import (
     _infer_primary_job_title, _infer_seniority_from_titles, _perform_cse_queries,
     is_linkedin_profile, parse_linkedin_title,
     get_linkedin_profile_picture, fetch_image_bytes_from_url,
-    add_message, persist_job,
+    add_message, persist_job, _load_job_from_backend,
     _sanitize_for_excel, _aggregate_company_dropdown,
     _extract_company_from_jobtitle, _gemini_extract_company_from_jobtitle,
     _role_tag_session_column_ensured,
@@ -635,6 +636,29 @@ def _write_outputs(job_id, rows):
             logger.warning(f"[Ingest] PostgreSQL ingestion failed: {e}")
     except Exception as e:
         logger.warning(f"[Excel Dropdown] XLSX generation failed: {e}")
+
+    # ---------------------------------------------------------------------------
+    # GCS upload: when OUTPUT_GCS_BUCKET is set, upload outputs so worker
+    # containers that lack a shared filesystem can still serve downloads.
+    # The /download endpoint will stream from GCS when the local file is absent.
+    # ---------------------------------------------------------------------------
+    _output_gcs_bucket = os.getenv("OUTPUT_GCS_BUCKET", "")
+    if _output_gcs_bucket and (csv_name or xlsx_name):
+        try:
+            from google.cloud import storage as gcs  # type: ignore
+            _gcs_client = gcs.Client()
+            _gcs_bucket = _gcs_client.bucket(_output_gcs_bucket)
+            for _fname, _fdir in [(csv_name, SEARCH_XLS_DIR), (xlsx_name, SEARCH_XLS_DIR)]:
+                if not _fname:
+                    continue
+                _local = os.path.join(_fdir, _fname)
+                if os.path.exists(_local):
+                    _blob = _gcs_bucket.blob(f"outputs/{_fname}")
+                    _blob.upload_from_filename(_local)
+                    logger.info(f"[GCS] Uploaded {_fname} to gs://{_output_gcs_bucket}/outputs/{_fname}")
+        except Exception as _gcs_err:
+            logger.warning(f"[GCS] Output upload failed: {_gcs_err}")
+
     return csv_name, xlsx_name
 
 def _gemini_multi_sector(selected, user_job_title, user_company, languages=None):
@@ -656,7 +680,10 @@ def _gemini_multi_sector(selected, user_job_title, user_company, languages=None)
             "- NO commentary or extra keys.\n"
             f"INPUT:\n{json.dumps(input_obj,ensure_ascii=False)}\nJSON:")
     try:
-        resp_text = unified_llm_call_text(prompt)
+        resp_text = unified_llm_call_text(
+            prompt,
+            cache_key="llm:multisector:" + hashlib.sha256(prompt.encode()).hexdigest(),
+        )
         parsed=_extract_json_object(resp_text or "")
         if not isinstance(parsed, dict): return None
         job=parsed.get("job",{}) if isinstance(parsed.get("job"),dict) else {}
@@ -887,14 +914,60 @@ def start_job():
             }
         }
     persist_job(job_id)
-    threading.Thread(target=_job_runner,
-                     args=(job_id, queries, fallback_queries, auto_expand, manual_urls,
-                           search_results_only, country, dynamic_target, job_titles,
-                           _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
-                           _user_linkedin_key,
-                           _selected_search_provider,
-                           _raw_form_fields),
-                     daemon=True).start()
+
+    # -----------------------------------------------------------------------
+    # Worker dispatch: when WORKER_BASE_URL is set, POST the job to the worker
+    # service instead of running it in a background thread.  This allows the
+    # heavy search+expand work to run on a separate (preemptible/spot) container.
+    # Fallback: if env var is empty or the request fails, run inline.
+    # -----------------------------------------------------------------------
+    _worker_url = (os.getenv("WORKER_BASE_URL") or "").rstrip("/")
+    _worker_token = os.getenv("INTERNAL_WORKER_TOKEN", "")
+    _worker_dispatched = False
+    if _worker_url:
+        try:
+            _payload = {
+                "job_id": job_id,
+                "queries": queries,
+                "fallback_queries": fallback_queries,
+                "auto_expand": auto_expand,
+                "manual_urls": manual_urls,
+                "search_results_only": search_results_only,
+                "country": country,
+                "dynamic_target": dynamic_target,
+                "job_titles": job_titles,
+                "user_search_provider": _user_search_provider,
+                "user_serper_key": _user_serper_key,
+                "user_dfs_login": _user_dfs_login,
+                "user_dfs_password": _user_dfs_password,
+                "user_linkedin_key": _user_linkedin_key,
+                "selected_search_provider": _selected_search_provider,
+                "raw_form_fields": _raw_form_fields,
+            }
+            _headers = {"Content-Type": "application/json"}
+            if _worker_token:
+                _headers["X-Internal-Token"] = _worker_token
+            _resp = requests.post(
+                f"{_worker_url}/internal/run-job",
+                json=_payload,
+                headers=_headers,
+                timeout=10,
+            )
+            _resp.raise_for_status()
+            _worker_dispatched = True
+            logger.info(f"[StartJob] Dispatched job {job_id} to worker {_worker_url}")
+        except Exception as _dispatch_err:
+            logger.warning(f"[StartJob] Worker dispatch failed ({_dispatch_err}), running inline")
+
+    if not _worker_dispatched:
+        threading.Thread(target=_job_runner,
+                         args=(job_id, queries, fallback_queries, auto_expand, manual_urls,
+                               search_results_only, country, dynamic_target, job_titles,
+                               _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
+                               _user_linkedin_key,
+                               _selected_search_provider,
+                               _raw_form_fields),
+                         daemon=True).start()
     # Log agentic intent event
     _agentic_filters = []
     if country: _agentic_filters.append(f"country:{country}")
@@ -911,6 +984,14 @@ def job_status(job_id):
     with JOBS_LOCK:
         job=JOBS.get(job_id)
     if not job:
+        # When a worker process is running the job, the in-process JOBS dict
+        # won't have the entry.  Try the configured persistence backend.
+        job = _load_job_from_backend(job_id)
+        if job:
+            # Populate in-process cache so subsequent polls are cheap.
+            with JOBS_LOCK:
+                JOBS[job_id] = job
+    if not job:
         return jsonify({"error":"Unknown job id"}), 404
     return jsonify(job)
 
@@ -923,7 +1004,34 @@ def download_file(filename):
     file_path_search = os.path.join(SEARCH_XLS_DIR, filename)
     if os.path.exists(file_path_search):
         return send_from_directory(SEARCH_XLS_DIR, filename, as_attachment=True)
-    return {'error':'File not found'}, 404
+
+    # GCS fallback: when OUTPUT_GCS_BUCKET is set and the file is not on local
+    # disk (e.g. the web container doesn't share a filesystem with the worker),
+    # stream the file directly from Cloud Storage.
+    _output_gcs_bucket = os.getenv("OUTPUT_GCS_BUCKET", "")
+    if _output_gcs_bucket:
+        try:
+            from google.cloud import storage as gcs  # type: ignore
+            _client = gcs.Client()
+            _bucket = _client.bucket(_output_gcs_bucket)
+            _blob = _bucket.blob(f"outputs/{filename}")
+            if _blob.exists():
+                _content_type = (
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    if filename.endswith(".xlsx") else "text/csv"
+                )
+                _data = _blob.download_as_bytes()
+                return Response(
+                    _data,
+                    headers={
+                        "Content-Disposition": f"attachment; filename={filename}",
+                        "Content-Type": _content_type,
+                    },
+                )
+        except Exception as _gcs_err:
+            logger.warning(f"[Download/GCS] {_gcs_err}")
+
+    return {"error": "File not found"}, 404
 
 @app.get("/SourcingVerify.html")
 def sourcing_verify_page():
@@ -2616,7 +2724,7 @@ def process_upload_cv():
             cur.close(); conn.close()
             
             # Fire and forget analysis in background
-            threading.Thread(target=analyze_cv_background, args=(linkedinurl, file_bytes)).start()
+            _dispatch_cv_analysis(linkedinurl, file_bytes)
 
             return jsonify({"status": "ok"}), 200
         else:
@@ -2823,7 +2931,7 @@ def process_upload_multiple_cvs():
                         uploaded_count += 1
                         if m_link:
                             uploaded_profiles.append(m_link)  # Include updated records so verifyBulkUploadedProfiles waits for analyze_cv_background
-                        threading.Thread(target=analyze_cv_background, args=(m_link, file_bytes), kwargs={'process_id': pid, 'override_role_tag': override_role_tag}).start()
+                        _dispatch_cv_analysis(m_link, file_bytes, process_id=pid, override_role_tag=override_role_tag)
                     else:
                         # Insert new record into process
                         r_tag = ""
@@ -2907,7 +3015,7 @@ def process_upload_multiple_cvs():
                         if inserted:
                             uploaded_count += 1
                             uploaded_profiles.append(m_link)  # Track uploaded profile
-                            threading.Thread(target=analyze_cv_background, args=(m_link, file_bytes), kwargs={'process_id': new_pid, 'override_role_tag': override_role_tag}).start()
+                            _dispatch_cv_analysis(m_link, file_bytes, process_id=new_pid, override_role_tag=override_role_tag)
                         else:
                             errors.append(f"Failed to insert/update for {fname}")
 
@@ -6833,7 +6941,7 @@ def process_scan_and_upload_cvs():
                     if cur.rowcount > 0:
                         conn.commit()
                         uploaded_count += 1
-                        threading.Thread(target=analyze_cv_background, args=(clink, file_bytes), kwargs={'process_id': cid}).start()
+                        _dispatch_cv_analysis(clink, file_bytes, process_id=cid)
                     else: errors.append(f"DB update failed for {fname} (Candidate: {cname})")
                 except Exception as e:
                     conn.rollback(); errors.append(f"Error processing {fname}: {e}")
@@ -6842,3 +6950,219 @@ def process_scan_and_upload_cvs():
     except Exception as e:
         logger.error(f"[Batch Upload] {e}")
         return jsonify({"error": str(e)}), 500
+
+# ---------------------------------------------------------------------------
+# Internal worker endpoint — /internal/run-job
+# Only active when WORKER_BASE_URL is set on the *web* container and this
+# endpoint is reachable by the web process (i.e. runs in the worker container).
+# Protected by the X-Internal-Token header (env: INTERNAL_WORKER_TOKEN).
+# ---------------------------------------------------------------------------
+
+_INTERNAL_WORKER_TOKEN = os.getenv("INTERNAL_WORKER_TOKEN", "")
+
+
+def _check_internal_token():
+    """Return True if the request carries a valid internal worker token."""
+    if not _INTERNAL_WORKER_TOKEN:
+        # Token not configured — reject all internal requests to prevent
+        # accidental exposure of the endpoint in prod without a secret.
+        return False
+    return request.headers.get("X-Internal-Token") == _INTERNAL_WORKER_TOKEN
+
+
+@app.post("/internal/run-job")
+def internal_run_job():
+    """Synchronously execute _job_runner for a pre-initialised job.
+
+    Called by the web process (via dispatch or Cloud Tasks) when
+    WORKER_BASE_URL is configured.  The job must already exist in the
+    configured JOB_BACKEND (persisted by start_job before this is called).
+    """
+    if not _check_internal_token():
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.get_json(force=True, silent=True) or {}
+    job_id = (data.get("job_id") or "").strip()
+    if not job_id:
+        return jsonify({"error": "job_id required"}), 400
+
+    # Reconstruct the job in the local JOBS dict from the backend if needed.
+    with JOBS_LOCK:
+        if job_id not in JOBS:
+            job = _load_job_from_backend(job_id)
+            if job:
+                JOBS[job_id] = job
+
+    queries = data.get("queries") or []
+    fallback_queries = data.get("fallback_queries") or []
+    auto_expand = data.get("auto_expand", True)
+    manual_urls = data.get("manual_urls") or []
+    search_results_only = data.get("search_results_only", False)
+    country = data.get("country") or ""
+    dynamic_target = data.get("dynamic_target") or SEARCH_RESULTS_TARGET
+    job_titles = data.get("job_titles") or []
+    user_search_provider = data.get("user_search_provider") or ""
+    user_serper_key = data.get("user_serper_key") or ""
+    user_dfs_login = data.get("user_dfs_login") or ""
+    user_dfs_password = data.get("user_dfs_password") or ""
+    user_linkedin_key = data.get("user_linkedin_key") or ""
+    selected_search_provider = data.get("selected_search_provider") or ""
+    raw_form_fields = data.get("raw_form_fields") or {}
+
+    # Run synchronously in this request context (worker containers are expected
+    # to handle one or a small number of concurrent requests with ample CPU).
+    try:
+        _job_runner(
+            job_id, queries, fallback_queries, auto_expand, manual_urls,
+            search_results_only, country, dynamic_target, job_titles,
+            user_search_provider, user_serper_key, user_dfs_login, user_dfs_password,
+            user_linkedin_key,
+            selected_search_provider,
+            raw_form_fields,
+        )
+    except Exception as exc:
+        logger.error(f"[internal/run-job] Unhandled error for {job_id}: {exc}", exc_info=True)
+        return jsonify({"error": "Job execution failed. Check worker logs."}), 500
+
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+# ---------------------------------------------------------------------------
+# CV worker dispatch helper
+# ---------------------------------------------------------------------------
+# Environment variables:
+#   CV_WORKER_URL  — base URL of the CV worker service.  When set, PDF bytes
+#                    are uploaded to GCS (CV_WORKER_GCS_BUCKET) and a Cloud
+#                    Tasks / HTTP POST task is sent to the worker.
+#                    When empty, the existing thread+semaphore path is used.
+#   CV_WORKER_GCS_BUCKET — GCS bucket used as a staging area for CV PDFs.
+# ---------------------------------------------------------------------------
+
+_CV_WORKER_URL = (os.getenv("CV_WORKER_URL") or "").rstrip("/")
+_CV_WORKER_GCS_BUCKET = os.getenv("CV_WORKER_GCS_BUCKET", "")
+_CV_WORKER_GCS_PREFIX = "cv-inbox/"
+
+
+def _upload_cv_to_gcs(pdf_bytes: bytes, object_name: str) -> bool:
+    """Upload *pdf_bytes* to GCS.  Returns True on success."""
+    try:
+        from google.cloud import storage as gcs  # type: ignore
+        client = gcs.Client()
+        bucket = client.bucket(_CV_WORKER_GCS_BUCKET)
+        blob = bucket.blob(object_name)
+        blob.upload_from_string(pdf_bytes, content_type="application/pdf")
+        return True
+    except Exception as exc:
+        logger.warning(f"[CV Worker] GCS upload failed: {exc}")
+        return False
+
+
+def _dispatch_cv_analysis(
+    linkedinurl: str,
+    pdf_bytes: bytes,
+    process_id=None,
+    override_role_tag=None,
+):
+    """Dispatch a CV analysis task.
+
+    When CV_WORKER_URL is set and a GCS bucket is configured, uploads the PDF
+    to GCS and POSTs a task to the worker service.
+    Falls back to the existing thread+semaphore path when env vars are absent
+    or when the GCS upload / worker POST fails.
+    """
+    if _CV_WORKER_URL and _CV_WORKER_GCS_BUCKET:
+        uid = str(uuid.uuid4())
+        safe_pid = str(process_id or "nopid")
+        gcs_object = f"{_CV_WORKER_GCS_PREFIX}{safe_pid}/{uid}.pdf"
+        uploaded = _upload_cv_to_gcs(pdf_bytes, gcs_object)
+        if uploaded:
+            try:
+                _payload = {
+                    "gcs_path": f"gs://{_CV_WORKER_GCS_BUCKET}/{gcs_object}",
+                    "linkedin_url": linkedinurl,
+                    "process_id": process_id,
+                    "override_role_tag": override_role_tag,
+                }
+                _headers = {"Content-Type": "application/json"}
+                if _INTERNAL_WORKER_TOKEN:
+                    _headers["X-Internal-Token"] = _INTERNAL_WORKER_TOKEN
+                _resp = requests.post(
+                    f"{_CV_WORKER_URL}/internal/run-cv",
+                    json=_payload,
+                    headers=_headers,
+                    timeout=10,
+                )
+                _resp.raise_for_status()
+                logger.info(f"[CV Worker] Dispatched CV analysis for {linkedinurl or process_id}")
+                return
+            except Exception as exc:
+                logger.warning(f"[CV Worker] Dispatch failed ({exc}), falling back to thread")
+
+    # Local / fallback: run in a background thread with the semaphore
+    threading.Thread(
+        target=analyze_cv_background,
+        args=(linkedinurl, pdf_bytes),
+        kwargs={"process_id": process_id, "override_role_tag": override_role_tag},
+        daemon=True,
+    ).start()
+
+
+# ---------------------------------------------------------------------------
+# Internal worker endpoint — /internal/run-cv
+# Executed synchronously in the CV worker container.
+# ---------------------------------------------------------------------------
+
+@app.post("/internal/run-cv")
+def internal_run_cv():
+    """Download a CV from GCS and run analyze_cv_background synchronously."""
+    if not _check_internal_token():
+        return jsonify({"error": "Forbidden"}), 403
+
+    data = request.get_json(force=True, silent=True) or {}
+    gcs_path = (data.get("gcs_path") or "").strip()
+    linkedin_url = (data.get("linkedin_url") or "").strip()
+    process_id = data.get("process_id")
+    override_role_tag = data.get("override_role_tag")
+
+    if not gcs_path:
+        return jsonify({"error": "gcs_path required"}), 400
+
+    # Parse gs://bucket/object
+    if not gcs_path.startswith("gs://"):
+        return jsonify({"error": "gcs_path must start with gs://"}), 400
+    without_gs = gcs_path[5:]
+    bucket_name, _, object_name = without_gs.partition("/")
+
+    try:
+        from google.cloud import storage as gcs  # type: ignore
+        client = gcs.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(object_name)
+        pdf_bytes = blob.download_as_bytes()
+    except Exception as exc:
+        logger.error(f"[internal/run-cv] GCS download failed: {exc}")
+        return jsonify({"error": "GCS download failed. Check worker logs."}), 500
+
+    try:
+        analyze_cv_background(
+            linkedin_url,
+            pdf_bytes,
+            process_id=process_id,
+            override_role_tag=override_role_tag,
+        )
+    except Exception as exc:
+        logger.error(f"[internal/run-cv] analyze_cv_background failed: {exc}", exc_info=True)
+        # Best-effort cleanup
+        try:
+            bucket.blob(object_name).delete()
+        except Exception as _cleanup_err:
+            logger.warning(f"[internal/run-cv] GCS cleanup failed: {_cleanup_err}")
+        return jsonify({"error": "CV analysis failed. Check worker logs."}), 500
+
+    # Clean up the staged file on success
+    try:
+        bucket.blob(object_name).delete()
+    except Exception as _cleanup_err:
+        logger.warning(f"[internal/run-cv] GCS cleanup after success failed: {_cleanup_err}")
+
+    return jsonify({"ok": True})

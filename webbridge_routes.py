@@ -20,6 +20,7 @@ from csv import DictWriter
 from datetime import datetime
 from functools import lru_cache, wraps
 import requests
+from cache_backend import cache_get, cache_set, SUGGEST_CACHE_TTL, LLM_CACHE_TTL
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -1820,7 +1821,9 @@ def get_process_skillsets():
 # ... rest of file unchanged beyond this point ...
 
 # Suggestion code: caching, supplemental lists, enforcement with sector-aware filtering
-SUGGEST_CACHE = {}
+# SUGGEST_CACHE is backed by cache_backend (Redis when REDIS_URL is set, else in-process dict).
+# The legacy dict and lock are kept as a secondary in-process layer for zero-dependency installs.
+SUGGEST_CACHE: dict = {}   # kept for backward compat; cache_backend is the primary store
 SUGGEST_CACHE_LOCK = threading.Lock()
 MAX_SUGGESTIONS_PER_TAG = int(os.getenv("MAX_SUGGESTIONS_PER_TAG", "6"))
 COMPANY_SUGGESTIONS_LIMIT = int(os.getenv("COMPANY_SUGGESTIONS_LIMIT", "30"))
@@ -2120,7 +2123,10 @@ def _gemini_suggestions(job_titles, companies, industry, languages=None, sectors
         f"{locality_hint}\n\nINPUT(JSON): {json.dumps(input_obj, ensure_ascii=False)}\n\nJSON:"
     )
     try:
-        text = (unified_llm_call_text(prompt) or "").strip()
+        text = (unified_llm_call_text(
+            prompt,
+            cache_key="llm:suggest:" + hashlib.sha256(prompt.encode()).hexdigest(),
+        ) or "").strip()
         start=text.find('{'); end=text.rfind('}')
         if start!=-1 and end!=-1 and end>start:
             parsed=json.loads(text[start:end+1])
@@ -2312,14 +2318,17 @@ def suggest():
     sectors = data.get("sectors") or data.get("selectedSectors") or []
     country = (data.get("country") or "").strip()
     products = data.get("products") or []  # Product references extracted from JD
-    key = (tuple(sorted([jt.strip().lower() for jt in job_titles])),
-           tuple(sorted([c.strip().lower() for c in companies])),
-           industry.lower(),
-           tuple(sorted([str(x).lower() for x in languages])),
-           tuple(sorted([str(x).lower() for x in sectors])),
-           country.lower())
-    with SUGGEST_CACHE_LOCK:
-        cached=SUGGEST_CACHE.get(key)
+    _cache_key_parts = (
+        tuple(sorted([jt.strip().lower() for jt in job_titles])),
+        tuple(sorted([c.strip().lower() for c in companies])),
+        industry.lower(),
+        tuple(sorted([str(x).lower() for x in languages])),
+        tuple(sorted([str(x).lower() for x in sectors])),
+        country.lower(),
+    )
+    # Stable string key usable by both the local dict and Redis/cache_backend
+    cache_key = "suggest:" + hashlib.sha256(repr(_cache_key_parts).encode()).hexdigest()
+    cached = cache_get(cache_key)
     if cached:
         return jsonify(cached)
 
@@ -2358,8 +2367,7 @@ def suggest():
             "engine": "heuristic"
         }
 
-    with SUGGEST_CACHE_LOCK:
-        SUGGEST_CACHE[key]=payload
+    cache_set(cache_key, payload, ttl=SUGGEST_CACHE_TTL)
     return jsonify(payload)
 
 @app.post("/sector_suggest")
@@ -3179,22 +3187,127 @@ JOBS_LOCK = threading.Lock()
 PERSIST_JOBS_TO_FILES = os.getenv("PERSIST_JOBS_TO_FILES", "1") == "1"
 JOB_FILE_PREFIX="job_"; JOB_FILE_SUFFIX=".json"
 _USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
+
+# ---------------------------------------------------------------------------
+# Job state backend — file (default), gcs, or redis.
+# JOB_BACKEND env var selects the backend.  GCS requires JOB_GCS_BUCKET.
+# Redis uses the same REDIS_URL as the cache backend.
+# ---------------------------------------------------------------------------
+JOB_BACKEND = os.getenv("JOB_BACKEND", "file")   # "file" | "gcs" | "redis"
+JOB_GCS_BUCKET = os.getenv("JOB_GCS_BUCKET", "")
+_JOB_GCS_PREFIX = "jobs/"
+_JOB_REDIS_TTL = int(os.getenv("JOB_REDIS_TTL_SECONDS", str(7 * 24 * 3600)))  # 7 days
+
+
 def _job_file(job_id: str, username: str = "") -> str:
     safe_username = _USERNAME_SAFE_RE.sub('', username or "")
     suffix = f"_{safe_username}" if safe_username else ""
     return os.path.join(OUTPUT_DIR, f"{JOB_FILE_PREFIX}{job_id}{suffix}{JOB_FILE_SUFFIX}")
+
+
+def _job_gcs_object(job_id: str) -> str:
+    return f"{_JOB_GCS_PREFIX}{job_id}.json"
+
+
+def _job_redis_key(job_id: str) -> str:
+    return f"job:{job_id}"
+
+
 def persist_job(job_id: str):
-    if not PERSIST_JOBS_TO_FILES: return
+    """Persist job state to the configured backend (file / gcs / redis)."""
+    if JOB_BACKEND == "gcs":
+        if not JOB_GCS_BUCKET:
+            return
+        try:
+            from google.cloud import storage as gcs  # type: ignore
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if not job:
+                    return
+                payload = json.dumps(job, ensure_ascii=False)
+            client = gcs.Client()
+            bucket = client.bucket(JOB_GCS_BUCKET)
+            blob = bucket.blob(_job_gcs_object(job_id))
+            blob.upload_from_string(payload, content_type="application/json")
+        except Exception as exc:
+            logger.warning(f"[Persist/GCS] {exc}")
+        return
+
+    if JOB_BACKEND == "redis":
+        try:
+            from cache_backend import _get_redis
+            r = _get_redis()
+            if r is None:
+                return
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if not job:
+                    return
+                payload = json.dumps(job, ensure_ascii=False)
+            r.setex(_job_redis_key(job_id), _JOB_REDIS_TTL, payload)
+        except Exception as exc:
+            logger.warning(f"[Persist/Redis] {exc}")
+        return
+
+    # Default: file backend
+    if not PERSIST_JOBS_TO_FILES:
+        return
     try:
         with JOBS_LOCK:
-            job=JOBS.get(job_id)
-            if not job: return
+            job = JOBS.get(job_id)
+            if not job:
+                return
             username = job.get("username") or ""
-            tmp=_job_file(job_id, username)+".tmp"
-            with open(tmp,"w",encoding="utf-8") as f: json.dump(job,f,ensure_ascii=False,indent=2)
-            os.replace(tmp,_job_file(job_id, username))
-    except Exception as e:
-        logger.warning(f"[Persist] {e}")
+            tmp = _job_file(job_id, username) + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(job, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _job_file(job_id, username))
+    except Exception as exc:
+        logger.warning(f"[Persist] {exc}")
+
+
+def _load_job_from_backend(job_id: str) -> dict | None:
+    """Load a job from the configured backend.  Returns None if not found."""
+    if JOB_BACKEND == "gcs":
+        if not JOB_GCS_BUCKET:
+            return None
+        try:
+            from google.cloud import storage as gcs  # type: ignore
+            client = gcs.Client()
+            bucket = client.bucket(JOB_GCS_BUCKET)
+            blob = bucket.blob(_job_gcs_object(job_id))
+            if not blob.exists():
+                return None
+            return json.loads(blob.download_as_text())
+        except Exception as exc:
+            logger.warning(f"[LoadJob/GCS] {exc}")
+            return None
+
+    if JOB_BACKEND == "redis":
+        try:
+            from cache_backend import _get_redis
+            r = _get_redis()
+            if r is None:
+                return None
+            raw = r.get(_job_redis_key(job_id))
+            if raw is None:
+                return None
+            return json.loads(raw)
+        except Exception as exc:
+            logger.warning(f"[LoadJob/Redis] {exc}")
+            return None
+
+    # File backend — scan OUTPUT_DIR for matching job files
+    try:
+        for fname in os.listdir(OUTPUT_DIR):
+            if fname.startswith(JOB_FILE_PREFIX) and fname.endswith(JOB_FILE_SUFFIX):
+                if job_id in fname:
+                    fpath = os.path.join(OUTPUT_DIR, fname)
+                    with open(fpath, encoding="utf-8") as f:
+                        return json.load(f)
+    except Exception as exc:
+        logger.warning(f"[LoadJob/File] {exc}")
+    return None
 def add_message(job_id: str, text: str):
     with JOBS_LOCK:
         job=JOBS.get(job_id)
@@ -3348,10 +3461,22 @@ def gemini_call_text(prompt: str, api_key: str, model: str = "gemini-2.5-flash-l
 
 def unified_llm_call_text(prompt: str, system_prompt: str = None,
                            temperature: float = None,
-                           max_output_tokens: int = None) -> str | None:
+                           max_output_tokens: int = None,
+                           cache_key: str = None) -> str | None:
     """Route an LLM text call through the active provider from llm_provider_config.json.
     Priority: active_provider field → Gemini fallback.
-    Returns the text response or None if no provider is configured / all fail."""
+    Returns the text response or None if no provider is configured / all fail.
+
+    cache_key: optional stable string key.  When provided and the cache backend is
+    available the result is read from / written to the cache (TTL = LLM_CACHE_TTL).
+    Only pass cache_key for deterministic, non-user-specific prompts (e.g. sector
+    suggestions, company extraction).  Never pass it for CV analysis or email generation.
+    """
+    if cache_key:
+        cached = cache_get(cache_key)
+        if cached is not None:
+            return cached
+
     cfg = _load_llm_provider_config()
     active = cfg.get("active_provider", "gemini")
 
@@ -3364,6 +3489,8 @@ def unified_llm_call_text(prompt: str, system_prompt: str = None,
                                       temperature=temperature,
                                       max_output_tokens=max_output_tokens)
             if result is not None:
+                if cache_key:
+                    cache_set(cache_key, result, ttl=LLM_CACHE_TTL)
                 return result
 
     if active == "anthropic":
@@ -3375,6 +3502,8 @@ def unified_llm_call_text(prompt: str, system_prompt: str = None,
                                          temperature=temperature,
                                          max_output_tokens=max_output_tokens)
             if result is not None:
+                if cache_key:
+                    cache_set(cache_key, result, ttl=LLM_CACHE_TTL)
                 return result
 
     # Gemini path (default / fallback)
@@ -3382,9 +3511,12 @@ def unified_llm_call_text(prompt: str, system_prompt: str = None,
     gem_key = (gem.get("api_key") or "").strip() or (GEMINI_API_KEY or "").strip()
     gem_model = gem.get("model", GEMINI_SUGGEST_MODEL)
     if gem_key:
-        return gemini_call_text(prompt, gem_key, gem_model,
-                                temperature=temperature,
-                                max_output_tokens=max_output_tokens)
+        result = gemini_call_text(prompt, gem_key, gem_model,
+                                  temperature=temperature,
+                                  max_output_tokens=max_output_tokens)
+        if result is not None and cache_key:
+            cache_set(cache_key, result, ttl=LLM_CACHE_TTL)
+        return result
 
     return None
 
@@ -5131,7 +5263,10 @@ def _gemini_extract_company_from_jobtitle(job_title_raw: str, candidates=None):
         prompt=("Extract inline employer/company from jobTitle strictly if present. "
                 "Return JSON {\"company\":\"\",\"jobTitleWithoutCompany\":\"\"}. "
                 f"INPUT:\n{json.dumps(context,ensure_ascii=False)}\nOUTPUT:")
-        text = (unified_llm_call_text(prompt) or "").strip()
+        text = (unified_llm_call_text(
+            prompt,
+            cache_key="llm:jobtitle2company:" + hashlib.sha256(prompt.encode()).hexdigest(),
+        ) or "").strip()
         start=text.find('{'); end=text.rfind('}')
         if start==-1 or end==-1 or end<=start: return None, job_title_raw
         obj=json.loads(text[start:end+1])

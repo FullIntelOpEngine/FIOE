@@ -1,0 +1,75 @@
+# Cloud Run service definition — web frontend
+# Deploy:
+#   gcloud run services replace deploy/cloudrun-web.yaml --region=asia-southeast1
+#
+# Substitute ${PROJECT_ID}, ${REGION}, ${IMAGE_TAG} before deploying, or use
+# gcloud builds submit with Cloud Build substitutions.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fioe-web
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "5"
+        run.googleapis.com/cpu-throttling: "true"
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300
+      containers:
+        - image: gcr.io/${PROJECT_ID}/fioe-web:${IMAGE_TAG}
+          resources:
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          env:
+            - name: PORT
+              value: "8091"
+            - name: GUNICORN_WORKERS
+              value: "1"
+            - name: GUNICORN_WORKER_CLASS
+              value: "gevent"
+            - name: GUNICORN_CONNECTIONS
+              value: "80"
+            # Job runner worker endpoint — leave empty to run inline
+            - name: WORKER_BASE_URL
+              value: ""
+            # CV analysis worker endpoint — leave empty to run inline
+            - name: CV_WORKER_URL
+              value: ""
+            # Shared secret for internal worker endpoints
+            - name: INTERNAL_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-internal-token
+                  key: latest
+            # Job state backend: file | gcs | redis
+            - name: JOB_BACKEND
+              value: "file"
+            # Redis cache (Memorystore) — leave empty to use in-process dict
+            - name: REDIS_URL
+              value: ""
+            # GCS bucket for CSV/XLSX outputs — leave empty for local disk
+            - name: OUTPUT_GCS_BUCKET
+              value: ""
+            # --- Database ---
+            - name: PGHOST
+              value: "localhost"   # Cloud SQL Proxy via Cloud Run sidecar
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: "candidate_db"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-db-user
+                  key: latest
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-db-password
+                  key: latest

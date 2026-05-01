@@ -1,0 +1,72 @@
+# Cloud Run service definition — job-runner + CV-analysis worker
+# Deploy:
+#   gcloud run services replace deploy/cloudrun-worker.yaml --region=asia-southeast1
+#
+# The worker service should NOT be publicly reachable — set ingress to internal.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: fioe-worker
+  annotations:
+    # Internal-only — only reachable from within the VPC / other Cloud Run services
+    run.googleapis.com/ingress: internal
+spec:
+  template:
+    metadata:
+      annotations:
+        # Scale to zero when idle; scale up quickly for bursts
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+        run.googleapis.com/cpu-throttling: "false"   # Always-on CPU for long jobs
+        # Use Spot/preemptible VMs to cut cost ~70%
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containerConcurrency: 1   # One job per instance to avoid resource contention
+      timeoutSeconds: 3600      # Allow up to 60 min per job
+      containers:
+        - image: gcr.io/${PROJECT_ID}/fioe-worker:${IMAGE_TAG}
+          resources:
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          env:
+            - name: PORT
+              value: "8092"
+            - name: GUNICORN_WORKERS
+              value: "1"
+            - name: GUNICORN_WORKER_CLASS
+              value: "sync"    # Sync workers for CPU-heavy tasks
+            - name: GUNICORN_TIMEOUT
+              value: "3600"
+            - name: INTERNAL_WORKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-internal-token
+                  key: latest
+            # Worker reads/writes job state to the same backend as web
+            - name: JOB_BACKEND
+              value: "gcs"
+            - name: JOB_GCS_BUCKET
+              value: "${JOB_GCS_BUCKET}"
+            # GCS bucket for PDF staging (CV worker)
+            - name: CV_WORKER_GCS_BUCKET
+              value: "${CV_WORKER_GCS_BUCKET}"
+            # GCS bucket for CSV/XLSX outputs
+            - name: OUTPUT_GCS_BUCKET
+              value: "${OUTPUT_GCS_BUCKET}"
+            - name: PGHOST
+              value: "localhost"
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: "candidate_db"
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-db-user
+                  key: latest
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fioe-db-password
+                  key: latest
