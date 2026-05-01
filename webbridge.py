@@ -3088,7 +3088,7 @@ def admin_ml_holding_delete_user(username: str):
     return _proxy_to_node_admin_delete(f"admin/ml-holding/user/{username}")
 
 
-
+def _apply_unified_diff(original_text: str, diff_text: str) -> str:
     """Apply a unified diff to *original_text* and return the patched result.
 
     Pure-Python implementation — no subprocess or external dependencies required.
