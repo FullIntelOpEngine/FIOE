@@ -178,6 +178,9 @@ def login_account():
 
         # Generate a cryptographic session_id and store it in the DB — same
         # pattern as server.js so either service can validate the session.
+        # Also ensures the session_id column exists (migration guard) and
+        # backfills a userid for accounts that were created without one, so
+        # AutoSourcing.html always has a valid activeUserid.
         new_session_id = secrets.token_hex(32)
         try:
             import psycopg2 as _pg2
@@ -189,6 +192,19 @@ def login_account():
                 dbname=os.getenv("PGDATABASE", "candidate_db"),
             )
             _cc = _sc.cursor()
+            # Ensure session_id column exists (idempotent — runs only when missing).
+            _cc.execute("ALTER TABLE login ADD COLUMN IF NOT EXISTS session_id TEXT")
+            _sc.commit()
+            # Backfill userid for accounts where it is NULL so that the client
+            # always receives a non-empty userid, preventing the sourcing page
+            # from redirecting back to login because activeUserid is falsy.
+            if not userid:
+                userid = str(uuid.uuid4().int % 9000000 + 1000000)
+                _cc.execute(
+                    "UPDATE login SET userid = %s WHERE username = %s AND (userid IS NULL OR userid = '')",
+                    (userid, username),
+                )
+                _sc.commit()
             _cc.execute("UPDATE login SET session_id = %s WHERE username = %s", (new_session_id, username))
             _sc.commit()
             _cc.close(); _sc.close()
