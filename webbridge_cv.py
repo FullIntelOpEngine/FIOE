@@ -18,6 +18,10 @@ from csv import DictWriter
 from datetime import datetime
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
 
+# Shared HTTP session — reuses TCP connections across worker-dispatch and
+# CV-worker calls so each request avoids a fresh TCP handshake.
+_HTTP_SESSION = requests.Session()
+
 # Sanitise username for use in filenames (allow only alphanumeric, _ and -)
 _CV_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
 
@@ -103,6 +107,7 @@ from webbridge import (
     _increment_gemini_query_count,
     _load_rate_limits,
     _make_flask_limit,
+    _has_column,
 )
 
 # Items that moved to webbridge_routes.py (originally lines 5152-9431 of webbridge.py).
@@ -1094,7 +1099,7 @@ def start_job():
             _headers = {"Content-Type": "application/json"}
             if _worker_token:
                 _headers["X-Internal-Token"] = _worker_token
-            _resp = requests.post(
+            _resp = _HTTP_SESSION.post(
                 f"{_worker_url}/internal/run-job",
                 json=_payload,
                 headers=_headers,
@@ -1293,18 +1298,10 @@ def sourcing_list():
         cur = conn.cursor()
 
         # Detect optional pic column once
-        cur.execute("""
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='sourcing' AND column_name='pic'
-        """)
-        has_pic = cur.fetchone() is not None
+        has_pic = _has_column(cur, 'sourcing', 'pic')
 
         # Detect whether process has a skillset column (for search)
-        cur.execute("""
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='process' AND column_name='skillset'
-        """)
-        has_skillset = cur.fetchone() is not None
+        has_skillset = _has_column(cur, 'process', 'skillset')
 
         # Detect whether search_vector columns exist (added by _ensure_search_indexes)
         cur.execute("""
@@ -1327,19 +1324,11 @@ def sourcing_list():
         rating_idx = 7 if has_pic else 6
 
         # Detect optional source column
-        cur.execute("""
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='sourcing' AND column_name='source'
-        """)
-        has_source_col = cur.fetchone() is not None
+        has_source_col = _has_column(cur, 'sourcing', 'source')
         source_col = "COALESCE(s.source, '') AS source" if has_source_col else "'' AS source"
 
         # Detect optional appeal column
-        cur.execute("""
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='sourcing' AND column_name='appeal'
-        """)
-        has_appeal_col = cur.fetchone() is not None
+        has_appeal_col = _has_column(cur, 'sourcing', 'appeal')
         appeal_col = "COALESCE(s.appeal, '') AS appeal" if has_appeal_col else "'' AS appeal"
 
         # ------------------------------------------------------------------
@@ -1645,7 +1634,7 @@ def sourcing_update():
     if field == "experience" and len(value) > 5000:
         value = value[:5000]
     try:
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
         col_identifier = sql.Identifier(allowed_fields[field])
@@ -1681,7 +1670,7 @@ def sourcing_delete():
         cleaned = [(x or "").strip() for x in arr if (x or "").strip()]
 
     try:
-from psycopg2 import sql as pgsql
+        from psycopg2 import sql as pgsql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
@@ -1842,15 +1831,14 @@ def process_delete_entry():
          return jsonify({"error": "No valid URLs"}), 400
 
     try:
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
         deleted_total = 0
 
         # Check for normalized column
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-        has_normalized = bool(cur.fetchone())
+        has_normalized = _has_column(cur, 'process', 'normalized_linkedin')
 
         for url in cleaned:
              # Try exact delete
@@ -1880,8 +1868,7 @@ from psycopg2 import sql
         new_token = 0
         if deleted_total > 0:
              # Update token
-             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='login' AND column_name='userid'")
-             login_has_userid = bool(cur.fetchone())
+             login_has_userid = _has_column(cur, 'login', 'userid')
              
              if login_has_userid and userid:
                  cur.execute("UPDATE login SET token = COALESCE(token,0) + %s WHERE userid = %s RETURNING COALESCE(token,0)", (deleted_total, userid))
@@ -2120,7 +2107,7 @@ def sourcing_market_analysis():
 
     inserted_process = 0
     try:
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
@@ -2510,7 +2497,7 @@ def process_geography():
     linkedin_norm_www = _standardize_host(linkedin_norm)
 
     try:
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
@@ -2715,7 +2702,7 @@ def process_upload_cv():
                 except Exception as _e:
                     logger.warning(f"[Upload CV] Name validation failed (non-fatal): {_e}")
 
-from psycopg2 import sql
+            from psycopg2 import sql
             conn=_get_pg_conn()
             cur=conn.cursor()
             
@@ -2726,8 +2713,7 @@ from psycopg2 import sql
             sourcing_id = None
             try:
                 # Discover if we have 'id' column in process first
-                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='id'")
-                has_process_id = bool(cur.fetchone())
+                has_process_id = _has_column(cur, 'process', 'id')
                 
                 if has_process_id:
                     # Try to get id from sourcing table
@@ -2796,8 +2782,7 @@ from psycopg2 import sql
                     
                     if normalized:
                         # check if column exists
-                        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-                        if cur.fetchone():
+                        if _has_column(cur, 'process', 'normalized_linkedin'):
                             cols.append("normalized_linkedin")
                             vals.append(normalized)
                             placeholders.append("%s")
@@ -2868,7 +2853,7 @@ def process_upload_multiple_cvs():
         to_process = [f for f in files if f and f.filename and f.filename.lower().endswith(allowed_ext)]
         rejected = [f.filename for f in files if f and f.filename and not f.filename.lower().endswith(allowed_ext)]
 
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
@@ -3162,19 +3147,17 @@ def process_download_cv():
     linkedin_norm_www = _standardize_host(linkedin_norm)
 
     try:
-from psycopg2 import sql
+        from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
 
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='cv'")
-        if not cur.fetchone():
+        if not _has_column(cur, 'process', 'cv'):
              cur.close(); conn.close()
              return "CV column not found in database", 404
 
         row = None
         if linkedin_path:
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-            if cur.fetchone():
+            if _has_column(cur, 'process', 'normalized_linkedin'):
                 cur.execute("SELECT cv, name FROM process WHERE normalized_linkedin = %s AND cv IS NOT NULL LIMIT 1", (linkedin_path,))
                 row = cur.fetchone()
 
@@ -4832,8 +4815,7 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
         sourcing_id = None
         if linkedinurl and not process_id:
             try:
-                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='id'")
-                if cur.fetchone():
+                if _has_column(cur, 'process', 'id'):
                     cur.execute("SELECT id FROM sourcing WHERE linkedinurl = %s LIMIT 1", (linkedinurl,))
                     row_sid = cur.fetchone()
                     if row_sid: sourcing_id = row_sid[0]
@@ -4871,8 +4853,7 @@ def analyze_cv_background(linkedinurl, pdf_bytes, process_id=None, override_role
         row = cur.fetchone()
         
         if not row and not sourcing_id and normalized:
-             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-             if cur.fetchone():
+             if _has_column(cur, 'process', 'normalized_linkedin'):
                  where_clause = "normalized_linkedin = %s"; params = [normalized]
                  cur.execute(pgsql.SQL("SELECT {} FROM process WHERE {}").format(pgsql.SQL(", ").join(pgsql.Identifier(f) for f in select_fields), pgsql.SQL(where_clause)), (normalized,))
                  row = cur.fetchone()
@@ -5146,15 +5127,13 @@ def process_parse_cv_and_update():
         linkedin_norm = linkedinurl.split('?')[0].rstrip('/')
         linkedin_path = _normalize_linkedin_to_path(linkedinurl)
         
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='cv'")
-        if not cur.fetchone():
+        if not _has_column(cur, 'process', 'cv'):
              cur.close(); conn.close()
              return jsonify({"error": "No CV column in DB"}), 500
 
         row = None
         if linkedin_path:
-             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-             if cur.fetchone():
+             if _has_column(cur, 'process', 'normalized_linkedin'):
                  cur.execute("SELECT cv FROM process WHERE normalized_linkedin = %s AND cv IS NOT NULL LIMIT 1", (linkedin_path,))
                  row = cur.fetchone()
         
@@ -5209,8 +5188,7 @@ def process_pending_assessments():
         pg_db=os.getenv("PGDATABASE","candidate_db")
         conn = _get_pg_conn()
         cur=conn.cursor()
-        cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name='normalized_linkedin'")
-        has_normalized = bool(cur.fetchone())
+        has_normalized = _has_column(cur, 'process', 'normalized_linkedin')
         cols = ["name", "company", "jobtitle", "country", "linkedinurl", "experience", "rating"]
         if has_normalized: cols.append("normalized_linkedin")
         from psycopg2 import sql
@@ -5466,7 +5444,7 @@ def process_bulk_assess():
     def _assess_and_persist(linkedinurl, candidate_name="", candidate_company="", candidate_process_id=None):
         try:
             # Fetch profile data from database
-from psycopg2 import sql
+            from psycopg2 import sql
             conn=_get_pg_conn()
             cur=conn.cursor()
             
@@ -6040,8 +6018,7 @@ from psycopg2 import sql
                                 try:
                                     conn_vsk = _get_pg_conn()
                                     cur_vsk = conn_vsk.cursor()
-                                    cur_vsk.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='process' AND column_name IN ('vskillset','skillset')")
-                                    avail_cols = {r[0] for r in cur_vsk.fetchall()}
+                                    avail_cols = {c for c in ('vskillset', 'skillset') if _has_column(cur_vsk, 'process', c)}
                                     vsk_json = json.dumps(vskillset_results, ensure_ascii=False)
                                     high_skills_str = ", ".join(
                                         i["skill"] for i in vskillset_results if i.get("category") == "High"
@@ -6155,11 +6132,7 @@ from psycopg2 import sql
                 conn = _get_pg_conn()
                 cur=conn.cursor()
 
-                cur.execute("""
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_schema='public' AND table_name='process' AND column_name='rating'
-                """)
-                if cur.fetchone():
+                if _has_column(cur, 'process', 'rating'):
                     # store JSON as text (exclude vskillset to keep rating payload compact,
                     # mirroring gemini_assess_profile which strips vskillset before persisting)
                     rating_obj = {k: v for k, v in result.items() if k != "vskillset"} if isinstance(result, dict) else result
@@ -6209,11 +6182,7 @@ from psycopg2 import sql
                     # Also sync jskill if result contains role_tag (safe best-effort)
                     role_tag_val = result.get("role_tag") if isinstance(result, dict) else None
                     if role_tag_val:
-                        cur.execute("""
-                            SELECT column_name FROM information_schema.columns
-                            WHERE table_schema='public' AND table_name='process' AND column_name='jskill'
-                        """)
-                        if cur.fetchone():
+                        if _has_column(cur, 'process', 'jskill'):
                             cur.execute("UPDATE process SET jskill = %s WHERE linkedinurl = %s", (role_tag_val, linkedinurl))
 
                     conn.commit()
@@ -6634,12 +6603,7 @@ def patch_profile_assessment(linkedinurl):
             cur = conn.cursor()
             
             # Check if rating column exists
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns 
-                WHERE table_schema='public' AND table_name='process' AND column_name='rating'
-            """)
-            
-            if cur.fetchone():
+            if _has_column(cur, 'process', 'rating'):
                 rating_json = json.dumps(rating) if isinstance(rating, dict) else rating
                 cur.execute(
                     sql.SQL("UPDATE process SET rating = %s WHERE linkedinurl = %s"),
@@ -7167,7 +7131,7 @@ def _dispatch_cv_analysis(
                 _headers = {"Content-Type": "application/json"}
                 if _INTERNAL_WORKER_TOKEN:
                     _headers["X-Internal-Token"] = _INTERNAL_WORKER_TOKEN
-                _resp = requests.post(
+                _resp = _HTTP_SESSION.post(
                     f"{_CV_WORKER_URL}/internal/run-cv",
                     json=_payload,
                     headers=_headers,

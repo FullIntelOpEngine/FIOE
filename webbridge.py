@@ -813,6 +813,38 @@ _PG_POOL_LOCK = threading.Lock()
 _PGPOOL_MIN: int = int(os.getenv("PGPOOL_MIN_CONNS", "2"))
 _PGPOOL_MAX: int = int(os.getenv("PGPOOL_MAX_CONNS", "20"))
 
+# ── Schema column-existence cache ─────────────────────────────────────────────
+# information_schema queries are expensive on PostgreSQL (catalog scans) and
+# called dozens of times per request.  Cache results for the process lifetime
+# so every table/column pair is resolved at most once.
+# Thread-safe: uses a lock for the rare first-time miss; reads are lock-free.
+_SCHEMA_COL_CACHE: dict = {}
+_SCHEMA_COL_LOCK = threading.Lock()
+
+
+def _has_column(cur, table: str, column: str) -> bool:
+    """Return True if *column* exists in the public schema table *table*.
+
+    The result is cached for the lifetime of the process so repeated calls
+    (even across requests) hit the in-process dict rather than PostgreSQL.
+    """
+    key = (table, column)
+    val = _SCHEMA_COL_CACHE.get(key)
+    if val is not None:
+        return val
+    with _SCHEMA_COL_LOCK:
+        val = _SCHEMA_COL_CACHE.get(key)
+        if val is not None:
+            return val
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s AND column_name=%s",
+            (table, column),
+        )
+        result = cur.fetchone() is not None
+        _SCHEMA_COL_CACHE[key] = result
+        return result
+
 
 class _PooledConn:
     """Wraps a psycopg2 pool connection; .close() returns it to the pool."""
@@ -6747,8 +6779,7 @@ def gemini_assess_profile():
                     if _r and _r[0]: role_tag = _r[0]
                 # 3. Fallback to login table
                 if not role_tag and username:
-                    _pg_cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='login' AND column_name='role_tag'")
-                    if _pg_cur.fetchone():
+                    if _has_column(_pg_cur, 'login', 'role_tag'):
                         _pg_cur.execute("SELECT role_tag FROM login WHERE username=%s AND role_tag IS NOT NULL AND role_tag != '' LIMIT 1", (username,))
                         _r = _pg_cur.fetchone()
                         if _r and _r[0]: role_tag = _r[0]
@@ -6757,8 +6788,7 @@ def gemini_assess_profile():
                 # could not find role_tag in sourcing even though it existed in login.
                 if role_tag and username:
                     try:
-                        _pg_cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='sourcing' AND column_name='role_tag'")
-                        if not _pg_cur.fetchone():
+                        if not _has_column(_pg_cur, 'sourcing', 'role_tag'):
                             _pg_cur.execute("ALTER TABLE sourcing ADD COLUMN role_tag TEXT DEFAULT ''")
                         _pg_cur.execute(
                             "UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')",

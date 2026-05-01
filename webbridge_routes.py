@@ -60,7 +60,7 @@ from webbridge import (
     _sync_login_jskillset_to_process, _sync_criteria_jskillset_to_process,
     _increment_cse_query_count, _increment_gemini_query_count, _load_rate_limits, _save_rate_limits,
     _make_flask_limit,
-    _pg_connect, _ensure_admin_columns,
+    _pg_connect, _ensure_admin_columns, _has_column,
     dedupe,
     _normalize_seniority_single, _map_gemini_seniority_to_dropdown,
     _gemini_talent_pool_suggestion,
@@ -80,6 +80,11 @@ from webbridge import (
 # search to record fallback in the JOBS dict for the front-end.
 _search_fallback_flag = threading.local()
 
+# ── Shared HTTP session for external API calls ────────────────────────────────
+# A single requests.Session() reuses TCP connections (keep-alive) and avoids
+# per-call SSL handshake / connect overhead.  API keys are passed per-request
+# in headers/params so there is no security concern with a shared session.
+_HTTP_SESSION = requests.Session()
 
 class ProviderSearchError(Exception):
     """Raised when a selected API provider (ContactOut/Apollo/RocketReach) search
@@ -1634,13 +1639,7 @@ Return ONLY the JSON object, no other text."""
         skillset_str = ", ".join([str(s) for s in high_skills if s])
         
         # Check if vskillset column exists
-        cur.execute("""
-            SELECT column_name 
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='process' 
-              AND column_name IN ('vskillset', 'skillset')
-        """)
-        available_cols = {r[0] for r in cur.fetchall()}
+        available_cols = {c for c in ('vskillset', 'skillset') if _has_column(cur, 'process', c)}
         
         # Update process table
         updates = []
@@ -1731,13 +1730,7 @@ def get_process_skillsets():
             normalized = 'https://' + normalized
         
         # Check which columns exist
-        cur.execute("""
-            SELECT column_name 
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='process' 
-              AND column_name IN ('vskillset', 'skillset')
-        """)
-        available_cols = {r[0] for r in cur.fetchall()}
+        available_cols = {c for c in ('vskillset', 'skillset') if _has_column(cur, 'process', c)}
         
         # Build SELECT query based on available columns
         select_cols = []
@@ -3519,7 +3512,7 @@ def google_cse_search_page(query: str, api_key: str, cx: str, num: int, start_in
     params={"key":api_key,"cx":cx,"q":query,"num":min(num,10),"start":start_index}
     if gl_hint: params["gl"]=gl_hint
     try:
-        r=requests.get(endpoint, params=params, timeout=30)
+        r=_HTTP_SESSION.get(endpoint, params=params, timeout=30)
         r.raise_for_status()
         data=r.json()
         items=data.get("items",[]) or []
@@ -3552,7 +3545,7 @@ def serper_search_page(query: str, api_key: str, num: int, gl_hint: str = None, 
     if gl_hint:
         payload["gl"] = gl_hint
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             endpoint,
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             json=payload,
@@ -3592,7 +3585,7 @@ def linkedin_search_page(query: str, api_key: str, num: int, gl_hint: str = None
     if gl_hint:
         payload["gl"] = gl_hint
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             endpoint,
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
             json=payload,
@@ -3921,7 +3914,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
     params.setdefault("limit", num)
     logger.info(f"[ContactOut] Calling people/search — page={page} limit={params.get('limit', num)} params_keys={list(params.keys())}")
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             "https://api.contactout.com/v1/people/search",
             headers={
                 "token": api_key,
@@ -4125,7 +4118,7 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
     params["per_page"] = num
     logger.debug(f"[Apollo] Calling mixed_people/search — page={page} per_page={num} params={params}")
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             "https://api.apollo.io/api/v1/mixed_people/search",
             headers={
                 "x-api-key": api_key,
@@ -4280,7 +4273,7 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
     logger.info(f"[RocketReach] Calling api/v2/person/search — page={page} page_size={num} query_keys={list(params.keys())}")
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             "https://api.rocketreach.co/api/v2/person/search",
             headers={
                 "Api-Key": api_key,
@@ -4443,7 +4436,7 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
     # requests' internal latin-1 encoding which can corrupt non-ASCII chars
     credentials = base64.b64encode(f"{login}:{password}".encode("utf-8")).decode("ascii")
     try:
-        r = requests.post(
+        r = _HTTP_SESSION.post(
             endpoint,
             headers={
                 "Authorization": f"Basic {credentials}",
@@ -4778,7 +4771,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get(linkedin_url, headers=headers, timeout=10)
+        response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
         
         # Handle rate limiting and forbidden responses
         if response.status_code == 429:
@@ -4877,7 +4870,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                         "searchType": "image",
                         "num": 5,
                     }
-                    r = requests.get(endpoint, params=params, timeout=15)
+                    r = _HTTP_SESSION.get(endpoint, params=params, timeout=15)
                     r.raise_for_status()
                     items = r.json().get("items", [])
                     for item in items:
@@ -4957,7 +4950,7 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         if _is_private_host(image_url):
             logger.warning(f"[Fetch Image Bytes] SSRF: blocked private-host URL: {image_url}")
             return None
-        response = requests.get(image_url, timeout=15, stream=True)
+        response = _HTTP_SESSION.get(image_url, timeout=15, stream=True)
         response.raise_for_status()
         
         # Check content type

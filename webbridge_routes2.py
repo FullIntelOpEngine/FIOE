@@ -63,7 +63,7 @@ from webbridge import (
     _sync_login_jskillset_to_process, _sync_criteria_jskillset_to_process,
     _increment_cse_query_count, _increment_gemini_query_count, _load_rate_limits, _save_rate_limits,
     _make_flask_limit,
-    _pg_connect, _ensure_admin_columns,
+    _pg_connect, _ensure_admin_columns, _has_column,
     dedupe,
     _normalize_seniority_single, _map_gemini_seniority_to_dropdown,
     _gemini_talent_pool_suggestion,
@@ -86,6 +86,7 @@ from webbridge_routes import (
     CRITERIA_OUTPUT_DIR,
     _get_criteria_filepath,
     _role_tag_session_column_ensured,
+    _HTTP_SESSION,
 )
 
 
@@ -1277,7 +1278,7 @@ def contactout_download_profile():
         return jsonify({"error": "ContactOut API key is not configured or not enabled"}), 503
 
     try:
-        r = requests.get(
+        r = _HTTP_SESSION.get(
             "https://api.contactout.com/v1/people/linkedin",
             params={
                 "profile": linkedin_url,
@@ -1385,7 +1386,7 @@ def apollo_download_profile():
         """Fallback enrichment via POST /v1/people/match. Returns person dict or None."""
         logger.debug(f"[Apollo] people/match fallback for linkedin_url={linkedin_url!r}")
         try:
-            r2 = requests.post(
+            r2 = _HTTP_SESSION.post(
                 "https://api.apollo.io/v1/people/match",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1423,7 +1424,7 @@ def apollo_download_profile():
         used_fallback = False
 
         try:
-            r = requests.post(
+            r = _HTTP_SESSION.post(
                 "https://api.apollo.io/api/v1/mixed_people/search",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1543,7 +1544,7 @@ def rocketreach_download_profile():
         return jsonify({"error": "RocketReach API key is not configured or not enabled"}), 503
 
     try:
-        r = requests.get(
+        r = _HTTP_SESSION.get(
             "https://api.rocketreach.co/api/v2/lookupProfile",
             params={"linkedin_url": linkedin_url},
             headers={
@@ -1618,7 +1619,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeou
         "format": "json",
     }
     try:
-        resp = requests.post(
+        resp = _HTTP_SESSION.post(
             _BRIGHTDATA_REQUEST_URL,
             json=payload,
             headers=headers,
@@ -1659,7 +1660,7 @@ def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60
     last_exc = None
     for attempt in range(1, _SCRAPINGDOG_MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, params=params, timeout=timeout,
+            resp = _HTTP_SESSION.get(url, params=params, timeout=timeout,
                                 headers={"Accept": "application/json"})
             body = resp.text
             logger.info("[scrapingdog] attempt %d/%d → HTTP %d (%d bytes)",
