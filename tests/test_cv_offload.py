@@ -1,4 +1,4 @@
-"""Smoke tests for the CV process-pool offload logic.
+"""Smoke tests for the CV thread-pool offload logic.
 
 Tests exercise analyze_cv_bytes_offload via a self-contained harness that
 does NOT import Flask/psycopg2.  The harness reimplements the env-var
@@ -35,7 +35,7 @@ def _build_harness(
     ns.CV_ANALYZE_USE_QUEUE = use_queue
     ns.CV_ANALYZE_HOURLY_CPU_LIMIT = hourly_cpu_limit
     ns._CV_ANALYZE_SEMAPHORE = threading.Semaphore(max_concurrency)
-    ns._CV_ANALYZE_PROCESS_POOL = None
+    ns._CV_ANALYZE_THREAD_POOL = None
     ns._CV_POOL_LOCK = threading.Lock()
     ns._cv_cpu_seconds_total = 0.0
     ns._cv_cpu_window_start = time.monotonic()
@@ -87,36 +87,33 @@ def _build_harness(
         try:
             ns.logger.info("cv_analysis_start size=%d" % size_bytes)
             with ns._CV_POOL_LOCK:
-                if ns._CV_ANALYZE_PROCESS_POOL is None:
+                if ns._CV_ANALYZE_THREAD_POOL is None:
                     try:
-                        ns._CV_ANALYZE_PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(
+                        ns._CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
                             max_workers=ns.CV_ANALYZE_WORKERS
                         )
                     except Exception as pool_err:
                         ns.logger.warning("cv_pool_create_failed: %s" % pool_err)
-                        ns._CV_ANALYZE_PROCESS_POOL = None
+                        ns._CV_ANALYZE_THREAD_POOL = None
 
-            pool = ns._CV_ANALYZE_PROCESS_POOL
+            pool = ns._CV_ANALYZE_THREAD_POOL
             if pool is None:
-                raise RuntimeError("ProcessPoolExecutor creation failed")
+                raise RuntimeError("ThreadPoolExecutor creation failed")
 
             future = pool.submit(ns._analyze_cv_bytes_sync, pdf_bytes)
             result = future.result(timeout=effective_timeout)
-            elapsed_ms = (time.perf_counter() - t_start) * 1000
-            ns.logger.info("cv_analysis_end duration_ms=%.1f" % elapsed_ms)
-            _record_cv_cpu(elapsed_ms / 1000)
+            elapsed_s = time.perf_counter() - t_start
+            ns.logger.info("cv_analysis_end duration_ms=%.1f" % (elapsed_s * 1000))
+            _record_cv_cpu(elapsed_s)
             return result
 
         except (
             concurrent.futures.TimeoutError,
-            concurrent.futures.process.BrokenProcessPool,
+            concurrent.futures.CancelledError,
             OSError,
             RuntimeError,
         ) as exc:
             ns.logger.warning("cv_analysis_fallback_sync: %s" % type(exc).__name__)
-            if isinstance(exc, concurrent.futures.process.BrokenProcessPool):
-                with ns._CV_POOL_LOCK:
-                    ns._CV_ANALYZE_PROCESS_POOL = None
             result = ns._analyze_cv_bytes_sync(pdf_bytes)
             _record_cv_cpu(time.perf_counter() - t_start)
             return result
@@ -150,7 +147,7 @@ def test_offload_returns_dict_on_success():
     expected = {"skillset": ["Python"], "total_experience_years": 5}
     h._analyze_cv_bytes_sync = lambda b: expected
 
-    # Use a mock pool so no real subprocess is spawned (lambdas are not picklable)
+    # Use a mock pool so no real thread overhead is needed
     class _GoodFuture:
         def result(self, timeout=None):
             return expected
@@ -159,13 +156,13 @@ def test_offload_returns_dict_on_success():
         def submit(self, fn, *args, **kw):
             return _GoodFuture()
 
-    h._CV_ANALYZE_PROCESS_POOL = _GoodPool()
+    h._CV_ANALYZE_THREAD_POOL = _GoodPool()
     result = h.analyze_cv_bytes_offload(b"fake-pdf-bytes")
     assert result == expected
 
 
 def test_offload_falls_back_on_runtime_error():
-    """Pool creation/submission error → sync fallback → dict returned."""
+    """Pool creation/submission error -> sync fallback -> dict returned."""
     h = _build_harness()
     expected = {"skillset": ["Java"], "total_experience_years": 3}
     h._analyze_cv_bytes_sync = lambda b: expected
@@ -175,13 +172,13 @@ def test_offload_falls_back_on_runtime_error():
         def submit(self, *a, **kw):
             raise RuntimeError("simulated pool error")
 
-    h._CV_ANALYZE_PROCESS_POOL = _BadPool()
+    h._CV_ANALYZE_THREAD_POOL = _BadPool()
     result = h.analyze_cv_bytes_offload(b"fake-pdf-bytes")
     assert result == expected
 
 
 def test_offload_falls_back_on_timeout():
-    """TimeoutError during future.result() → sync fallback → dict returned."""
+    """TimeoutError during future.result() -> sync fallback -> dict returned."""
     h = _build_harness(offload_timeout=0.001)
     expected = {"name": "Alice", "total_experience_years": 7}
     h._analyze_cv_bytes_sync = lambda b: expected
@@ -195,13 +192,13 @@ def test_offload_falls_back_on_timeout():
         def submit(self, *a, **kw):
             return _SlowFuture()
 
-    h._CV_ANALYZE_PROCESS_POOL = _SlowPool()
+    h._CV_ANALYZE_THREAD_POOL = _SlowPool()
     result = h.analyze_cv_bytes_offload(b"fake-pdf-bytes")
     assert result == expected
 
 
 def test_cpu_limit_triggers_sync_fallback():
-    """Hourly CPU limit already exceeded → sync path used, dict returned."""
+    """Hourly CPU limit already exceeded -> sync path used, dict returned."""
     h = _build_harness(hourly_cpu_limit=0.001)
     expected = {"skillset": [], "total_experience_years": 0}
     h._analyze_cv_bytes_sync = lambda b: expected
@@ -211,7 +208,7 @@ def test_cpu_limit_triggers_sync_fallback():
 
 
 def test_semaphore_unavailable_falls_back():
-    """All semaphore slots taken → sync fallback (not a hang)."""
+    """All semaphore slots taken -> sync fallback (not a hang)."""
     h = _build_harness(max_concurrency=1)
     expected = {"skillset": ["Go"], "total_experience_years": 2}
     h._analyze_cv_bytes_sync = lambda b: expected
@@ -224,20 +221,19 @@ def test_semaphore_unavailable_falls_back():
         h._CV_ANALYZE_SEMAPHORE.release()
 
 
-def test_broken_pool_is_reset():
-    """BrokenProcessPool causes pool to be cleared so it is recreated next call."""
+def test_pool_error_falls_back():
+    """Any pool error -> sync fallback, pool state untouched (thread pool doesn't break)."""
     h = _build_harness()
     expected = {"skillset": ["Rust"], "total_experience_years": 1}
     h._analyze_cv_bytes_sync = lambda b: expected
 
-    class _BrokenPool:
+    class _ErrorPool:
         def submit(self, *a, **kw):
-            raise concurrent.futures.process.BrokenProcessPool("simulated")
+            raise OSError("simulated OS error")
 
-    h._CV_ANALYZE_PROCESS_POOL = _BrokenPool()
+    h._CV_ANALYZE_THREAD_POOL = _ErrorPool()
     result = h.analyze_cv_bytes_offload(b"fake-pdf-bytes")
     assert result == expected
-    assert h._CV_ANALYZE_PROCESS_POOL is None  # pool was cleared
 
 
 def test_cpu_counter_increments():
@@ -248,3 +244,4 @@ def test_cpu_counter_increments():
     assert h._cv_cpu_seconds_total == pytest.approx(2.5)
     h._record_cv_cpu(1.0)
     assert h._cv_cpu_seconds_total == pytest.approx(3.5)
+

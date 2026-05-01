@@ -126,12 +126,19 @@ from webbridge_routes import (
 
 
 # ---------------------------------------------------------------------------
-# CV ProcessPoolExecutor — lazy init, cost-aware, safe synchronous fallback
+# CV ThreadPoolExecutor — lazy init, cost-aware, safe synchronous fallback
+#
+# NOTE: ProcessPoolExecutor was considered but rejected for this codebase:
+# on Windows (spawn start method) each worker subprocess re-imports webbridge_cv
+# which transitively imports webbridge.py (Flask app init, DB connections, etc.),
+# causing an immediate crash.  ThreadPoolExecutor avoids subprocess spawning
+# entirely; it is also the correct tool since CV analysis is I/O-bound (Gemini
+# API calls dominate wall-clock time) rather than CPU-bound.
 # ---------------------------------------------------------------------------
 import concurrent.futures  # stdlib, no new dep
 
 # Module-level pool (None until first use) and cost tracking
-_CV_ANALYZE_PROCESS_POOL: "concurrent.futures.ProcessPoolExecutor | None" = None
+_CV_ANALYZE_THREAD_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
 _CV_POOL_LOCK = threading.Lock()
 
 # Cumulative CPU-seconds tracker (reset every hour)
@@ -141,16 +148,13 @@ _cv_cpu_lock = threading.Lock()
 
 
 def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
-    """Top-level (picklable) wrapper executed inside the process pool."""
-    # _analyze_cv_bytes_sync is defined later in this module; we re-import the
-    # symbol via the module so the worker process has a self-contained reference.
-    import webbridge_cv as _self
-    return _self._analyze_cv_bytes_sync(pdf_bytes)
+    """Thread-pool wrapper: runs _analyze_cv_bytes_sync in a worker thread."""
+    return _analyze_cv_bytes_sync(pdf_bytes)
 
 
 def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> dict:
     """
-    Offload CV parsing to a process-pool worker if possible, with full
+    Offload CV parsing to a thread-pool worker if possible, with full
     synchronous fallback on any failure.
 
     Cost-aware behaviour:
@@ -159,7 +163,7 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
     - If CV_ANALYZE_HOURLY_CPU_LIMIT is set and exceeded, falls back to sync.
     - All results are logged as JSON-line telemetry.
     """
-    global _CV_ANALYZE_PROCESS_POOL, _cv_cpu_seconds_total, _cv_cpu_window_start
+    global _CV_ANALYZE_THREAD_POOL, _cv_cpu_seconds_total, _cv_cpu_window_start
 
     effective_timeout = timeout if timeout is not None else CV_ANALYZE_OFFLOAD_TIMEOUT
     size_bytes = len(pdf_bytes)
@@ -209,9 +213,9 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
         )
         # Lazily create the pool (never at import time)
         with _CV_POOL_LOCK:
-            if _CV_ANALYZE_PROCESS_POOL is None:
+            if _CV_ANALYZE_THREAD_POOL is None:
                 try:
-                    _CV_ANALYZE_PROCESS_POOL = concurrent.futures.ProcessPoolExecutor(
+                    _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
                         max_workers=CV_ANALYZE_WORKERS
                     )
                     logger.info(
@@ -221,11 +225,11 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
                     logger.warning(
                         '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
                     )
-                    _CV_ANALYZE_PROCESS_POOL = None
+                    _CV_ANALYZE_THREAD_POOL = None
 
-        pool = _CV_ANALYZE_PROCESS_POOL
+        pool = _CV_ANALYZE_THREAD_POOL
         if pool is None:
-            raise RuntimeError("ProcessPoolExecutor creation failed")
+            raise RuntimeError("ThreadPoolExecutor creation failed")
 
         future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
         result = future.result(timeout=effective_timeout)
@@ -240,7 +244,6 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
 
     except (
         concurrent.futures.TimeoutError,
-        concurrent.futures.process.BrokenProcessPool,
         concurrent.futures.CancelledError,
         OSError,
         RuntimeError,
@@ -250,10 +253,6 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
             '{"event":"cv_analysis_fallback_sync","reason":"%s","duration_ms":%.1f,'
             '"size_bytes":%d}' % (type(exc).__name__, elapsed_s * 1000, size_bytes)
         )
-        # If pool is broken, discard it so it is recreated on the next call
-        if isinstance(exc, concurrent.futures.process.BrokenProcessPool):
-            with _CV_POOL_LOCK:
-                _CV_ANALYZE_PROCESS_POOL = None
         result = _analyze_cv_bytes_sync(pdf_bytes)
         _record_cv_cpu(time.perf_counter() - t_start)
         return result
