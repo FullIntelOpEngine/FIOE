@@ -2724,6 +2724,7 @@ def process_upload_cv():
                 except Exception as _e:
                     logger.warning(f"[Upload CV] Name validation failed (non-fatal): {_e}")
 
+            import psycopg2
             from psycopg2 import sql
             conn=_get_pg_conn()
             cur=conn.cursor()
@@ -2875,6 +2876,7 @@ def process_upload_multiple_cvs():
         to_process = [f for f in files if f and f.filename and f.filename.lower().endswith(allowed_ext)]
         rejected = [f.filename for f in files if f and f.filename and not f.filename.lower().endswith(allowed_ext)]
 
+        import psycopg2
         from psycopg2 import sql
         conn=_get_pg_conn()
         cur=conn.cursor()
