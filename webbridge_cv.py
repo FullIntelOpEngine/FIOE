@@ -573,6 +573,77 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 job['status_html']="<br>".join(job['messages'][-12:])
         persist_job(job_id)
 
+def _async_backfill_pictures(targets):
+    """Back-fill the sourcing.pic column for newly-inserted rows.
+
+    Runs in a daemon thread so the foreground `_write_outputs` returns
+    quickly and `_job_runner` can mark the job done (which lets the
+    AutoSourcing.html `/job_status` poller terminate).
+
+    The picture fetch helpers (`get_linkedin_profile_picture` and
+    `fetch_image_bytes_from_url`) are preserved and invoked here per row.
+
+    Parameters
+    ----------
+    targets : list[tuple[str, str]]
+        List of (userid, linkedinurl) pairs to back-fill.
+    """
+    if not targets:
+        return
+    try:
+        import psycopg2
+    except Exception as _imp_err:
+        logger.warning(f"[PicBackfill] psycopg2 unavailable: {_imp_err}")
+        return
+    conn = None
+    cur = None
+    updated = 0
+    try:
+        conn = _get_pg_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        for active_userid, linkedinurl in targets:
+            if not linkedinurl:
+                continue
+            try:
+                pic_url = get_linkedin_profile_picture(linkedinurl)
+                pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
+                if not pic_bytes:
+                    continue
+                cur.execute(
+                    "UPDATE sourcing SET pic = %s "
+                    "WHERE userid = %s AND linkedinurl = %s "
+                    "AND (pic IS NULL OR octet_length(pic) = 0)",
+                    (psycopg2.Binary(pic_bytes), active_userid, linkedinurl),
+                )
+                conn.commit()
+                updated += 1
+            except Exception as _row_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                logger.debug(f"[PicBackfill] Skipping {linkedinurl}: {_row_err}")
+        logger.info(f"[PicBackfill] Updated pic for {updated}/{len(targets)} rows.")
+    except Exception as _err:
+        logger.warning(f"[PicBackfill] Aborted: {_err}")
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _write_outputs(job_id, rows):
     with JOBS_LOCK:
         job_meta=(JOBS.get(job_id) or {}).get('meta',{})
@@ -698,33 +769,34 @@ def _write_outputs(job_id, rows):
                         active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
                         active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
 
+                        # Profile-picture fetching (get_linkedin_profile_picture +
+                        # fetch_image_bytes_from_url) is intentionally deferred to a
+                        # background thread spawned after this insert commits.  Doing
+                        # it synchronously here issues N×HTTP requests with 10 s+
+                        # timeouts each, blocking _job_runner for many minutes and
+                        # causing the frontend `/job_status` poller in
+                        # AutoSourcing.html to loop indefinitely (job['done'] is
+                        # only set after _write_outputs returns).  The pic column
+                        # is inserted as NULL and back-filled asynchronously — the
+                        # fetch helpers themselves are NOT removed; see the
+                        # `_async_backfill_pictures` invocation below.
                         if has_source_header:
                             if has_pic_column:
                                 insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                                batch_rows = []
-                                for r in data_rows:
-                                    try:
-                                        pic_url = get_linkedin_profile_picture(r[4]) if r[4] else None
-                                        pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
-                                        pic_val = psycopg2.Binary(pic_bytes) if pic_bytes else None
-                                    except Exception:
-                                        pic_val = None
-                                    batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], r[4],
-                                                       pic_val, (r[5] or "") if len(r) > 5 else ""))
+                                batch_rows = [
+                                    (active_userid, active_username, r[0], r[1], r[2], r[3], r[4],
+                                     None, (r[5] or "") if len(r) > 5 else "")
+                                    for r in data_rows
+                                ]
                             else:
                                 insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                                 batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
                         elif has_pic_column:
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                            batch_rows = []
-                            for r in data_rows:
-                                try:
-                                    pic_url = get_linkedin_profile_picture(r[4]) if r[4] else None
-                                    pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
-                                    pic_val = psycopg2.Binary(pic_bytes) if pic_bytes else None
-                                except Exception:
-                                    pic_val = None
-                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], r[4], pic_val))
+                            batch_rows = [
+                                (active_userid, active_username, r[0], r[1], r[2], r[3], r[4], None)
+                                for r in data_rows
+                            ]
                         else:
                             # No pic column, use original insert
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
@@ -800,6 +872,26 @@ def _write_outputs(job_id, rows):
                                 conn.close()
                             except Exception:
                                 pass
+
+                    # Schedule asynchronous LinkedIn profile-picture back-fill.
+                    # The fetch helpers (get_linkedin_profile_picture +
+                    # fetch_image_bytes_from_url) are intentionally preserved and
+                    # invoked from a background daemon thread so the synchronous
+                    # ingestion path completes promptly.  This unblocks
+                    # _job_runner so it can mark job['done']=True, which in turn
+                    # stops the AutoSourcing.html `/job_status` polling loop.
+                    if has_pic_column and active_userid and data_rows:
+                        _pic_targets = [
+                            (active_userid, r[4]) for r in data_rows
+                            if r[4] and isinstance(r[4], str)
+                        ]
+                        if _pic_targets:
+                            threading.Thread(
+                                target=_async_backfill_pictures,
+                                args=(_pic_targets,),
+                                name=f"pic-backfill-{job_id}",
+                                daemon=True,
+                            ).start()
                 else:
                     logger.info(f"[Ingest] No data rows to insert from {xlsx_name}.")
         except Exception as e:
