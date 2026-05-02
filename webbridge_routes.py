@@ -5116,8 +5116,10 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, se
 
             # ── Method 3: Image search — last resort (Google CSE only) ──
             # Only execute when Google CSE is the active main provider (i.e. neither
-            # Serper nor DataForSEO is enabled). Using CSE here when another provider
-            # is the main provider would violate the single-provider constraint.
+            # Serper nor DataForSEO is enabled). Calling the CSE image API while
+            # Serper or DataForSEO is the configured main provider would violate the
+            # single-provider constraint (profile pictures must be retrieved
+            # exclusively through the main provider).
             if not profile_pic_url and _cse_available and not _serper_active and not _dfs_active:
                 try:
                     endpoint = "https://www.googleapis.com/customsearch/v1"
