@@ -595,53 +595,59 @@ def _async_backfill_pictures(targets):
     except Exception as _imp_err:
         logger.warning(f"[PicBackfill] psycopg2 unavailable: {_imp_err}")
         return
-    conn = None
-    cur = None
     updated = 0
     try:
-        conn = _get_pg_conn()
-        conn.autocommit = False
-        cur = conn.cursor()
         for active_userid, linkedinurl in targets:
             if not linkedinurl:
                 continue
+            conn = None
+            cur = None
             try:
+                # Do not hold a PostgreSQL connection while making the external
+                # LinkedIn/image HTTP calls.  These calls can take many seconds
+                # per candidate; keeping a pooled DB connection checked out for
+                # the whole back-fill can starve auth/session requests.
                 pic_url = get_linkedin_profile_picture(linkedinurl)
                 pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
                 if not pic_bytes:
                     continue
-                cur.execute(
-                    "UPDATE sourcing SET pic = %s "
-                    "WHERE userid = %s AND linkedinurl = %s "
-                    "AND (pic IS NULL OR octet_length(pic) = 0)",
-                    (psycopg2.Binary(pic_bytes), active_userid, linkedinurl),
-                )
-                conn.commit()
-                updated += 1
+                try:
+                    conn = _get_pg_conn()
+                    conn.autocommit = False
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE sourcing SET pic = %s "
+                        "WHERE userid = %s AND linkedinurl = %s "
+                        "AND (pic IS NULL OR octet_length(pic) = 0)",
+                        (psycopg2.Binary(pic_bytes), active_userid, linkedinurl),
+                    )
+                    conn.commit()
+                    updated += 1
+                finally:
+                    if cur is not None:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                    if conn is not None:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
             except Exception as _row_err:
                 try:
-                    conn.rollback()
+                    if conn is not None:
+                        conn.rollback()
                 except Exception:
                     pass
                 logger.debug(f"[PicBackfill] Skipping {linkedinurl}: {_row_err}")
         logger.info(f"[PicBackfill] Updated pic for {updated}/{len(targets)} rows.")
     except Exception as _err:
         logger.warning(f"[PicBackfill] Aborted: {_err}")
-    finally:
-        if cur is not None:
-            try:
-                cur.close()
-            except Exception:
-                pass
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 def _write_outputs(job_id, rows):
