@@ -701,26 +701,30 @@ def _write_outputs(job_id, rows):
                         if has_source_header:
                             if has_pic_column:
                                 insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                                # Profile-picture fetching (get_linkedin_profile_picture) is intentionally
-                                # skipped here: fetching N pictures serially adds 60-70 s per candidate and
-                                # blocks job completion for 10-30 min on typical result sets.  Pictures are
-                                # stored as NULL and can be fetched on-demand when a profile is viewed.
-                                batch_rows = [
-                                    (active_userid, active_username, r[0], r[1], r[2], r[3], r[4],
-                                     None, (r[5] or "") if len(r) > 5 else "")
-                                    for r in data_rows
-                                ]
+                                batch_rows = []
+                                for r in data_rows:
+                                    try:
+                                        pic_url = get_linkedin_profile_picture(r[4]) if r[4] else None
+                                        pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
+                                        pic_val = psycopg2.Binary(pic_bytes) if pic_bytes else None
+                                    except Exception:
+                                        pic_val = None
+                                    batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], r[4],
+                                                       pic_val, (r[5] or "") if len(r) > 5 else ""))
                             else:
                                 insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                                 batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
                         elif has_pic_column:
-                            # Include pic column in insert; pictures are stored as NULL and fetched
-                            # on-demand — see comment above for why synchronous fetching is skipped.
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                            batch_rows = [
-                                (active_userid, active_username, r[0], r[1], r[2], r[3], r[4], None)
-                                for r in data_rows
-                            ]
+                            batch_rows = []
+                            for r in data_rows:
+                                try:
+                                    pic_url = get_linkedin_profile_picture(r[4]) if r[4] else None
+                                    pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
+                                    pic_val = psycopg2.Binary(pic_bytes) if pic_bytes else None
+                                except Exception:
+                                    pic_val = None
+                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], r[4], pic_val))
                         else:
                             # No pic column, use original insert
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
