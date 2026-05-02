@@ -704,7 +704,20 @@ def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg
                     continue
                 pic_bytes = fetch_image_bytes_from_url(pic_url)
                 if not pic_bytes:
-                    logger.info(f"[PicBackfill] Image fetch returned no bytes for {linkedin_url}; skipping")
+                    # Direct CDN URL failed (e.g. 403); try again using only the
+                    # search-engine fallback (CSE / Serper / DataForSEO) which returns
+                    # a Google-cached thumbnail URL that does not require LinkedIn auth.
+                    logger.info(
+                        f"[PicBackfill] Direct URL fetch failed for {linkedin_url}; "
+                        "retrying via search-engine fallback (CSE/Serper)"
+                    )
+                    cse_pic_url = get_linkedin_profile_picture(
+                        linkedin_url, display_name=display_name, search_only=True
+                    )
+                    if cse_pic_url:
+                        pic_bytes = fetch_image_bytes_from_url(cse_pic_url)
+                if not pic_bytes:
+                    logger.info(f"[PicBackfill] All image fetch attempts failed for {linkedin_url}; skipping")
                     continue
                 # Skip LinkedIn ghost/placeholder icons — real profile photos are always
                 # larger than ~1 KB.  LinkedIn's default avatar SVG is ~451 bytes.

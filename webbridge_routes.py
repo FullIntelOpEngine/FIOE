@@ -4884,7 +4884,7 @@ def _is_private_host(url: str) -> bool:
         return True
 
 
-def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
+def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, search_only: bool = False):
     """
     Retrieve LinkedIn profile picture URL using scraping and Google Custom Search.
     Returns profile picture URL or None if not found.
@@ -4898,6 +4898,15 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
        Google caches the metadata even for authenticated pages)
     3. Google CSE image search as a last-resort fallback
     4. Return None if no valid image found
+
+    Args:
+        linkedin_url: The LinkedIn profile URL to retrieve a picture for.
+        display_name: Optional display name used to improve search accuracy.
+        search_only: When True, skip Methods 1 and 1.5 (direct LinkedIn scrape /
+            BrightData) and jump straight to the search-engine fallback (CSE /
+            Serper / DataForSEO).  Set this when the caller already knows that a
+            direct CDN URL returned an error (e.g. 403) and wants a cacheable
+            thumbnail URL from Google instead.
 
     Security Note: Validates LinkedIn URLs to prevent SSRF attacks.
     """
@@ -4922,39 +4931,43 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     )
 
     # Method 1: Try to fetch og:image meta tag directly from LinkedIn profile
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
-        
-        # Handle rate limiting and forbidden responses
-        if response.status_code == 429:
-            logger.warning(f"[Profile Pic] Rate limited by LinkedIn: {linkedin_url}")
-            # Continue to fallback method
-        elif response.status_code == 403:
-            logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
-            # Continue to fallback method
-        elif response.status_code == 200:
-            # Parse only the <head> section (first 8 KB is enough for meta tags).
-            # Using a string-search helper instead of complex regex avoids
-            # polynomial ReDoS on adversarial HTML.
-            html_head = response.text[:8192]
-            profile_pic_url = _extract_og_image(html_head)
-            if profile_pic_url:
-                logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
-                if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
-                    return profile_pic_url
-                logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
-            else:
-                logger.info(f"[Profile Pic] Method 1: no og:image in LinkedIn HTML (bot-block or auth wall) for {linkedin_url}")
-    except Exception as e:
-        logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
+    # (skipped when search_only=True — caller wants a search-engine cached URL)
+    if not search_only:
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
+
+            # Handle rate limiting and forbidden responses
+            if response.status_code == 429:
+                logger.warning(f"[Profile Pic] Rate limited by LinkedIn: {linkedin_url}")
+                # Continue to fallback method
+            elif response.status_code == 403:
+                logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
+                # Continue to fallback method
+            elif response.status_code == 200:
+                # Parse only the <head> section (first 8 KB is enough for meta tags).
+                # Using a string-search helper instead of complex regex avoids
+                # polynomial ReDoS on adversarial HTML.
+                html_head = response.text[:8192]
+                profile_pic_url = _extract_og_image(html_head)
+                if profile_pic_url:
+                    logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
+                    if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
+                        return profile_pic_url
+                    logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
+                else:
+                    logger.info(f"[Profile Pic] Method 1: no og:image in LinkedIn HTML (bot-block or auth wall) for {linkedin_url}")
+        except Exception as e:
+            logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
+    else:
+        logger.info(f"[Profile Pic] search_only=True: skipping direct scrape for {linkedin_url}")
 
     # Method 1.5: BrightData web-unlock proxy — mirrors the Google Sheets link-preview approach.
     # When BrightData is configured, use it to fetch the LinkedIn profile page and extract
     # og:image from the HTML.  This bypasses LinkedIn's bot-detection that blocks Method 1.
-    if not profile_pic_url and profile_slug:
+    if not search_only and not profile_pic_url and profile_slug:
         try:
             _gp_cfg = _load_get_profiles_config()
             _bd = _gp_cfg.get("brightdata", {})
@@ -5258,56 +5271,15 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         
         # Read the image data
         image_bytes = response.content
-        
+
         # Verify size after download
         if len(image_bytes) > max_size_mb * 1024 * 1024:
             logger.warning(f"[Fetch Image Bytes] Downloaded image too large: {len(image_bytes)} bytes")
             return None
-        
-        # Convert to WebP for efficient storage and lower browser decode cost.
-        # Also resize to at most 300×300 pixels — adequate for the 150px namecard
-        # display at 2× DPI — eliminating most of the payload from high-res originals.
-        # WebP at quality 82 typically yields 5–15 KB for a profile thumbnail vs
-        # 50–300 KB for the original JPEG, reducing bandwidth and JSON payload size.
-        # Falls back to the original bytes silently if Pillow is unavailable or the
-        # image cannot be converted (e.g. animated GIF).
-        try:
-            from PIL import Image as _PilImage
-            import io as _io
-            with _PilImage.open(_io.BytesIO(image_bytes)) as _img:
-                # Skip animated GIF/WebP — converting would strip frames
-                if not getattr(_img, 'is_animated', False) and getattr(_img, 'n_frames', 1) <= 1:
-                    # Resize down to at most 300×300 (thumbnail() never upscales).
-                    _orig_size = _img.size
-                    _img_copy = _img.copy()
-                    _img_copy.thumbnail((300, 300), _PilImage.LANCZOS)
-                    _buf = _io.BytesIO()
-                    # Preserve transparency: RGBA/LA modes have an alpha channel;
-                    # palette ('P') images need an explicit transparency-aware path.
-                    if _img_copy.mode in ('RGBA', 'LA'):
-                        _img_copy.convert('RGBA').save(_buf, format='WEBP', quality=82, method=4)
-                    elif _img_copy.mode == 'P':
-                        # Convert palette to RGBA only when the palette carries transparency,
-                        # otherwise RGB is sufficient (avoids colour-space corruption).
-                        target = 'RGBA' if 'transparency' in _img_copy.info else 'RGB'
-                        _img_copy.convert(target).save(_buf, format='WEBP', quality=82, method=4)
-                    else:
-                        _img_copy.convert('RGB').save(_buf, format='WEBP', quality=82, method=4)
-                    webp_bytes = _buf.getvalue()
-                    if len(webp_bytes) < len(image_bytes):
-                        logger.info(
-                            f"[Fetch Image Bytes] Resized {_orig_size}→{_img_copy.size} "
-                            f"+ WebP: {len(image_bytes)} → {len(webp_bytes)} bytes"
-                        )
-                        image_bytes = webp_bytes
-        except ImportError:
-            pass  # Pillow not installed — keep original bytes
-        except Exception as _conv_err:
-            logger.debug(f"[Fetch Image Bytes] WebP conversion skipped ({_conv_err}); using original")
-        
+
         logger.info(f"[Fetch Image Bytes] Successfully fetched {len(image_bytes)} bytes from {image_url}")
         return image_bytes
-        
+
     except Exception as e:
         logger.warning(f"[Fetch Image Bytes] Failed to fetch image from {image_url}: {e}")
         return None
