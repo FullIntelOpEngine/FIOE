@@ -5020,13 +5020,19 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                     items, _ = unified_search_page(query_str, 5, 1)
                     for item in items:
                         pagemap = item.get("pagemap", {})
-                        # Priority: cse_thumbnail (Google's cached thumbnail — no auth needed)
+                        # Priority 1: cse_thumbnail (Google's cached thumbnail — no auth needed)
                         thumbnails = pagemap.get("cse_thumbnail") or []
                         if thumbnails and thumbnails[0].get("src"):
                             src = thumbnails[0]["src"]
                             logger.info(f"[Profile Pic] cse_thumbnail found: {src}")
                             return src
-                        # Fallback: og:image from metatags
+                        # Priority 2: cse_image (Google's cached full image — also auth-free)
+                        cse_imgs = pagemap.get("cse_image") or []
+                        if cse_imgs and cse_imgs[0].get("src"):
+                            src = cse_imgs[0]["src"]
+                            logger.info(f"[Profile Pic] cse_image found: {src}")
+                            return src
+                        # Priority 3: og:image / twitter:image from metatags
                         for mt in pagemap.get("metatags", []):
                             og = mt.get("og:image") or mt.get("twitter:image")
                             if og:
@@ -5040,9 +5046,12 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             if display_name and display_name.strip():
                 clean_name = display_name.strip()
                 profile_pic_url = _run_text_search(f'"{clean_name}" site:linkedin.com/in')
-            # Fall back to URL slug
+            # Fall back to quoted-slug search
             if not profile_pic_url:
                 profile_pic_url = _run_text_search(f'site:linkedin.com/in "{profile_slug}"')
+            # Last-resort text variant: exact URL path (unquoted slug — CSE indexes the path)
+            if not profile_pic_url:
+                profile_pic_url = _run_text_search(f'site:linkedin.com/in/{profile_slug}')
 
             # ── Method 3: Image search — last resort (Google CSE only) ──
             if not profile_pic_url and _cse_available and not _serper_active:
@@ -5052,13 +5061,19 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                     img_query = (
                         f'"{display_name.strip()}" site:linkedin.com/in'
                         if display_name and display_name.strip()
-                        else f'site:linkedin.com/in "{profile_slug}"'
+                        else f'site:linkedin.com/in/{profile_slug}'
                     )
                     params = {
                         "key": GOOGLE_CSE_API_KEY,
                         "cx": GOOGLE_CSE_CX,
                         "q": img_query,
                         "searchType": "image",
+                        # imgType=face biases results towards portrait/headshot photos,
+                        # which greatly improves accuracy for LinkedIn profile pictures.
+                        "imgType": "face",
+                        # imgSize=MEDIUM avoids tiny icons (xxsmall) and very large
+                        # originals that would expand JSON payload unnecessarily.
+                        "imgSize": "MEDIUM",
                         "num": 5,
                     }
                     r = _HTTP_SESSION.get(endpoint, params=params, timeout=15)
@@ -5089,6 +5104,18 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                     if not profile_pic_url and items:
                         profile_pic_url = items[0].get("link")
                         logger.info(f"[Profile Pic] Using first image result: {profile_pic_url}")
+                    # If face-oriented search returned nothing, retry without imgType constraint
+                    if not profile_pic_url and _cse_available:
+                        params_broad = {k: v for k, v in params.items() if k not in ("imgType", "imgSize")}
+                        try:
+                            r2 = _HTTP_SESSION.get(endpoint, params=params_broad, timeout=15)
+                            r2.raise_for_status()
+                            items2 = r2.json().get("items", [])
+                            if items2:
+                                profile_pic_url = items2[0].get("link")
+                                logger.info(f"[Profile Pic] Broad image search hit: {profile_pic_url}")
+                        except Exception as exc2:
+                            logger.debug(f"[Profile Pic] Broad image search skipped: {exc2}")
                 except Exception as exc:
                     logger.warning(f"[Profile Pic] CSE image search failed: {exc}")
 
@@ -5203,32 +5230,39 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
             return None
         
         # Convert to WebP for efficient storage and lower browser decode cost.
-        # WebP typically reduces file size 25–35% vs JPEG while decoding faster
-        # in modern browsers.  Falls back to the original bytes silently if
-        # Pillow is unavailable or the image cannot be converted (e.g. animated GIF).
+        # Also resize to at most 300×300 pixels — adequate for the 150px namecard
+        # display at 2× DPI — eliminating most of the payload from high-res originals.
+        # WebP at quality 82 typically yields 5–15 KB for a profile thumbnail vs
+        # 50–300 KB for the original JPEG, reducing bandwidth and JSON payload size.
+        # Falls back to the original bytes silently if Pillow is unavailable or the
+        # image cannot be converted (e.g. animated GIF).
         try:
             from PIL import Image as _PilImage
             import io as _io
             with _PilImage.open(_io.BytesIO(image_bytes)) as _img:
                 # Skip animated GIF/WebP — converting would strip frames
                 if not getattr(_img, 'is_animated', False) and getattr(_img, 'n_frames', 1) <= 1:
+                    # Resize down to at most 300×300 (thumbnail() never upscales).
+                    _orig_size = _img.size
+                    _img_copy = _img.copy()
+                    _img_copy.thumbnail((300, 300), _PilImage.LANCZOS)
                     _buf = _io.BytesIO()
                     # Preserve transparency: RGBA/LA modes have an alpha channel;
                     # palette ('P') images need an explicit transparency-aware path.
-                    if _img.mode in ('RGBA', 'LA'):
-                        _img.convert('RGBA').save(_buf, format='WEBP', quality=85, method=4)
-                    elif _img.mode == 'P':
+                    if _img_copy.mode in ('RGBA', 'LA'):
+                        _img_copy.convert('RGBA').save(_buf, format='WEBP', quality=82, method=4)
+                    elif _img_copy.mode == 'P':
                         # Convert palette to RGBA only when the palette carries transparency,
                         # otherwise RGB is sufficient (avoids colour-space corruption).
-                        target = 'RGBA' if 'transparency' in _img.info else 'RGB'
-                        _img.convert(target).save(_buf, format='WEBP', quality=85, method=4)
+                        target = 'RGBA' if 'transparency' in _img_copy.info else 'RGB'
+                        _img_copy.convert(target).save(_buf, format='WEBP', quality=82, method=4)
                     else:
-                        _img.convert('RGB').save(_buf, format='WEBP', quality=85, method=4)
+                        _img_copy.convert('RGB').save(_buf, format='WEBP', quality=82, method=4)
                     webp_bytes = _buf.getvalue()
                     if len(webp_bytes) < len(image_bytes):
                         logger.info(
-                            f"[Fetch Image Bytes] Converted to WebP: {len(image_bytes)} → "
-                            f"{len(webp_bytes)} bytes"
+                            f"[Fetch Image Bytes] Resized {_orig_size}→{_img_copy.size} "
+                            f"+ WebP: {len(image_bytes)} → {len(webp_bytes)} bytes"
                         )
                         image_bytes = webp_bytes
         except ImportError:
