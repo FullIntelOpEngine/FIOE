@@ -9075,6 +9075,8 @@ if (bulkIngestBtn) {
       if (!res.ok) return;
       const data = await res.json();
       const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+      // Evict the oldest entry when cache would exceed 50 queries (FIFO cap)
+      if (_acQueryCache.size >= 50) _acQueryCache.delete(_acQueryCache.keys().next().value);
       _acQueryCache.set(q, suggestions);
       showDropdown(suggestions);
     } catch (err) {
