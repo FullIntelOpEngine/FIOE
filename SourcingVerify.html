@@ -3109,7 +3109,7 @@ function _cancelPicPoll() {
 function _schedulePicPoll() {
   _cancelPicPoll();
   _picPollAttempt = 0;
-  const _ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : function(cb) { setTimeout(cb, 0); };
+  const _ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : function(cb) { setTimeout(cb, 16); };
   _ric(() => _scheduleNextPicPoll());
 }
 // Schedules one pic-poll timeout using the current attempt index.
