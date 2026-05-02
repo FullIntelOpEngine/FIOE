@@ -20,7 +20,7 @@ def _build_app_with_require_admin(db_row=None, db_error=None):
     Build a minimal Flask app with a stubbed _require_admin decorator.
 
     db_row   – row returned by SELECT useraccess FROM login (e.g. ("admin",))
-    db_error – exception raised by psycopg2.connect
+    db_error – exception raised by the DB helper
     """
     app = Flask(__name__)
     app.config["TESTING"] = True
@@ -28,15 +28,21 @@ def _build_app_with_require_admin(db_row=None, db_error=None):
     def _require_admin(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            username = (request.cookies.get("username") or "").strip()
+            username   = (request.cookies.get("username") or "").strip()
+            session_id = (request.cookies.get("session_id") or "").strip()
             if not username:
                 return jsonify({"error": "Authentication required"}), 401
             try:
                 if db_error is not None:
                     raise db_error
-                # Simulate cursor
-                if db_row is None:
-                    return jsonify({"error": "Admin access required"}), 403
+                if session_id:
+                    # Strict: session_id must match
+                    if db_row is None:
+                        return jsonify({"error": "Session expired or invalid"}), 401
+                else:
+                    # Legacy fallback: username existence only
+                    if db_row is None:
+                        return jsonify({"error": "Authentication required"}), 401
                 useraccess = (db_row[0] or "").strip().lower()
                 if useraccess != "admin":
                     return jsonify({"error": "Admin access required"}), 403
@@ -101,13 +107,36 @@ class TestAdminAuth(unittest.TestCase):
         data = resp.get_json()
         self.assertIn("Auth check failed", data.get("error", ""))
 
-    def test_admin_no_db_row(self):
-        """@_require_admin: user not found in DB → 403."""
+    def test_admin_no_db_row_no_session_id(self):
+        """@_require_admin: user not found, no session_id cookie → 401 Authentication required."""
         app = _build_app_with_require_admin(db_row=None)
         client = app.test_client()
         client.set_cookie("username", "ghost")
         resp = client.get("/admin/secret")
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 401)
+        data = resp.get_json()
+        self.assertIn("Authentication required", data.get("error", ""))
+
+    def test_admin_session_id_mismatch(self):
+        """@_require_admin: session_id present but DB row not found → 401 Session expired."""
+        app = _build_app_with_require_admin(db_row=None)
+        client = app.test_client()
+        client.set_cookie("username", "adminuser")
+        client.set_cookie("session_id", "stale-token")
+        resp = client.get("/admin/secret")
+        self.assertEqual(resp.status_code, 401)
+        data = resp.get_json()
+        self.assertIn("Session expired or invalid", data.get("error", ""))
+
+    def test_admin_valid_with_session_id(self):
+        """@_require_admin: username + matching session_id → 200."""
+        app = _build_app_with_require_admin(db_row=("admin",))
+        client = app.test_client()
+        client.set_cookie("username", "adminuser")
+        client.set_cookie("session_id", "valid-token")
+        resp = client.get("/admin/secret")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json().get("ok"))
 
 
 if __name__ == "__main__":

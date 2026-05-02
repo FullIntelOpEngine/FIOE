@@ -694,14 +694,24 @@ def _require_admin(f):
             conn = _pg_connect()
             cur = conn.cursor()
             if session_id:
-                cur.execute("SELECT useraccess FROM login WHERE username=%s AND session_id=%s LIMIT 1", (username, session_id))
+                cur.execute(
+                    "SELECT useraccess FROM login WHERE username=%s AND session_id=%s LIMIT 1",
+                    (username, session_id),
+                )
+                row = cur.fetchone()
+                cur.close(); conn.close()
+                if not row:
+                    return jsonify({"error": "Session expired or invalid"}), 401
             else:
                 # Legacy fallback: just confirm the username exists
-                cur.execute("SELECT useraccess FROM login WHERE username=%s LIMIT 1", (username,))
-            row = cur.fetchone()
-            cur.close(); conn.close()
-            if not row:
-                return jsonify({"error": "Session expired or invalid"}), 401
+                cur.execute(
+                    "SELECT useraccess FROM login WHERE username=%s LIMIT 1",
+                    (username,),
+                )
+                row = cur.fetchone()
+                cur.close(); conn.close()
+                if not row:
+                    return jsonify({"error": "Authentication required"}), 401
             if (row[0] or "").strip().lower() != "admin":
                 return jsonify({"error": "Admin access required"}), 403
         except Exception as e:
@@ -727,11 +737,7 @@ def _require_session(f):
     Mirrors the server.js requireLogin middleware — don't trust a raw username
     cookie alone.  The opaque session_id must match the value stored in the
     login table.  If no session_id cookie is present (legacy session) we fall
-    back to a lightweight DB existence check so active sessions aren't broken.
-    If session_id is present but stale (e.g. invalidated by a login from another
-    device or by a server-side logout that was not reflected in the client's
-    cookie jar), we also fall back to the username-existence check and log a
-    warning so operations teams can investigate.
+    back to a username-existence check.
     On success, sets ``request._session_user`` (username) and
     ``request._session_userid`` (userid str) for downstream handlers."""
     @wraps(f)
@@ -750,27 +756,10 @@ def _require_session(f):
                     (username, session_id),
                 )
                 row = cur.fetchone()
+                cur.close(); conn.close()
                 if not row:
-                    # session_id did not match the DB record.  This can happen
-                    # when the user has a stale session_id cookie — for example
-                    # after logging in on a different device (which overwrites the
-                    # single session_id column) or after a DB reset.  Fall back to
-                    # the same username-existence check used for the legacy (no
-                    # session_id) path so users are not permanently locked out by a
-                    # stale cookie.  A warning is logged so admins can monitor for
-                    # unusual patterns.
-                    cur.execute("SELECT userid FROM login WHERE username = %s LIMIT 1", (username,))
-                    row = cur.fetchone()
-                    cur.close(); conn.close()
-                    if not row:
-                        return jsonify({"error": "Authentication required"}), 401
-                    logger.warning(
-                        "[_require_session] session_id mismatch for user=%s;"
-                        " accepted via username fallback (stale or invalidated session cookie).",
-                        username,
-                    )
-                else:
-                    cur.close(); conn.close()
+                    # Strict behaviour: reject when a session_id is present but invalid
+                    return jsonify({"error": "Session expired or invalid"}), 401
             else:
                 # Legacy fallback: just confirm the username exists
                 cur.execute("SELECT userid FROM login WHERE username = %s LIMIT 1", (username,))
