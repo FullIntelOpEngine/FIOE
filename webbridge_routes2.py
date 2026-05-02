@@ -88,6 +88,35 @@ from webbridge_routes import (
     _role_tag_session_column_ensured,
 )
 
+# ── Per-vendor HTTP sessions — reuse TCP connections via urllib3 pools ────────
+_CONTACTOUT_SESSION  = requests.Session()
+_APOLLO_SESSION      = requests.Session()
+_ROCKETREACH_SESSION = requests.Session()
+_BRIGHTDATA_SESSION  = requests.Session()
+_SCRAPINGDOG_SESSION = requests.Session()
+
+# ── Module-level compiled regex constants ─────────────────────────────────────
+# LinkedIn profile slug extraction (used in multiple download-profile endpoints)
+_LI_SLUG_RE         = re.compile(r"/in/([A-Za-z0-9_%-]+)")
+# Slug value sanitisation
+_SLUG_SANITIZE_RE   = re.compile(r'[^A-Za-z0-9_-]+')
+_SLUG_MULTI_UNDER_RE = re.compile(r'_+')
+# LLM output fence stripping
+_LLM_FENCE_OPEN_RE  = re.compile(r'^```(?:json)?\s*', re.MULTILINE)
+_LLM_FENCE_CLOSE_RE = re.compile(r'\s*```$', re.MULTILINE)
+# Porting helpers (replaces local `import re as _re` in _porting_safe_name)
+_PORTING_SAFE_RE    = re.compile(r'[^a-zA-Z0-9_\-]')
+_PORTING_FNAME_RE   = re.compile(r'[^a-zA-Z0-9_\-\.]')
+# linkdapi: strip non-printable ASCII from API key before passing to shell
+_LINKDAPI_PRINT_RE  = re.compile(r"[^\x20-\x7E]")
+
+
+def _safe_slug(value: str, fallback: str) -> str:
+    """Sanitise a string to [A-Za-z0-9_-] for safe use as a filename component."""
+    slug = _SLUG_SANITIZE_RE.sub('_', value or "")
+    slug = _SLUG_MULTI_UNDER_RE.sub('_', slug).strip('_')
+    return slug or fallback
+
 
 @app.get("/")
 def index():
@@ -230,7 +259,6 @@ def _startup_backfill_role_tag_session():
 _startup_backfill_role_tag_session()
 
 # ── API Porting routes ─────────────────────────────────────────────────────────
-import re as _re
 
 _PORTING_INPUT_DIR = os.path.normpath(
     os.getenv("PORTING_INPUT_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "porting_input"))
@@ -247,7 +275,7 @@ _PROCESS_TABLE_FIELDS = [
 ]
 
 def _porting_safe_name(s):
-    return _re.sub(r'[^a-zA-Z0-9_\-]', '_', str(s))
+    return _PORTING_SAFE_RE.sub('_', str(s))
 
 def _porting_get_key() -> bytes:
     """Return a stable 32-byte encryption key.
@@ -348,7 +376,7 @@ def porting_upload():
         safe_fname = os.path.basename(str(filename)).replace(" ", "_") if filename else (
             "upload.env" if upload_type == "file" else "api_keys.txt"
         )
-        safe_fname = _re.sub(r'[^a-zA-Z0-9_\-\.]', '_', safe_fname)
+        safe_fname = _PORTING_FNAME_RE.sub('_', safe_fname)
         safe_fname = f"{_porting_safe_name(username)}_{int(__import__('time').time()*1000)}_{safe_fname}"
         os.makedirs(_PORTING_INPUT_DIR, exist_ok=True)
         encrypted = _porting_encrypt(raw)
@@ -385,8 +413,8 @@ def porting_map():
         if not raw:
             return jsonify({"error": "No LLM provider configured."}), 500
         _increment_gemini_query_count(username)
-        raw = _re.sub(r'^```(?:json)?\s*', '', raw, flags=_re.IGNORECASE)
-        raw = _re.sub(r'\s*```$', '', raw).strip()
+        raw = _LLM_FENCE_OPEN_RE.sub('', raw)
+        raw = _LLM_FENCE_CLOSE_RE.sub('', raw).strip()
         try:
             mapping = json.loads(raw)
         except Exception:
@@ -1280,7 +1308,7 @@ def contactout_download_profile():
         return jsonify({"error": "ContactOut API key is not configured or not enabled"}), 503
 
     try:
-        r = requests.get(
+        r = _CONTACTOUT_SESSION.get(
             "https://api.contactout.com/v1/people/linkedin",
             params={
                 "profile": linkedin_url,
@@ -1388,7 +1416,7 @@ def apollo_download_profile():
         """Fallback enrichment via POST /v1/people/match. Returns person dict or None."""
         logger.debug(f"[Apollo] people/match fallback for linkedin_url={linkedin_url!r}")
         try:
-            r2 = requests.post(
+            r2 = _APOLLO_SESSION.post(
                 "https://api.apollo.io/v1/people/match",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1426,7 +1454,7 @@ def apollo_download_profile():
         used_fallback = False
 
         try:
-            r = requests.post(
+            r = _APOLLO_SESSION.post(
                 "https://api.apollo.io/api/v1/mixed_people/search",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1546,7 +1574,7 @@ def rocketreach_download_profile():
         return jsonify({"error": "RocketReach API key is not configured or not enabled"}), 503
 
     try:
-        r = requests.get(
+        r = _ROCKETREACH_SESSION.get(
             "https://api.rocketreach.co/api/v2/lookupProfile",
             params={"linkedin_url": linkedin_url},
             headers={
@@ -1621,7 +1649,7 @@ def _brightdata_fetch_profile(linkedin_url: str, api_key: str, zone: str, timeou
         "format": "json",
     }
     try:
-        resp = requests.post(
+        resp = _BRIGHTDATA_SESSION.post(
             _BRIGHTDATA_REQUEST_URL,
             json=payload,
             headers=headers,
@@ -1662,7 +1690,7 @@ def _scrapingdog_fetch_profile(linkedin_id: str, api_key: str, timeout: int = 60
     last_exc = None
     for attempt in range(1, _SCRAPINGDOG_MAX_RETRIES + 1):
         try:
-            resp = requests.get(url, params=params, timeout=timeout,
+            resp = _SCRAPINGDOG_SESSION.get(url, params=params, timeout=timeout,
                                 headers={"Accept": "application/json"})
             body = resp.text
             logger.info("[scrapingdog] attempt %d/%d → HTTP %d (%d bytes)",
@@ -1714,7 +1742,7 @@ def _linkdapi_fetch(username: str, api_key: str, timeout: int = 30):
     headers = {_LINKDAPI_HEADER: api_key, "Accept": "application/json"}
 
     # Sanitise api_key for safe shell-arg use (reject embedded control chars).
-    _safe_key = re.sub(r"[^\x20-\x7E]", "", api_key)
+    _safe_key = _LINKDAPI_PRINT_RE.sub("", api_key)
 
     last_exc = None
 
@@ -1843,7 +1871,7 @@ def linkdapi_get_profile():
         return jsonify({"error": "linkedin_url is required"}), 400
 
     # Extract LinkedIn username from URL (re already imported at module level)
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -1897,10 +1925,6 @@ def linkdapi_get_profile():
         profile_data = json.loads(body_str)
     except (json.JSONDecodeError, ValueError):
         return jsonify({"error": "Invalid JSON from linkdapi"}), 502
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -1948,15 +1972,11 @@ def linkdapi_read_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -2057,8 +2077,8 @@ def _linkdapi_json_to_pdf_bytes(profile: dict) -> bytes:
         if raw:
             cleaned = raw.strip()
             if cleaned.startswith("```"):
-                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-                cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+                cleaned = _LLM_FENCE_OPEN_RE.sub('', cleaned)
+                cleaned = _LLM_FENCE_CLOSE_RE.sub('', cleaned).strip()
             formatted = json.loads(cleaned)
     except Exception as exc:
         logger.warning("[linkdapi PDF] LLM formatting failed: %s", exc)
@@ -2785,15 +2805,11 @@ def linkdapi_profile_to_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -2874,15 +2890,11 @@ def _gp_check_profile_pdf_impl():
     if not linkedin_url:
         return jsonify({"exists": False, "filename": ""}), 200
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"exists": False, "filename": ""}), 200
     username = _m.group(1)
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active = _safe_slug(active_username, "unknown")
@@ -2931,15 +2943,11 @@ def linkdapi_get_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -2995,10 +3003,6 @@ def _gp_list_profile_pdfs_impl():
     """
     active_username = getattr(request, "_session_user", "") or ""
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     safe_active = _safe_slug(active_username, "unknown")
     user_suffix = f"_{safe_active}.pdf"
@@ -3056,10 +3060,6 @@ def linkdapi_get_pdf_by_filename():
 
     active_username = getattr(request, "_session_user", "") or ""
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     safe_active = _safe_slug(active_username, "unknown")
     expected_suffix = f"_{safe_active}.pdf"
@@ -3118,15 +3118,11 @@ def linkdapi_upload_profile_pdf():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -3341,7 +3337,7 @@ def scrapingdog_get_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -3412,10 +3408,6 @@ def scrapingdog_get_profile():
                        body_str[:200] if body_str else "(empty)")
         return jsonify({"error": "No profile data returned"}), 502
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -3489,7 +3481,7 @@ def brightdata_get_profile():
     if not linkedin_url:
         return jsonify({"error": "linkedin_url is required"}), 400
 
-    _m = re.search(r"/in/([A-Za-z0-9_%-]+)", linkedin_url)
+    _m = _LI_SLUG_RE.search(linkedin_url)
     if not _m:
         return jsonify({"error": "Could not extract LinkedIn username from URL"}), 400
     username = _m.group(1)
@@ -3571,10 +3563,6 @@ def brightdata_get_profile():
     if not profile_data:
         return jsonify({"error": "No profile data returned"}), 502
 
-    def _safe_slug(value: str, fallback: str) -> str:
-        slug = re.sub(r'[^A-Za-z0-9_-]+', '_', value or "")
-        slug = re.sub(r'_+', '_', slug).strip('_')
-        return slug or fallback
 
     active_username = getattr(request, "_session_user", "") or ""
     safe_active_username = _safe_slug(active_username, "unknown")
@@ -3905,7 +3893,7 @@ def _vip_mask_keys(cfg: dict) -> dict:
 
 
 # Regex that matches valid usernames accepted by _porting_safe_name (only alphanumerics + _-@.)
-_VIP_USERNAME_RE = _re.compile(r'^[a-zA-Z0-9_@.\-]{1,128}$')
+_VIP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9_@.\-]{1,128}$')
 
 
 @app.get("/admin/vip/user-service-config")

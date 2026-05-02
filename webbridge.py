@@ -49,7 +49,7 @@ import time
 import uuid
 from csv import DictWriter
 from datetime import datetime
-from functools import wraps
+from functools import wraps, lru_cache
 import re
 import json
 import requests
@@ -115,6 +115,15 @@ app.config['SESSION_COOKIE_SECURE'] = os.getenv("DISABLE_SECURE_COOKIES", "0") !
 # Single-file endpoints enforce their own 6 MB per-file check below.
 app.config['MAX_CONTENT_LENGTH'] = 80 * 1024 * 1024  # 80 MB
 _SINGLE_FILE_MAX = 6 * 1024 * 1024  # 6 MB per-file limit for single uploads
+
+# ── Response compression — reduces JSON payload size by ~60-80% ──────────────
+# flask-compress (gzip) is applied app-wide to all compressible responses.
+# Degrades gracefully: if the package is not installed the app still starts.
+try:
+    from flask_compress import Compress as _FlaskCompress
+    _FlaskCompress(app)
+except ImportError:
+    pass  # flask-compress not installed; responses are served uncompressed
 
 # ── Startup constants from rate_limits.json ──────────────────────────────────
 # Priority: env var > rate_limits.json system section > hardcoded default.
@@ -6092,6 +6101,7 @@ def highlight_talent_pools():
 try:
     _normalize_linkedin_to_path  # type: ignore
 except NameError:
+    @lru_cache(maxsize=4096)
     def _normalize_linkedin_to_path(linkedin_url: str) -> str:
         if not linkedin_url:
             return ""
