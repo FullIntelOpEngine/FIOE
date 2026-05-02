@@ -704,6 +704,11 @@ def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg
                 if not pic_bytes:
                     logger.debug(f"[PicBackfill] Image fetch returned no bytes for {linkedin_url}; skipping")
                     continue
+                # Skip LinkedIn ghost/placeholder icons — real profile photos are always
+                # larger than ~1 KB.  LinkedIn's default avatar SVG is ~451 bytes.
+                if len(pic_bytes) < 1000:
+                    logger.debug(f"[PicBackfill] Image too small ({len(pic_bytes)} bytes) for {linkedin_url}; skipping placeholder")
+                    continue
                 pic_val = _psycopg2.Binary(pic_bytes)
                 _cur.execute(
                     "UPDATE sourcing SET pic=%s WHERE userid=%s AND linkedinurl=%s AND pic IS NULL",

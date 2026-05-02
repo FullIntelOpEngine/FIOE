@@ -3025,6 +3025,32 @@ let _serverSortDir = '';   // 'asc' | 'desc'
 // Global sort state: when non-null, holds all rows sorted; client-side pagination is used instead of server-side
 let _globalSortedRows = null;
 
+// Pic-backfill polling: retry loading rows when profile pictures are still NULL.
+// The async backfill thread in the backend can take 30–120s to populate pics.
+// We retry at increasing intervals until all visible rows have a pic or the
+// maximum number of retries is reached.
+let _picPollTimeouts = [];
+const _PIC_POLL_INTERVALS = [5000, 15000, 30000, 60000]; // ms delays after initial load
+function _cancelPicPoll() {
+  _picPollTimeouts.forEach(t => clearTimeout(t));
+  _picPollTimeouts = [];
+}
+function _schedulePicPoll() {
+  _cancelPicPoll();
+  let cumulative = 0;
+  _PIC_POLL_INTERVALS.forEach((delay) => {
+    cumulative += delay;
+    _picPollTimeouts.push(setTimeout(async () => {
+      // Only re-fetch if some rows still have no pic
+      if (rowsData && rowsData.some(r => !r.pic)) {
+        await loadRows(currentPage);
+      } else {
+        _cancelPicPoll();
+      }
+    }, cumulative));
+  });
+}
+
 let excelBlobUrl = null;
 // Tracks LinkedIn URLs that have already used "Reassess File" this session (one-use per profile)
 const _reassessFileUsed = new Set();
@@ -6004,6 +6030,13 @@ async function loadRows(page=1){
     setStatus(`Loaded page ${currentPage} (${rowsData.length} row(s)).`);
     renderTable();
     renderPager();
+    // If any row is still missing a profile picture, schedule background re-fetches
+    // so the table picks up pics filled in by the async backfill thread.
+    if (rowsData.some(r => !r.pic)) {
+      _schedulePicPoll();
+    } else {
+      _cancelPicPoll();
+    }
   } catch(e) {
     tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:24px; color:#d1242f;">${escapeHtml(e.message || 'Load failed')}</td></tr>`;
     setStatus(e.message,'error');
@@ -8953,6 +8986,7 @@ if (bulkIngestBtn) {
 /* ── End candidate search bar ────────────────────────────────────────────── */
 
 function _resetAndReload() {
+  _cancelPicPoll();
   _globalSortedRows = null;
   _serverSortBy = '';
   _serverSortDir = '';

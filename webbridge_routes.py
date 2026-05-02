@@ -5206,7 +5206,19 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         if _is_private_host(image_url):
             logger.warning(f"[Fetch Image Bytes] SSRF: blocked private-host URL: {image_url}")
             return None
-        response = _HTTP_SESSION.get(image_url, timeout=15, stream=True)
+        # Add browser-like headers for LinkedIn CDN URLs which enforce Referer/Accept checks.
+        _fetch_headers = {}
+        if 'licdn.com' in image_url or 'linkedin.com' in image_url:
+            _fetch_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Referer': 'https://www.linkedin.com/',
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'sec-fetch-dest': 'image',
+                'sec-fetch-mode': 'no-cors',
+                'sec-fetch-site': 'cross-site',
+            }
+        response = _HTTP_SESSION.get(image_url, headers=_fetch_headers, timeout=15, stream=True)
         response.raise_for_status()
         
         # Check content type
