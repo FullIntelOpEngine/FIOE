@@ -701,11 +701,10 @@ def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg
                 if not pic_url:
                     continue
                 pic_bytes = fetch_image_bytes_from_url(pic_url)
-                if pic_bytes:
-                    pic_val = _psycopg2.Binary(pic_bytes)
-                else:
-                    # Store the URL as bytes so the frontend can attempt a direct load
-                    pic_val = _psycopg2.Binary(pic_url.encode("utf-8"))
+                if not pic_bytes:
+                    logger.debug(f"[PicBackfill] Image fetch returned no bytes for {linkedin_url}; skipping")
+                    continue
+                pic_val = _psycopg2.Binary(pic_bytes)
                 _cur.execute(
                     "UPDATE sourcing SET pic=%s WHERE userid=%s AND linkedinurl=%s AND pic IS NULL",
                     (pic_val, userid, linkedin_url),
