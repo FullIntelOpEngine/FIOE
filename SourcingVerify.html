@@ -213,17 +213,76 @@ html, body {
 }
 </style>
 
-<!-- Leaflet for country map visualization in Market Analytic -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<!-- Third-party libs deferred until needed to avoid blocking initial parse -->
+<!-- Chart.js, Leaflet and vskillset.js are injected on demand (see _loadChartJs,
+     _loadLeaflet, _ensureVSkillset helpers below). xlsx is not used and removed. -->
+<script>
+// ---------------------------------------------------------------------------
+// Lazy-loader helpers — each returns a Promise that resolves once the lib is
+// ready (idempotent; subsequent calls return the cached promise).
+// ---------------------------------------------------------------------------
+(function() {
+  'use strict';
 
-<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+  // Chart.js (~220 KB) — needed only when Market Analytic tab renders charts
+  let _chartJsPromise = null;
+  window._loadChartJs = function() {
+    if (_chartJsPromise) return _chartJsPromise;
+    if (typeof Chart !== 'undefined') return (_chartJsPromise = Promise.resolve());
+    _chartJsPromise = new Promise(function(resolve, reject) {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+      s.crossOrigin = 'anonymous';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    return _chartJsPromise;
+  };
 
-<!-- VSkillset Integration -->
-<script src="vskillset.js"></script>
+  // Leaflet CSS + JS (~140 KB combined) — needed only when Map mode is selected
+  let _leafletPromise = null;
+  window._loadLeaflet = function() {
+    if (_leafletPromise) return _leafletPromise;
+    if (typeof L !== 'undefined') return (_leafletPromise = Promise.resolve());
+    _leafletPromise = new Promise(function(resolve, reject) {
+      // CSS first (non-blocking link)
+      if (!document.querySelector('link[href*="leaflet"]')) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+      }
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      s.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+      s.crossOrigin = 'anonymous';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    return _leafletPromise;
+  };
+
+  // vskillset.js (~14 KB) — needed only when an assessment result is rendered
+  let _vskillsetPromise = null;
+  window._ensureVSkillset = function() {
+    if (_vskillsetPromise) return _vskillsetPromise;
+    if (window.vskillset && typeof window.vskillset.renderVSkillsetToUI === 'function')
+      return (_vskillsetPromise = Promise.resolve());
+    _vskillsetPromise = new Promise(function(resolve) {
+      const s = document.createElement('script');
+      s.src = 'vskillset.js';
+      s.onload = resolve;
+      s.onerror = resolve; // non-fatal — callers already guard with window.vskillset &&
+      document.head.appendChild(s);
+    });
+    return _vskillsetPromise;
+  };
+})();
+</script>
 <!-- Rate-limit enforcement (client-side guard matching admin-configured limits) -->
 <script src="ui/rate-limit-enforcer.js"></script>
 <script>RateLimitEnforcer.init({ prefetch: true });</script>
@@ -738,10 +797,12 @@ function switchTab(tabId) {
         }, 1000);
     } else if (tabId === 'tab-research') {
         document.querySelector('.tab-btn:nth-child(3)').classList.add('active');
-        // Trigger Market Analytic logic when tab is activated to ensure data is present
-        if (typeof deepResearch === 'function') {
-            deepResearch();
-        }
+        // Ensure Chart.js is loaded before triggering Market Analytic (lazy-loaded)
+        Promise.resolve(typeof window._loadChartJs === 'function' ? window._loadChartJs() : null)
+            .catch(() => {})
+            .then(() => {
+                if (typeof deepResearch === 'function') deepResearch();
+            });
     }
 }
 </script>
@@ -2358,6 +2419,9 @@ async function runBulkAssessmentFromSearch() {
     const progressContainer = document.getElementById('searchBulkProgressContainer');
     const progressBar = document.getElementById('searchBulkProgressBar');
     const progressPercent = document.getElementById('searchBulkProgressPercent');
+
+    // Preload vskillset.js so it's ready when assessment results arrive
+    if (typeof window._ensureVSkillset === 'function') window._ensureVSkillset();
     
     // All assessments use L2 (inference mode) by default
     const useL2 = true;
@@ -3040,10 +3104,13 @@ function _cancelPicPoll() {
   if (_picPollTimeoutId !== null) { clearTimeout(_picPollTimeoutId); _picPollTimeoutId = null; }
 }
 // Called only from manual/user-initiated loads (resets the attempt counter).
+// The first poll is scheduled via requestIdleCallback (or setTimeout fallback) so
+// it doesn't compete with the table-render repaint that immediately follows loadRows.
 function _schedulePicPoll() {
   _cancelPicPoll();
   _picPollAttempt = 0;
-  _scheduleNextPicPoll();
+  const _ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : function(cb) { setTimeout(cb, 0); };
+  _ric(() => _scheduleNextPicPoll());
 }
 // Schedules one pic-poll timeout using the current attempt index.
 // When it fires, does a silent fetch-and-merge (no full page re-render or re-poll
@@ -4308,6 +4375,7 @@ function buildRow(row) {
     const img = document.createElement('img');
     img.src = picSrc;
     img.alt = row.name || 'Profile';
+    img.loading = 'lazy';
     img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     img.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
@@ -4506,6 +4574,8 @@ function buildRow(row) {
                 // service to fetch the PDF instead of the primary configured service, ensuring
                 // the same provider that saved the PDF is used to retrieve it.
                 async function _runAssessPipeline(btn, label, svcOverride) {
+                    // Preload vskillset.js so it's ready when results arrive
+                    if (typeof window._ensureVSkillset === 'function') window._ensureVSkillset();
                     btn.textContent = 'Fetching PDF…';
                     const _gpGetSvc = svcOverride || _activeGpService();
                     const pdfResp = await fetch(
@@ -6513,6 +6583,7 @@ function renderTable(){
       const profileImg = document.createElement('img');
       profileImg.src = picSrc;
       profileImg.alt = name;
+      profileImg.loading = 'lazy';
       profileImg.style.cssText = 'width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
       profileImg.onerror = function() {
         const placeholder = document.createElement('div');
@@ -8153,7 +8224,10 @@ async function exportCSV() {
   const uid = window.__SV_ACTIVE_USERID || '';
   if (!uid) { setStatus('Missing user session.','error'); return; }
 
-  let allRows = []; 
+  const _excelBtn = document.getElementById('exportExcelBtn');
+  if (_excelBtn) { _excelBtn.disabled = true; }
+
+  let allRows = [];
   try {
     const res = await fetch(`${API_LIST}?userid=${encodeURIComponent(uid)}&all=1`);
     const data = await res.json().catch(()=> ({}));
@@ -8161,11 +8235,13 @@ async function exportCSV() {
     allRows = Array.isArray(data.rows) ? data.rows : [];
   } catch(e) {
     setStatus(`Failed to fetch all data: ${e.message}`, 'error');
+    if (_excelBtn) { _excelBtn.disabled = false; }
     return;
   }
 
   if (!allRows.length) {
     setStatus('No data to export.','error');
+    if (_excelBtn) { _excelBtn.disabled = false; }
     return;
   }
 
@@ -8194,6 +8270,7 @@ async function exportCSV() {
   setStatus('CSV downloaded.','success');
   deleteClientExcelBlob();
   disableActionButton(document.getElementById('exportCsvBtn'));
+  if (_excelBtn) { _excelBtn.disabled = false; }
 }
 
 async function exportExcelXlsxAndPurge() {
@@ -9606,6 +9683,10 @@ function renderLocations(res, useDOM=true) {
     if (mode === 'Map') {
         if (!mapDiv) return;
         mapDiv.style.display = 'block';
+        // Lazy-load Leaflet (only when Map mode is first requested)
+        (typeof window._loadLeaflet === 'function' ? window._loadLeaflet() : Promise.resolve())
+            .catch(() => {})
+            .then(function() {
         // Initialize map (singleton)
         if (!window._countryMapInstance) {
             try {
@@ -9694,6 +9775,7 @@ function renderLocations(res, useDOM=true) {
         })();
 
         return;
+        }); // end _loadLeaflet().then
     }
 }
 
