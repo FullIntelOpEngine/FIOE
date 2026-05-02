@@ -696,18 +696,20 @@ def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg
         for userid, linkedin_url, display_name in targets:
             if not linkedin_url:
                 continue
+            logger.info(f"[PicBackfill] Fetching pic for {linkedin_url!r} (name={display_name!r})")
             try:
                 pic_url = get_linkedin_profile_picture(linkedin_url, display_name=display_name)
                 if not pic_url:
+                    logger.info(f"[PicBackfill] No pic URL returned for {linkedin_url}; skipping")
                     continue
                 pic_bytes = fetch_image_bytes_from_url(pic_url)
                 if not pic_bytes:
-                    logger.debug(f"[PicBackfill] Image fetch returned no bytes for {linkedin_url}; skipping")
+                    logger.info(f"[PicBackfill] Image fetch returned no bytes for {linkedin_url}; skipping")
                     continue
                 # Skip LinkedIn ghost/placeholder icons — real profile photos are always
                 # larger than ~1 KB.  LinkedIn's default avatar SVG is ~451 bytes.
                 if len(pic_bytes) < 1000:
-                    logger.debug(f"[PicBackfill] Image too small ({len(pic_bytes)} bytes) for {linkedin_url}; skipping placeholder")
+                    logger.info(f"[PicBackfill] Image too small ({len(pic_bytes)} bytes) for {linkedin_url}; skipping placeholder")
                     continue
                 pic_val = _psycopg2.Binary(pic_bytes)
                 _cur.execute(

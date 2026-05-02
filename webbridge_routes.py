@@ -4946,6 +4946,8 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                 if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
                     return profile_pic_url
                 logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
+            else:
+                logger.info(f"[Profile Pic] Method 1: no og:image in LinkedIn HTML (bot-block or auth wall) for {linkedin_url}")
     except Exception as e:
         logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
 
@@ -5002,7 +5004,11 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     _dfs_active = (_dfs_cfg.get("enabled", "disabled") == "enabled"
                    and bool(_dfs_cfg.get("login")) and bool(_dfs_cfg.get("password")))
     _cse_available = bool(GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX)
-    if not profile_pic_url and (_serper_active or _dfs_active or _cse_available):
+    _provider_label = ("serper" if _serper_active else "dataforseo" if _dfs_active else "google-cse" if _cse_available else None)
+    if not profile_pic_url and not _provider_label:
+        logger.warning(f"[Profile Pic] No search provider configured (CSE/Serper/DFS); skipping search for {linkedin_url}")
+    if not profile_pic_url and _provider_label:
+        logger.info(f"[Profile Pic] Method 2: text search via {_provider_label} for {linkedin_url}")
         try:
             from urllib.parse import urlparse
 
@@ -5016,6 +5022,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             # Build query: prefer display name (more specific), fall back to slug.
             def _run_text_search(query_str: str) -> str | None:
                 """Run a unified text search and extract the best profile picture URL."""
+                logger.info(f"[Profile Pic] Querying: {query_str!r}")
                 try:
                     items, _ = unified_search_page(query_str, 5, 1)
                     for item in items:
@@ -5038,6 +5045,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                             if og:
                                 logger.info(f"[Profile Pic] og:image found via metatags: {og}")
                                 return og
+                    logger.info(f"[Profile Pic] No usable pic in {len(items)} search result(s) for {query_str!r}")
                 except Exception as exc:
                     logger.warning(f"[Profile Pic] text search failed ({query_str!r}): {exc}")
                 return None
