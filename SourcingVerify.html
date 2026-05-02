@@ -1136,6 +1136,8 @@ function _applyWeightLockState() {
 (function() {
   // previous weights snapshot (in-memory and persisted briefly)
   let _prevWeights = null;
+  // Debounce timer for localStorage saves triggered by slider oninput
+  let _weightSaveTimer = null;
 
   // Snapshot of slider values captured each time the assessment panel opens.
   // Used to detect whether the user actually changed any values before closing.
@@ -1319,7 +1321,12 @@ function _applyWeightLockState() {
       if (display) display.textContent = `Total: ${sum}%`;
       if (sum === 100) {
         if (display) { display.classList.remove('invalid'); display.style.color = 'var(--robins-egg,#6deaf9)'; }
-        try { localStorage.setItem('sv_assessment_weights', JSON.stringify(config)); } catch(_) {}
+        // Debounce the localStorage write: the UI label updates instantly (above) but
+        // the persist is deferred 400 ms so rapid slider drags do not spam storage I/O.
+        clearTimeout(_weightSaveTimer);
+        _weightSaveTimer = setTimeout(function() {
+          try { localStorage.setItem('sv_assessment_weights', JSON.stringify(config)); } catch(_) {}
+        }, 400);
         // Lock is applied in validateWeightsOnClose (not here) so that programmatic
         // calls from loadWeights()/restorePrevWeights() do not trigger locking prematurely.
       } else {
@@ -4364,7 +4371,7 @@ function buildRow(row) {
           tickIcon.className = 'score-icon';
           tickIcon.style.cssText = 'width:25px; height:25px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.15); color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           tickIcon.title = `Accept (Score: ${cachedScore.toFixed(1)}% ≥ 50%)`;
-          tickIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'accept');
+          tickIcon.dataset.svAction = 'accept'; // handled by tableBody delegated listener
           // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(tickIcon);
       } else if (cachedScore !== null && cachedScore < scoreThreshold && !window.__HAS_CUSTOM_LLM) {
@@ -4374,7 +4381,7 @@ function buildRow(row) {
           crossIcon.className = 'score-icon';
           crossIcon.style.cssText = 'width:25px; height:25px; border:2px solid #ef4444; background:#fee2e2; color:#dc2626; border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           crossIcon.title = `Rebate (Score: ${cachedScore.toFixed(1)}% < 50%)`;
-          crossIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'rebate');
+          crossIcon.dataset.svAction = 'rebate'; // handled by tableBody delegated listener
           // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(crossIcon);
       }
@@ -4412,15 +4419,7 @@ function buildRow(row) {
     img.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
       : 'Click to view details';
-    img.onclick = async (e) => {
-      e.stopPropagation();
-      // For GP rows: attempt PDF download first; fall back to namecard if no PDF saved
-      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-        if (downloaded) return;
-      }
-      window.__sv_namecard.toggleNameCard(tr);
-    };
+    img.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
     // hover handled via CSS #tableBody td img:hover
     img.onerror = function() {
       // Fallback to placeholder if image fails to load
@@ -4432,14 +4431,7 @@ function buildRow(row) {
       placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
         ? 'Click to download GP profile PDF (or view details if no PDF)'
         : 'Click to view details';
-      placeholder.onclick = async (e) => {
-        e.stopPropagation();
-        if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-          const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-          if (downloaded) return;
-        }
-        window.__sv_namecard.toggleNameCard(tr);
-      };
+      placeholder.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
       // hover handled via CSS .sv-pic-placeholder:hover
       this.parentNode.appendChild(placeholder);
     };
@@ -4453,14 +4445,7 @@ function buildRow(row) {
     placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
       : 'Click to view details';
-    placeholder.onclick = async (e) => {
-      e.stopPropagation();
-      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-        if (downloaded) return;
-      }
-      window.__sv_namecard.toggleNameCard(tr);
-    };
+    placeholder.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
     // hover handled via CSS .sv-pic-placeholder:hover
     picCell.appendChild(placeholder);
   }
@@ -4553,9 +4538,7 @@ function buildRow(row) {
                 btn.textContent = 'View';
                 btn.className = 'view-btn assessment-complete';
                 btn.title = isLevel2 ? "View - L2 Complete" : "View - L1 Complete";
-                btn.onclick = () => {
-                    window.__sv_namecard.toggleNameCard(tr);
-                };
+                btn.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
                 // Revert to previous button styling (default gray button)
                 btn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; cursor:pointer;';
                 td.appendChild(btn);
@@ -8980,6 +8963,9 @@ if (bulkIngestBtn) {
                 const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null, toIngest[i].name || '');
                 if (ok) done++; else failed++;
             } catch (_) { failed++; }
+            // Yield the event loop so the browser can paint the progress text and
+            // remain responsive between profile fetches (avoids long task warnings).
+            await new Promise(r => setTimeout(r, 0));
         }
 
         bulkIngestBtn.textContent = 'Bulk Ingest';
@@ -9170,6 +9156,51 @@ function _resetAndReload() {
 const pagerEl = document.getElementById('pager');
 const prevBtn = document.getElementById('prevPageBtn');
 const nextBtn = document.getElementById('nextPageBtn');
+
+/* ── Delegated click handler for #tableBody ─────────────────────────────────
+   Replaces per-row onclick handlers on score-icon buttons and pic/placeholder
+   elements. A single listener on the tbody handles all rows, scaling O(1)
+   instead of O(n) with row count.  Uses data-sv-action attributes set in
+   buildRow to route to the appropriate action. ─────────────────────────────*/
+if (tableBody) {
+  tableBody.addEventListener('click', async function (e) {
+    // Find the actionable element (button or div with data-sv-action)
+    const target = e.target.closest('[data-sv-action]');
+    if (!target) return;
+    const action = target.dataset.svAction;
+    if (!action) return;
+
+    // Find the ancestor row to retrieve linkedinurl and source
+    const tr = target.closest('tr[data-linkedinurl]');
+    if (!tr) return;
+    const linkedinurl = tr.dataset.linkedinurl || '';
+    const source = tr.dataset.source || '';
+
+    if (action === 'accept' || action === 'rebate') {
+      // Score-icon: finalise individual assessment result
+      e.stopPropagation();
+      if (typeof finalizeIndividualAssessment === 'function') {
+        finalizeIndividualAssessment(linkedinurl, action);
+      }
+      return;
+    }
+
+    if (action === 'namecard') {
+      // Profile pic / placeholder / View btn: open namecard (GP rows try PDF first)
+      e.stopPropagation();
+      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[source.toLowerCase()]) {
+        if (typeof _downloadGpProfilePdf === 'function') {
+          const downloaded = await _downloadGpProfilePdf(linkedinurl);
+          if (downloaded) return;
+        }
+      }
+      if (window.__sv_namecard && tr) {
+        window.__sv_namecard.toggleNameCard(tr);
+      }
+      return;
+    }
+  });
+}
 prevBtn.addEventListener('click', async () => {
   if(currentPage > 1){
     await loadRows(currentPage - 1);
