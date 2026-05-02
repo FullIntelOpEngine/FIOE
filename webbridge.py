@@ -692,7 +692,7 @@ def _require_admin(f):
             return jsonify({"error": "Authentication required"}), 401
         try:
             conn = _pg_connect()
-            cur  = conn.cursor()
+            cur = conn.cursor()
             if session_id:
                 cur.execute(
                     "SELECT useraccess FROM login WHERE username=%s AND session_id=%s LIMIT 1",
@@ -749,7 +749,7 @@ def _require_session(f):
             return jsonify({"error": "Authentication required"}), 401
         try:
             conn = _pg_connect()
-            cur  = conn.cursor()
+            cur = conn.cursor()
             if session_id:
                 cur.execute(
                     "SELECT userid FROM login WHERE username = %s AND session_id = %s LIMIT 1",
