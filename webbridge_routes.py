@@ -3682,12 +3682,17 @@ def serper_search_page(query: str, api_key: str, num: int, gl_hint: str = None, 
             estimated_total = 0
         out = []
         for it in organic:
-            out.append({
+            entry = {
                 "link": it.get("link") or "",
                 "title": it.get("title") or "",
                 "snippet": it.get("snippet") or "",
                 "displayLink": it.get("displayLink") or (it.get("link") or ""),
-            })
+            }
+            # Preserve Serper's thumbnail field so profile-pic extraction works
+            # when Serper is the configured main search provider.
+            if it.get("imageUrl"):
+                entry["imageUrl"] = it["imageUrl"]
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[Serper] page fetch failed: {e}")
@@ -4585,12 +4590,25 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
         for it in items:
             if it.get("type") != "organic":
                 continue
-            out.append({
+            entry = {
                 "link": it.get("url") or "",
                 "title": it.get("title") or "",
                 "snippet": it.get("description") or "",
                 "displayLink": it.get("domain") or (it.get("url") or ""),
-            })
+            }
+            # Preserve DataForSEO image fields so profile-pic extraction works
+            # when DataForSEO is the configured main search provider.
+            _dfs_img = None
+            _dfs_extra = it.get("extra") or {}
+            if _dfs_extra.get("featured_image"):
+                _dfs_img = _dfs_extra["featured_image"]
+            elif it.get("images"):
+                _first_img = it["images"][0] if it["images"] else None
+                if _first_img and _first_img.get("url"):
+                    _dfs_img = _first_img["url"]
+            if _dfs_img:
+                entry["imageUrl"] = _dfs_img
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[DataforSEO] page fetch failed: {e}")
@@ -5046,6 +5064,14 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, se
                 try:
                     items, _ = unified_search_page(query_str, 5, 1)
                     for item in items:
+                        # Priority 0: provider-native image field (Serper imageUrl /
+                        # DataForSEO featured_image).  These are populated by
+                        # serper_search_page and dataforseo_search_page when the
+                        # respective provider is the configured main search provider.
+                        native_img = item.get("imageUrl")
+                        if native_img:
+                            logger.info(f"[Profile Pic] provider imageUrl found: {native_img}")
+                            return native_img
                         pagemap = item.get("pagemap", {})
                         # Priority 1: cse_thumbnail (Google's cached thumbnail — no auth needed)
                         thumbnails = pagemap.get("cse_thumbnail") or []
