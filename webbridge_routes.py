@@ -5030,7 +5030,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                         cse_imgs = pagemap.get("cse_image") or []
                         if cse_imgs and cse_imgs[0].get("src"):
                             src = cse_imgs[0]["src"]
-                            logger.info(f"[Profile Pic] cse_image found: {src}")
+                            logger.info("[Profile Pic] cse_image found")
                             return src
                         # Priority 3: og:image / twitter:image from metatags
                         for mt in pagemap.get("metatags", []):
