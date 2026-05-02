@@ -639,11 +639,6 @@ def _async_backfill_pictures(targets):
                         except Exception:
                             pass
             except Exception as _row_err:
-                try:
-                    if conn is not None:
-                        conn.rollback()
-                except Exception:
-                    pass
                 logger.debug(f"[PicBackfill] Skipping {linkedinurl}: {_row_err}")
         logger.info(f"[PicBackfill] Updated pic for {updated}/{len(targets)} rows.")
     except Exception as _err:
