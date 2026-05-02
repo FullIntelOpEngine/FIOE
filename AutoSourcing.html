@@ -2971,11 +2971,14 @@ function lookupCountryCode(c){
   if (_textInput) {
     _textInput.addEventListener('blur', _validateCountryInput);
     _textInput.addEventListener('change', _validateCountryInput);
-    // On input: clear errors (no datalist — plain textbox only)
+    // On input: clear errors only. updateSourcingSection is handled by the
+    // debounced listener registered in the smartToggles IIFE (line ~3755).
+    // Do NOT dispatch input to _selectEl here — val('country') already reads from
+    // countryTextInput directly in textbox mode, so the dispatch was redundant and
+    // caused updateSourcingSection() to fire immediately on every keystroke, defeating
+    // the 300ms debounce.
     _textInput.addEventListener('input', function () {
       _validationError.style.display = 'none';
-      // Also fire input on the select so updateSourcingSection picks up changes
-      try { _selectEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
     });
   }
 
@@ -5671,15 +5674,20 @@ function renderExternalSuggestions(jobs, comps){
     });
   };
 
-  window.syncUserSkillsToServer = function(){
+  // Debounce skill syncs so rapid add/remove operations (e.g. JD auto-populate)
+  // are batched into a single POST instead of firing one per change.
+  const _debouncedSyncSkills = debounce(function(){
     const username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username');
     if(!username) return;
-    
     fetch('/user/update_skills', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: username, skills: userSkills })
     }).catch(e => console.warn('Sync skills failed', e));
+  }, 800);
+
+  window.syncUserSkillsToServer = function(){
+    _debouncedSyncSkills();
   };
 })();
 
