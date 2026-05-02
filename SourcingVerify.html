@@ -211,6 +211,23 @@ html, body {
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(7,54,121,0.3);
 }
+
+/* ── Per-row hover effects handled via CSS to avoid per-row JS listeners ── */
+/* Score icons (tick ✓ / cross ✗) in the checkbox column */
+.score-icon:hover {
+  transform: scale(1.15);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+/* Profile picture images and initial-letter placeholders */
+#tableBody td img:hover,
+.sv-pic-placeholder:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+/* Name cell — underline on hover (overrides the inline text-decoration:none) */
+td[data-field="name"]:hover {
+  text-decoration: underline !important;
+}
 </style>
 
 <!-- Third-party libs deferred until needed to avoid blocking initial parse -->
@@ -1342,6 +1359,14 @@ let pendingReviewRows = [];
 let bulkJobId = null;
 let bulkPollInterval = null;
 let bulkPollEventSource = null;  // NEW: SSE connection for bulk assessment
+
+/* ── Client-side performance telemetry ─────────────────────────────────────
+   Read from the console or the window object to measure improvements:
+   window._svTelemetry.lastRenderMs  — duration of the last renderTable() call
+   window._svTelemetry.renderRowCount — rows rendered in that call
+   window._svTelemetry.acRequestCount — number of autocomplete fetch calls made
+*/
+window._svTelemetry = { lastRenderMs: 0, renderRowCount: 0, acRequestCount: 0 };
 
 /* Helper: safely find element by id */
 function $id(id) { return document.getElementById(id); }
@@ -4278,6 +4303,8 @@ function buildRow(row) {
   tr.dataset.linkedinurl = row.linkedinurl;
   // Store the sourcing record's role_tag so assessment can validate it matches the current session.
   tr.dataset.roleTag = row.role_tag || '';
+  // Store source so delegated click handlers can inspect provider without closure.
+  tr.dataset.source = row.source || '';
   // Track whether an appeal has already been filed for this record.
   if (row.appeal) { tr.dataset.hasAppeal = '1'; }
 
@@ -4338,8 +4365,7 @@ function buildRow(row) {
           tickIcon.style.cssText = 'width:25px; height:25px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.15); color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           tickIcon.title = `Accept (Score: ${cachedScore.toFixed(1)}% ≥ 50%)`;
           tickIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'accept');
-          tickIcon.onmouseover = function() { this.style.transform = 'scale(1.15)'; this.style.boxShadow = '0 4px 8px rgba(16,185,129,0.3)'; };
-          tickIcon.onmouseout = function() { this.style.transform = 'scale(1)'; this.style.boxShadow = 'none'; };
+          // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(tickIcon);
       } else if (cachedScore !== null && cachedScore < scoreThreshold && !window.__HAS_CUSTOM_LLM) {
           // ✗ FAIL - Red cross icon
@@ -4349,8 +4375,7 @@ function buildRow(row) {
           crossIcon.style.cssText = 'width:25px; height:25px; border:2px solid #ef4444; background:#fee2e2; color:#dc2626; border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           crossIcon.title = `Rebate (Score: ${cachedScore.toFixed(1)}% < 50%)`;
           crossIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'rebate');
-          crossIcon.onmouseover = function() { this.style.transform = 'scale(1.15)'; this.style.boxShadow = '0 4px 8px rgba(239,68,68,0.3)'; };
-          crossIcon.onmouseout = function() { this.style.transform = 'scale(1)'; this.style.boxShadow = 'none'; };
+          // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(crossIcon);
       }
   }
@@ -4396,18 +4421,12 @@ function buildRow(row) {
       }
       window.__sv_namecard.toggleNameCard(tr);
     };
-    img.onmouseover = function() {
-      this.style.transform = 'scale(1.05)';
-      this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-    };
-    img.onmouseout = function() {
-      this.style.transform = 'scale(1)';
-      this.style.boxShadow = 'none';
-    };
+    // hover handled via CSS #tableBody td img:hover
     img.onerror = function() {
       // Fallback to placeholder if image fails to load
       this.style.display = 'none';
       const placeholder = document.createElement('div');
+      placeholder.className = 'sv-pic-placeholder';
       placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
       placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
       placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
@@ -4421,20 +4440,14 @@ function buildRow(row) {
         }
         window.__sv_namecard.toggleNameCard(tr);
       };
-      placeholder.onmouseover = function() {
-        this.style.transform = 'scale(1.05)';
-        this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-      };
-      placeholder.onmouseout = function() {
-        this.style.transform = 'scale(1)';
-        this.style.boxShadow = 'none';
-      };
+      // hover handled via CSS .sv-pic-placeholder:hover
       this.parentNode.appendChild(placeholder);
     };
     picCell.appendChild(img);
   } else {
     // Placeholder for missing profile picture - also clickable
     const placeholder = document.createElement('div');
+    placeholder.className = 'sv-pic-placeholder';
     placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
     placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
@@ -4448,14 +4461,7 @@ function buildRow(row) {
       }
       window.__sv_namecard.toggleNameCard(tr);
     };
-    placeholder.onmouseover = function() {
-      this.style.transform = 'scale(1.05)';
-      this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-    };
-    placeholder.onmouseout = function() {
-      this.style.transform = 'scale(1)';
-      this.style.boxShadow = 'none';
-    };
+    // hover handled via CSS .sv-pic-placeholder:hover
     picCell.appendChild(placeholder);
   }
   tr.appendChild(picCell);
@@ -4488,8 +4494,7 @@ function buildRow(row) {
           console.warn('Invalid or missing LinkedIn URL');
         }
       };
-      td.onmouseover = function() { this.style.textDecoration = 'underline'; };
-      td.onmouseout = function() { this.style.textDecoration = 'none'; };
+      // hover handled via CSS td[data-field="name"]:hover
       return td;
     }
     
@@ -6159,12 +6164,19 @@ async function loadRows(page=1){
   }
 }
 function renderTable(){
+  const _t0 = performance.now();
   tableBody.innerHTML='';
   // Build all rows in a DocumentFragment so the tbody is updated in one operation,
   // avoiding a layout reflow after every individual row insertion.
   const frag = document.createDocumentFragment();
   rowsData.forEach(r => frag.appendChild(buildRow(r)));
   tableBody.appendChild(frag);
+  const _renderMs = Math.round(performance.now() - _t0);
+  if (window._svTelemetry) {
+    window._svTelemetry.lastRenderMs   = _renderMs;
+    window._svTelemetry.renderRowCount = rowsData.length;
+    console.debug('[SV] renderTable', rowsData.length, 'rows in', _renderMs + 'ms');
+  }
   if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
 }
 
@@ -9054,6 +9066,7 @@ if (bulkIngestBtn) {
     if (_acFetchController) { try { _acFetchController.abort(); } catch (_) { /* abort() is safe; ignore */ } }
     const ctrl = new AbortController();
     _acFetchController = ctrl;
+    if (window._svTelemetry) window._svTelemetry.acRequestCount++;
     try {
       const uid = window.__SV_ACTIVE_USERID || '';
       let url = `${API_AUTOCOMPLETE}?q=${encodeURIComponent(q)}&limit=10`;
