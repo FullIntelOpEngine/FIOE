@@ -4538,7 +4538,7 @@ function buildRow(row) {
                 btn.textContent = 'View';
                 btn.className = 'view-btn assessment-complete';
                 btn.title = isLevel2 ? "View - L2 Complete" : "View - L1 Complete";
-                btn.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
+                btn.dataset.svAction = 'view'; // handled by tableBody delegated listener (always opens detail, no PDF download)
                 // Revert to previous button styling (default gray button)
                 btn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; cursor:pointer;';
                 td.appendChild(btn);
@@ -9185,8 +9185,17 @@ if (tableBody) {
       return;
     }
 
+    if (action === 'view') {
+      // View button: always open namecard/detail panel (no PDF download)
+      e.stopPropagation();
+      if (window.__sv_namecard && tr) {
+        window.__sv_namecard.toggleNameCard(tr);
+      }
+      return;
+    }
+
     if (action === 'namecard') {
-      // Profile pic / placeholder / View btn: open namecard (GP rows try PDF first)
+      // Profile pic / placeholder: open namecard (GP rows try PDF first)
       e.stopPropagation();
       if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[source.toLowerCase()]) {
         if (typeof _downloadGpProfilePdf === 'function') {
