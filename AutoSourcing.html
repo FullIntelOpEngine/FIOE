@@ -4871,6 +4871,18 @@ async function pollJob(jobId){
         if(prog) prog.textContent=`Progress: ${data.progress.processed}/${data.progress.total} tasks`;
       } else if(prog) prog.textContent='';
       if(data.done){
+        if(data.failed){
+          // Job ended with a pipeline error — re-enable the button so the user can retry.
+          if(btn){
+            btn.disabled=false;
+            btn.dataset.state='idle';
+            removeSearchingSpinner(btn);
+            btn.textContent='Start Autosourcing';
+          }
+          if(progressFill){ progressFill.classList.remove('prog-running','prog-done'); progressFill.style.width='0%'; }
+          if(dl) dl.innerHTML='<em>Search failed — check server logs for details.</em>';
+          return;
+        }
         if(btn){
           btn.disabled=false;
           btn.classList.add('ready-download');

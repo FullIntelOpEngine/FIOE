@@ -568,7 +568,8 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
         with JOBS_LOCK:
             job=JOBS.get(job_id)
             if job:
-                job['done']=False
+                job['done']=True
+                job['failed']=True
                 job['status_html']="<br>".join(job['messages'][-12:])
         persist_job(job_id)
 
@@ -674,133 +675,127 @@ def _write_outputs(job_id, rows):
                     data_rows.append(row)
                 if data_rows:
                     logger.info("[Ingest] Connecting to Postgres via pool")
-                    conn=_get_pg_conn()
-                    conn.autocommit=False
-                    cur=conn.cursor()
+                    conn=None
+                    cur=None
+                    try:
+                        conn=_get_pg_conn()
+                        conn.autocommit=False
+                        cur=conn.cursor()
 
-                    # Ensure source column exists when file includes Source header
-                    if has_source_header:
-                        cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
-                        conn.commit()
-
-                    # Check if pic column exists in sourcing table
-                    cur.execute("""
-                        SELECT column_name 
-                        FROM information_schema.columns 
-                        WHERE table_schema='public' AND table_name='sourcing' AND column_name='pic'
-                    """)
-                    has_pic_column = bool(cur.fetchone())
-                    
-                    active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
-                    active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
-                    
-                    if has_source_header:
-                        if has_pic_column:
-                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                            batch_rows = []
-                            for r in data_rows:
-                                linkedin_url = r[4]
-                                source_val = (r[5] or "") if len(r) > 5 else ""
-                                pic_bytes = None
-                                try:
-                                    pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
-                                    if pic_url:
-                                        pic_bytes = fetch_image_bytes_from_url(pic_url)
-                                        if pic_bytes:
-                                            pic_bytes = psycopg2.Binary(pic_bytes)
-                                        else:
-                                            pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
-                                except Exception as pic_err:
-                                    logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
-                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes, source_val))
-                        else:
-                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                            batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
-                    elif has_pic_column:
-                        # Include pic column in insert
-                        insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                        batch_rows = []
-                        for r in data_rows:
-                            # r is a tuple: (name, company, jobtitle, country, linkedinurl)
-                            # LinkedInURL is at index 4 (0-based indexing, 5th column)
-                            linkedin_url = r[4]
-                            # Retrieve profile picture and convert to bytea
-                            pic_bytes = None
-                            try:
-                                pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
-                                if pic_url:
-                                    pic_bytes = fetch_image_bytes_from_url(pic_url)
-                                    if pic_bytes:
-                                        import psycopg2
-                                        pic_bytes = psycopg2.Binary(pic_bytes)
-                                    else:
-                                        # Byte fetch failed — store URL as bytes so client can try direct load
-                                        import psycopg2
-                                        pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
-                            except Exception as pic_err:
-                                logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
-                            batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes))
-                    else:
-                        # No pic column, use original insert
-                        insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
-                        batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4]) for r in data_rows]
-                    
-                    batch_size=500
-                    total_inserted=0
-                    for i in range(0,len(batch_rows),batch_size):
-                        batch=batch_rows[i:i+batch_size]
-                        cur.executemany(insert_stmt, batch)
-                        total_inserted+=len(batch)
-                    conn.commit()
-                    logger.info(f"[Ingest] Inserted {total_inserted} rows into sourcing (userid='{active_userid}' username='{active_username}').")
-                    # Back-fill the source column for any existing rows that were previously
-                    # inserted without a source (ON CONFLICT DO NOTHING skips them on insert).
-                    # This ensures the provider button (CO/AP/RR) appears even for contacts
-                    # that were re-found by a provider search after being added by a prior search.
-                    if has_source_header:
-                        if has_pic_column:
-                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], pic[7], source[8])
-                            update_src_rows = [
-                                (row[8], row[0], row[6])  # (source, userid, linkedinurl)
-                                for row in batch_rows if row[8]
-                            ]
-                        else:
-                            # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], source[7])
-                            update_src_rows = [
-                                (row[7], row[0], row[6])  # (source, userid, linkedinurl)
-                                for row in batch_rows if row[7]
-                            ]
-                        if update_src_rows:
-                            for i in range(0, len(update_src_rows), batch_size):
-                                cur.executemany(
-                                    "UPDATE sourcing SET source = %s WHERE userid = %s AND linkedinurl = %s AND (source IS NULL OR source = '')",
-                                    update_src_rows[i:i+batch_size]
-                                )
+                        # Ensure source column exists when file includes Source header
+                        if has_source_header:
+                            cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
                             conn.commit()
-                            logger.info(f"[Ingest] Back-filled source column for up to {len(update_src_rows)} existing rows.")
-                    # Transfer role_tag from login table into sourcing table for this user
-                    if active_username:
-                        try:
-                            cur.execute("SELECT role_tag, session FROM login WHERE username=%s LIMIT 1", (active_username,))
-                            rt_row = cur.fetchone()
-                            login_role_tag = rt_row[0] if rt_row and rt_row[0] else ""
-                            login_session_ts = rt_row[1] if rt_row else None
-                            if login_role_tag:
-                                cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS role_tag TEXT DEFAULT ''")
-                                cur.execute("UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')", (login_role_tag, active_username))
-                                # Transfer session timestamp from login to sourcing after validating role_tag matches.
-                                if login_session_ts is not None:
-                                    cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
-                                    cur.execute("ALTER TABLE sourcing ALTER COLUMN session DROP DEFAULT")
-                                    cur.execute(
-                                        "UPDATE sourcing SET session=%s WHERE username=%s AND role_tag=%s",
-                                        (login_session_ts, active_username, login_role_tag)
+
+                        # Check if pic column exists in sourcing table
+                        cur.execute("""
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_schema='public' AND table_name='sourcing' AND column_name='pic'
+                        """)
+                        has_pic_column = bool(cur.fetchone())
+
+                        active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
+                        active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
+
+                        if has_source_header:
+                            if has_pic_column:
+                                insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                                # Profile-picture fetching (get_linkedin_profile_picture) is intentionally
+                                # skipped here: fetching N pictures serially adds 60-70 s per candidate and
+                                # blocks job completion for 10-30 min on typical result sets.  Pictures are
+                                # stored as NULL and can be fetched on-demand when a profile is viewed.
+                                batch_rows = [
+                                    (active_userid, active_username, r[0], r[1], r[2], r[3], r[4],
+                                     None, (r[5] or "") if len(r) > 5 else "")
+                                    for r in data_rows
+                                ]
+                            else:
+                                insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                                batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
+                        elif has_pic_column:
+                            # Include pic column in insert; pictures are stored as NULL and fetched
+                            # on-demand — see comment above for why synchronous fetching is skipped.
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows = [
+                                (active_userid, active_username, r[0], r[1], r[2], r[3], r[4], None)
+                                for r in data_rows
+                            ]
+                        else:
+                            # No pic column, use original insert
+                            insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
+                            batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4]) for r in data_rows]
+
+                        batch_size=500
+                        total_inserted=0
+                        for i in range(0,len(batch_rows),batch_size):
+                            batch=batch_rows[i:i+batch_size]
+                            cur.executemany(insert_stmt, batch)
+                            total_inserted+=len(batch)
+                        conn.commit()
+                        logger.info(f"[Ingest] Inserted {total_inserted} rows into sourcing (userid='{active_userid}' username='{active_username}').")
+                        # Back-fill the source column for any existing rows that were previously
+                        # inserted without a source (ON CONFLICT DO NOTHING skips them on insert).
+                        # This ensures the provider button (CO/AP/RR) appears even for contacts
+                        # that were re-found by a provider search after being added by a prior search.
+                        if has_source_header:
+                            if has_pic_column:
+                                # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], pic[7], source[8])
+                                update_src_rows = [
+                                    (row[8], row[0], row[6])  # (source, userid, linkedinurl)
+                                    for row in batch_rows if row[8]
+                                ]
+                            else:
+                                # batch tuple: (userid[0], username[1], name[2], company[3], jobtitle[4], country[5], linkedinurl[6], source[7])
+                                update_src_rows = [
+                                    (row[7], row[0], row[6])  # (source, userid, linkedinurl)
+                                    for row in batch_rows if row[7]
+                                ]
+                            if update_src_rows:
+                                for i in range(0, len(update_src_rows), batch_size):
+                                    cur.executemany(
+                                        "UPDATE sourcing SET source = %s WHERE userid = %s AND linkedinurl = %s AND (source IS NULL OR source = '')",
+                                        update_src_rows[i:i+batch_size]
                                     )
                                 conn.commit()
-                                logger.info(f"[Ingest] Transferred role_tag='{login_role_tag}' session_ts='{login_session_ts}' from login to sourcing for user='{active_username}'.")
-                        except Exception as e_rt:
-                            logger.warning(f"[Ingest] Failed to transfer role_tag to sourcing: {e_rt}")
-                    cur.close(); conn.close()
+                                logger.info(f"[Ingest] Back-filled source column for up to {len(update_src_rows)} existing rows.")
+                        # Transfer role_tag from login table into sourcing table for this user
+                        if active_username:
+                            try:
+                                cur.execute("SELECT role_tag, session FROM login WHERE username=%s LIMIT 1", (active_username,))
+                                rt_row = cur.fetchone()
+                                login_role_tag = rt_row[0] if rt_row and rt_row[0] else ""
+                                login_session_ts = rt_row[1] if rt_row else None
+                                if login_role_tag:
+                                    cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS role_tag TEXT DEFAULT ''")
+                                    cur.execute("UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')", (login_role_tag, active_username))
+                                    # Transfer session timestamp from login to sourcing after validating role_tag matches.
+                                    if login_session_ts is not None:
+                                        cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
+                                        cur.execute("ALTER TABLE sourcing ALTER COLUMN session DROP DEFAULT")
+                                        cur.execute(
+                                            "UPDATE sourcing SET session=%s WHERE username=%s AND role_tag=%s",
+                                            (login_session_ts, active_username, login_role_tag)
+                                        )
+                                    conn.commit()
+                                    logger.info(f"[Ingest] Transferred role_tag='{login_role_tag}' session_ts='{login_session_ts}' from login to sourcing for user='{active_username}'.")
+                            except Exception as e_rt:
+                                logger.warning(f"[Ingest] Failed to transfer role_tag to sourcing: {e_rt}")
+                    finally:
+                        if cur is not None:
+                            try:
+                                cur.close()
+                            except Exception:
+                                pass
+                        if conn is not None:
+                            try:
+                                conn.rollback()
+                            except Exception:
+                                pass
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
                 else:
                     logger.info(f"[Ingest] No data rows to insert from {xlsx_name}.")
         except Exception as e:
