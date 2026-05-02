@@ -36,52 +36,44 @@
     (function resolveUseridForSession(activeUsername){
       try {
         var existingUid = sessionStorage.getItem('userid') || localStorage.getItem('userid');
-        if (!existingUid) {
-            fetch('/user/resolve?username=' + encodeURIComponent(activeUsername), { method: 'GET', credentials: 'same-origin' })
-            .then(function(r){ return r.ok ? r.json() : null; })
-            .then(function(data){
-              var uid = data && (data.userid || data.userId || data.id);
-              if (uid && String(uid).trim()) {
-                uid = String(uid).trim();
-                try {
-                  sessionStorage.setItem('userid', uid);
-                  localStorage.setItem('userid', uid);
-                  document.cookie = 'userid=' + encodeURIComponent(uid) + '; path=/; max-age=2592000';
-                } catch(_){}
-                window.__ACTIVE_USERID = uid;
-              }
-              // Pre-populate Target Limit from user's stored setting
-              var tl = data && data.target_limit;
-              if (tl && parseInt(tl, 10) >= 1) {
-                var tlVal = parseInt(tl, 10);
-                var inp = document.getElementById('userTargetInput');
-                var sliderEl = document.getElementById('targetLimitSlider');
-                var displayEl = document.getElementById('targetLimitDisplayVal');
-                if (inp) inp.value = tlVal;
-                if (sliderEl) sliderEl.value = tlVal;
-                if (displayEl) displayEl.textContent = tlVal;
-              }
-            })
-            .catch(function(){ /* silent */ });
-        } else {
+        if (existingUid) {
           window.__ACTIVE_USERID = String(existingUid).trim();
-          // Still fetch target_limit even when userid is already cached
-          fetch('/user/resolve?username=' + encodeURIComponent(activeUsername), { method: 'GET', credentials: 'same-origin' })
-            .then(function(r){ return r.ok ? r.json() : null; })
-            .then(function(data){
-              var tl = data && data.target_limit;
-              if (tl && parseInt(tl, 10) >= 1) {
-                var tlVal = parseInt(tl, 10);
-                var inp = document.getElementById('userTargetInput');
-                var sliderEl = document.getElementById('targetLimitSlider');
-                var displayEl = document.getElementById('targetLimitDisplayVal');
-                if (inp) inp.value = tlVal;
-                if (sliderEl) sliderEl.value = tlVal;
-                if (displayEl) displayEl.textContent = tlVal;
-              }
-            })
-            .catch(function(){ /* silent */ });
         }
+        // Single /user/resolve fetch — covers both the userid-cache-miss path and the
+        // target_limit + full-name hydration needed by enhanceWelcomeWithFullName().
+        // The promise is stored on window so enhanceWelcomeWithFullName() can await it
+        // instead of making a second identical request.
+        window.__USER_RESOLVE_PROMISE = fetch(
+          '/user/resolve?username=' + encodeURIComponent(activeUsername),
+          { method: 'GET', credentials: 'same-origin' }
+        )
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(data){
+          if (!data) return data;
+          var uid = data.userid || data.userId || data.id;
+          if (uid && String(uid).trim() && !existingUid) {
+            uid = String(uid).trim();
+            try {
+              sessionStorage.setItem('userid', uid);
+              localStorage.setItem('userid', uid);
+              document.cookie = 'userid=' + encodeURIComponent(uid) + '; path=/; max-age=2592000';
+            } catch(_){}
+            window.__ACTIVE_USERID = uid;
+          }
+          // Pre-populate Target Limit from user's stored setting
+          var tl = data.target_limit;
+          if (tl && parseInt(tl, 10) >= 1) {
+            var tlVal = parseInt(tl, 10);
+            var inp = document.getElementById('userTargetInput');
+            var sliderEl = document.getElementById('targetLimitSlider');
+            var displayEl = document.getElementById('targetLimitDisplayVal');
+            if (inp) inp.value = tlVal;
+            if (sliderEl) sliderEl.value = tlVal;
+            if (displayEl) displayEl.textContent = tlVal;
+          }
+          return data;
+        })
+        .catch(function(){ return null; });
       } catch (_) {}
     })(window.__ACTIVE_USERNAME);
   } catch (e) {
@@ -3145,6 +3137,19 @@ let lastSuggestionHash=''; let lastGeneralSuggestions=null;
 // stale responses never overwrite fresher results and their memory is released promptly.
 let _suggestAbortCtrl=null;
 
+const _SUGGEST_SS_TTL = 5 * 60 * 1000; // 5-minute client-side cache for identical queries
+function _suggestCacheGet(hash) {
+  try {
+    const raw = sessionStorage.getItem('_sg_' + hash);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (Date.now() - entry.ts > _SUGGEST_SS_TTL) { sessionStorage.removeItem('_sg_' + hash); return null; }
+    return entry.data;
+  } catch(_) { return null; }
+}
+function _suggestCacheSet(hash, data) {
+  try { sessionStorage.setItem('_sg_' + hash, JSON.stringify({ ts: Date.now(), data })); } catch(_) {}
+}
 function hashSuggestionPayload(){ return JSON.stringify({ jobs:[...jobTitles].sort(), companies:[...companies].sort(), languages:[...languages].sort(), sectors:[...selectedSectors].sort(), currentRole:false, country:(val('country')||'').toLowerCase() }); }
 function scheduleSuggestionsUpdate(){ debouncedFetchSuggestions(); }
 const debouncedFetchSuggestions=debounce(fetchSuggestions,500);
@@ -3157,6 +3162,11 @@ async function fetchSuggestions(force=false){
   }
   const h=hashSuggestionPayload();
   if(!force && h===lastSuggestionHash && lastGeneralSuggestions){ renderSuggestionsAggregated(lastGeneralSuggestions); return; }
+  // Check sessionStorage for a cached response before hitting the network
+  if(!force){
+    const cached=_suggestCacheGet(h);
+    if(cached){ lastSuggestionHash=h; lastGeneralSuggestions=cached; renderSuggestionsAggregated(cached); return; }
+  }
   lastSuggestionHash=h;
   // Cancel any previous in-flight request so stale responses don't overwrite fresher results.
   if (_suggestAbortCtrl) _suggestAbortCtrl.abort();
@@ -3167,7 +3177,7 @@ async function fetchSuggestions(force=false){
   try{
     const res=await fetch('/suggest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ jobTitles, companies, languages, sectors:selectedSectors, country, products: jdProducts }),signal:_signal});
     if(!res.ok) throw new Error(await res.text());
-    const data=await res.json(); lastGeneralSuggestions=data; renderSuggestionsAggregated(data);
+    const data=await res.json(); lastGeneralSuggestions=data; _suggestCacheSet(h, data); renderSuggestionsAggregated(data);
   }catch(e){
     if(_signal.aborted) return; // superseded by a newer request — do nothing
     if(suggestionsError){ suggestionsError.textContent='Suggestion error: '+e.message; suggestionsError.classList.remove('hidden'); }
@@ -3329,14 +3339,31 @@ function renderSuggestionsAggregated(data){
   updateDynamicCompanyPreview();
 }
 
+const _SG_INITIAL_LIMIT = 12; // render first N chips, defer the rest to a "show more" click
 function buildSuggestionGroup(title,list,type){
   const group=document.createElement('div'); group.style.border='1px solid var(--border)'; group.style.borderRadius='8px'; group.style.padding='10px';
   const h=document.createElement('div'); h.style.fontSize='12px'; h.style.fontWeight='700'; h.style.marginBottom='8px'; h.textContent=title; group.appendChild(h);
   const box=document.createElement('div'); box.style.display='flex'; box.style.flexWrap='wrap'; box.style.gap='8px';
+  const visible=list.slice(0,_SG_INITIAL_LIMIT);
+  const hidden=list.slice(_SG_INITIAL_LIMIT);
   const frag=document.createDocumentFragment();
-  list.forEach(text=>frag.appendChild(makeChip(text,type,false)));
+  visible.forEach(text=>frag.appendChild(makeChip(text,type,false)));
   box.appendChild(frag);
-  group.appendChild(box); return group;
+  group.appendChild(box);
+  if(hidden.length > 0){
+    const more=document.createElement('button');
+    more.type='button';
+    more.style.cssText='margin-top:6px;font-size:11px;color:var(--azure-dragon,#073679);background:none;border:none;cursor:pointer;padding:2px 0;';
+    more.textContent='Show ' + hidden.length + ' more…';
+    more.addEventListener('click',function(){
+      const f2=document.createDocumentFragment();
+      hidden.forEach(text=>f2.appendChild(makeChip(text,type,false)));
+      box.appendChild(f2);
+      more.remove();
+    },{once:true});
+    group.appendChild(more);
+  }
+  return group;
 }
 function makeChip(text,type,isExisting){
   const chip=document.createElement('div'); chip.className='tag-chip';
@@ -4144,9 +4171,9 @@ async function enhanceWelcomeWithFullName(){
   try{
     const username = window.__ACTIVE_USERNAME;
     if(!username) return;
-    const res = await fetch('/user/resolve?username='+encodeURIComponent(username),{credentials:'same-origin'});
-    if(!res.ok) return;
-    const data = await res.json().catch(()=>null);
+    // Reuse the promise from resolveUseridForSession (fired at page load) so we
+    // don't make a second identical /user/resolve request.
+    const data = await (window.__USER_RESOLVE_PROMISE || fetch('/user/resolve?username='+encodeURIComponent(username),{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null));
     if(!data) return;
     const full = (data.full_name || data.fullname || data.name || data.display_name || '').toString().trim();
     if(full){
