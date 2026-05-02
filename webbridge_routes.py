@@ -116,6 +116,23 @@ _LINKEDIN_SLUG_RE = re.compile(r'linkedin\.com/in/([^/?#]+)')
 # og:image content-value extraction (applied to a single <meta> tag string, not full HTML)
 _OG_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.IGNORECASE)
 
+# ── Trusted image CDN domain suffixes ────────────────────────────────────────
+# Public CDN hosts that carry no SSRF risk — skip the DNS-based _is_private_host
+# check and accept their images without a HEAD validation round-trip.
+# Matching is done against the URL hostname (exact or as a suffix of a subdomain).
+_TRUSTED_IMAGE_CDN_SUFFIXES = frozenset([
+    'gstatic.com',            # Google CSE thumbnails (encrypted-tbn*.gstatic.com)
+    'googleusercontent.com',  # Google user-content images
+    'licdn.com',              # LinkedIn media CDN (media.licdn.com, media-exp*.licdn.com)
+    'linkedin.com',           # LinkedIn itself (og:image host)
+    'cloudinary.com',         # Cloudinary image CDN
+    'twimg.com',              # Twitter image CDN (twitter:image tags)
+    'gravatar.com',           # Gravatar avatars
+    'fastly.net',             # Fastly-backed image CDNs
+    'akamaized.net',          # Akamai CDN
+    'cdninstagram.com',       # Instagram CDN
+])
+
 
 def _extract_og_image(html_head):
     # type: (str) -> str
@@ -4825,11 +4842,34 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
 
+def _is_trusted_cdn_url(url: str) -> bool:
+    """Return True if *url* is hosted on a known-safe public CDN.
+
+    These domains carry no SSRF risk and their images can be fetched without
+    the DNS-based private-host check or a HEAD validation round-trip.
+    """
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        # Exact match or subdomain match (e.g. "media.licdn.com" ends with ".licdn.com")
+        return host in _TRUSTED_IMAGE_CDN_SUFFIXES or any(
+            host == s or host.endswith('.' + s)
+            for s in _TRUSTED_IMAGE_CDN_SUFFIXES
+        )
+    except Exception:
+        return False
+
+
 def _is_private_host(url: str) -> bool:
     """Return True if the URL resolves to a private/loopback/reserved IP — used to block SSRF."""
     import socket
     import ipaddress
     from urllib.parse import urlparse
+    # Fast-path: known public CDN hosts are never private.
+    if _is_trusted_cdn_url(url):
+        return False
     try:
         host = urlparse(url).hostname
         if not host:
@@ -4851,6 +4891,8 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
 
     Priority:
     1. Try to fetch og:image meta tag directly from LinkedIn profile
+    1.5. Try BrightData web-unlock proxy to fetch LinkedIn og:image when
+         direct access is blocked (mirrors the Google Sheets link-preview approach)
     2. Google CSE text search for the LinkedIn profile page — extract
        pagemap.cse_thumbnail or pagemap.metatags[og:image] (most reliable,
        Google caches the metadata even for authenticated pages)
@@ -4869,6 +4911,15 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
         return None
 
     profile_pic_url = None
+
+    # Extract profile slug early so all methods can use it.
+    _slug_match = _LINKEDIN_SLUG_RE.search(linkedin_url)
+    profile_slug = _slug_match.group(1).rstrip('/') if _slug_match else None
+
+    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., …)
+    _normalized_li_url = (
+        f"https://www.linkedin.com/in/{profile_slug}" if profile_slug else linkedin_url
+    )
 
     # Method 1: Try to fetch og:image meta tag directly from LinkedIn profile
     try:
@@ -4898,6 +4949,51 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     except Exception as e:
         logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
 
+    # Method 1.5: BrightData web-unlock proxy — mirrors the Google Sheets link-preview approach.
+    # When BrightData is configured, use it to fetch the LinkedIn profile page and extract
+    # og:image from the HTML.  This bypasses LinkedIn's bot-detection that blocks Method 1.
+    if not profile_pic_url and profile_slug:
+        try:
+            _gp_cfg = _load_get_profiles_config()
+            _bd = _gp_cfg.get("brightdata", {})
+            if _bd.get("enabled") == "enabled" and _bd.get("api_key") and _bd.get("zone"):
+                _bd_key  = _bd["api_key"]
+                _bd_zone = _bd["zone"]
+                # Ask BrightData to fetch the LinkedIn page directly and return its HTML.
+                # We send the raw LinkedIn URL (not a Google SERP URL) so BrightData's
+                # web-unlock layer handles the anti-bot challenge transparently.
+                import json as _json_mod
+                _bd_payload = {
+                    "zone": _bd_zone,
+                    "url": _normalized_li_url,
+                    "format": "raw",          # request raw HTML response
+                }
+                _bd_headers = {
+                    "Authorization": f"Bearer {_bd_key}",
+                    "Content-Type": "application/json",
+                }
+                _bd_resp = _HTTP_SESSION.post(
+                    "https://api.brightdata.com/request",
+                    json=_bd_payload,
+                    headers=_bd_headers,
+                    timeout=30,
+                )
+                if _bd_resp.status_code == 200 and _bd_resp.text:
+                    _html_head = _bd_resp.text[:16384]
+                    _og = _extract_og_image(_html_head)
+                    if _og and not any(
+                        p in _og.lower() for p in ['default', 'placeholder', 'ghost']
+                    ):
+                        profile_pic_url = _og
+                        logger.info(f"[Profile Pic] BrightData og:image: {_og}")
+                else:
+                    logger.debug(
+                        f"[Profile Pic] BrightData returned HTTP {_bd_resp.status_code} "
+                        f"for {_normalized_li_url}"
+                    )
+        except Exception as _bd_exc:
+            logger.debug(f"[Profile Pic] BrightData fetch skipped: {_bd_exc}")
+
     # Method 2 & 3: search fallback (Serper.dev, DataforSEO, or Google CSE)
     _search_cfg = _load_search_provider_config()
     _serper_cfg = _search_cfg.get("serper", {})
@@ -4910,13 +5006,10 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
         try:
             from urllib.parse import urlparse
 
-            # Extract URL slug (e.g. john-doe-12345)
-            match = _LINKEDIN_SLUG_RE.search(linkedin_url)
-            if not match:
+            # profile_slug already extracted at function top; guard against edge-case None
+            if not profile_slug:
                 logger.warning(f"[Profile Pic] Could not extract profile slug from URL: {linkedin_url}")
                 return None
-
-            profile_slug = match.group(1).rstrip('/')
 
             # ── Method 2: Text search — Google caches pagemap metadata including og:image ──
             # This works even when LinkedIn requires login to view the profile page.
@@ -5005,20 +5098,59 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     # Final validation: ensure URL is not empty or broken
     if profile_pic_url:
         try:
+            # Fast-path: trusted CDN hosts are public, no SSRF risk.
+            # Skip DNS-based SSRF check and expensive HEAD round-trip — the
+            # image will still be verified when fetch_image_bytes_from_url
+            # actually downloads it.
+            if _is_trusted_cdn_url(profile_pic_url):
+                logger.debug(f"[Profile Pic] Trusted CDN, skipping HEAD: {profile_pic_url}")
+                return profile_pic_url
+
             # SECURITY: reject URLs that resolve to private/loopback addresses (SSRF)
             if _is_private_host(profile_pic_url):
                 logger.warning(f"[Profile Pic] SSRF: blocked private-host URL: {profile_pic_url}")
                 return None
+
+            # Shared headers for HEAD/GET verification — some CDNs require a real User-Agent.
+            _val_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/webp,image/avif,image/*,*/*",
+            }
+
             # Quick HEAD request to verify image exists; allow redirects and treat 2xx/3xx as valid
             try:
-                head_response = requests.head(profile_pic_url, timeout=8, allow_redirects=True)
+                head_response = requests.head(
+                    profile_pic_url, timeout=8, allow_redirects=True,
+                    headers=_val_headers,
+                )
                 status = head_response.status_code
                 if 200 <= status < 400:
                     return profile_pic_url
-                # Some CDNs reject HEAD but serve GET — fall through to return URL if content-type ok
-                if status == 405:
-                    # Method Not Allowed: server does not support HEAD, trust CSE result
-                    return profile_pic_url
+                # Some CDNs reject HEAD but serve GET — try a ranged GET to confirm.
+                if status in (403, 405):
+                    try:
+                        get_response = requests.get(
+                            profile_pic_url, timeout=8, allow_redirects=True,
+                            headers={**_val_headers, "Range": "bytes=0-1023"},
+                            stream=True,
+                        )
+                        get_response.close()
+                        get_status = get_response.status_code
+                        if 200 <= get_status < 400 or get_status == 206:
+                            logger.info(
+                                f"[Profile Pic] HEAD {status}→GET {get_status}: "
+                                f"accepting {profile_pic_url}"
+                            )
+                            return profile_pic_url
+                    except Exception:
+                        pass
+                    if status == 405:
+                        # Method Not Allowed with no working GET — still trust CSE result
+                        return profile_pic_url
                 logger.warning(f"[Profile Pic] Image URL returned status {status}: {profile_pic_url}")
                 return None
             except requests.exceptions.Timeout:
