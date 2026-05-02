@@ -6083,7 +6083,11 @@ async function loadRows(page=1){
 }
 function renderTable(){
   tableBody.innerHTML='';
-  rowsData.forEach(r=> tableBody.appendChild(buildRow(r)));
+  // Build all rows in a DocumentFragment so the tbody is updated in one operation,
+  // avoiding a layout reflow after every individual row insertion.
+  const frag = document.createDocumentFragment();
+  rowsData.forEach(r => frag.appendChild(buildRow(r)));
+  tableBody.appendChild(frag);
   if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
 }
 
@@ -8896,6 +8900,8 @@ if (bulkIngestBtn) {
 
   let _acDebounce = null;
   let _acActiveIdx = -1; // keyboard-focused item index in dropdown
+  let _acFetchController = null; // AbortController for in-flight autocomplete fetch
+  const _acQueryCache = new Map(); // in-memory cache: query → suggestions array
 
   function hideDropdown() {
     if (searchDropdown) searchDropdown.style.display = 'none';
@@ -8914,9 +8920,10 @@ if (bulkIngestBtn) {
 
   function showDropdown(items) {
     if (!searchDropdown) return;
-    searchDropdown.innerHTML = '';
     _acActiveIdx = -1;
     if (!items.length) { hideDropdown(); return; }
+    // Build all list items in a DocumentFragment — single DOM insertion, one reflow
+    const frag = document.createDocumentFragment();
     items.forEach((item, idx) => {
       const li = document.createElement('li');
       li.textContent = item;
@@ -8930,24 +8937,35 @@ if (bulkIngestBtn) {
         triggerSearch();
       });
       li.addEventListener('mouseover', () => _acSetActive(idx));
-      searchDropdown.appendChild(li);
+      frag.appendChild(li);
     });
+    searchDropdown.innerHTML = '';
+    searchDropdown.appendChild(frag);
     searchDropdown.style.display = 'block';
   }
 
   async function fetchAutocomplete(q) {
     // Minimum 2 characters required to avoid excessive DB load
     if (!q || q.length < 2) { hideDropdown(); return; }
+    // Serve from cache when available to avoid redundant network requests
+    if (_acQueryCache.has(q)) { showDropdown(_acQueryCache.get(q)); return; }
+    // Cancel any in-flight request for a prior query
+    if (_acFetchController) { try { _acFetchController.abort(); } catch (_) { /* abort() is safe; ignore */ } }
+    _acFetchController = new AbortController();
     try {
       const uid = window.__SV_ACTIVE_USERID || '';
       let url = `${API_AUTOCOMPLETE}?q=${encodeURIComponent(q)}&limit=10`;
       if (uid) url += `&userid=${encodeURIComponent(uid)}`;
-      const res = await fetch(url, { credentials: 'same-origin' });
+      const res = await fetch(url, { credentials: 'same-origin', signal: _acFetchController.signal });
       if (!res.ok) return;
       const data = await res.json();
-      showDropdown(Array.isArray(data.suggestions) ? data.suggestions : []);
-    } catch (_) {
-      hideDropdown();
+      const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+      _acQueryCache.set(q, suggestions);
+      showDropdown(suggestions);
+    } catch (err) {
+      if (err && err.name !== 'AbortError') hideDropdown();
+    } finally {
+      _acFetchController = null;
     }
   }
 
@@ -9759,14 +9777,19 @@ function clientInferFallback(body, t0) {
     renderLocations(inferenceResult); // Call Table Render instead of Map
     setupDropZones(); 
     
-    // Wire up Viz Selectors
+    // Wire up Viz Selectors — debounced so rapid mode switches only trigger one render
+    const _vizDebounceMs = 120;
+    const _vizDebounceTimers = {};
     ['viz-select-jobfamily', 'viz-select-seniority', 'viz-select-company', 'viz-select-country'].forEach(id => {
         const el = document.getElementById(id);
         if(el) el.addEventListener('change', () => {
-            if(id.includes('jobfamily')) renderFamilyViz(inferenceResult, true);
-            if(id.includes('seniority')) renderSeniorityViz(inferenceResult, true);
-            if(id.includes('company')) renderCompanyViz(inferenceResult, true);
-            if(id.includes('country')) renderLocations(inferenceResult, true);
+            clearTimeout(_vizDebounceTimers[id]);
+            _vizDebounceTimers[id] = setTimeout(() => {
+                if(id.includes('jobfamily')) renderFamilyViz(inferenceResult, true);
+                if(id.includes('seniority')) renderSeniorityViz(inferenceResult, true);
+                if(id.includes('company')) renderCompanyViz(inferenceResult, true);
+                if(id.includes('country')) renderLocations(inferenceResult, true);
+            }, _vizDebounceMs);
         });
     });
 
