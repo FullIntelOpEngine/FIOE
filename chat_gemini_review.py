@@ -4,7 +4,19 @@ import json
 import os
 import time
 import re
-from difflib import SequenceMatcher
+from difflib import SequenceMatcher as _SequenceMatcher
+
+# Use rapidfuzz when available — 10–100x faster than difflib for string ratio
+# calculations while being a drop-in replacement.  Falls back gracefully.
+try:
+    from rapidfuzz import fuzz as _rfuzz
+    def _str_ratio(a: str, b: str) -> float:
+        """Return similarity ratio in [0, 1] using rapidfuzz.fuzz.ratio."""
+        return _rfuzz.ratio(a, b) / 100.0
+except ImportError:
+    def _str_ratio(a: str, b: str) -> float:  # type: ignore[misc]
+        """Fallback: difflib.SequenceMatcher similarity ratio."""
+        return _SequenceMatcher(None, a, b).ratio()
 
 # Try to import Google generative AI client (Gemini). If unavailable, genai will be None.
 try:
@@ -629,8 +641,7 @@ def title_match_status(candidate_title, role_tag):
     if inter > 0:
         return "match", f"Title tokens overlap ({inter}/{total})"
     # fallback fuzzy
-    seq = SequenceMatcher(None, ct, rt)
-    sim = seq.ratio()
+    sim = _str_ratio(ct, rt)
     if sim >= 0.55:
         return "related", f"Fuzzy similarity {sim:.2f}"
     return "unrelated", f"Fuzzy similarity {sim:.2f}"

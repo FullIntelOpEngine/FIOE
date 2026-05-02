@@ -274,7 +274,10 @@ def _cv_default_workers() -> int:
     cpu = os.cpu_count() or 2
     return min(max(1, cpu - 1), 2)
 
-CV_ANALYZE_WORKERS: int = int(os.getenv("CV_ANALYZE_WORKERS", "") or _cv_default_workers())
+CV_ANALYZE_WORKERS: int = min(
+    int(os.getenv("CV_ANALYZE_WORKERS", "") or _cv_default_workers()),
+    os.cpu_count() or 1,
+)
 CV_ANALYZE_MAX_CONCURRENCY: int = int(
     os.getenv("CV_ANALYZE_MAX_CONCURRENCY", "") or
     min(CV_ANALYZE_WORKERS, max(1, (os.cpu_count() or 2) // 2))

@@ -167,9 +167,29 @@ _cv_cpu_window_start: float = time.monotonic()
 _cv_cpu_lock = threading.Lock()
 
 
+def _cv_worker_init() -> None:
+    """Thread-pool initializer: pre-import heavy PDF libs so the first real
+    CV analysis request doesn't pay the import cost.  Runs once per worker
+    thread at pool creation time."""
+    try:
+        import pypdf  # noqa: F401
+    except ImportError:
+        pass
+    try:
+        import pdfplumber  # noqa: F401
+    except ImportError:
+        pass
+
+
 def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
-    """Thread-pool wrapper: runs _analyze_cv_bytes_sync in a worker thread."""
-    return _analyze_cv_bytes_sync(pdf_bytes)
+    """Thread-pool wrapper: runs _analyze_cv_bytes_sync, adds per-thread CPU
+    time to the returned dict so the caller can log it accurately."""
+    t_cpu = time.thread_time()
+    result = _analyze_cv_bytes_sync(pdf_bytes)
+    if isinstance(result, dict):
+        result = dict(result)
+        result['_thread_cpu_s'] = time.thread_time() - t_cpu
+    return result
 
 
 def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> dict:
@@ -236,7 +256,8 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
             if _CV_ANALYZE_THREAD_POOL is None:
                 try:
                     _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
-                        max_workers=CV_ANALYZE_WORKERS
+                        max_workers=CV_ANALYZE_WORKERS,
+                        initializer=_cv_worker_init,
                     )
                     logger.info(
                         '{"event":"cv_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
@@ -254,11 +275,18 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
         future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
         result = future.result(timeout=effective_timeout)
         elapsed_s = time.perf_counter() - t_start
-        logger.info(
-            '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
-                elapsed_s * 1000, size_bytes
+        cpu_s = result.pop('_thread_cpu_s', None) if isinstance(result, dict) else None
+        if cpu_s is not None:
+            logger.info(
+                '{"event":"cv_analysis_end","duration_ms":%.1f,"cpu_time_ms":%.1f,'
+                '"size_bytes":%d}' % (elapsed_s * 1000, cpu_s * 1000, size_bytes)
             )
-        )
+        else:
+            logger.info(
+                '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
+                    elapsed_s * 1000, size_bytes
+                )
+            )
         _record_cv_cpu(elapsed_s)
         return result
 
@@ -3667,6 +3695,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
     
     Returns structured dict or None.
     """
+    _t_cpu_sync_start = time.thread_time()
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -3679,6 +3708,12 @@ def _analyze_cv_bytes_sync(pdf_bytes):
         for page in reader.pages:
             t = page.extract_text()
             if t: text += t + "\n"
+        _pdf_cpu_s = time.thread_time() - _t_cpu_sync_start
+        logger.debug(
+            '{"event":"cv_pdf_extract","cpu_time_ms":%.1f,"size_bytes":%d}' % (
+                _pdf_cpu_s * 1000, len(pdf_bytes)
+            )
+        )
         
         if not text.strip(): return None
 
