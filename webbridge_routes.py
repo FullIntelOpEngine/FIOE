@@ -101,8 +101,9 @@ _LLM_FENCE_OPEN_RE  = re.compile(r'^```(?:json)?\s*', re.MULTILINE)
 _LLM_FENCE_CLOSE_RE = re.compile(r'\s*```$', re.MULTILINE)
 # Company-key normalisation: keep only lowercase alphanumeric
 _COMPANY_KEY_RE = re.compile(r'[^a-z0-9]')
-# Trailing punctuation stripped from list items in _clean_list
-_TRAILING_PUNCT_RE = re.compile(r'[;,/]+$')
+# Trailing punctuation stripped from list items in _clean_list (rstrip avoids ReDoS)
+# Whitespace normalisation — also re-exported as MULTI_SPACE_RE for backward compat
+MULTI_SPACE_RE = re.compile(r'\s+')
 # Filename-safe characters for criteria file paths
 _FILENAME_UNSAFE_RE = re.compile(r'[<>:"/\\|?*\.]')
 # Cookie value sanitisation (used by _safe_cookie_value)
@@ -1875,7 +1876,7 @@ def _clean_list(items, limit=20):
         if not t: continue
         k=t.lower()
         if k in seen: continue
-        t=_TRAILING_PUNCT_RE.sub('',t)
+        t=t.rstrip(';,/')  # strip trailing punctuation (rstrip avoids ReDoS)
         seen.add(k); out.append(t)
         if len(out)>=limit: break
     return out
@@ -2478,8 +2479,8 @@ _BD_ACTIVITY_PATH = os.getenv(
 )
 _bd_activity_lock = __import__("threading").Lock()
 # Mtime-checked in-memory cache for BD_Activity.json (avoids disk read on every GET)
-_bd_activity_cache: list = []
-_bd_activity_cache_mtime: float | None = None
+_bd_activity_cache = []   # type: list
+_bd_activity_cache_mtime = None  # float | None — mtime of last loaded file
 
 
 def _bd_load():
@@ -3389,7 +3390,7 @@ def add_message(job_id: str, text: str):
 # ... [Job helper functions] ...
 LINKEDIN_PROFILE_RE = re.compile(r'(?:^|\.)linkedin\.com/(?:in|pub)/', re.I)
 CLEAN_LINKEDIN_SUFFIX_RE = re.compile(r'\s*\|\s*LinkedIn.*$', re.I)
-MULTI_SPACE_RE = re.compile(r'\s+')
+# MULTI_SPACE_RE is defined at module top alongside the other regex constants
 
 def is_linkedin_profile(url: str) -> bool:
     return bool(url and LINKEDIN_PROFILE_RE.search(url))
@@ -4844,7 +4845,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
 
     # SECURITY: Validate LinkedIn URL to prevent SSRF
     # Must be a valid LinkedIn profile URL
-    if not re.match(_LINKEDIN_VALIDATE_RE, linkedin_url):
+    if not _LINKEDIN_VALIDATE_RE.match(linkedin_url):
         logger.warning(f"[Profile Pic] Invalid LinkedIn URL format: {linkedin_url}")
         return None
 
@@ -4865,12 +4866,14 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
             # Continue to fallback method
         elif response.status_code == 200:
-            # Parse HTML to find og:image meta tag
+            # Parse only the <head> section (first 8 KB is enough for meta tags).
+            # Capping input prevents polynomial ReDoS on adversarial HTML.
+            html_head = response.text[:8192]
             # Note: LinkedIn may actively block scraping - this is best-effort
-            og_image_match = _OG_IMAGE_RE.search(response.text)
+            og_image_match = _OG_IMAGE_RE.search(html_head)
             if not og_image_match:
                 # Try reverse order (content before property)
-                og_image_match = _OG_IMAGE_ALT_RE.search(response.text)
+                og_image_match = _OG_IMAGE_ALT_RE.search(html_head)
             
             if og_image_match:
                 profile_pic_url = og_image_match.group(1)
