@@ -31,6 +31,23 @@ def _sanitize_jd_name_part(s: str) -> str:
     return cleaned[:120]  # cap length
 
 
+def _sniff_image_mime(raw: bytes) -> str:
+    """Return the MIME type of *raw* image bytes by inspecting magic bytes.
+
+    Supports JPEG, PNG, WebP, and GIF.  Falls back to ``image/jpeg`` for any
+    unrecognised format so existing callers never see an empty string.
+    """
+    if len(raw) >= 2 and raw[:2] == b'\xff\xd8':
+        return 'image/jpeg'
+    if len(raw) >= 4 and raw[:4] == b'\x89PNG':
+        return 'image/png'
+    if len(raw) >= 12 and raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
+        return 'image/webp'
+    if len(raw) >= 6 and raw[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    return 'image/jpeg'
+
+
 def _unique_jd_path(path: str) -> str:
     """Return *path* if it does not exist, otherwise append _2, _3, … to the
     stem until a free filename is found.  Preserves audit integrity by never
@@ -87,6 +104,7 @@ from webbridge import (
     CV_ANALYZE_WORKERS, CV_ANALYZE_MAX_CONCURRENCY,
     CV_ANALYZE_OFFLOAD_TIMEOUT, CV_ANALYZE_USE_QUEUE,
     CV_ANALYZE_HOURLY_CPU_LIMIT, CV_ANALYZE_MAX_BATCH_SIZE,
+    CV_USE_PROCESS_POOL,
     _rate, _check_user_rate, _csrf_required,
     _is_pdf_bytes,
     _extract_json_object, _extract_confirmed_skills,
@@ -127,19 +145,23 @@ from webbridge_routes import (
 
 
 # ---------------------------------------------------------------------------
-# CV ThreadPoolExecutor — lazy init, cost-aware, safe synchronous fallback
+# CV worker pool — ProcessPoolExecutor (default) with ThreadPoolExecutor fallback
 #
-# NOTE: ProcessPoolExecutor was considered but rejected for this codebase:
-# on Windows (spawn start method) each worker subprocess re-imports webbridge_cv
-# which transitively imports webbridge.py (Flask app init, DB connections, etc.),
-# causing an immediate crash.  ThreadPoolExecutor avoids subprocess spawning
-# entirely; it is also the correct tool since CV analysis is I/O-bound (Gemini
-# API calls dominate wall-clock time) rather than CPU-bound.
+# ProcessPoolExecutor uses the "spawn" multiprocessing context so worker
+# subprocesses only import webbridge_cv_worker.py (a slim, Flask-free module).
+# This avoids the historical problem where spawning re-imported webbridge.py
+# causing a Flask/DB-init crash.
+#
+# Set CV_USE_PROCESS_POOL=0 to revert to the thread-based path (e.g. on
+# Windows where multiprocessing has additional constraints, or in environments
+# where subprocesses are not supported).
 # ---------------------------------------------------------------------------
 import concurrent.futures  # stdlib, no new dep
+import multiprocessing
 
-# Module-level pool (None until first use) and cost tracking
+# Module-level pool handles (None until first use) and cost tracking
 _CV_ANALYZE_THREAD_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
+_CV_ANALYZE_PROC_POOL: "concurrent.futures.ProcessPoolExecutor | None" = None
 _CV_POOL_LOCK = threading.Lock()
 
 # Bounded thread pool for background job runners (prevents unbounded thread
@@ -167,23 +189,96 @@ _cv_cpu_window_start: float = time.monotonic()
 _cv_cpu_lock = threading.Lock()
 
 
+def _cv_worker_init() -> None:
+    """Thread-pool initializer: pre-import heavy PDF libs so the first real
+    CV analysis request doesn't pay the import cost.  Runs once per worker
+    thread at pool creation time."""
+    try:
+        import pypdf
+    except ImportError:
+        pass
+    try:
+        import pdfplumber
+    except ImportError:
+        pass
+
+
 def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
-    """Thread-pool wrapper: runs _analyze_cv_bytes_sync in a worker thread."""
-    return _analyze_cv_bytes_sync(pdf_bytes)
+    """Thread-pool wrapper: runs _analyze_cv_bytes_sync, adds per-process CPU
+    time to the returned dict so the caller can log it accurately."""
+    t_cpu = time.process_time()
+    result = _analyze_cv_bytes_sync(pdf_bytes)
+    if isinstance(result, dict):
+        result['_thread_cpu_s'] = time.process_time() - t_cpu
+    return result
+
+
+def _get_cv_pool():
+    """Return (or lazily create) the active CV analysis executor.
+
+    When CV_USE_PROCESS_POOL is True, creates a ProcessPoolExecutor backed
+    by the "spawn" multiprocessing context and webbridge_cv_worker as the
+    entry point.  Falls back to ThreadPoolExecutor on any creation error.
+    """
+    global _CV_ANALYZE_PROC_POOL, _CV_ANALYZE_THREAD_POOL
+    with _CV_POOL_LOCK:
+        if CV_USE_PROCESS_POOL:
+            if _CV_ANALYZE_PROC_POOL is None:
+                try:
+                    import webbridge_cv_worker as _wcw
+                    ctx = multiprocessing.get_context("spawn")
+                    _CV_ANALYZE_PROC_POOL = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=CV_ANALYZE_WORKERS,
+                        mp_context=ctx,
+                        initializer=_wcw.worker_process_init,
+                    )
+                    logger.info(
+                        '{"event":"cv_proc_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
+                    )
+                except Exception as pool_err:
+                    logger.warning(
+                        '{"event":"cv_proc_pool_create_failed","error":"%s",'
+                        '"fallback":"thread_pool"}' % str(pool_err)
+                    )
+                    _CV_ANALYZE_PROC_POOL = None
+            if _CV_ANALYZE_PROC_POOL is not None:
+                return _CV_ANALYZE_PROC_POOL, True  # (pool, is_process_pool)
+
+        # ThreadPoolExecutor path (fallback or when CV_USE_PROCESS_POOL=False)
+        if _CV_ANALYZE_THREAD_POOL is None:
+            try:
+                _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=CV_ANALYZE_WORKERS,
+                    initializer=_cv_worker_init,
+                )
+                logger.info(
+                    '{"event":"cv_thread_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
+                )
+            except Exception as pool_err:
+                logger.warning(
+                    '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
+                )
+                _CV_ANALYZE_THREAD_POOL = None
+        return _CV_ANALYZE_THREAD_POOL, False  # (pool, is_process_pool)
 
 
 def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> dict:
     """
-    Offload CV parsing to a thread-pool worker if possible, with full
+    Offload CV parsing to a worker pool (process or thread), with full
     synchronous fallback on any failure.
 
+    When CV_USE_PROCESS_POOL is True (default on Linux/macOS), uses a
+    ProcessPoolExecutor backed by webbridge_cv_worker.py so analysis runs
+    in a separate OS process, bypassing the GIL for CPU-bound PDF work and
+    providing accurate per-process CPU timing via time.process_time().
+
     Cost-aware behaviour:
-    - Pool capped at CV_ANALYZE_WORKERS workers (default ≤ 2).
+    - Pool capped at CV_ANALYZE_WORKERS workers (≤ os.cpu_count()).
     - Concurrency further limited by _CV_ANALYZE_SEMAPHORE.
     - If CV_ANALYZE_HOURLY_CPU_LIMIT is set and exceeded, falls back to sync.
     - All results are logged as JSON-line telemetry.
     """
-    global _CV_ANALYZE_THREAD_POOL, _cv_cpu_seconds_total, _cv_cpu_window_start
+    global _cv_cpu_seconds_total, _cv_cpu_window_start
 
     effective_timeout = timeout if timeout is not None else CV_ANALYZE_OFFLOAD_TIMEOUT
     size_bytes = len(pdf_bytes)
@@ -229,36 +324,37 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
 
     try:
         logger.info(
-            '{"event":"cv_analysis_start","size_bytes":%d}' % size_bytes
+            '{"event":"cv_analysis_start","pool_type":"%s","size_bytes":%d}'
+            % ("process" if CV_USE_PROCESS_POOL else "thread", size_bytes)
         )
-        # Lazily create the pool (never at import time)
-        with _CV_POOL_LOCK:
-            if _CV_ANALYZE_THREAD_POOL is None:
-                try:
-                    _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
-                        max_workers=CV_ANALYZE_WORKERS
-                    )
-                    logger.info(
-                        '{"event":"cv_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
-                    )
-                except Exception as pool_err:
-                    logger.warning(
-                        '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
-                    )
-                    _CV_ANALYZE_THREAD_POOL = None
 
-        pool = _CV_ANALYZE_THREAD_POOL
+        pool, is_process_pool = _get_cv_pool()
         if pool is None:
-            raise RuntimeError("ThreadPoolExecutor creation failed")
+            raise RuntimeError("CV worker pool creation failed")
 
-        future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
+        if is_process_pool:
+            import webbridge_cv_worker as _wcw
+            future = pool.submit(_wcw.analyze_cv_bytes_worker_entry, pdf_bytes)
+            cpu_key = '_proc_cpu_s'
+        else:
+            future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
+            cpu_key = '_thread_cpu_s'
+
         result = future.result(timeout=effective_timeout)
         elapsed_s = time.perf_counter() - t_start
-        logger.info(
-            '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
-                elapsed_s * 1000, size_bytes
+        cpu_s = result.pop(cpu_key, None) if isinstance(result, dict) else None
+        pool_type = "process" if is_process_pool else "thread"
+        if cpu_s is not None:
+            logger.info(
+                '{"event":"cv_analysis_end","pool_type":"%s","duration_ms":%.1f,'
+                '"cpu_time_ms":%.1f,"size_bytes":%d}'
+                % (pool_type, elapsed_s * 1000, cpu_s * 1000, size_bytes)
             )
-        )
+        else:
+            logger.info(
+                '{"event":"cv_analysis_end","pool_type":"%s","duration_ms":%.1f,'
+                '"size_bytes":%d}' % (pool_type, elapsed_s * 1000, size_bytes)
+            )
         _record_cv_cpu(elapsed_s)
         return result
 
@@ -574,6 +670,91 @@ def _job_runner(job_id, queries, fallback_queries, auto_expand, manual_urls, sea
                 job['status_html']="<br>".join(job['messages'][-12:])
         persist_job(job_id)
 
+def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg_db):
+    """Background daemon thread: fetch LinkedIn profile pictures and write to sourcing.pic.
+
+    Each entry in *targets* is a ``(userid, linkedinurl, display_name)`` tuple.
+    A fresh DB connection is opened so the caller's transaction is already committed
+    before this thread starts doing slow network I/O.
+    """
+    if not targets:
+        return
+    logger.info(f"[PicBackfill] Starting async picture backfill for {len(targets)} rows")
+    try:
+        import psycopg2 as _psycopg2
+        _conn = _psycopg2.connect(
+            host=pg_host, port=pg_port, user=pg_user,
+            password=pg_password, dbname=pg_db,
+        )
+        _conn.autocommit = False
+        _cur = _conn.cursor()
+    except Exception as _conn_err:
+        logger.warning(f"[PicBackfill] Could not open DB connection: {_conn_err}")
+        return
+    succeeded = 0
+    try:
+        for userid, linkedin_url, display_name in targets:
+            if not linkedin_url:
+                continue
+            logger.info(f"[PicBackfill] Fetching pic for {linkedin_url!r} (name={display_name!r})")
+            try:
+                pic_url = get_linkedin_profile_picture(linkedin_url, display_name=display_name)
+                if not pic_url:
+                    logger.info(f"[PicBackfill] No pic URL returned for {linkedin_url}; skipping")
+                    continue
+                pic_bytes = fetch_image_bytes_from_url(pic_url)
+                if not pic_bytes:
+                    # Direct CDN URL failed (e.g. 403); try again using only the
+                    # search-engine fallback (CSE / Serper / DataForSEO) which returns
+                    # a Google-cached thumbnail URL that does not require LinkedIn auth.
+                    logger.info(
+                        f"[PicBackfill] Direct URL fetch failed for {linkedin_url}; "
+                        "retrying via search-engine fallback (CSE/Serper)"
+                    )
+                    cse_pic_url = get_linkedin_profile_picture(
+                        linkedin_url, display_name=display_name, search_only=True
+                    )
+                    if cse_pic_url:
+                        pic_bytes = fetch_image_bytes_from_url(cse_pic_url)
+                        if not pic_bytes:
+                            logger.info(
+                                f"[PicBackfill] Search-fallback URL fetch also returned no bytes "
+                                f"for {linkedin_url} (url={cse_pic_url!r}); skipping"
+                            )
+                    else:
+                        logger.info(
+                            f"[PicBackfill] Search-fallback found no pic URL for {linkedin_url}; skipping"
+                        )
+                if not pic_bytes:
+                    logger.info(f"[PicBackfill] All image fetch attempts failed for {linkedin_url}; skipping")
+                    continue
+                # Skip LinkedIn ghost/placeholder icons — real profile photos are always
+                # larger than ~1 KB.  LinkedIn's default avatar SVG is ~451 bytes.
+                if len(pic_bytes) < 1000:
+                    logger.info(f"[PicBackfill] Image too small ({len(pic_bytes)} bytes) for {linkedin_url}; skipping placeholder")
+                    continue
+                pic_val = _psycopg2.Binary(pic_bytes)
+                _cur.execute(
+                    "UPDATE sourcing SET pic=%s WHERE userid=%s AND linkedinurl=%s AND pic IS NULL",
+                    (pic_val, userid, linkedin_url),
+                )
+                _conn.commit()
+                succeeded += 1
+            except Exception as _row_err:
+                logger.warning(f"[PicBackfill] Failed for {linkedin_url}: {_row_err}")
+                try:
+                    _conn.rollback()
+                except Exception:
+                    pass
+    finally:
+        try:
+            _cur.close()
+            _conn.close()
+        except Exception:
+            pass
+    logger.info(f"[PicBackfill] Backfill complete: {succeeded}/{len(targets)} rows updated")
+
+
 def _write_outputs(job_id, rows):
     with JOBS_LOCK:
         job_meta=(JOBS.get(job_id) or {}).get('meta',{})
@@ -690,17 +871,20 @@ def _write_outputs(job_id, rows):
                         cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS source TEXT DEFAULT ''")
                         conn.commit()
 
-                    # Check if pic column exists in sourcing table
-                    cur.execute("""
-                        SELECT column_name 
-                        FROM information_schema.columns 
-                        WHERE table_schema='public' AND table_name='sourcing' AND column_name='pic'
-                    """)
-                    has_pic_column = bool(cur.fetchone())
-                    
+                    # Auto-migrate: ensure pic column exists so thumbnails can always be stored.
+                    # This is idempotent (IF NOT EXISTS) and runs once per ingest operation.
+                    cur.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS pic BYTEA")
+                    conn.commit()
+                    has_pic_column = True  # we just guaranteed the column exists
+
                     active_userid=(job_meta.get('userid') or job_top.get('userid') or '').strip()
                     active_username=(job_meta.get('username') or job_top.get('username') or '').strip()
-                    
+
+                    # Collect (userid, linkedinurl, display_name) tuples for async pic backfill.
+                    # Pictures are NOT fetched here — rows are inserted with pic=NULL so the job
+                    # completes immediately; a daemon thread backfills the pic column afterwards.
+                    _backfill_targets = []
+
                     if has_source_header:
                         if has_pic_column:
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
@@ -708,45 +892,21 @@ def _write_outputs(job_id, rows):
                             for r in data_rows:
                                 linkedin_url = r[4]
                                 source_val = (r[5] or "") if len(r) > 5 else ""
-                                pic_bytes = None
-                                try:
-                                    pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
-                                    if pic_url:
-                                        pic_bytes = fetch_image_bytes_from_url(pic_url)
-                                        if pic_bytes:
-                                            pic_bytes = psycopg2.Binary(pic_bytes)
-                                        else:
-                                            pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
-                                except Exception as pic_err:
-                                    logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
-                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes, source_val))
+                                batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, None, source_val))
+                                if linkedin_url:
+                                    _backfill_targets.append((active_userid, linkedin_url, r[0]))
                         else:
                             insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, source) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                             batch_rows=[(active_userid, active_username, r[0], r[1], r[2], r[3], r[4], (r[5] or "") if len(r) > 5 else "") for r in data_rows]
                     elif has_pic_column:
-                        # Include pic column in insert
+                        # Include pic column in insert (pic=NULL; backfilled asynchronously)
                         insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl, pic) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
                         batch_rows = []
                         for r in data_rows:
-                            # r is a tuple: (name, company, jobtitle, country, linkedinurl)
-                            # LinkedInURL is at index 4 (0-based indexing, 5th column)
                             linkedin_url = r[4]
-                            # Retrieve profile picture and convert to bytea
-                            pic_bytes = None
-                            try:
-                                pic_url = get_linkedin_profile_picture(linkedin_url, display_name=r[0]) if linkedin_url else None
-                                if pic_url:
-                                    pic_bytes = fetch_image_bytes_from_url(pic_url)
-                                    if pic_bytes:
-                                        import psycopg2
-                                        pic_bytes = psycopg2.Binary(pic_bytes)
-                                    else:
-                                        # Byte fetch failed — store URL as bytes so client can try direct load
-                                        import psycopg2
-                                        pic_bytes = psycopg2.Binary(pic_url.encode('utf-8'))
-                            except Exception as pic_err:
-                                logger.warning(f"[Ingest] Failed to get profile pic for {linkedin_url}: {pic_err}")
-                            batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, pic_bytes))
+                            batch_rows.append((active_userid, active_username, r[0], r[1], r[2], r[3], linkedin_url, None))
+                            if linkedin_url:
+                                _backfill_targets.append((active_userid, linkedin_url, r[0]))
                     else:
                         # No pic column, use original insert
                         insert_stmt=sql.SQL("INSERT INTO sourcing (userid, username, name, company, jobtitle, country, linkedinurl) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING")
@@ -760,6 +920,17 @@ def _write_outputs(job_id, rows):
                         total_inserted+=len(batch)
                     conn.commit()
                     logger.info(f"[Ingest] Inserted {total_inserted} rows into sourcing (userid='{active_userid}' username='{active_username}').")
+                    # Spawn async thread to back-fill profile pictures now that the main
+                    # commit is done and rows are visible.  This avoids blocking the job.
+                    if _backfill_targets:
+                        import threading as _threading
+                        _t = _threading.Thread(
+                            target=_async_backfill_pictures,
+                            args=(_backfill_targets, pg_host, pg_port, pg_user, pg_password, pg_db),
+                            daemon=True,
+                        )
+                        _t.start()
+                        logger.info(f"[PicBackfill] Spawned async thread for {len(_backfill_targets)} targets")
                     # Back-fill the source column for any existing rows that were previously
                     # inserted without a source (ON CONFLICT DO NOTHING skips them on insert).
                     # This ensures the provider button (CO/AP/RR) appears even for contacts
@@ -1550,15 +1721,21 @@ def sourcing_list():
                 if pic_data:
                     if isinstance(pic_data, (bytes, memoryview)):
                         raw = bytes(pic_data)
-                        # Detect if the stored value is actually a URL (fallback path)
+                        # Detect if the stored value is actually a URL or data URI (fallback path)
                         try:
                             decoded = raw.decode('utf-8', errors='strict')
                             if decoded.startswith(('http://', 'https://', 'data:')):
                                 row_dict["pic"] = decoded
                             else:
-                                row_dict["pic"] = base64.b64encode(raw).decode("utf-8")
+                                # Emit a full data URI with the correct MIME type so the
+                                # browser never tries to decode WebP/PNG bytes as JPEG.
+                                mime = _sniff_image_mime(raw)
+                                b64 = base64.b64encode(raw).decode("utf-8")
+                                row_dict["pic"] = f"data:{mime};base64,{b64}"
                         except (UnicodeDecodeError, Exception):
-                            row_dict["pic"] = base64.b64encode(raw).decode("utf-8")
+                            mime = _sniff_image_mime(raw)
+                            b64 = base64.b64encode(raw).decode("utf-8")
+                            row_dict["pic"] = f"data:{mime};base64,{b64}"
                     else:
                         row_dict["pic"] = str(pic_data)
                 else:
@@ -3667,6 +3844,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
     
     Returns structured dict or None.
     """
+    _t_cpu_sync_start = time.process_time()
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -3679,6 +3857,12 @@ def _analyze_cv_bytes_sync(pdf_bytes):
         for page in reader.pages:
             t = page.extract_text()
             if t: text += t + "\n"
+        _pdf_cpu_s = time.process_time() - _t_cpu_sync_start
+        logger.debug(
+            '{"event":"cv_pdf_extract","cpu_time_ms":%.1f,"size_bytes":%d}' % (
+                _pdf_cpu_s * 1000, len(pdf_bytes)
+            )
+        )
         
         if not text.strip(): return None
 

@@ -211,19 +211,95 @@ html, body {
   transform: translateY(-2px);
   box-shadow: 0 4px 8px rgba(7,54,121,0.3);
 }
+
+/* ── Per-row hover effects handled via CSS to avoid per-row JS listeners ── */
+/* Score icons (tick ✓ / cross ✗) in the checkbox column */
+.score-icon:hover {
+  transform: scale(1.15);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+/* Profile picture images and initial-letter placeholders */
+#tableBody td img:hover,
+.sv-pic-placeholder:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+/* Name cell — underline on hover (overrides the inline text-decoration:none) */
+td[data-field="name"]:hover {
+  text-decoration: underline !important;
+}
 </style>
 
-<!-- Leaflet for country map visualization in Market Analytic -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<!-- Third-party libs deferred until needed to avoid blocking initial parse -->
+<!-- Chart.js, Leaflet and vskillset.js are injected on demand (see _loadChartJs,
+     _loadLeaflet, _ensureVSkillset helpers below). xlsx is not used and removed. -->
+<script>
+// ---------------------------------------------------------------------------
+// Lazy-loader helpers — each returns a Promise that resolves once the lib is
+// ready (idempotent; subsequent calls return the cached promise).
+// ---------------------------------------------------------------------------
+(function() {
+  'use strict';
 
-<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+  // Chart.js (~220 KB) — needed only when Market Analytic tab renders charts
+  let _chartJsPromise = null;
+  window._loadChartJs = function() {
+    if (_chartJsPromise) return _chartJsPromise;
+    if (typeof Chart !== 'undefined') return (_chartJsPromise = Promise.resolve());
+    _chartJsPromise = new Promise(function(resolve, reject) {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+      s.crossOrigin = 'anonymous';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    return _chartJsPromise;
+  };
 
-<!-- VSkillset Integration -->
-<script src="vskillset.js"></script>
+  // Leaflet CSS + JS (~140 KB combined) — needed only when Map mode is selected
+  let _leafletPromise = null;
+  window._loadLeaflet = function() {
+    if (_leafletPromise) return _leafletPromise;
+    if (typeof L !== 'undefined') return (_leafletPromise = Promise.resolve());
+    _leafletPromise = new Promise(function(resolve, reject) {
+      // CSS first (non-blocking link)
+      if (!document.querySelector('link[href*="leaflet"]')) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        link.integrity = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
+        link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+      }
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      s.integrity = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
+      s.crossOrigin = 'anonymous';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    return _leafletPromise;
+  };
+
+  // vskillset.js (~14 KB) — needed only when an assessment result is rendered
+  let _vskillsetPromise = null;
+  window._ensureVSkillset = function() {
+    if (_vskillsetPromise) return _vskillsetPromise;
+    if (window.vskillset && typeof window.vskillset.renderVSkillsetToUI === 'function')
+      return (_vskillsetPromise = Promise.resolve());
+    _vskillsetPromise = new Promise(function(resolve) {
+      const s = document.createElement('script');
+      s.src = 'vskillset.js';
+      s.onload = resolve;
+      s.onerror = resolve; // non-fatal — callers already guard with window.vskillset &&
+      document.head.appendChild(s);
+    });
+    return _vskillsetPromise;
+  };
+})();
+</script>
 <!-- Rate-limit enforcement (client-side guard matching admin-configured limits) -->
 <script src="ui/rate-limit-enforcer.js"></script>
 <script>RateLimitEnforcer.init({ prefetch: true });</script>
@@ -738,10 +814,12 @@ function switchTab(tabId) {
         }, 1000);
     } else if (tabId === 'tab-research') {
         document.querySelector('.tab-btn:nth-child(3)').classList.add('active');
-        // Trigger Market Analytic logic when tab is activated to ensure data is present
-        if (typeof deepResearch === 'function') {
-            deepResearch();
-        }
+        // Ensure Chart.js is loaded before triggering Market Analytic (lazy-loaded)
+        Promise.resolve(typeof window._loadChartJs === 'function' ? window._loadChartJs() : null)
+            .catch(() => {})
+            .then(() => {
+                if (typeof deepResearch === 'function') deepResearch();
+            });
     }
 }
 </script>
@@ -1058,6 +1136,8 @@ function _applyWeightLockState() {
 (function() {
   // previous weights snapshot (in-memory and persisted briefly)
   let _prevWeights = null;
+  // Debounce timer for localStorage saves triggered by slider oninput
+  let _weightSaveTimer = null;
 
   // Snapshot of slider values captured each time the assessment panel opens.
   // Used to detect whether the user actually changed any values before closing.
@@ -1241,7 +1321,12 @@ function _applyWeightLockState() {
       if (display) display.textContent = `Total: ${sum}%`;
       if (sum === 100) {
         if (display) { display.classList.remove('invalid'); display.style.color = 'var(--robins-egg,#6deaf9)'; }
-        try { localStorage.setItem('sv_assessment_weights', JSON.stringify(config)); } catch(_) {}
+        // Debounce the localStorage write: the UI label updates instantly (above) but
+        // the persist is deferred 400 ms so rapid slider drags do not spam storage I/O.
+        clearTimeout(_weightSaveTimer);
+        _weightSaveTimer = setTimeout(function() {
+          try { localStorage.setItem('sv_assessment_weights', JSON.stringify(config)); } catch(_) {}
+        }, 400);
         // Lock is applied in validateWeightsOnClose (not here) so that programmatic
         // calls from loadWeights()/restorePrevWeights() do not trigger locking prematurely.
       } else {
@@ -1281,6 +1366,14 @@ let pendingReviewRows = [];
 let bulkJobId = null;
 let bulkPollInterval = null;
 let bulkPollEventSource = null;  // NEW: SSE connection for bulk assessment
+
+/* ── Client-side performance telemetry ─────────────────────────────────────
+   Read from the console or the window object to measure improvements:
+   window._svTelemetry.lastRenderMs  — duration of the last renderTable() call
+   window._svTelemetry.renderRowCount — rows rendered in that call
+   window._svTelemetry.acRequestCount — number of autocomplete fetch calls made
+*/
+window._svTelemetry = { lastRenderMs: 0, renderRowCount: 0, acRequestCount: 0 };
 
 /* Helper: safely find element by id */
 function $id(id) { return document.getElementById(id); }
@@ -2075,17 +2168,24 @@ function pollBulkJob() {
     };
 }
 
+let _refreshBgTimer = null;
 function refreshSearchResultsInBackground() {
-    // Refresh the Search Results tab data without switching to it
-    // This ensures latest assessment results are visible when user switches back
-    try {
-        // Re-run the search to refresh the table with updated assessment data
-        if (typeof performSearch === 'function') {
-            performSearch();  // This will refresh the search results table
+    // Debounce: collapse rapid back-to-back calls into one 300 ms deferred refresh
+    // so bulk-complete callbacks don't spawn N concurrent performSearch calls.
+    if (_refreshBgTimer) clearTimeout(_refreshBgTimer);
+    _refreshBgTimer = setTimeout(function() {
+        _refreshBgTimer = null;
+        // Refresh the Search Results tab data without switching to it
+        // This ensures latest assessment results are visible when user switches back
+        try {
+            // Re-run the search to refresh the table with updated assessment data
+            if (typeof performSearch === 'function') {
+                performSearch();  // This will refresh the search results table
+            }
+        } catch(e) {
+            console.warn("Failed to refresh search results in background", e);
         }
-    } catch(e) {
-        console.warn("Failed to refresh search results in background", e);
-    }
+    }, 300);
 }
 
 // Wrapper function for refreshData to maintain compatibility with code that calls it
@@ -2358,6 +2458,9 @@ async function runBulkAssessmentFromSearch() {
     const progressContainer = document.getElementById('searchBulkProgressContainer');
     const progressBar = document.getElementById('searchBulkProgressBar');
     const progressPercent = document.getElementById('searchBulkProgressPercent');
+
+    // Preload vskillset.js so it's ready when assessment results arrive
+    if (typeof window._ensureVSkillset === 'function') window._ensureVSkillset();
     
     // All assessments use L2 (inference mode) by default
     const useL2 = true;
@@ -3024,6 +3127,66 @@ let _serverSortBy  = '';   // e.g. 'rating_score', 'name', 'company'
 let _serverSortDir = '';   // 'asc' | 'desc'
 // Global sort state: when non-null, holds all rows sorted; client-side pagination is used instead of server-side
 let _globalSortedRows = null;
+
+// Pic-backfill polling: silently re-fetch rows to pick up profile pictures populated
+// by the async backend backfill thread (which can run 30–120s after the initial load).
+// Uses a single-shot timer approach: _schedulePicPoll() resets the attempt counter and
+// starts the sequence; _scheduleNextPicPoll() fires ONE timeout, does a silent
+// pic-only re-fetch (never calls loadRows), then advances to the next attempt.
+// This prevents the infinite-poll bug where loadRows → _schedulePicPoll →
+// _cancelPicPoll (kills remaining timers) → restart from 5s → repeat forever.
+let _picPollAttempt = 0;
+const _PIC_POLL_INTERVALS = [5000, 15000, 30000, 60000]; // delay per attempt (ms)
+let _picPollTimeoutId = null;
+
+function _cancelPicPoll() {
+  if (_picPollTimeoutId !== null) { clearTimeout(_picPollTimeoutId); _picPollTimeoutId = null; }
+}
+// Called only from manual/user-initiated loads (resets the attempt counter).
+// The first poll is scheduled via requestIdleCallback (or setTimeout fallback) so
+// it doesn't compete with the table-render repaint that immediately follows loadRows.
+function _schedulePicPoll() {
+  _cancelPicPoll();
+  _picPollAttempt = 0;
+  const _ric = typeof requestIdleCallback === 'function' ? requestIdleCallback : function(cb) { setTimeout(cb, 16); };
+  _ric(() => _scheduleNextPicPoll());
+}
+// Schedules one pic-poll timeout using the current attempt index.
+// When it fires, does a silent fetch-and-merge (no full page re-render or re-poll
+// through loadRows) and then calls itself again if pics are still missing.
+function _scheduleNextPicPoll() {
+  if (_picPollAttempt >= _PIC_POLL_INTERVALS.length) return; // exhausted retries
+  const delay = _PIC_POLL_INTERVALS[_picPollAttempt];
+  _picPollAttempt++;
+  _picPollTimeoutId = setTimeout(async () => {
+    _picPollTimeoutId = null;
+    if (!(rowsData && rowsData.some(r => !r.pic))) return; // all pics arrived
+    try {
+      const uid = window.__SV_ACTIVE_USERID || '';
+      if (!uid) return;
+      let url = `${API_LIST}?userid=${encodeURIComponent(uid)}&page=${currentPage}&page_size=${PAGE_SIZE}`;
+      if (_activeSearchQuery) url += `&q=${encodeURIComponent(_activeSearchQuery)}`;
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const newRows = Array.isArray(data.rows) ? data.rows : [];
+      // Merge only newly-arrived pics into the existing rowsData so we don't
+      // re-render the whole table (avoids scroll-jump and flicker).
+      let anyPicAdded = false;
+      newRows.forEach((nr, i) => {
+        if (nr.pic && rowsData[i] && !rowsData[i].pic) {
+          rowsData[i].pic = nr.pic;
+          anyPicAdded = true;
+        }
+      });
+      if (anyPicAdded) renderTable();
+    } catch (_err) { /* silent — will retry on next interval if attempts remain */ }
+    // Schedule next attempt only if pics are still missing.
+    if (rowsData && rowsData.some(r => !r.pic)) {
+      _scheduleNextPicPoll();
+    }
+  }, delay);
+}
 
 let excelBlobUrl = null;
 // Tracks LinkedIn URLs that have already used "Reassess File" this session (one-use per profile)
@@ -4147,6 +4310,8 @@ function buildRow(row) {
   tr.dataset.linkedinurl = row.linkedinurl;
   // Store the sourcing record's role_tag so assessment can validate it matches the current session.
   tr.dataset.roleTag = row.role_tag || '';
+  // Store source so delegated click handlers can inspect provider without closure.
+  tr.dataset.source = row.source || '';
   // Track whether an appeal has already been filed for this record.
   if (row.appeal) { tr.dataset.hasAppeal = '1'; }
 
@@ -4206,9 +4371,8 @@ function buildRow(row) {
           tickIcon.className = 'score-icon';
           tickIcon.style.cssText = 'width:25px; height:25px; border:2px solid var(--robins-egg,#6deaf9); background:rgba(109,234,249,0.15); color:var(--azure-dragon,#073679); border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           tickIcon.title = `Accept (Score: ${cachedScore.toFixed(1)}% ≥ 50%)`;
-          tickIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'accept');
-          tickIcon.onmouseover = function() { this.style.transform = 'scale(1.15)'; this.style.boxShadow = '0 4px 8px rgba(16,185,129,0.3)'; };
-          tickIcon.onmouseout = function() { this.style.transform = 'scale(1)'; this.style.boxShadow = 'none'; };
+          tickIcon.dataset.svAction = 'accept'; // handled by tableBody delegated listener
+          // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(tickIcon);
       } else if (cachedScore !== null && cachedScore < scoreThreshold && !window.__HAS_CUSTOM_LLM) {
           // ✗ FAIL - Red cross icon
@@ -4217,9 +4381,8 @@ function buildRow(row) {
           crossIcon.className = 'score-icon';
           crossIcon.style.cssText = 'width:25px; height:25px; border:2px solid #ef4444; background:#fee2e2; color:#dc2626; border-radius:6px; cursor:pointer; font-size:16px; font-weight:bold; display:flex; align-items:center; justify-content:center; transition:all 0.2s;';
           crossIcon.title = `Rebate (Score: ${cachedScore.toFixed(1)}% < 50%)`;
-          crossIcon.onclick = () => finalizeIndividualAssessment(row.linkedinurl, 'rebate');
-          crossIcon.onmouseover = function() { this.style.transform = 'scale(1.15)'; this.style.boxShadow = '0 4px 8px rgba(239,68,68,0.3)'; };
-          crossIcon.onmouseout = function() { this.style.transform = 'scale(1)'; this.style.boxShadow = 'none'; };
+          crossIcon.dataset.svAction = 'rebate'; // handled by tableBody delegated listener
+          // hover handled via CSS .score-icon:hover
           checkboxCell.appendChild(crossIcon);
       }
   }
@@ -4232,17 +4395,18 @@ function buildRow(row) {
   // Handle profile picture - check if it's bytea data or URL
   let picSrc = null;
   if (row.pic && row.pic.trim()) {
-    // Check if it's already a URL
+    // Check if it's already a URL or full data URI
     if (row.pic.startsWith('http://') || row.pic.startsWith('https://') || row.pic.startsWith('data:')) {
       picSrc = row.pic;
     } else {
-      // Assume it's base64 encoded bytea data from Postgres
-      // If it doesn't have data URI prefix, add it
-      if (!row.pic.startsWith('data:image/')) {
-        picSrc = `data:image/jpeg;base64,${row.pic}`;
-      } else {
-        picSrc = row.pic;
-      }
+      // Raw base64 from Postgres bytea — sniff MIME type from base64 magic-byte prefix
+      // so the browser receives the correct content-type and never fails to decode WebP/PNG as JPEG.
+      let mime = 'image/jpeg'; // safe fallback
+      if      (row.pic.startsWith('/9j/'))       mime = 'image/jpeg';  // FF D8 FF (JPEG)
+      else if (row.pic.startsWith('iVBOR'))       mime = 'image/png';   // \x89PNG
+      else if (row.pic.startsWith('UklGR'))       mime = 'image/webp';  // RIFF....WEBP
+      else if (row.pic.startsWith('R0lGO'))       mime = 'image/gif';   // GIF87a / GIF89a
+      picSrc = `data:${mime};base64,${row.pic}`;
     }
   }
   
@@ -4250,79 +4414,39 @@ function buildRow(row) {
     const img = document.createElement('img');
     img.src = picSrc;
     img.alt = row.name || 'Profile';
-    img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+    img.loading = 'lazy';
+    img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     img.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
       : 'Click to view details';
-    img.onclick = async (e) => {
-      e.stopPropagation();
-      // For GP rows: attempt PDF download first; fall back to namecard if no PDF saved
-      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-        if (downloaded) return;
-      }
-      window.__sv_namecard.toggleNameCard(tr);
-    };
-    img.onmouseover = function() {
-      this.style.transform = 'scale(1.05)';
-      this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-    };
-    img.onmouseout = function() {
-      this.style.transform = 'scale(1)';
-      this.style.boxShadow = 'none';
-    };
+    img.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
+    // hover handled via CSS #tableBody td img:hover
     img.onerror = function() {
       // Fallback to placeholder if image fails to load
       this.style.display = 'none';
       const placeholder = document.createElement('div');
-      placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+      placeholder.className = 'sv-pic-placeholder';
+      placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
       placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
       placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
         ? 'Click to download GP profile PDF (or view details if no PDF)'
         : 'Click to view details';
-      placeholder.onclick = async (e) => {
-        e.stopPropagation();
-        if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-          const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-          if (downloaded) return;
-        }
-        window.__sv_namecard.toggleNameCard(tr);
-      };
-      placeholder.onmouseover = function() {
-        this.style.transform = 'scale(1.05)';
-        this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-      };
-      placeholder.onmouseout = function() {
-        this.style.transform = 'scale(1)';
-        this.style.boxShadow = 'none';
-      };
+      placeholder.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
+      // hover handled via CSS .sv-pic-placeholder:hover
       this.parentNode.appendChild(placeholder);
     };
     picCell.appendChild(img);
   } else {
     // Placeholder for missing profile picture - also clickable
     const placeholder = document.createElement('div');
-    placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+    placeholder.className = 'sv-pic-placeholder';
+    placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
     placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
       : 'Click to view details';
-    placeholder.onclick = async (e) => {
-      e.stopPropagation();
-      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source || '').toLowerCase()]) {
-        const downloaded = await _downloadGpProfilePdf(row.linkedinurl);
-        if (downloaded) return;
-      }
-      window.__sv_namecard.toggleNameCard(tr);
-    };
-    placeholder.onmouseover = function() {
-      this.style.transform = 'scale(1.05)';
-      this.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
-    };
-    placeholder.onmouseout = function() {
-      this.style.transform = 'scale(1)';
-      this.style.boxShadow = 'none';
-    };
+    placeholder.dataset.svAction = 'namecard'; // handled by tableBody delegated listener
+    // hover handled via CSS .sv-pic-placeholder:hover
     picCell.appendChild(placeholder);
   }
   tr.appendChild(picCell);
@@ -4355,8 +4479,7 @@ function buildRow(row) {
           console.warn('Invalid or missing LinkedIn URL');
         }
       };
-      td.onmouseover = function() { this.style.textDecoration = 'underline'; };
-      td.onmouseout = function() { this.style.textDecoration = 'none'; };
+      // hover handled via CSS td[data-field="name"]:hover
       return td;
     }
     
@@ -4415,9 +4538,7 @@ function buildRow(row) {
                 btn.textContent = 'View';
                 btn.className = 'view-btn assessment-complete';
                 btn.title = isLevel2 ? "View - L2 Complete" : "View - L1 Complete";
-                btn.onclick = () => {
-                    window.__sv_namecard.toggleNameCard(tr);
-                };
+                btn.dataset.svAction = 'view'; // handled by tableBody delegated listener (always opens detail, no PDF download)
                 // Revert to previous button styling (default gray button)
                 btn.style.cssText = 'width:100%; padding:6px 12px; font-size:13px; cursor:pointer;';
                 td.appendChild(btn);
@@ -4448,6 +4569,8 @@ function buildRow(row) {
                 // service to fetch the PDF instead of the primary configured service, ensuring
                 // the same provider that saved the PDF is used to retrieve it.
                 async function _runAssessPipeline(btn, label, svcOverride) {
+                    // Preload vskillset.js so it's ready when results arrive
+                    if (typeof window._ensureVSkillset === 'function') window._ensureVSkillset();
                     btn.textContent = 'Fetching PDF…';
                     const _gpGetSvc = svcOverride || _activeGpService();
                     const pdfResp = await fetch(
@@ -6003,6 +6126,13 @@ async function loadRows(page=1){
     setStatus(`Loaded page ${currentPage} (${rowsData.length} row(s)).`);
     renderTable();
     renderPager();
+    // If any row is still missing a profile picture, schedule background re-fetches
+    // so the table picks up pics filled in by the async backfill thread.
+    if (rowsData.some(r => !r.pic)) {
+      _schedulePicPoll();
+    } else {
+      _cancelPicPoll();
+    }
   } catch(e) {
     tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding:24px; color:#d1242f;">${escapeHtml(e.message || 'Load failed')}</td></tr>`;
     setStatus(e.message,'error');
@@ -6017,8 +6147,19 @@ async function loadRows(page=1){
   }
 }
 function renderTable(){
+  const _t0 = performance.now();
   tableBody.innerHTML='';
-  rowsData.forEach(r=> tableBody.appendChild(buildRow(r)));
+  // Build all rows in a DocumentFragment so the tbody is updated in one operation,
+  // avoiding a layout reflow after every individual row insertion.
+  const frag = document.createDocumentFragment();
+  rowsData.forEach(r => frag.appendChild(buildRow(r)));
+  tableBody.appendChild(frag);
+  const _renderMs = Math.round(performance.now() - _t0);
+  if (window._svTelemetry) {
+    window._svTelemetry.lastRenderMs   = _renderMs;
+    window._svTelemetry.renderRowCount = rowsData.length;
+    console.debug('[SV] renderTable', rowsData.length, 'rows in', _renderMs + 'ms');
+  }
   if (typeof _updateBulkActionButton === 'function') _updateBulkActionButton();
 }
 
@@ -6444,6 +6585,7 @@ function renderTable(){
       const profileImg = document.createElement('img');
       profileImg.src = picSrc;
       profileImg.alt = name;
+      profileImg.loading = 'lazy';
       profileImg.style.cssText = 'width:150px; height:150px; border-radius:50%; object-fit:cover; border:3px solid var(--robins-egg,#6deaf9); box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
       profileImg.onerror = function() {
         const placeholder = document.createElement('div');
@@ -7927,7 +8069,22 @@ window.applyTokenDelta = async function(delta, feature) {
 //   document.querySelectorAll('.row-select').forEach(cb => cb.checked = checked);
 //   showDeleteIfNeeded();
 // });
-reloadBtn.addEventListener('click', async () => { _resetAndReload(); await loadRows(currentPage); refreshAccountTokens(); });
+let _reloadBtnInFlight = false;
+reloadBtn.addEventListener('click', async () => {
+  if (_reloadBtnInFlight) return;
+  _reloadBtnInFlight = true;
+  reloadBtn.disabled = true;
+  reloadBtn.classList.add('btn-spinning');
+  try {
+    _resetAndReload();
+    await loadRows(currentPage);
+    refreshAccountTokens();
+  } finally {
+    _reloadBtnInFlight = false;
+    reloadBtn.disabled = false;
+    reloadBtn.classList.remove('btn-spinning');
+  }
+});
 // Delete button functionality removed per requirements
 // deleteBtn.addEventListener('click', deleteSelected);
 
@@ -8084,7 +8241,10 @@ async function exportCSV() {
   const uid = window.__SV_ACTIVE_USERID || '';
   if (!uid) { setStatus('Missing user session.','error'); return; }
 
-  let allRows = []; 
+  const _excelBtn = document.getElementById('exportExcelBtn');
+  if (_excelBtn) { _excelBtn.disabled = true; }
+
+  let allRows = [];
   try {
     const res = await fetch(`${API_LIST}?userid=${encodeURIComponent(uid)}&all=1`);
     const data = await res.json().catch(()=> ({}));
@@ -8092,11 +8252,13 @@ async function exportCSV() {
     allRows = Array.isArray(data.rows) ? data.rows : [];
   } catch(e) {
     setStatus(`Failed to fetch all data: ${e.message}`, 'error');
+    if (_excelBtn) { _excelBtn.disabled = false; }
     return;
   }
 
   if (!allRows.length) {
     setStatus('No data to export.','error');
+    if (_excelBtn) { _excelBtn.disabled = false; }
     return;
   }
 
@@ -8125,6 +8287,7 @@ async function exportCSV() {
   setStatus('CSV downloaded.','success');
   deleteClientExcelBlob();
   disableActionButton(document.getElementById('exportCsvBtn'));
+  if (_excelBtn) { _excelBtn.disabled = false; }
 }
 
 async function exportExcelXlsxAndPurge() {
@@ -8791,6 +8954,7 @@ if (bulkIngestBtn) {
         if (!confirmed) return;
 
         bulkIngestBtn.disabled = true;
+        bulkIngestBtn.classList.add('btn-spinning');
         setSearchResultButtonsEnabled(false);
         let done = 0, failed = 0;
         for (let i = 0; i < toIngest.length; i++) {
@@ -8799,9 +8963,13 @@ if (bulkIngestBtn) {
                 const ok = await _downloadLinkdapiProfile(toIngest[i].linkedinurl, null, toIngest[i].name || '');
                 if (ok) done++; else failed++;
             } catch (_) { failed++; }
+            // Yield the event loop so the browser can paint the progress text and
+            // remain responsive between profile fetches (avoids long task warnings).
+            await new Promise(r => setTimeout(r, 0));
         }
 
         bulkIngestBtn.textContent = 'Bulk Ingest';
+        bulkIngestBtn.classList.remove('btn-spinning');
         bulkIngestBtn.disabled = false;
         setSearchResultButtonsEnabled(true);
 
@@ -8831,6 +8999,8 @@ if (bulkIngestBtn) {
 
   let _acDebounce = null;
   let _acActiveIdx = -1; // keyboard-focused item index in dropdown
+  let _acFetchController = null; // AbortController for in-flight autocomplete fetch
+  const _acQueryCache = new Map(); // in-memory cache: query → suggestions array
 
   function hideDropdown() {
     if (searchDropdown) searchDropdown.style.display = 'none';
@@ -8849,9 +9019,10 @@ if (bulkIngestBtn) {
 
   function showDropdown(items) {
     if (!searchDropdown) return;
-    searchDropdown.innerHTML = '';
     _acActiveIdx = -1;
     if (!items.length) { hideDropdown(); return; }
+    // Build all list items in a DocumentFragment — single DOM insertion, one reflow
+    const frag = document.createDocumentFragment();
     items.forEach((item, idx) => {
       const li = document.createElement('li');
       li.textContent = item;
@@ -8865,24 +9036,40 @@ if (bulkIngestBtn) {
         triggerSearch();
       });
       li.addEventListener('mouseover', () => _acSetActive(idx));
-      searchDropdown.appendChild(li);
+      frag.appendChild(li);
     });
+    searchDropdown.innerHTML = '';
+    searchDropdown.appendChild(frag);
     searchDropdown.style.display = 'block';
   }
 
   async function fetchAutocomplete(q) {
     // Minimum 2 characters required to avoid excessive DB load
     if (!q || q.length < 2) { hideDropdown(); return; }
+    // Serve from cache when available to avoid redundant network requests
+    if (_acQueryCache.has(q)) { showDropdown(_acQueryCache.get(q)); return; }
+    // Cancel any in-flight request for a prior query
+    if (_acFetchController) { try { _acFetchController.abort(); } catch (_) { /* abort() is safe; ignore */ } }
+    const ctrl = new AbortController();
+    _acFetchController = ctrl;
+    if (window._svTelemetry) window._svTelemetry.acRequestCount++;
     try {
       const uid = window.__SV_ACTIVE_USERID || '';
       let url = `${API_AUTOCOMPLETE}?q=${encodeURIComponent(q)}&limit=10`;
       if (uid) url += `&userid=${encodeURIComponent(uid)}`;
-      const res = await fetch(url, { credentials: 'same-origin' });
+      const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
       if (!res.ok) return;
       const data = await res.json();
-      showDropdown(Array.isArray(data.suggestions) ? data.suggestions : []);
-    } catch (_) {
-      hideDropdown();
+      const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+      // Evict the oldest entry when cache would exceed 50 queries (FIFO cap)
+      if (_acQueryCache.size >= 50) _acQueryCache.delete(_acQueryCache.keys().next().value);
+      _acQueryCache.set(q, suggestions);
+      showDropdown(suggestions);
+    } catch (err) {
+      if (err && err.name !== 'AbortError') hideDropdown();
+    } finally {
+      // Only clear the module-level ref if it hasn't been replaced by a newer request
+      if (_acFetchController === ctrl) _acFetchController = null;
     }
   }
 
@@ -8952,6 +9139,8 @@ if (bulkIngestBtn) {
 /* ── End candidate search bar ────────────────────────────────────────────── */
 
 function _resetAndReload() {
+  _cancelPicPoll();
+  _picPollAttempt = 0;
   _globalSortedRows = null;
   _serverSortBy = '';
   _serverSortDir = '';
@@ -8967,6 +9156,60 @@ function _resetAndReload() {
 const pagerEl = document.getElementById('pager');
 const prevBtn = document.getElementById('prevPageBtn');
 const nextBtn = document.getElementById('nextPageBtn');
+
+/* ── Delegated click handler for #tableBody ─────────────────────────────────
+   Replaces per-row onclick handlers on score-icon buttons and pic/placeholder
+   elements. A single listener on the tbody handles all rows, scaling O(1)
+   instead of O(n) with row count.  Uses data-sv-action attributes set in
+   buildRow to route to the appropriate action. ─────────────────────────────*/
+if (tableBody) {
+  tableBody.addEventListener('click', async function (e) {
+    // Find the actionable element (button or div with data-sv-action)
+    const target = e.target.closest('[data-sv-action]');
+    if (!target) return;
+    const action = target.dataset.svAction;
+    if (!action) return;
+
+    // Find the ancestor row to retrieve linkedinurl and source
+    const tr = target.closest('tr[data-linkedinurl]');
+    if (!tr) return;
+    const linkedinurl = tr.dataset.linkedinurl || '';
+    const source = tr.dataset.source || '';
+
+    if (action === 'accept' || action === 'rebate') {
+      // Score-icon: finalise individual assessment result
+      e.stopPropagation();
+      if (typeof finalizeIndividualAssessment === 'function') {
+        finalizeIndividualAssessment(linkedinurl, action);
+      }
+      return;
+    }
+
+    if (action === 'view') {
+      // View button: always open namecard/detail panel (no PDF download)
+      e.stopPropagation();
+      if (window.__sv_namecard && tr) {
+        window.__sv_namecard.toggleNameCard(tr);
+      }
+      return;
+    }
+
+    if (action === 'namecard') {
+      // Profile pic / placeholder: open namecard (GP rows try PDF first)
+      e.stopPropagation();
+      if (window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[source.toLowerCase()]) {
+        if (typeof _downloadGpProfilePdf === 'function') {
+          const downloaded = await _downloadGpProfilePdf(linkedinurl);
+          if (downloaded) return;
+        }
+      }
+      if (window.__sv_namecard && tr) {
+        window.__sv_namecard.toggleNameCard(tr);
+      }
+      return;
+    }
+  });
+}
 prevBtn.addEventListener('click', async () => {
   if(currentPage > 1){
     await loadRows(currentPage - 1);
@@ -9521,6 +9764,10 @@ function renderLocations(res, useDOM=true) {
     if (mode === 'Map') {
         if (!mapDiv) return;
         mapDiv.style.display = 'block';
+        // Lazy-load Leaflet (only when Map mode is first requested)
+        (typeof window._loadLeaflet === 'function' ? window._loadLeaflet() : Promise.resolve())
+            .catch(() => {})
+            .then(function() {
         // Initialize map (singleton)
         if (!window._countryMapInstance) {
             try {
@@ -9609,6 +9856,7 @@ function renderLocations(res, useDOM=true) {
         })();
 
         return;
+        }); // end _loadLeaflet().then
     }
 }
 
@@ -9692,14 +9940,19 @@ function clientInferFallback(body, t0) {
     renderLocations(inferenceResult); // Call Table Render instead of Map
     setupDropZones(); 
     
-    // Wire up Viz Selectors
+    // Wire up Viz Selectors — debounced so rapid mode switches only trigger one render
+    const _vizDebounceMs = 120;
+    const _vizDebounceTimers = {};
     ['viz-select-jobfamily', 'viz-select-seniority', 'viz-select-company', 'viz-select-country'].forEach(id => {
         const el = document.getElementById(id);
         if(el) el.addEventListener('change', () => {
-            if(id.includes('jobfamily')) renderFamilyViz(inferenceResult, true);
-            if(id.includes('seniority')) renderSeniorityViz(inferenceResult, true);
-            if(id.includes('company')) renderCompanyViz(inferenceResult, true);
-            if(id.includes('country')) renderLocations(inferenceResult, true);
+            clearTimeout(_vizDebounceTimers[id]);
+            _vizDebounceTimers[id] = setTimeout(() => {
+                if(id.includes('jobfamily')) renderFamilyViz(inferenceResult, true);
+                if(id.includes('seniority')) renderSeniorityViz(inferenceResult, true);
+                if(id.includes('company')) renderCompanyViz(inferenceResult, true);
+                if(id.includes('country')) renderLocations(inferenceResult, true);
+            }, _vizDebounceMs);
         });
     });
 

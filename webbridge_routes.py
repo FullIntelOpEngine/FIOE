@@ -116,6 +116,23 @@ _LINKEDIN_SLUG_RE = re.compile(r'linkedin\.com/in/([^/?#]+)')
 # og:image content-value extraction (applied to a single <meta> tag string, not full HTML)
 _OG_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.IGNORECASE)
 
+# ── Trusted image CDN domain suffixes ────────────────────────────────────────
+# Public CDN hosts that carry no SSRF risk — skip the DNS-based _is_private_host
+# check and accept their images without a HEAD validation round-trip.
+# Matching is done against the URL hostname (exact or as a suffix of a subdomain).
+_TRUSTED_IMAGE_CDN_SUFFIXES = frozenset([
+    'gstatic.com',            # Google CSE thumbnails (encrypted-tbn*.gstatic.com)
+    'googleusercontent.com',  # Google user-content images
+    'licdn.com',              # LinkedIn media CDN (media.licdn.com, media-exp*.licdn.com)
+    'linkedin.com',           # LinkedIn itself (og:image host)
+    'cloudinary.com',         # Cloudinary image CDN
+    'twimg.com',              # Twitter image CDN (twitter:image tags)
+    'gravatar.com',           # Gravatar avatars
+    'fastly.net',             # Fastly-backed image CDNs
+    'akamaized.net',          # Akamai CDN
+    'cdninstagram.com',       # Instagram CDN
+])
+
 
 def _extract_og_image(html_head):
     # type: (str) -> str
@@ -3627,7 +3644,14 @@ def google_cse_search_page(query: str, api_key: str, cx: str, num: int, start_in
             estimated_total=0
         out=[]
         for it in items:
-            out.append({"link":it.get("link") or "","title":it.get("title") or "","snippet":it.get("snippet") or "","displayLink":it.get("displayLink") or ""})
+            entry = {"link":it.get("link") or "","title":it.get("title") or "","snippet":it.get("snippet") or "","displayLink":it.get("displayLink") or ""}
+            # Preserve pagemap so callers (e.g. get_linkedin_profile_picture) can
+            # extract cse_thumbnail / cse_image / metatags from the Google-cached
+            # metadata — this is the primary way profile pictures are obtained when
+            # Google CSE is the configured main search provider.
+            if it.get("pagemap"):
+                entry["pagemap"] = it["pagemap"]
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[CSE] page fetch failed: {e}")
@@ -3665,12 +3689,17 @@ def serper_search_page(query: str, api_key: str, num: int, gl_hint: str = None, 
             estimated_total = 0
         out = []
         for it in organic:
-            out.append({
+            entry = {
                 "link": it.get("link") or "",
                 "title": it.get("title") or "",
                 "snippet": it.get("snippet") or "",
                 "displayLink": it.get("displayLink") or (it.get("link") or ""),
-            })
+            }
+            # Preserve Serper's thumbnail field so profile-pic extraction works
+            # when Serper is the configured main search provider.
+            if it.get("imageUrl"):
+                entry["imageUrl"] = it["imageUrl"]
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[Serper] page fetch failed: {e}")
@@ -4568,12 +4597,25 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
         for it in items:
             if it.get("type") != "organic":
                 continue
-            out.append({
+            entry = {
                 "link": it.get("url") or "",
                 "title": it.get("title") or "",
                 "snippet": it.get("description") or "",
                 "displayLink": it.get("domain") or (it.get("url") or ""),
-            })
+            }
+            # Preserve DataForSEO image fields so profile-pic extraction works
+            # when DataForSEO is the configured main search provider.
+            _dfs_img = None
+            _dfs_extra = it.get("extra") or {}
+            if _dfs_extra.get("featured_image"):
+                _dfs_img = _dfs_extra["featured_image"]
+            elif it.get("images"):
+                _first_img = it["images"][0] if it["images"] else None
+                if _first_img and _first_img.get("url"):
+                    _dfs_img = _first_img["url"]
+            if _dfs_img:
+                entry["imageUrl"] = _dfs_img
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[DataforSEO] page fetch failed: {e}")
@@ -4825,11 +4867,34 @@ def unified_search_page(query: str, num: int, start_index: int, gl_hint: str = N
     # Fall back to Google CSE
     return google_cse_search_page(query, GOOGLE_CSE_API_KEY, GOOGLE_CSE_CX, num, start_index, gl_hint=gl_hint)
 
+def _is_trusted_cdn_url(url: str) -> bool:
+    """Return True if *url* is hosted on a known-safe public CDN.
+
+    These domains carry no SSRF risk and their images can be fetched without
+    the DNS-based private-host check or a HEAD validation round-trip.
+    """
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        if not host:
+            return False
+        # Exact match or subdomain match (e.g. "media.licdn.com" ends with ".licdn.com")
+        return host in _TRUSTED_IMAGE_CDN_SUFFIXES or any(
+            host == s or host.endswith('.' + s)
+            for s in _TRUSTED_IMAGE_CDN_SUFFIXES
+        )
+    except Exception:
+        return False
+
+
 def _is_private_host(url: str) -> bool:
     """Return True if the URL resolves to a private/loopback/reserved IP — used to block SSRF."""
     import socket
     import ipaddress
     from urllib.parse import urlparse
+    # Fast-path: known public CDN hosts are never private.
+    if _is_trusted_cdn_url(url):
+        return False
     try:
         host = urlparse(url).hostname
         if not host:
@@ -4844,18 +4909,29 @@ def _is_private_host(url: str) -> bool:
         return True
 
 
-def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
+def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, search_only: bool = False):
     """
     Retrieve LinkedIn profile picture URL using scraping and Google Custom Search.
     Returns profile picture URL or None if not found.
 
     Priority:
     1. Try to fetch og:image meta tag directly from LinkedIn profile
+    1.5. Try BrightData web-unlock proxy to fetch LinkedIn og:image when
+         direct access is blocked (mirrors the Google Sheets link-preview approach)
     2. Google CSE text search for the LinkedIn profile page — extract
        pagemap.cse_thumbnail or pagemap.metatags[og:image] (most reliable,
        Google caches the metadata even for authenticated pages)
     3. Google CSE image search as a last-resort fallback
     4. Return None if no valid image found
+
+    Args:
+        linkedin_url: The LinkedIn profile URL to retrieve a picture for.
+        display_name: Optional display name used to improve search accuracy.
+        search_only: When True, skip Methods 1 and 1.5 (direct LinkedIn scrape /
+            BrightData) and jump straight to the search-engine fallback (CSE /
+            Serper / DataForSEO).  Set this when the caller already knows that a
+            direct CDN URL returned an error (e.g. 403) and wants a cacheable
+            thumbnail URL from Google instead.
 
     Security Note: Validates LinkedIn URLs to prevent SSRF attacks.
     """
@@ -4870,33 +4946,93 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
 
     profile_pic_url = None
 
+    # Extract profile slug early so all methods can use it.
+    _slug_match = _LINKEDIN_SLUG_RE.search(linkedin_url)
+    profile_slug = _slug_match.group(1).rstrip('/') if _slug_match else None
+
+    # Normalise to www.linkedin.com (handles regional subdomains like cn., jp., …)
+    _normalized_li_url = (
+        f"https://www.linkedin.com/in/{profile_slug}" if profile_slug else linkedin_url
+    )
+
     # Method 1: Try to fetch og:image meta tag directly from LinkedIn profile
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
-        
-        # Handle rate limiting and forbidden responses
-        if response.status_code == 429:
-            logger.warning(f"[Profile Pic] Rate limited by LinkedIn: {linkedin_url}")
-            # Continue to fallback method
-        elif response.status_code == 403:
-            logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
-            # Continue to fallback method
-        elif response.status_code == 200:
-            # Parse only the <head> section (first 8 KB is enough for meta tags).
-            # Using a string-search helper instead of complex regex avoids
-            # polynomial ReDoS on adversarial HTML.
-            html_head = response.text[:8192]
-            profile_pic_url = _extract_og_image(html_head)
-            if profile_pic_url:
-                logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
-                if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
-                    return profile_pic_url
-                logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
-    except Exception as e:
-        logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
+    # (skipped when search_only=True — caller wants a search-engine cached URL)
+    if not search_only:
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
+
+            # Handle rate limiting and forbidden responses
+            if response.status_code == 429:
+                logger.warning(f"[Profile Pic] Rate limited by LinkedIn: {linkedin_url}")
+                # Continue to fallback method
+            elif response.status_code == 403:
+                logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
+                # Continue to fallback method
+            elif response.status_code == 200:
+                # Parse only the <head> section (first 8 KB is enough for meta tags).
+                # Using a string-search helper instead of complex regex avoids
+                # polynomial ReDoS on adversarial HTML.
+                html_head = response.text[:8192]
+                profile_pic_url = _extract_og_image(html_head)
+                if profile_pic_url:
+                    logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
+                    if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
+                        return profile_pic_url
+                    logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
+                else:
+                    logger.info(f"[Profile Pic] Method 1: no og:image in LinkedIn HTML (bot-block or auth wall) for {linkedin_url}")
+        except Exception as e:
+            logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
+    else:
+        logger.info(f"[Profile Pic] search_only=True: skipping direct scrape for {linkedin_url}")
+
+    # Method 1.5: BrightData web-unlock proxy — mirrors the Google Sheets link-preview approach.
+    # When BrightData is configured, use it to fetch the LinkedIn profile page and extract
+    # og:image from the HTML.  This bypasses LinkedIn's bot-detection that blocks Method 1.
+    if not search_only and not profile_pic_url and profile_slug:
+        try:
+            _gp_cfg = _load_get_profiles_config()
+            _bd = _gp_cfg.get("brightdata", {})
+            if _bd.get("enabled") == "enabled" and _bd.get("api_key") and _bd.get("zone"):
+                _bd_key  = _bd["api_key"]
+                _bd_zone = _bd["zone"]
+                # Ask BrightData to fetch the LinkedIn page and return its HTML.
+                # We send the raw LinkedIn URL (not a Google SERP URL) so BrightData's
+                # web-unlock layer handles the anti-bot challenge transparently.
+                # "format": "html" instructs the API to return the raw response body.
+                _bd_payload = {
+                    "zone": _bd_zone,
+                    "url": _normalized_li_url,
+                    "format": "html",
+                }
+                _bd_headers = {
+                    "Authorization": f"Bearer {_bd_key}",
+                    "Content-Type": "application/json",
+                }
+                _bd_resp = _HTTP_SESSION.post(
+                    "https://api.brightdata.com/request",
+                    json=_bd_payload,
+                    headers=_bd_headers,
+                    timeout=30,
+                )
+                if _bd_resp.status_code == 200 and _bd_resp.text:
+                    _html_head = _bd_resp.text[:16384]
+                    _og = _extract_og_image(_html_head)
+                    if _og and not any(
+                        p in _og.lower() for p in ['default', 'placeholder', 'ghost']
+                    ):
+                        profile_pic_url = _og
+                        logger.info("[Profile Pic] BrightData og:image found")
+                else:
+                    logger.debug(
+                        "[Profile Pic] BrightData returned HTTP %d",
+                        _bd_resp.status_code,
+                    )
+        except Exception as _bd_exc:
+            logger.debug("[Profile Pic] BrightData fetch skipped: %s", _bd_exc)
 
     # Method 2 & 3: search fallback (Serper.dev, DataforSEO, or Google CSE)
     _search_cfg = _load_search_provider_config()
@@ -4906,39 +5042,63 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     _dfs_active = (_dfs_cfg.get("enabled", "disabled") == "enabled"
                    and bool(_dfs_cfg.get("login")) and bool(_dfs_cfg.get("password")))
     _cse_available = bool(GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX)
-    if not profile_pic_url and (_serper_active or _dfs_active or _cse_available):
+    if _serper_active:
+        _provider_label = "serper"
+    elif _dfs_active:
+        _provider_label = "dataforseo"
+    elif _cse_available:
+        _provider_label = "google-cse"
+    else:
+        _provider_label = None
+    if not profile_pic_url and not _provider_label:
+        logger.warning(f"[Profile Pic] No search provider configured (CSE/Serper/DFS); skipping search for {linkedin_url}")
+    if not profile_pic_url and _provider_label:
+        logger.info(f"[Profile Pic] Method 2: text search via {_provider_label} for {linkedin_url}")
         try:
             from urllib.parse import urlparse
 
-            # Extract URL slug (e.g. john-doe-12345)
-            match = _LINKEDIN_SLUG_RE.search(linkedin_url)
-            if not match:
+            # profile_slug already extracted at function top; guard against edge-case None
+            if not profile_slug:
                 logger.warning(f"[Profile Pic] Could not extract profile slug from URL: {linkedin_url}")
                 return None
-
-            profile_slug = match.group(1).rstrip('/')
 
             # ── Method 2: Text search — Google caches pagemap metadata including og:image ──
             # This works even when LinkedIn requires login to view the profile page.
             # Build query: prefer display name (more specific), fall back to slug.
             def _run_text_search(query_str: str) -> str | None:
                 """Run a unified text search and extract the best profile picture URL."""
+                logger.info(f"[Profile Pic] Querying: {query_str!r}")
                 try:
                     items, _ = unified_search_page(query_str, 5, 1)
                     for item in items:
+                        # Priority 0: provider-native image field (Serper imageUrl /
+                        # DataForSEO featured_image).  These are populated by
+                        # serper_search_page and dataforseo_search_page when the
+                        # respective provider is the configured main search provider.
+                        native_img = item.get("imageUrl")
+                        if native_img:
+                            logger.info("[Profile Pic] provider imageUrl found")
+                            return native_img
                         pagemap = item.get("pagemap", {})
-                        # Priority: cse_thumbnail (Google's cached thumbnail — no auth needed)
+                        # Priority 1: cse_thumbnail (Google's cached thumbnail — no auth needed)
                         thumbnails = pagemap.get("cse_thumbnail") or []
                         if thumbnails and thumbnails[0].get("src"):
                             src = thumbnails[0]["src"]
                             logger.info(f"[Profile Pic] cse_thumbnail found: {src}")
                             return src
-                        # Fallback: og:image from metatags
+                        # Priority 2: cse_image (Google's cached full image — also auth-free)
+                        cse_imgs = pagemap.get("cse_image") or []
+                        if cse_imgs and cse_imgs[0].get("src"):
+                            src = cse_imgs[0]["src"]
+                            logger.info("[Profile Pic] cse_image found")
+                            return src
+                        # Priority 3: og:image / twitter:image from metatags
                         for mt in pagemap.get("metatags", []):
                             og = mt.get("og:image") or mt.get("twitter:image")
                             if og:
                                 logger.info(f"[Profile Pic] og:image found via metatags: {og}")
                                 return og
+                    logger.info(f"[Profile Pic] No usable pic in {len(items)} search result(s) for {query_str!r}")
                 except Exception as exc:
                     logger.warning(f"[Profile Pic] text search failed ({query_str!r}): {exc}")
                 return None
@@ -4947,25 +5107,39 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             if display_name and display_name.strip():
                 clean_name = display_name.strip()
                 profile_pic_url = _run_text_search(f'"{clean_name}" site:linkedin.com/in')
-            # Fall back to URL slug
+            # Fall back to quoted-slug search
             if not profile_pic_url:
                 profile_pic_url = _run_text_search(f'site:linkedin.com/in "{profile_slug}"')
+            # Last-resort text variant: exact URL path (unquoted slug — CSE indexes the path)
+            if not profile_pic_url:
+                profile_pic_url = _run_text_search(f'site:linkedin.com/in/{profile_slug}')
 
             # ── Method 3: Image search — last resort (Google CSE only) ──
-            if not profile_pic_url and _cse_available and not _serper_active:
+            # Only execute when Google CSE is the active main provider (i.e. neither
+            # Serper nor DataForSEO is enabled). Calling the CSE image API while
+            # Serper or DataForSEO is the configured main provider would violate the
+            # single-provider constraint (profile pictures must be retrieved
+            # exclusively through the main provider).
+            if not profile_pic_url and _cse_available and not _serper_active and not _dfs_active:
                 try:
                     endpoint = "https://www.googleapis.com/customsearch/v1"
                     # Build image query: display name is more useful than URL slug here
                     img_query = (
                         f'"{display_name.strip()}" site:linkedin.com/in'
                         if display_name and display_name.strip()
-                        else f'site:linkedin.com/in "{profile_slug}"'
+                        else f'site:linkedin.com/in/{profile_slug}'
                     )
                     params = {
                         "key": GOOGLE_CSE_API_KEY,
                         "cx": GOOGLE_CSE_CX,
                         "q": img_query,
                         "searchType": "image",
+                        # imgType=face biases results towards portrait/headshot photos,
+                        # which greatly improves accuracy for LinkedIn profile pictures.
+                        "imgType": "face",
+                        # imgSize=MEDIUM avoids tiny icons (xxsmall) and very large
+                        # originals that would expand JSON payload unnecessarily.
+                        "imgSize": "MEDIUM",
                         "num": 5,
                     }
                     r = _HTTP_SESSION.get(endpoint, params=params, timeout=15)
@@ -4996,6 +5170,18 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                     if not profile_pic_url and items:
                         profile_pic_url = items[0].get("link")
                         logger.info(f"[Profile Pic] Using first image result: {profile_pic_url}")
+                    # If face-oriented search returned nothing, retry without imgType constraint
+                    if not profile_pic_url and _cse_available:
+                        params_broad = {k: v for k, v in params.items() if k not in ("imgType", "imgSize")}
+                        try:
+                            r2 = _HTTP_SESSION.get(endpoint, params=params_broad, timeout=15)
+                            r2.raise_for_status()
+                            items2 = r2.json().get("items", [])
+                            if items2:
+                                profile_pic_url = items2[0].get("link")
+                                logger.info(f"[Profile Pic] Broad image search hit: {profile_pic_url}")
+                        except Exception as exc2:
+                            logger.debug(f"[Profile Pic] Broad image search skipped: {exc2}")
                 except Exception as exc:
                     logger.warning(f"[Profile Pic] CSE image search failed: {exc}")
 
@@ -5005,20 +5191,58 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     # Final validation: ensure URL is not empty or broken
     if profile_pic_url:
         try:
+            # Fast-path: trusted CDN hosts are public, no SSRF risk.
+            # Skip DNS-based SSRF check and expensive HEAD round-trip — the
+            # image will still be verified when fetch_image_bytes_from_url
+            # actually downloads it.
+            if _is_trusted_cdn_url(profile_pic_url):
+                logger.debug("[Profile Pic] Trusted CDN, skipping HEAD")
+                return profile_pic_url
+
             # SECURITY: reject URLs that resolve to private/loopback addresses (SSRF)
             if _is_private_host(profile_pic_url):
                 logger.warning(f"[Profile Pic] SSRF: blocked private-host URL: {profile_pic_url}")
                 return None
+
+            # Shared headers for HEAD/GET verification — some CDNs require a real User-Agent.
+            _val_headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/webp,image/avif,image/*,*/*",
+            }
+
             # Quick HEAD request to verify image exists; allow redirects and treat 2xx/3xx as valid
             try:
-                head_response = requests.head(profile_pic_url, timeout=8, allow_redirects=True)
+                head_response = requests.head(
+                    profile_pic_url, timeout=8, allow_redirects=True,
+                    headers=_val_headers,
+                )
                 status = head_response.status_code
                 if 200 <= status < 400:
                     return profile_pic_url
-                # Some CDNs reject HEAD but serve GET — fall through to return URL if content-type ok
-                if status == 405:
-                    # Method Not Allowed: server does not support HEAD, trust CSE result
-                    return profile_pic_url
+                # Some CDNs reject HEAD but serve GET — try a ranged GET to confirm.
+                if status in (403, 405):
+                    try:
+                        get_response = requests.get(
+                            profile_pic_url, timeout=8, allow_redirects=True,
+                            headers={**_val_headers, "Range": "bytes=0-1023"},
+                            stream=True,
+                        )
+                        get_response.close()
+                        get_status = get_response.status_code
+                        if 200 <= get_status < 400 or get_status == 206:
+                            logger.info(
+                                f"[Profile Pic] HEAD {status}→GET {get_status}: image verified"
+                            )
+                            return profile_pic_url
+                    except Exception:
+                        pass
+                    if status == 405:
+                        # Method Not Allowed with no working GET — still trust CSE result
+                        return profile_pic_url
                 logger.warning(f"[Profile Pic] Image URL returned status {status}: {profile_pic_url}")
                 return None
             except requests.exceptions.Timeout:
@@ -5048,7 +5272,27 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         if _is_private_host(image_url):
             logger.warning(f"[Fetch Image Bytes] SSRF: blocked private-host URL: {image_url}")
             return None
-        response = _HTTP_SESSION.get(image_url, timeout=15, stream=True)
+        # Add browser-like headers for LinkedIn CDN URLs which enforce Referer/Accept checks.
+        # Use urllib.parse to extract the hostname so the check cannot be bypassed by embedding
+        # 'licdn.com' or 'linkedin.com' in the path or query string.
+        _fetch_headers = {}
+        try:
+            from urllib.parse import urlparse as _urlparse
+            _img_host = _urlparse(image_url).hostname or ''
+            if _img_host.endswith('.licdn.com') or _img_host == 'licdn.com' \
+                    or _img_host.endswith('.linkedin.com') or _img_host == 'linkedin.com':
+                _fetch_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.linkedin.com/',
+                    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'sec-fetch-dest': 'image',
+                    'sec-fetch-mode': 'no-cors',
+                    'sec-fetch-site': 'cross-site',
+                }
+        except Exception:
+            pass
+        response = _HTTP_SESSION.get(image_url, headers=_fetch_headers, timeout=15, stream=True)
         response.raise_for_status()
         
         # Check content type
@@ -5065,15 +5309,15 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         
         # Read the image data
         image_bytes = response.content
-        
+
         # Verify size after download
         if len(image_bytes) > max_size_mb * 1024 * 1024:
             logger.warning(f"[Fetch Image Bytes] Downloaded image too large: {len(image_bytes)} bytes")
             return None
-        
+
         logger.info(f"[Fetch Image Bytes] Successfully fetched {len(image_bytes)} bytes from {image_url}")
         return image_bytes
-        
+
     except Exception as e:
         logger.warning(f"[Fetch Image Bytes] Failed to fetch image from {image_url}: {e}")
         return None

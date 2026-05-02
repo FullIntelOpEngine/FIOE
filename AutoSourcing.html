@@ -36,52 +36,44 @@
     (function resolveUseridForSession(activeUsername){
       try {
         var existingUid = sessionStorage.getItem('userid') || localStorage.getItem('userid');
-        if (!existingUid) {
-            fetch('/user/resolve?username=' + encodeURIComponent(activeUsername), { method: 'GET', credentials: 'same-origin' })
-            .then(function(r){ return r.ok ? r.json() : null; })
-            .then(function(data){
-              var uid = data && (data.userid || data.userId || data.id);
-              if (uid && String(uid).trim()) {
-                uid = String(uid).trim();
-                try {
-                  sessionStorage.setItem('userid', uid);
-                  localStorage.setItem('userid', uid);
-                  document.cookie = 'userid=' + encodeURIComponent(uid) + '; path=/; max-age=2592000';
-                } catch(_){}
-                window.__ACTIVE_USERID = uid;
-              }
-              // Pre-populate Target Limit from user's stored setting
-              var tl = data && data.target_limit;
-              if (tl && parseInt(tl, 10) >= 1) {
-                var tlVal = parseInt(tl, 10);
-                var inp = document.getElementById('userTargetInput');
-                var sliderEl = document.getElementById('targetLimitSlider');
-                var displayEl = document.getElementById('targetLimitDisplayVal');
-                if (inp) inp.value = tlVal;
-                if (sliderEl) sliderEl.value = tlVal;
-                if (displayEl) displayEl.textContent = tlVal;
-              }
-            })
-            .catch(function(){ /* silent */ });
-        } else {
+        if (existingUid) {
           window.__ACTIVE_USERID = String(existingUid).trim();
-          // Still fetch target_limit even when userid is already cached
-          fetch('/user/resolve?username=' + encodeURIComponent(activeUsername), { method: 'GET', credentials: 'same-origin' })
-            .then(function(r){ return r.ok ? r.json() : null; })
-            .then(function(data){
-              var tl = data && data.target_limit;
-              if (tl && parseInt(tl, 10) >= 1) {
-                var tlVal = parseInt(tl, 10);
-                var inp = document.getElementById('userTargetInput');
-                var sliderEl = document.getElementById('targetLimitSlider');
-                var displayEl = document.getElementById('targetLimitDisplayVal');
-                if (inp) inp.value = tlVal;
-                if (sliderEl) sliderEl.value = tlVal;
-                if (displayEl) displayEl.textContent = tlVal;
-              }
-            })
-            .catch(function(){ /* silent */ });
         }
+        // Single /user/resolve fetch — covers both the userid-cache-miss path and the
+        // target_limit + full-name hydration needed by enhanceWelcomeWithFullName().
+        // The promise is stored on window so enhanceWelcomeWithFullName() can await it
+        // instead of making a second identical request.
+        window.__USER_RESOLVE_PROMISE = fetch(
+          '/user/resolve?username=' + encodeURIComponent(activeUsername),
+          { method: 'GET', credentials: 'same-origin' }
+        )
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(data){
+          if (!data) return data;
+          var uid = data.userid || data.userId || data.id;
+          if (uid && String(uid).trim() && !existingUid) {
+            uid = String(uid).trim();
+            try {
+              sessionStorage.setItem('userid', uid);
+              localStorage.setItem('userid', uid);
+              document.cookie = 'userid=' + encodeURIComponent(uid) + '; path=/; max-age=2592000';
+            } catch(_){}
+            window.__ACTIVE_USERID = uid;
+          }
+          // Pre-populate Target Limit from user's stored setting
+          var tl = data.target_limit;
+          if (tl && parseInt(tl, 10) >= 1) {
+            var tlVal = parseInt(tl, 10);
+            var inp = document.getElementById('userTargetInput');
+            var sliderEl = document.getElementById('targetLimitSlider');
+            var displayEl = document.getElementById('targetLimitDisplayVal');
+            if (inp) inp.value = tlVal;
+            if (sliderEl) sliderEl.value = tlVal;
+            if (displayEl) displayEl.textContent = tlVal;
+          }
+          return data;
+        })
+        .catch(function(){ return null; });
       } catch (_) {}
     })(window.__ACTIVE_USERNAME);
   } catch (e) {
@@ -2033,6 +2025,8 @@ function hide(el){ el.classList.add('hidden'); }
 function val(id){ const e=document.getElementById(id); return e?e.value.trim():""; }
 function normalizeSpaces(s){ return (s||"").replace(/\s+/g,' ').trim(); }
 function debounce(fn, delay=450){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),delay); }; }
+/* throttle: run fn at most once per `limit` ms; trailing call fires after the window */
+function throttle(fn, limit=200){ let last=0, t=null; return function(...a){ const now=Date.now(); if(now-last>=limit){ last=now; fn.apply(this,a); } else { clearTimeout(t); t=setTimeout(()=>{ last=Date.now(); fn.apply(this,a); }, limit-(now-last)); } }; }
 function escapeQuotes(s){ return (s||"").replace(/"/g,'\\"'); }
 function canonicalKey(s){ return (s||"").toLowerCase(); }
 function titleCase(s){ return (s||"").toLowerCase().replace(/(?:^|[\s\/'-])([a-z\u00C0-\u024F])/g,(m,c)=>m.replace(c,c.toUpperCase())); }
@@ -2977,11 +2971,14 @@ function lookupCountryCode(c){
   if (_textInput) {
     _textInput.addEventListener('blur', _validateCountryInput);
     _textInput.addEventListener('change', _validateCountryInput);
-    // On input: clear errors (no datalist — plain textbox only)
+    // On input: clear errors only. updateSourcingSection is handled by the
+    // debounced listener registered in the smartToggles IIFE (line ~3755).
+    // Do NOT dispatch input to _selectEl here — val('country') already reads from
+    // countryTextInput directly in textbox mode, so the dispatch was redundant and
+    // caused updateSourcingSection() to fire immediately on every keystroke, defeating
+    // the 300ms debounce.
     _textInput.addEventListener('input', function () {
       _validationError.style.display = 'none';
-      // Also fire input on the select so updateSourcingSection picks up changes
-      try { _selectEl.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
     });
   }
 
@@ -3143,6 +3140,19 @@ let lastSuggestionHash=''; let lastGeneralSuggestions=null;
 // stale responses never overwrite fresher results and their memory is released promptly.
 let _suggestAbortCtrl=null;
 
+const _SUGGEST_SS_TTL = 5 * 60 * 1000; // 5-minute client-side cache for identical queries
+function _suggestCacheGet(hash) {
+  try {
+    const raw = sessionStorage.getItem('_sg_' + hash);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (Date.now() - entry.ts > _SUGGEST_SS_TTL) { sessionStorage.removeItem('_sg_' + hash); return null; }
+    return entry.data;
+  } catch(_) { return null; }
+}
+function _suggestCacheSet(hash, data) {
+  try { sessionStorage.setItem('_sg_' + hash, JSON.stringify({ ts: Date.now(), data })); } catch(_) {}
+}
 function hashSuggestionPayload(){ return JSON.stringify({ jobs:[...jobTitles].sort(), companies:[...companies].sort(), languages:[...languages].sort(), sectors:[...selectedSectors].sort(), currentRole:false, country:(val('country')||'').toLowerCase() }); }
 function scheduleSuggestionsUpdate(){ debouncedFetchSuggestions(); }
 const debouncedFetchSuggestions=debounce(fetchSuggestions,500);
@@ -3155,6 +3165,11 @@ async function fetchSuggestions(force=false){
   }
   const h=hashSuggestionPayload();
   if(!force && h===lastSuggestionHash && lastGeneralSuggestions){ renderSuggestionsAggregated(lastGeneralSuggestions); return; }
+  // Check sessionStorage for a cached response before hitting the network
+  if(!force){
+    const cached=_suggestCacheGet(h);
+    if(cached){ lastSuggestionHash=h; lastGeneralSuggestions=cached; renderSuggestionsAggregated(cached); return; }
+  }
   lastSuggestionHash=h;
   // Cancel any previous in-flight request so stale responses don't overwrite fresher results.
   if (_suggestAbortCtrl) _suggestAbortCtrl.abort();
@@ -3165,7 +3180,7 @@ async function fetchSuggestions(force=false){
   try{
     const res=await fetch('/suggest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ jobTitles, companies, languages, sectors:selectedSectors, country, products: jdProducts }),signal:_signal});
     if(!res.ok) throw new Error(await res.text());
-    const data=await res.json(); lastGeneralSuggestions=data; renderSuggestionsAggregated(data);
+    const data=await res.json(); lastGeneralSuggestions=data; _suggestCacheSet(h, data); renderSuggestionsAggregated(data);
   }catch(e){
     if(_signal.aborted) return; // superseded by a newer request — do nothing
     if(suggestionsError){ suggestionsError.textContent='Suggestion error: '+e.message; suggestionsError.classList.remove('hidden'); }
@@ -3327,14 +3342,31 @@ function renderSuggestionsAggregated(data){
   updateDynamicCompanyPreview();
 }
 
+const _SG_INITIAL_LIMIT = 12; // render first N chips, defer the rest to a "show more" click
 function buildSuggestionGroup(title,list,type){
   const group=document.createElement('div'); group.style.border='1px solid var(--border)'; group.style.borderRadius='8px'; group.style.padding='10px';
   const h=document.createElement('div'); h.style.fontSize='12px'; h.style.fontWeight='700'; h.style.marginBottom='8px'; h.textContent=title; group.appendChild(h);
   const box=document.createElement('div'); box.style.display='flex'; box.style.flexWrap='wrap'; box.style.gap='8px';
+  const visible=list.slice(0,_SG_INITIAL_LIMIT);
+  const hidden=list.slice(_SG_INITIAL_LIMIT);
   const frag=document.createDocumentFragment();
-  list.forEach(text=>frag.appendChild(makeChip(text,type,false)));
+  visible.forEach(text=>frag.appendChild(makeChip(text,type,false)));
   box.appendChild(frag);
-  group.appendChild(box); return group;
+  group.appendChild(box);
+  if(hidden.length > 0){
+    const more=document.createElement('button');
+    more.type='button';
+    more.style.cssText='margin-top:6px;font-size:11px;color:var(--azure-dragon,#073679);background:none;border:none;cursor:pointer;padding:2px 0;';
+    more.textContent='Show ' + hidden.length + ' more…';
+    more.addEventListener('click',function(){
+      const f2=document.createDocumentFragment();
+      hidden.forEach(text=>f2.appendChild(makeChip(text,type,false)));
+      box.appendChild(f2);
+      more.remove();
+    },{once:true});
+    group.appendChild(more);
+  }
+  return group;
 }
 function makeChip(text,type,isExisting){
   const chip=document.createElement('div'); chip.className='tag-chip';
@@ -3723,8 +3755,9 @@ function updateSourcingSection() {
     // Also monitor the API-mode textbox for location changes
     const countryTextInput = document.getElementById('countryTextInput');
     if (countryTextInput) {
+      const _debouncedUpdateSourcingForCountry = debounce(updateSourcingSection, 300);
       countryTextInput.addEventListener('input', function() {
-        updateSourcingSection();
+        _debouncedUpdateSourcingForCountry();
       });
       countryTextInput.addEventListener('change', function() {
         updateSourcingSection();
@@ -4077,6 +4110,7 @@ function primaryButtonHandler(e){
   try {
     const btn = e && e.currentTarget ? e.currentTarget : document.getElementById('generateBtn');
     const state = (btn && btn.dataset && btn.dataset.state) ? btn.dataset.state : 'idle';
+    if(state === 'searching') return; // already in-flight — ignore duplicate clicks
     if(state === 'idle'){
       try { generateAndStart(); } catch(err){ if(btn){ btn.dataset.state='idle'; btn.disabled=false; removeSearchingSpinner(btn); } }
     } else if(state === 'ready'){
@@ -4140,9 +4174,9 @@ async function enhanceWelcomeWithFullName(){
   try{
     const username = window.__ACTIVE_USERNAME;
     if(!username) return;
-    const res = await fetch('/user/resolve?username='+encodeURIComponent(username),{credentials:'same-origin'});
-    if(!res.ok) return;
-    const data = await res.json().catch(()=>null);
+    // Reuse the promise from resolveUseridForSession (fired at page load) so we
+    // don't make a second identical /user/resolve request.
+    const data = await (window.__USER_RESOLVE_PROMISE || fetch('/user/resolve?username='+encodeURIComponent(username),{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null));
     if(!data) return;
     const full = (data.full_name || data.fullname || data.name || data.display_name || '').toString().trim();
     if(full){
@@ -4794,7 +4828,7 @@ async function generateAndStart(){
     if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('start_job'))) return;
     // JD archive file renaming is now handled server-side inside start_job using the
     // authoritative role_tag from the sourcing table, so no separate tag_jd call is needed here.
-    const res=await fetch('/start_job',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify(payload)});
+    const res=await fetch('/start_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status+' '+(await res.text()));
     const data=await res.json();
     if(!data.job_id) throw new Error('No job_id in response');
@@ -4825,7 +4859,10 @@ async function pollJob(jobId){
   const progressWrap=document.getElementById('sourcingProgressWrap');
   const progressFill=document.getElementById('sourcingProgressFill');
   const profileCount=document.getElementById('sourcingProfileCount');
-  let interval=1500;
+  let interval=2500;
+  // State tracked across ticks to detect meaningful progress.
+  let _lastStatusHtml = null;
+  let _lastProcessed = -1;
   // Keep progress bar hidden — count is shown in button text instead
   if(progressFill){ progressFill.classList.remove('prog-done'); progressFill.classList.add('prog-running'); }
   function extractFinalRowCount(html){ if(!html) return null; const m=/Wrote\s+(\d+)\s+rows/i.exec(html); return m?parseInt(m[1],10):null; }
@@ -4860,11 +4897,33 @@ async function pollJob(jobId){
         return setTimeout(step,interval);
       }
       const data=await r.json();
-      interval=1500;
+      // Adaptive backoff: reset to minimum when meaningful progress arrives so
+      // the UI stays snappy while the job is actively updating.  During quiet
+      // periods multiply by 1.4 per tick (×1.4, ×1.96, …) to reduce load.
+      // Add ±20% jitter on every interval to desynchronise concurrent pollers
+      // (thundering-herd prevention).
+      const _newStatusHtml = data.status_html || '';
+      const _newProcessed = data.progress && typeof data.progress.processed === 'number'
+        ? data.progress.processed : _lastProcessed;
+      if(_newStatusHtml !== _lastStatusHtml || _newProcessed > _lastProcessed){
+        // Job actively progressing — snap back to a short interval.
+        interval = 2500;
+      } else {
+        interval = Math.min(10000, Math.round(interval * 1.4));
+      }
+      // ±20% jitter (uniform) keeps clients from all hitting the server simultaneously.
+      interval = Math.min(10000, Math.round(interval * (0.8 + Math.random() * 0.4)));
+      _lastStatusHtml = _newStatusHtml;
+      _lastProcessed = _newProcessed;
       if(msg) msg.innerHTML=data.status_html||'';
       renderCounts(data);
       if(data.urls&&data.urls.length){
-        if(urlBox){ urlBox.innerHTML=data.urls.map(u=>`<div>${u}</div>`).join(''); show(urlBox); }
+        if(urlBox){
+          const _frag=document.createDocumentFragment();
+          data.urls.forEach(u=>{ const d=document.createElement('div'); d.textContent=u; _frag.appendChild(d); });
+          urlBox.replaceChildren(_frag);
+          show(urlBox);
+        }
       }
       if(data.progress){
         if(prog) prog.textContent=`Progress: ${data.progress.processed}/${data.progress.total} tasks`;
@@ -4882,57 +4941,65 @@ async function pollJob(jobId){
         // Deduct tokens based on actual final row count (skipped for BYOK users).
         // If the user had custom search keys but they failed (backend set _user_search_fallback),
         // token deduction resumes even though __HAS_CUSTOM_SEARCH is true.
-        try{
-          const finalRows = extractFinalRowCount(data.status_html||'');
-          const _searchFallback = !!data._user_search_fallback;
-          if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && (!window.__HAS_CUSTOM_SEARCH || _searchFallback)){
-            const _acctToken = window.__ACCOUNT_TOKEN;
-            const _userid = window.__ACTIVE_USERID || sessionStorage.getItem('userid') || localStorage.getItem('userid') || '';
-            const _username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
-            const _rate = (typeof _getTokenRate === 'function' ? _getTokenRate() : 1) || 1;
-            if(_userid && _acctToken != null && !isNaN(Number(_acctToken))){
-              const _newBalance = Math.max(0, Math.floor(Number(_acctToken) - finalRows * _rate));
-              fetch('/user/token_update',{
+        // Deferred to idle time so the download link appears immediately without blocking.
+        const _deferIdle = typeof requestIdleCallback === 'function'
+          ? (cb) => requestIdleCallback(cb, {timeout:4000})
+          : (cb) => setTimeout(cb, 0);
+        _deferIdle(function(){
+          try{
+            const finalRows = extractFinalRowCount(data.status_html||'');
+            const _searchFallback = !!data._user_search_fallback;
+            if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && (!window.__HAS_CUSTOM_SEARCH || _searchFallback)){
+              const _acctToken = window.__ACCOUNT_TOKEN;
+              const _userid = window.__ACTIVE_USERID || sessionStorage.getItem('userid') || localStorage.getItem('userid') || '';
+              const _username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+              const _rate = (typeof _getTokenRate === 'function' ? _getTokenRate() : 1) || 1;
+              if(_userid && _acctToken != null && !isNaN(Number(_acctToken))){
+                const _newBalance = Math.max(0, Math.floor(Number(_acctToken) - finalRows * _rate));
+                fetch('/user/token_update',{
+                  method:'POST',
+                  headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+                  credentials:'same-origin',
+                  body:JSON.stringify({ userid:_userid, username:_username, token:_newBalance, result_count:finalRows, feature:'candidate_search' })
+                }).then(function(r){
+                  if(r.ok){
+                    window.__ACCOUNT_TOKEN = _newBalance;
+                    const _el = document.getElementById('accountTokenDisplay');
+                    if(_el) _el.textContent = 'Account Tokens: ' + _newBalance;
+                  }
+                }).catch(function(){});
+              }
+            }
+          }catch(_){}
+        });
+        // Save search criteria to server JSON file — also deferred to idle time
+        _deferIdle(function(){
+          try{
+            const _sc_username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+            const _sc_role_tag = (typeof buildRoleTagFromJobTitles === 'function') ? buildRoleTagFromJobTitles() : (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '');
+            if(_sc_username && _sc_role_tag){
+              const _sc_companies = [
+                ...(typeof companies !== 'undefined' ? companies : []),
+                ...(typeof sectorCompanyRelated !== 'undefined' ? Array.from(sectorCompanyRelated) : [])
+              ].filter((v,i,a)=>v&&a.indexOf(v)===i);
+              const _sc_criteria = {
+                'Job Title': typeof jobTitles !== 'undefined' ? jobTitles.slice() : [],
+                'Seniority': (typeof val === 'function' ? val('senioritySelect') : (document.getElementById('senioritySelect')||{}).value) || '',
+                'Sector': typeof selectedSectors !== 'undefined' ? selectedSectors.slice() : [],
+                'Country': (typeof val === 'function' ? val('country') : (document.getElementById('country')||{}).value) || '',
+                'Company': _sc_companies,
+                'Skillset': typeof userSkills !== 'undefined' ? userSkills.slice() : [],
+                'Tenure': null
+              };
+              fetch('/save_search_criteria',{
                 method:'POST',
                 headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
                 credentials:'same-origin',
-                body:JSON.stringify({ userid:_userid, username:_username, token:_newBalance, result_count:finalRows, feature:'candidate_search' })
-              }).then(function(r){
-                if(r.ok){
-                  window.__ACCOUNT_TOKEN = _newBalance;
-                  const _el = document.getElementById('accountTokenDisplay');
-                  if(_el) _el.textContent = 'Account Tokens: ' + _newBalance;
-                }
+                body:JSON.stringify({ username:_sc_username, role_tag:_sc_role_tag, criteria:_sc_criteria })
               }).catch(function(){});
             }
-          }
-        }catch(_){}
-        // Save search criteria to server JSON file
-        try{
-          const _sc_username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
-          const _sc_role_tag = (typeof buildRoleTagFromJobTitles === 'function') ? buildRoleTagFromJobTitles() : (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '');
-          if(_sc_username && _sc_role_tag){
-            const _sc_companies = [
-              ...(typeof companies !== 'undefined' ? companies : []),
-              ...(typeof sectorCompanyRelated !== 'undefined' ? Array.from(sectorCompanyRelated) : [])
-            ].filter((v,i,a)=>v&&a.indexOf(v)===i);
-            const _sc_criteria = {
-              'Job Title': typeof jobTitles !== 'undefined' ? jobTitles.slice() : [],
-              'Seniority': (typeof val === 'function' ? val('senioritySelect') : (document.getElementById('senioritySelect')||{}).value) || '',
-              'Sector': typeof selectedSectors !== 'undefined' ? selectedSectors.slice() : [],
-              'Country': (typeof val === 'function' ? val('country') : (document.getElementById('country')||{}).value) || '',
-              'Company': _sc_companies,
-              'Skillset': typeof userSkills !== 'undefined' ? userSkills.slice() : [],
-              'Tenure': null
-            };
-            fetch('/save_search_criteria',{
-              method:'POST',
-              headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-              credentials:'same-origin',
-              body:JSON.stringify({ username:_sc_username, role_tag:_sc_role_tag, criteria:_sc_criteria })
-            }).catch(function(){});
-          }
-        }catch(_sc_err){ console.warn('[AutoSourcing] save_search_criteria failed', _sc_err); }
+          }catch(_sc_err){ console.warn('[AutoSourcing] save_search_criteria failed', _sc_err); }
+        });
         if(data.output_csv){
           let html=`<a href="/download/${encodeURIComponent(data.output_csv)}">Download Aggregated CSV</a>`;
           if(data.output_xlsx) html+=` · <a class="alt" href="/download/${encodeURIComponent(data.output_xlsx)}">Download XLSX</a>`;
@@ -5625,15 +5692,20 @@ function renderExternalSuggestions(jobs, comps){
     });
   };
 
-  window.syncUserSkillsToServer = function(){
+  // Debounce skill syncs so rapid add/remove operations (e.g. JD auto-populate)
+  // are batched into a single POST instead of firing one per change.
+  const _debouncedSyncSkills = debounce(function(){
     const username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username');
     if(!username) return;
-    
     fetch('/user/update_skills', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: username, skills: userSkills })
     }).catch(e => console.warn('Sync skills failed', e));
+  }, 800);
+
+  window.syncUserSkillsToServer = function(){
+    _debouncedSyncSkills();
   };
 })();
 
@@ -6015,10 +6087,17 @@ function renderExternalSuggestions(jobs, comps){
     var slider=document.getElementById('targetLimitSlider');
     var numInp=document.getElementById('userTargetInput');
     function clamp(v){ return Math.min(TARGET_MAX, Math.max(TARGET_MIN, isNaN(v)?TARGET_MIN:v)); }
+    // Throttle slider input updates: UI (display + sync) updates on every tick for visual
+    // responsiveness, but the expensive /preview_target estimate is only sent on change.
     if(slider) slider.addEventListener('input',function(){
       numInp.value=this.value;
       syncDisplayVal(this.value);
+      // Dispatch to numInp for any other listeners that need to stay in sync (no estimate call here)
       numInp.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+    // Fire estimate only once the user lifts their finger / releases the slider
+    if(slider) slider.addEventListener('change',function(){
+      scheduleEstimateUpdate();
     });
     if(numInp) numInp.addEventListener('input',function(){
       var v=clamp(parseInt(this.value,10));
@@ -6126,15 +6205,7 @@ function renderExternalSuggestions(jobs, comps){
           document.cookie = 'username=; Max-Age=0; path=/';
           document.cookie = 'userid=; Max-Age=0; path=/';
         } catch(_) {}
-        // Call server-side logout to invalidate the session_id (httpOnly cookie)
-        // so the session cannot be replayed after the user leaves the page.
-        fetch('/logout', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
-        }).catch(function(){}).finally(function(){
-          location.replace('/login.html');
-        });
+        location.replace('/login.html');
       });
     }
   } catch(_){}
