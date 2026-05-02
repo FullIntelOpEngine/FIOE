@@ -21,12 +21,21 @@ openpyxl>=3.1,<4.0
 # PDF processing (worker image only — heavy dep)
 pdfplumber>=0.11,<1.0
 
+# Image processing — used for format detection (sniff_image_mime); WebP conversion removed
+Pillow>=10.0,<12.0
+
 # GCP services (PR 1, PR 2, PR 6)
 google-cloud-storage>=2.17,<3.0
 google-cloud-tasks>=2.16,<3.0
 
 # Cache backend (PR 3 — optional Redis)
 redis>=5.0,<6.0
+
+# Response compression (PR 10 — gzip for JSON responses)
+flask-compress>=1.14,<2.0
+
+# Fast string similarity — drop-in replacement for difflib.SequenceMatcher (10–100x faster)
+rapidfuzz>=3.0,<4.0
 
 # Security / crypto
 werkzeug>=3.0,<4.0
