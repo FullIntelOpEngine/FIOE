@@ -5070,7 +5070,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, se
                         # respective provider is the configured main search provider.
                         native_img = item.get("imageUrl")
                         if native_img:
-                            logger.info(f"[Profile Pic] provider imageUrl found: {native_img}")
+                            logger.info("[Profile Pic] provider imageUrl found")
                             return native_img
                         pagemap = item.get("pagemap", {})
                         # Priority 1: cse_thumbnail (Google's cached thumbnail — no auth needed)
