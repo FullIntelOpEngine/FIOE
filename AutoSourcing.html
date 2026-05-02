@@ -2033,6 +2033,8 @@ function hide(el){ el.classList.add('hidden'); }
 function val(id){ const e=document.getElementById(id); return e?e.value.trim():""; }
 function normalizeSpaces(s){ return (s||"").replace(/\s+/g,' ').trim(); }
 function debounce(fn, delay=450){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),delay); }; }
+/* throttle: run fn at most once per `limit` ms; trailing call fires after the window */
+function throttle(fn, limit=200){ let last=0, t=null; return function(...a){ const now=Date.now(); if(now-last>=limit){ last=now; fn.apply(this,a); } else { clearTimeout(t); t=setTimeout(()=>{ last=Date.now(); fn.apply(this,a); }, limit-(now-last)); } }; }
 function escapeQuotes(s){ return (s||"").replace(/"/g,'\\"'); }
 function canonicalKey(s){ return (s||"").toLowerCase(); }
 function titleCase(s){ return (s||"").toLowerCase().replace(/(?:^|[\s\/'-])([a-z\u00C0-\u024F])/g,(m,c)=>m.replace(c,c.toUpperCase())); }
@@ -3723,8 +3725,9 @@ function updateSourcingSection() {
     // Also monitor the API-mode textbox for location changes
     const countryTextInput = document.getElementById('countryTextInput');
     if (countryTextInput) {
+      const _debouncedUpdateSourcingForCountry = debounce(updateSourcingSection, 300);
       countryTextInput.addEventListener('input', function() {
-        updateSourcingSection();
+        _debouncedUpdateSourcingForCountry();
       });
       countryTextInput.addEventListener('change', function() {
         updateSourcingSection();
@@ -4077,6 +4080,7 @@ function primaryButtonHandler(e){
   try {
     const btn = e && e.currentTarget ? e.currentTarget : document.getElementById('generateBtn');
     const state = (btn && btn.dataset && btn.dataset.state) ? btn.dataset.state : 'idle';
+    if(state === 'searching') return; // already in-flight — ignore duplicate clicks
     if(state === 'idle'){
       try { generateAndStart(); } catch(err){ if(btn){ btn.dataset.state='idle'; btn.disabled=false; removeSearchingSpinner(btn); } }
     } else if(state === 'ready'){
@@ -4825,7 +4829,7 @@ async function pollJob(jobId){
   const progressWrap=document.getElementById('sourcingProgressWrap');
   const progressFill=document.getElementById('sourcingProgressFill');
   const profileCount=document.getElementById('sourcingProfileCount');
-  let interval=1500;
+  let interval=2500;
   // Keep progress bar hidden — count is shown in button text instead
   if(progressFill){ progressFill.classList.remove('prog-done'); progressFill.classList.add('prog-running'); }
   function extractFinalRowCount(html){ if(!html) return null; const m=/Wrote\s+(\d+)\s+rows/i.exec(html); return m?parseInt(m[1],10):null; }
@@ -4860,11 +4864,18 @@ async function pollJob(jobId){
         return setTimeout(step,interval);
       }
       const data=await r.json();
-      interval=1500;
+      // Slowly increase the poll interval as the job runs to reduce main-thread
+      // churn and server load (caps at 3 s for long-running jobs).
+      interval=Math.min(3000, interval+250);
       if(msg) msg.innerHTML=data.status_html||'';
       renderCounts(data);
       if(data.urls&&data.urls.length){
-        if(urlBox){ urlBox.innerHTML=data.urls.map(u=>`<div>${u}</div>`).join(''); show(urlBox); }
+        if(urlBox){
+          const _frag=document.createDocumentFragment();
+          data.urls.forEach(u=>{ const d=document.createElement('div'); d.textContent=u; _frag.appendChild(d); });
+          urlBox.replaceChildren(_frag);
+          show(urlBox);
+        }
       }
       if(data.progress){
         if(prog) prog.textContent=`Progress: ${data.progress.processed}/${data.progress.total} tasks`;
@@ -4882,57 +4893,65 @@ async function pollJob(jobId){
         // Deduct tokens based on actual final row count (skipped for BYOK users).
         // If the user had custom search keys but they failed (backend set _user_search_fallback),
         // token deduction resumes even though __HAS_CUSTOM_SEARCH is true.
-        try{
-          const finalRows = extractFinalRowCount(data.status_html||'');
-          const _searchFallback = !!data._user_search_fallback;
-          if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && (!window.__HAS_CUSTOM_SEARCH || _searchFallback)){
-            const _acctToken = window.__ACCOUNT_TOKEN;
-            const _userid = window.__ACTIVE_USERID || sessionStorage.getItem('userid') || localStorage.getItem('userid') || '';
-            const _username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
-            const _rate = (typeof _getTokenRate === 'function' ? _getTokenRate() : 1) || 1;
-            if(_userid && _acctToken != null && !isNaN(Number(_acctToken))){
-              const _newBalance = Math.max(0, Math.floor(Number(_acctToken) - finalRows * _rate));
-              fetch('/user/token_update',{
+        // Deferred to idle time so the download link appears immediately without blocking.
+        const _deferIdle = typeof requestIdleCallback === 'function'
+          ? (cb) => requestIdleCallback(cb, {timeout:4000})
+          : (cb) => setTimeout(cb, 0);
+        _deferIdle(function(){
+          try{
+            const finalRows = extractFinalRowCount(data.status_html||'');
+            const _searchFallback = !!data._user_search_fallback;
+            if(finalRows != null && finalRows > 0 && !window.__IS_BYOK && (!window.__HAS_CUSTOM_SEARCH || _searchFallback)){
+              const _acctToken = window.__ACCOUNT_TOKEN;
+              const _userid = window.__ACTIVE_USERID || sessionStorage.getItem('userid') || localStorage.getItem('userid') || '';
+              const _username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+              const _rate = (typeof _getTokenRate === 'function' ? _getTokenRate() : 1) || 1;
+              if(_userid && _acctToken != null && !isNaN(Number(_acctToken))){
+                const _newBalance = Math.max(0, Math.floor(Number(_acctToken) - finalRows * _rate));
+                fetch('/user/token_update',{
+                  method:'POST',
+                  headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
+                  credentials:'same-origin',
+                  body:JSON.stringify({ userid:_userid, username:_username, token:_newBalance, result_count:finalRows, feature:'candidate_search' })
+                }).then(function(r){
+                  if(r.ok){
+                    window.__ACCOUNT_TOKEN = _newBalance;
+                    const _el = document.getElementById('accountTokenDisplay');
+                    if(_el) _el.textContent = 'Account Tokens: ' + _newBalance;
+                  }
+                }).catch(function(){});
+              }
+            }
+          }catch(_){}
+        });
+        // Save search criteria to server JSON file — also deferred to idle time
+        _deferIdle(function(){
+          try{
+            const _sc_username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
+            const _sc_role_tag = (typeof buildRoleTagFromJobTitles === 'function') ? buildRoleTagFromJobTitles() : (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '');
+            if(_sc_username && _sc_role_tag){
+              const _sc_companies = [
+                ...(typeof companies !== 'undefined' ? companies : []),
+                ...(typeof sectorCompanyRelated !== 'undefined' ? Array.from(sectorCompanyRelated) : [])
+              ].filter((v,i,a)=>v&&a.indexOf(v)===i);
+              const _sc_criteria = {
+                'Job Title': typeof jobTitles !== 'undefined' ? jobTitles.slice() : [],
+                'Seniority': (typeof val === 'function' ? val('senioritySelect') : (document.getElementById('senioritySelect')||{}).value) || '',
+                'Sector': typeof selectedSectors !== 'undefined' ? selectedSectors.slice() : [],
+                'Country': (typeof val === 'function' ? val('country') : (document.getElementById('country')||{}).value) || '',
+                'Company': _sc_companies,
+                'Skillset': typeof userSkills !== 'undefined' ? userSkills.slice() : [],
+                'Tenure': null
+              };
+              fetch('/save_search_criteria',{
                 method:'POST',
                 headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
                 credentials:'same-origin',
-                body:JSON.stringify({ userid:_userid, username:_username, token:_newBalance, result_count:finalRows, feature:'candidate_search' })
-              }).then(function(r){
-                if(r.ok){
-                  window.__ACCOUNT_TOKEN = _newBalance;
-                  const _el = document.getElementById('accountTokenDisplay');
-                  if(_el) _el.textContent = 'Account Tokens: ' + _newBalance;
-                }
+                body:JSON.stringify({ username:_sc_username, role_tag:_sc_role_tag, criteria:_sc_criteria })
               }).catch(function(){});
             }
-          }
-        }catch(_){}
-        // Save search criteria to server JSON file
-        try{
-          const _sc_username = window.__ACTIVE_USERNAME || sessionStorage.getItem('username') || localStorage.getItem('username') || '';
-          const _sc_role_tag = (typeof buildRoleTagFromJobTitles === 'function') ? buildRoleTagFromJobTitles() : (sessionStorage.getItem('role_tag') || localStorage.getItem('role_tag') || '');
-          if(_sc_username && _sc_role_tag){
-            const _sc_companies = [
-              ...(typeof companies !== 'undefined' ? companies : []),
-              ...(typeof sectorCompanyRelated !== 'undefined' ? Array.from(sectorCompanyRelated) : [])
-            ].filter((v,i,a)=>v&&a.indexOf(v)===i);
-            const _sc_criteria = {
-              'Job Title': typeof jobTitles !== 'undefined' ? jobTitles.slice() : [],
-              'Seniority': (typeof val === 'function' ? val('senioritySelect') : (document.getElementById('senioritySelect')||{}).value) || '',
-              'Sector': typeof selectedSectors !== 'undefined' ? selectedSectors.slice() : [],
-              'Country': (typeof val === 'function' ? val('country') : (document.getElementById('country')||{}).value) || '',
-              'Company': _sc_companies,
-              'Skillset': typeof userSkills !== 'undefined' ? userSkills.slice() : [],
-              'Tenure': null
-            };
-            fetch('/save_search_criteria',{
-              method:'POST',
-              headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-              credentials:'same-origin',
-              body:JSON.stringify({ username:_sc_username, role_tag:_sc_role_tag, criteria:_sc_criteria })
-            }).catch(function(){});
-          }
-        }catch(_sc_err){ console.warn('[AutoSourcing] save_search_criteria failed', _sc_err); }
+          }catch(_sc_err){ console.warn('[AutoSourcing] save_search_criteria failed', _sc_err); }
+        });
         if(data.output_csv){
           let html=`<a href="/download/${encodeURIComponent(data.output_csv)}">Download Aggregated CSV</a>`;
           if(data.output_xlsx) html+=` · <a class="alt" href="/download/${encodeURIComponent(data.output_xlsx)}">Download XLSX</a>`;
@@ -6015,10 +6034,17 @@ function renderExternalSuggestions(jobs, comps){
     var slider=document.getElementById('targetLimitSlider');
     var numInp=document.getElementById('userTargetInput');
     function clamp(v){ return Math.min(TARGET_MAX, Math.max(TARGET_MIN, isNaN(v)?TARGET_MIN:v)); }
+    // Throttle slider input updates: UI (display + sync) updates on every tick for visual
+    // responsiveness, but the expensive /preview_target estimate is only sent on change.
     if(slider) slider.addEventListener('input',function(){
       numInp.value=this.value;
       syncDisplayVal(this.value);
+      // Dispatch to numInp for any other listeners that need to stay in sync (no estimate call here)
       numInp.dispatchEvent(new Event('input',{bubbles:true}));
+    });
+    // Fire estimate only once the user lifts their finger / releases the slider
+    if(slider) slider.addEventListener('change',function(){
+      scheduleEstimateUpdate();
     });
     if(numInp) numInp.addEventListener('input',function(){
       var v=clamp(parseInt(this.value,10));
