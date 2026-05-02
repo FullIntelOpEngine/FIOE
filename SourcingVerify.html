@@ -2136,17 +2136,24 @@ function pollBulkJob() {
     };
 }
 
+let _refreshBgTimer = null;
 function refreshSearchResultsInBackground() {
-    // Refresh the Search Results tab data without switching to it
-    // This ensures latest assessment results are visible when user switches back
-    try {
-        // Re-run the search to refresh the table with updated assessment data
-        if (typeof performSearch === 'function') {
-            performSearch();  // This will refresh the search results table
+    // Debounce: collapse rapid back-to-back calls into one 300 ms deferred refresh
+    // so bulk-complete callbacks don't spawn N concurrent performSearch calls.
+    if (_refreshBgTimer) clearTimeout(_refreshBgTimer);
+    _refreshBgTimer = setTimeout(function() {
+        _refreshBgTimer = null;
+        // Refresh the Search Results tab data without switching to it
+        // This ensures latest assessment results are visible when user switches back
+        try {
+            // Re-run the search to refresh the table with updated assessment data
+            if (typeof performSearch === 'function') {
+                performSearch();  // This will refresh the search results table
+            }
+        } catch(e) {
+            console.warn("Failed to refresh search results in background", e);
         }
-    } catch(e) {
-        console.warn("Failed to refresh search results in background", e);
-    }
+    }, 300);
 }
 
 // Wrapper function for refreshData to maintain compatibility with code that calls it
@@ -8067,7 +8074,22 @@ window.applyTokenDelta = async function(delta, feature) {
 //   document.querySelectorAll('.row-select').forEach(cb => cb.checked = checked);
 //   showDeleteIfNeeded();
 // });
-reloadBtn.addEventListener('click', async () => { _resetAndReload(); await loadRows(currentPage); refreshAccountTokens(); });
+let _reloadBtnInFlight = false;
+reloadBtn.addEventListener('click', async () => {
+  if (_reloadBtnInFlight) return;
+  _reloadBtnInFlight = true;
+  reloadBtn.disabled = true;
+  reloadBtn.classList.add('btn-spinning');
+  try {
+    _resetAndReload();
+    await loadRows(currentPage);
+    refreshAccountTokens();
+  } finally {
+    _reloadBtnInFlight = false;
+    reloadBtn.disabled = false;
+    reloadBtn.classList.remove('btn-spinning');
+  }
+});
 // Delete button functionality removed per requirements
 // deleteBtn.addEventListener('click', deleteSelected);
 
@@ -8937,6 +8959,7 @@ if (bulkIngestBtn) {
         if (!confirmed) return;
 
         bulkIngestBtn.disabled = true;
+        bulkIngestBtn.classList.add('btn-spinning');
         setSearchResultButtonsEnabled(false);
         let done = 0, failed = 0;
         for (let i = 0; i < toIngest.length; i++) {
@@ -8948,6 +8971,7 @@ if (bulkIngestBtn) {
         }
 
         bulkIngestBtn.textContent = 'Bulk Ingest';
+        bulkIngestBtn.classList.remove('btn-spinning');
         bulkIngestBtn.disabled = false;
         setSearchResultButtonsEnabled(true);
 
@@ -9028,12 +9052,13 @@ if (bulkIngestBtn) {
     if (_acQueryCache.has(q)) { showDropdown(_acQueryCache.get(q)); return; }
     // Cancel any in-flight request for a prior query
     if (_acFetchController) { try { _acFetchController.abort(); } catch (_) { /* abort() is safe; ignore */ } }
-    _acFetchController = new AbortController();
+    const ctrl = new AbortController();
+    _acFetchController = ctrl;
     try {
       const uid = window.__SV_ACTIVE_USERID || '';
       let url = `${API_AUTOCOMPLETE}?q=${encodeURIComponent(q)}&limit=10`;
       if (uid) url += `&userid=${encodeURIComponent(uid)}`;
-      const res = await fetch(url, { credentials: 'same-origin', signal: _acFetchController.signal });
+      const res = await fetch(url, { credentials: 'same-origin', signal: ctrl.signal });
       if (!res.ok) return;
       const data = await res.json();
       const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
@@ -9042,7 +9067,8 @@ if (bulkIngestBtn) {
     } catch (err) {
       if (err && err.name !== 'AbortError') hideDropdown();
     } finally {
-      _acFetchController = null;
+      // Only clear the module-level ref if it hasn't been replaced by a newer request
+      if (_acFetchController === ctrl) _acFetchController = null;
     }
   }
 
