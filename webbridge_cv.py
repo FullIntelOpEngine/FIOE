@@ -87,6 +87,7 @@ from webbridge import (
     CV_ANALYZE_WORKERS, CV_ANALYZE_MAX_CONCURRENCY,
     CV_ANALYZE_OFFLOAD_TIMEOUT, CV_ANALYZE_USE_QUEUE,
     CV_ANALYZE_HOURLY_CPU_LIMIT, CV_ANALYZE_MAX_BATCH_SIZE,
+    CV_USE_PROCESS_POOL,
     _rate, _check_user_rate, _csrf_required,
     _is_pdf_bytes,
     _extract_json_object, _extract_confirmed_skills,
@@ -127,19 +128,23 @@ from webbridge_routes import (
 
 
 # ---------------------------------------------------------------------------
-# CV ThreadPoolExecutor — lazy init, cost-aware, safe synchronous fallback
+# CV worker pool — ProcessPoolExecutor (default) with ThreadPoolExecutor fallback
 #
-# NOTE: ProcessPoolExecutor was considered but rejected for this codebase:
-# on Windows (spawn start method) each worker subprocess re-imports webbridge_cv
-# which transitively imports webbridge.py (Flask app init, DB connections, etc.),
-# causing an immediate crash.  ThreadPoolExecutor avoids subprocess spawning
-# entirely; it is also the correct tool since CV analysis is I/O-bound (Gemini
-# API calls dominate wall-clock time) rather than CPU-bound.
+# ProcessPoolExecutor uses the "spawn" multiprocessing context so worker
+# subprocesses only import webbridge_cv_worker.py (a slim, Flask-free module).
+# This avoids the historical problem where spawning re-imported webbridge.py
+# causing a Flask/DB-init crash.
+#
+# Set CV_USE_PROCESS_POOL=0 to revert to the thread-based path (e.g. on
+# Windows where multiprocessing has additional constraints, or in environments
+# where subprocesses are not supported).
 # ---------------------------------------------------------------------------
 import concurrent.futures  # stdlib, no new dep
+import multiprocessing
 
-# Module-level pool (None until first use) and cost tracking
+# Module-level pool handles (None until first use) and cost tracking
 _CV_ANALYZE_THREAD_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
+_CV_ANALYZE_PROC_POOL: "concurrent.futures.ProcessPoolExecutor | None" = None
 _CV_POOL_LOCK = threading.Lock()
 
 # Bounded thread pool for background job runners (prevents unbounded thread
@@ -182,27 +187,81 @@ def _cv_worker_init() -> None:
 
 
 def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
-    """Thread-pool wrapper: runs _analyze_cv_bytes_sync, adds per-thread CPU
+    """Thread-pool wrapper: runs _analyze_cv_bytes_sync, adds per-process CPU
     time to the returned dict so the caller can log it accurately."""
-    t_cpu = time.thread_time()
+    t_cpu = time.process_time()
     result = _analyze_cv_bytes_sync(pdf_bytes)
     if isinstance(result, dict):
-        result['_thread_cpu_s'] = time.thread_time() - t_cpu
+        result['_thread_cpu_s'] = time.process_time() - t_cpu
     return result
+
+
+def _get_cv_pool():
+    """Return (or lazily create) the active CV analysis executor.
+
+    When CV_USE_PROCESS_POOL is True, creates a ProcessPoolExecutor backed
+    by the "spawn" multiprocessing context and webbridge_cv_worker as the
+    entry point.  Falls back to ThreadPoolExecutor on any creation error.
+    """
+    global _CV_ANALYZE_PROC_POOL, _CV_ANALYZE_THREAD_POOL
+    with _CV_POOL_LOCK:
+        if CV_USE_PROCESS_POOL:
+            if _CV_ANALYZE_PROC_POOL is None:
+                try:
+                    import webbridge_cv_worker as _wcw
+                    ctx = multiprocessing.get_context("spawn")
+                    _CV_ANALYZE_PROC_POOL = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=CV_ANALYZE_WORKERS,
+                        mp_context=ctx,
+                        initializer=_wcw.worker_process_init,
+                    )
+                    logger.info(
+                        '{"event":"cv_proc_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
+                    )
+                except Exception as pool_err:
+                    logger.warning(
+                        '{"event":"cv_proc_pool_create_failed","error":"%s",'
+                        '"fallback":"thread_pool"}' % str(pool_err)
+                    )
+                    _CV_ANALYZE_PROC_POOL = None
+            if _CV_ANALYZE_PROC_POOL is not None:
+                return _CV_ANALYZE_PROC_POOL, True  # (pool, is_process_pool)
+
+        # ThreadPoolExecutor path (fallback or when CV_USE_PROCESS_POOL=False)
+        if _CV_ANALYZE_THREAD_POOL is None:
+            try:
+                _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=CV_ANALYZE_WORKERS,
+                    initializer=_cv_worker_init,
+                )
+                logger.info(
+                    '{"event":"cv_thread_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
+                )
+            except Exception as pool_err:
+                logger.warning(
+                    '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
+                )
+                _CV_ANALYZE_THREAD_POOL = None
+        return _CV_ANALYZE_THREAD_POOL, False  # (pool, is_process_pool)
 
 
 def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> dict:
     """
-    Offload CV parsing to a thread-pool worker if possible, with full
+    Offload CV parsing to a worker pool (process or thread), with full
     synchronous fallback on any failure.
 
+    When CV_USE_PROCESS_POOL is True (default on Linux/macOS), uses a
+    ProcessPoolExecutor backed by webbridge_cv_worker.py so analysis runs
+    in a separate OS process, bypassing the GIL for CPU-bound PDF work and
+    providing accurate per-process CPU timing via time.process_time().
+
     Cost-aware behaviour:
-    - Pool capped at CV_ANALYZE_WORKERS workers (default ≤ 2).
+    - Pool capped at CV_ANALYZE_WORKERS workers (≤ os.cpu_count()).
     - Concurrency further limited by _CV_ANALYZE_SEMAPHORE.
     - If CV_ANALYZE_HOURLY_CPU_LIMIT is set and exceeded, falls back to sync.
     - All results are logged as JSON-line telemetry.
     """
-    global _CV_ANALYZE_THREAD_POOL, _cv_cpu_seconds_total, _cv_cpu_window_start
+    global _cv_cpu_seconds_total, _cv_cpu_window_start
 
     effective_timeout = timeout if timeout is not None else CV_ANALYZE_OFFLOAD_TIMEOUT
     size_bytes = len(pdf_bytes)
@@ -248,43 +307,36 @@ def analyze_cv_bytes_offload(pdf_bytes: bytes, timeout: float | None = None) -> 
 
     try:
         logger.info(
-            '{"event":"cv_analysis_start","size_bytes":%d}' % size_bytes
+            '{"event":"cv_analysis_start","pool_type":"%s","size_bytes":%d}'
+            % ("process" if CV_USE_PROCESS_POOL else "thread", size_bytes)
         )
-        # Lazily create the pool (never at import time)
-        with _CV_POOL_LOCK:
-            if _CV_ANALYZE_THREAD_POOL is None:
-                try:
-                    _CV_ANALYZE_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(
-                        max_workers=CV_ANALYZE_WORKERS,
-                        initializer=_cv_worker_init,
-                    )
-                    logger.info(
-                        '{"event":"cv_pool_created","workers":%d}' % CV_ANALYZE_WORKERS
-                    )
-                except Exception as pool_err:
-                    logger.warning(
-                        '{"event":"cv_pool_create_failed","error":"%s"}' % str(pool_err)
-                    )
-                    _CV_ANALYZE_THREAD_POOL = None
 
-        pool = _CV_ANALYZE_THREAD_POOL
+        pool, is_process_pool = _get_cv_pool()
         if pool is None:
-            raise RuntimeError("ThreadPoolExecutor creation failed")
+            raise RuntimeError("CV worker pool creation failed")
 
-        future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
+        if is_process_pool:
+            import webbridge_cv_worker as _wcw
+            future = pool.submit(_wcw.analyze_cv_bytes_worker_entry, pdf_bytes)
+            cpu_key = '_proc_cpu_s'
+        else:
+            future = pool.submit(_analyze_cv_bytes_worker, pdf_bytes)
+            cpu_key = '_thread_cpu_s'
+
         result = future.result(timeout=effective_timeout)
         elapsed_s = time.perf_counter() - t_start
-        cpu_s = result.pop('_thread_cpu_s', None) if isinstance(result, dict) else None
+        cpu_s = result.pop(cpu_key, None) if isinstance(result, dict) else None
+        pool_type = "process" if is_process_pool else "thread"
         if cpu_s is not None:
             logger.info(
-                '{"event":"cv_analysis_end","duration_ms":%.1f,"cpu_time_ms":%.1f,'
-                '"size_bytes":%d}' % (elapsed_s * 1000, cpu_s * 1000, size_bytes)
+                '{"event":"cv_analysis_end","pool_type":"%s","duration_ms":%.1f,'
+                '"cpu_time_ms":%.1f,"size_bytes":%d}'
+                % (pool_type, elapsed_s * 1000, cpu_s * 1000, size_bytes)
             )
         else:
             logger.info(
-                '{"event":"cv_analysis_end","duration_ms":%.1f,"size_bytes":%d}' % (
-                    elapsed_s * 1000, size_bytes
-                )
+                '{"event":"cv_analysis_end","pool_type":"%s","duration_ms":%.1f,'
+                '"size_bytes":%d}' % (pool_type, elapsed_s * 1000, size_bytes)
             )
         _record_cv_cpu(elapsed_s)
         return result
@@ -3694,7 +3746,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
     
     Returns structured dict or None.
     """
-    _t_cpu_sync_start = time.thread_time()
+    _t_cpu_sync_start = time.process_time()
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -3707,7 +3759,7 @@ def _analyze_cv_bytes_sync(pdf_bytes):
         for page in reader.pages:
             t = page.extract_text()
             if t: text += t + "\n"
-        _pdf_cpu_s = time.thread_time() - _t_cpu_sync_start
+        _pdf_cpu_s = time.process_time() - _t_cpu_sync_start
         logger.debug(
             '{"event":"cv_pdf_extract","cpu_time_ms":%.1f,"size_bytes":%d}' % (
                 _pdf_cpu_s * 1000, len(pdf_bytes)

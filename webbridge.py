@@ -287,6 +287,16 @@ CV_ANALYZE_USE_QUEUE: bool = os.getenv("CV_ANALYZE_USE_QUEUE", "0").strip() == "
 CV_ANALYZE_HOURLY_CPU_LIMIT: float = float(os.getenv("CV_ANALYZE_HOURLY_CPU_LIMIT", "") or 0.0)
 CV_ANALYZE_MAX_BATCH_SIZE: int = int(os.getenv("CV_ANALYZE_MAX_BATCH_SIZE", "") or 16)
 
+# Use a ProcessPoolExecutor (spawn context) instead of ThreadPoolExecutor for
+# CV analysis.  Enabled by default on Linux/macOS where spawn is safe.
+# Set CV_USE_PROCESS_POOL=0 to revert to the thread-based path.
+# The worker entry point lives in webbridge_cv_worker.py which has zero
+# Flask/webbridge imports, so spawned subprocesses start up cleanly.
+import sys as _sys
+CV_USE_PROCESS_POOL: bool = (
+    os.getenv("CV_USE_PROCESS_POOL", "0" if _sys.platform == "win32" else "1").strip() == "1"
+)
+
 # Semaphore to cap concurrent CV analyses (process-pool *and* legacy thread path).
 # Reconfigured to CV_ANALYZE_MAX_CONCURRENCY; legacy default was 4.
 _CV_ANALYZE_SEMAPHORE = threading.Semaphore(CV_ANALYZE_MAX_CONCURRENCY)
