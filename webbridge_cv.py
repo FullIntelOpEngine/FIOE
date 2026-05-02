@@ -31,6 +31,23 @@ def _sanitize_jd_name_part(s: str) -> str:
     return cleaned[:120]  # cap length
 
 
+def _sniff_image_mime(raw: bytes) -> str:
+    """Return the MIME type of *raw* image bytes by inspecting magic bytes.
+
+    Supports JPEG, PNG, WebP, and GIF.  Falls back to ``image/jpeg`` for any
+    unrecognised format so existing callers never see an empty string.
+    """
+    if len(raw) >= 2 and raw[:2] == b'\xff\xd8':
+        return 'image/jpeg'
+    if len(raw) >= 4 and raw[:4] == b'\x89PNG':
+        return 'image/png'
+    if len(raw) >= 12 and raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
+        return 'image/webp'
+    if len(raw) >= 6 and raw[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    return 'image/jpeg'
+
+
 def _unique_jd_path(path: str) -> str:
     """Return *path* if it does not exist, otherwise append _2, _3, … to the
     stem until a free filename is found.  Preserves audit integrity by never
@@ -1629,15 +1646,21 @@ def sourcing_list():
                 if pic_data:
                     if isinstance(pic_data, (bytes, memoryview)):
                         raw = bytes(pic_data)
-                        # Detect if the stored value is actually a URL (fallback path)
+                        # Detect if the stored value is actually a URL or data URI (fallback path)
                         try:
                             decoded = raw.decode('utf-8', errors='strict')
                             if decoded.startswith(('http://', 'https://', 'data:')):
                                 row_dict["pic"] = decoded
                             else:
-                                row_dict["pic"] = base64.b64encode(raw).decode("utf-8")
+                                # Emit a full data URI with the correct MIME type so the
+                                # browser never tries to decode WebP/PNG bytes as JPEG.
+                                mime = _sniff_image_mime(raw)
+                                b64 = base64.b64encode(raw).decode("utf-8")
+                                row_dict["pic"] = f"data:{mime};base64,{b64}"
                         except (UnicodeDecodeError, Exception):
-                            row_dict["pic"] = base64.b64encode(raw).decode("utf-8")
+                            mime = _sniff_image_mime(raw)
+                            b64 = base64.b64encode(raw).decode("utf-8")
+                            row_dict["pic"] = f"data:{mime};base64,{b64}"
                     else:
                         row_dict["pic"] = str(pic_data)
                 else:

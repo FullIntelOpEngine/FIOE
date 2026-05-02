@@ -4232,17 +4232,18 @@ function buildRow(row) {
   // Handle profile picture - check if it's bytea data or URL
   let picSrc = null;
   if (row.pic && row.pic.trim()) {
-    // Check if it's already a URL
+    // Check if it's already a URL or full data URI
     if (row.pic.startsWith('http://') || row.pic.startsWith('https://') || row.pic.startsWith('data:')) {
       picSrc = row.pic;
     } else {
-      // Assume it's base64 encoded bytea data from Postgres
-      // If it doesn't have data URI prefix, add it
-      if (!row.pic.startsWith('data:image/')) {
-        picSrc = `data:image/jpeg;base64,${row.pic}`;
-      } else {
-        picSrc = row.pic;
-      }
+      // Raw base64 from Postgres bytea — sniff MIME type from base64 magic-byte prefix
+      // so the browser receives the correct content-type and never fails to decode WebP/PNG as JPEG.
+      let mime = 'image/jpeg'; // safe fallback
+      if      (row.pic.startsWith('/9j/'))       mime = 'image/jpeg';  // FF D8 FF (JPEG)
+      else if (row.pic.startsWith('iVBOR'))       mime = 'image/png';   // \x89PNG
+      else if (row.pic.startsWith('UklGR'))       mime = 'image/webp';  // RIFF....WEBP
+      else if (row.pic.startsWith('R0lGO'))       mime = 'image/gif';   // GIF87a / GIF89a
+      picSrc = `data:${mime};base64,${row.pic}`;
     }
   }
   
@@ -4250,7 +4251,7 @@ function buildRow(row) {
     const img = document.createElement('img');
     img.src = picSrc;
     img.alt = row.name || 'Profile';
-    img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+    img.style.cssText = 'display:block; margin:0 auto; width:50px; height:50px; border-radius:50%; object-fit:cover; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     img.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'
       : 'Click to view details';
@@ -4275,7 +4276,7 @@ function buildRow(row) {
       // Fallback to placeholder if image fails to load
       this.style.display = 'none';
       const placeholder = document.createElement('div');
-      placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+      placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
       placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
       placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
         ? 'Click to download GP profile PDF (or view details if no PDF)'
@@ -4302,7 +4303,7 @@ function buildRow(row) {
   } else {
     // Placeholder for missing profile picture - also clickable
     const placeholder = document.createElement('div');
-    placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:var(--argent,#87888a); font-weight:600; font-size:18px; margin:0 auto; border:2px solid var(--desired-dawn,#d8d8d8); cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
+    placeholder.style.cssText = 'width:50px; height:50px; border-radius:50%; background:#f8f8f8; display:flex; align-items:center; justify-content:center; color:#00CCCC; font-weight:600; font-size:18px; margin:0 auto; border:2px solid #00CCCC; cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;';
     placeholder.textContent = (row.name || '?').charAt(0).toUpperCase();
     placeholder.title = window.__LINKDAPI_ENABLED && !_PROVIDER_BUTTON_CONFIG[(row.source||'').toLowerCase()]
       ? 'Click to download GP profile PDF (or view details if no PDF)'

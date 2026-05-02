@@ -5071,6 +5071,40 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
             logger.warning(f"[Fetch Image Bytes] Downloaded image too large: {len(image_bytes)} bytes")
             return None
         
+        # Convert to WebP for efficient storage and lower browser decode cost.
+        # WebP typically reduces file size 25–35% vs JPEG while decoding faster
+        # in modern browsers.  Falls back to the original bytes silently if
+        # Pillow is unavailable or the image cannot be converted (e.g. animated GIF).
+        try:
+            from PIL import Image as _PilImage
+            import io as _io
+            with _PilImage.open(_io.BytesIO(image_bytes)) as _img:
+                # Skip animated GIF/WebP — converting would strip frames
+                if not getattr(_img, 'is_animated', False) and getattr(_img, 'n_frames', 1) <= 1:
+                    _buf = _io.BytesIO()
+                    # Preserve transparency: RGBA/LA modes have an alpha channel;
+                    # palette ('P') images need an explicit transparency-aware path.
+                    if _img.mode in ('RGBA', 'LA'):
+                        _img.convert('RGBA').save(_buf, format='WEBP', quality=85, method=4)
+                    elif _img.mode == 'P':
+                        # Convert palette to RGBA only when the palette carries transparency,
+                        # otherwise RGB is sufficient (avoids colour-space corruption).
+                        target = 'RGBA' if 'transparency' in _img.info else 'RGB'
+                        _img.convert(target).save(_buf, format='WEBP', quality=85, method=4)
+                    else:
+                        _img.convert('RGB').save(_buf, format='WEBP', quality=85, method=4)
+                    webp_bytes = _buf.getvalue()
+                    if len(webp_bytes) < len(image_bytes):
+                        logger.info(
+                            f"[Fetch Image Bytes] Converted to WebP: {len(image_bytes)} → "
+                            f"{len(webp_bytes)} bytes"
+                        )
+                        image_bytes = webp_bytes
+        except ImportError:
+            pass  # Pillow not installed — keep original bytes
+        except Exception as _conv_err:
+            logger.debug(f"[Fetch Image Bytes] WebP conversion skipped ({_conv_err}); using original")
+        
         logger.info(f"[Fetch Image Bytes] Successfully fetched {len(image_bytes)} bytes from {image_url}")
         return image_bytes
         
