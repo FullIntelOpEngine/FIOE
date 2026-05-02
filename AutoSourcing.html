@@ -4894,9 +4894,11 @@ async function pollJob(jobId){
         return setTimeout(step,interval);
       }
       const data=await r.json();
-      // Slowly increase the poll interval as the job runs to reduce main-thread
-      // churn and server load (caps at 3 s for long-running jobs).
-      interval=Math.min(3000, interval+250);
+      // Exponential backoff: multiply by 1.4 on each successful poll, capped at
+      // 10 s. This reduces poll count from ~100 to ~30 for a 5-minute job while
+      // still giving rapid feedback in the first few seconds (2.5 s → 3.5 s →
+      // 4.9 s → 6.9 s → 9.6 s → 10 s).
+      interval=Math.min(10000, Math.round(interval * 1.4));
       if(msg) msg.innerHTML=data.status_html||'';
       renderCounts(data);
       if(data.urls&&data.urls.length){
