@@ -80,6 +80,66 @@ from webbridge import (
 # search to record fallback in the JOBS dict for the front-end.
 _search_fallback_flag = threading.local()
 
+# ── Per-vendor HTTP sessions — reuse TCP connections via urllib3 pools ────────
+# One session per external vendor so urllib3 keeps a persistent connection pool
+# to each host, eliminating repeated TLS handshakes.  API keys are always sent
+# per-request (not stored on the session) so there is no cross-user leakage.
+_APOLLO_SESSION      = requests.Session()
+_CONTACTOUT_SESSION  = requests.Session()
+_ROCKETREACH_SESSION = requests.Session()
+_DATAFORSEO_SESSION  = requests.Session()
+_HTTP_SESSION        = requests.Session()  # Google CSE, LinkedIn, image fetch
+
+# ── Module-level compiled regex constants — avoid recompiling on every request ─
+# Hot-path Xray-query cleanup (ContactOut / Apollo / RocketReach fallback paths)
+_XRAY_SITE_RE   = re.compile(r'site:\S+', re.I)
+_XRAY_INURL_RE  = re.compile(r'-(?:intitle|inurl|intext|allinurl):\S*', re.I)
+_XRAY_BOOL_RE   = re.compile(r'\b(?:AND|OR|NOT)\b')
+_XRAY_PARENS_RE = re.compile(r'[()"]')
+# LLM output fence stripping (used in all three Xray-translation helpers)
+_LLM_FENCE_OPEN_RE  = re.compile(r'^```(?:json)?\s*', re.MULTILINE)
+_LLM_FENCE_CLOSE_RE = re.compile(r'\s*```$', re.MULTILINE)
+# Company-key normalisation: keep only lowercase alphanumeric
+_COMPANY_KEY_RE = re.compile(r'[^a-z0-9]')
+# Trailing punctuation stripped from list items in _clean_list (rstrip avoids ReDoS)
+# Whitespace normalisation — also re-exported as MULTI_SPACE_RE for backward compat
+MULTI_SPACE_RE = re.compile(r'\s+')
+# Filename-safe characters for criteria file paths
+_FILENAME_UNSAFE_RE = re.compile(r'[<>:"/\\|?*\.]')
+# Cookie value sanitisation (used by _safe_cookie_value)
+_SAFE_COOKIE_RE = re.compile(r'[\x00-\x1f\x7f;,\\ "\'=]')
+# LinkedIn profile URL validation (SSRF guard) and slug extraction
+_LINKEDIN_VALIDATE_RE = re.compile(
+    r'^https?://([a-z]+\.)?linkedin\.com/in/[a-zA-Z0-9\-._~%]+/?$', re.IGNORECASE
+)
+_LINKEDIN_SLUG_RE = re.compile(r'linkedin\.com/in/([^/?#]+)')
+# og:image content-value extraction (applied to a single <meta> tag string, not full HTML)
+_OG_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _extract_og_image(html_head):
+    # type: (str) -> str
+    """Return the og:image URL from an HTML head snippet, or None.
+
+    Finds the og:image occurrence first with a plain string search, then
+    locates the enclosing <meta …> tag and applies a narrow regex to extract
+    the content attribute value.  This avoids applying a complex pattern to
+    the full HTML string, which would cause polynomial backtracking.
+    """
+    idx = html_head.lower().find("og:image")
+    if idx < 0:
+        return None
+    # Locate the opening <meta that precedes the og:image hit.
+    tag_start = html_head.rfind("<meta", 0, idx)
+    if tag_start < 0:
+        return None
+    tag_end = html_head.find(">", tag_start)
+    if tag_end < 0:
+        tag_end = tag_start + 512  # safety cap
+    tag_text = html_head[tag_start : tag_end + 1]
+    m = _OG_CONTENT_RE.search(tag_text)
+    return m.group(1) if m else None
+
 
 class ProviderSearchError(Exception):
     """Raised when a selected API provider (ContactOut/Apollo/RocketReach) search
@@ -337,8 +397,7 @@ def register_account():
 
 def _safe_cookie_value(s: str) -> str:
     """Strip characters that are illegal in HTTP Set-Cookie values to prevent header injection."""
-    import re as _re
-    return _re.sub(r'[\x00-\x1f\x7f;,\\ "\'=]', '', str(s or ""))[:256]
+    return _SAFE_COOKIE_RE.sub('', str(s or ""))[:256]
 
 
 def _ensure_employee_table(conn):
@@ -1832,11 +1891,11 @@ def _clean_list(items, limit=20):
     out=[]; seen=set()
     for x in items or []:
         if not isinstance(x,str): continue
-        t=re.sub(r'\s+',' ',x).strip()
+        t=MULTI_SPACE_RE.sub(' ',x).strip()
         if not t: continue
         k=t.lower()
         if k in seen: continue
-        t=re.sub(r'[;,/]+$','',t)
+        t=t.rstrip(';,/')  # strip trailing punctuation (rstrip avoids ReDoS)
         seen.add(k); out.append(t)
         if len(out)>=limit: break
     return out
@@ -2402,6 +2461,32 @@ _CRM_SALES_DIR = os.getenv(
     r"F:\Recruiting Tools\Autosourcing\Sales",
 )
 _CRM_USERNAME_SAFE_RE = re.compile(r'[^A-Za-z0-9_-]')
+# Per-file mtime-checked cache for CRM_{user}.json reads
+_crm_file_cache: dict = {}  # filepath -> (mtime, data)
+_crm_file_cache_lock = threading.Lock()
+
+
+def _load_crm_file(crm_file: str) -> list:
+    """Load a CRM JSON file with mtime-checked in-memory caching."""
+    global _crm_file_cache
+    try:
+        mtime = os.path.getmtime(crm_file)
+        with _crm_file_cache_lock:
+            cached = _crm_file_cache.get(crm_file)
+            if cached is not None and cached[0] == mtime:
+                return cached[1]
+        with open(crm_file, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, list):
+            data = []
+        with _crm_file_cache_lock:
+            _crm_file_cache[crm_file] = (mtime, data)
+        return data
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        logger.warning("[CRM load] Could not read %s: %s", crm_file, exc)
+        return []
 
 # ── BD Activity store ─────────────────────────────────────────────────────────
 _BD_ACTIVITY_PATH = os.getenv(
@@ -2412,14 +2497,28 @@ _BD_ACTIVITY_PATH = os.getenv(
     ),
 )
 _bd_activity_lock = __import__("threading").Lock()
+# Mtime-checked in-memory cache for BD_Activity.json (avoids disk read on every GET)
+_bd_activity_cache = []   # type: list
+_bd_activity_cache_mtime = None  # float | None — mtime of last loaded file
 
 
 def _bd_load():
-    """Return the BD Activity thread list (list of dicts). Never raises."""
+    """Return the BD Activity thread list (list of dicts). Never raises.
+
+    Uses an mtime-checked in-memory cache so concurrent GET /api/bd-activity
+    requests do not all hit disk — the file is only re-read when it changes.
+    """
+    global _bd_activity_cache, _bd_activity_cache_mtime
     try:
+        mtime = os.path.getmtime(_BD_ACTIVITY_PATH)
+        if _bd_activity_cache_mtime is not None and mtime == _bd_activity_cache_mtime:
+            return _bd_activity_cache
         with open(_BD_ACTIVITY_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, list) else []
+        data = data if isinstance(data, list) else []
+        _bd_activity_cache = data
+        _bd_activity_cache_mtime = mtime
+        return data
     except Exception:
         return []
 
@@ -2790,17 +2889,8 @@ def prospect_crm_data_get():
     if not abs_file.startswith(abs_crm_dir + os.sep):
         logger.error("[CRM load] Path traversal blocked: %s", crm_file)
         return jsonify({"profiles": []}), 200
-    if not os.path.exists(crm_file):
-        return jsonify({"profiles": []}), 200
-    try:
-        with open(crm_file, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-        if not isinstance(data, list):
-            data = []
-        return jsonify({"profiles": data}), 200
-    except Exception as exc:
-        logger.warning("[CRM load] Could not read %s: %s", crm_file, exc)
-        return jsonify({"profiles": []}), 200
+    data = _load_crm_file(crm_file)
+    return jsonify({"profiles": data}), 200
 
 
 @app.delete("/prospect/crm-data")
@@ -2925,7 +3015,7 @@ def _load_verified_email():
         if isinstance(_data, list):
             _converted = {}
             for _entry in _data:
-                _ck = re.sub(r'[^a-z0-9]', '_', (_entry.get('company') or 'unknown').lower())
+                _ck = _COMPANY_KEY_RE.sub('_', (_entry.get('company') or 'unknown').lower())
                 if _ck not in _converted:
                     _converted[_ck] = {'Domain': [], 'Confidence_threshold': 1}
                 _converted[_ck]['Domain'].append({
@@ -2988,7 +3078,7 @@ def prospect_crm_generate_email():
         return jsonify({'error': 'Name and Company are required.'}), 400
 
     try:
-        company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+        company_key = _COMPANY_KEY_RE.sub('_', company.lower())
         verified_data  = _load_verified_email()
         company_entry  = verified_data.get(company_key)
 
@@ -3096,7 +3186,7 @@ def prospect_crm_save_verified_email():
     try:
         with _verified_email_lock:
             existing    = _load_verified_email()
-            company_key = re.sub(r'[^a-z0-9]', '_', company.lower())
+            company_key = _COMPANY_KEY_RE.sub('_', company.lower())
             if company_key not in existing:
                 existing[company_key] = {'Domain': [], 'Confidence_threshold': 1}
             company_data = existing[company_key]
@@ -3319,7 +3409,7 @@ def add_message(job_id: str, text: str):
 # ... [Job helper functions] ...
 LINKEDIN_PROFILE_RE = re.compile(r'(?:^|\.)linkedin\.com/(?:in|pub)/', re.I)
 CLEAN_LINKEDIN_SUFFIX_RE = re.compile(r'\s*\|\s*LinkedIn.*$', re.I)
-MULTI_SPACE_RE = re.compile(r'\s+')
+# MULTI_SPACE_RE is defined at module top alongside the other regex constants
 
 def is_linkedin_profile(url: str) -> bool:
     return bool(url and LINKEDIN_PROFILE_RE.search(url))
@@ -3526,7 +3616,7 @@ def google_cse_search_page(query: str, api_key: str, cx: str, num: int, start_in
     params={"key":api_key,"cx":cx,"q":query,"num":min(num,10),"start":start_index}
     if gl_hint: params["gl"]=gl_hint
     try:
-        r=requests.get(endpoint, params=params, timeout=30)
+        r=_HTTP_SESSION.get(endpoint, params=params, timeout=30)
         r.raise_for_status()
         data=r.json()
         items=data.get("items",[]) or []
@@ -3891,8 +3981,8 @@ def _translate_xray_to_contactout_params(query: str) -> dict:
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
             # Remove any ```json``` fences
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _LLM_FENCE_OPEN_RE.sub('', cleaned)
+            cleaned = _LLM_FENCE_CLOSE_RE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[ContactOut] Xray→ContactOut params: {params}")
@@ -3901,11 +3991,11 @@ def _translate_xray_to_contactout_params(query: str) -> dict:
         logger.warning(f"[ContactOut] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
     # Strip obvious Google Xray operators before falling back
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _XRAY_SITE_RE.sub('', query)
+    kw = _XRAY_INURL_RE.sub('', kw)
+    kw = _XRAY_BOOL_RE.sub(' ', kw)
+    kw = _XRAY_PARENS_RE.sub(' ', kw)
+    kw = MULTI_SPACE_RE.sub(' ', kw).strip()
     return {"keyword": kw} if kw else {}
 
 
@@ -3928,7 +4018,7 @@ def contactout_people_search_page(query: str, api_key: str, num: int = 10,
     params.setdefault("limit", num)
     logger.info(f"[ContactOut] Calling people/search — page={page} limit={params.get('limit', num)} params_keys={list(params.keys())}")
     try:
-        r = requests.post(
+        r = _CONTACTOUT_SESSION.post(
             "https://api.contactout.com/v1/people/search",
             headers={
                 "token": api_key,
@@ -4095,8 +4185,8 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _LLM_FENCE_OPEN_RE.sub('', cleaned)
+            cleaned = _LLM_FENCE_CLOSE_RE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[Apollo] Xray→Apollo params: {params}")
@@ -4104,11 +4194,11 @@ def _translate_xray_to_apollo_params(query: str) -> dict:
     except Exception as exc:
         logger.warning(f"[Apollo] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _XRAY_SITE_RE.sub('', query)
+    kw = _XRAY_INURL_RE.sub('', kw)
+    kw = _XRAY_BOOL_RE.sub(' ', kw)
+    kw = _XRAY_PARENS_RE.sub(' ', kw)
+    kw = MULTI_SPACE_RE.sub(' ', kw).strip()
     return {"q_keywords": kw} if kw else {}
 
 
@@ -4132,7 +4222,7 @@ def apollo_people_search_page(query: str, api_key: str, num: int = 10,
     params["per_page"] = num
     logger.debug(f"[Apollo] Calling mixed_people/search — page={page} per_page={num} params={params}")
     try:
-        r = requests.post(
+        r = _APOLLO_SESSION.post(
             "https://api.apollo.io/api/v1/mixed_people/search",
             headers={
                 "x-api-key": api_key,
@@ -4252,8 +4342,8 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
         raw = unified_llm_call_text(prompt, temperature=0.0, max_output_tokens=512)
         if raw and raw.strip():
             cleaned = raw.strip().strip("`")
-            cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.MULTILINE)
-            cleaned = re.sub(r'\s*```$', '', cleaned, flags=re.MULTILINE)
+            cleaned = _LLM_FENCE_OPEN_RE.sub('', cleaned)
+            cleaned = _LLM_FENCE_CLOSE_RE.sub('', cleaned)
             params = json.loads(cleaned.strip())
             if isinstance(params, dict):
                 logger.info(f"[RocketReach] Xray→RocketReach params: {params}")
@@ -4261,11 +4351,11 @@ def _translate_xray_to_rocketreach_params(query: str) -> dict:
     except Exception as exc:
         logger.warning(f"[RocketReach] Xray translation failed: {exc}")
     # Fallback: use the raw query as a keyword search
-    kw = re.sub(r'site:\S+', '', query, flags=re.I)
-    kw = re.sub(r'-(?:intitle|inurl|intext|allinurl):\S*', '', kw, flags=re.I)
-    kw = re.sub(r'\b(?:AND|OR|NOT)\b', ' ', kw)
-    kw = re.sub(r'[()"]', ' ', kw)
-    kw = re.sub(r'\s+', ' ', kw).strip()
+    kw = _XRAY_SITE_RE.sub('', query)
+    kw = _XRAY_INURL_RE.sub('', kw)
+    kw = _XRAY_BOOL_RE.sub(' ', kw)
+    kw = _XRAY_PARENS_RE.sub(' ', kw)
+    kw = MULTI_SPACE_RE.sub(' ', kw).strip()
     return {"keyword": kw} if kw else {}
 
 
@@ -4287,7 +4377,7 @@ def rocketreach_people_search_page(query: str, api_key: str, num: int = 10,
     body = {"query": params, "start": ((page - 1) * num) + 1, "page_size": num}
     logger.info(f"[RocketReach] Calling api/v2/person/search — page={page} page_size={num} query_keys={list(params.keys())}")
     try:
-        r = requests.post(
+        r = _ROCKETREACH_SESSION.post(
             "https://api.rocketreach.co/api/v2/person/search",
             headers={
                 "Api-Key": api_key,
@@ -4450,7 +4540,7 @@ def dataforseo_search_page(query: str, login: str, password: str, num: int = 10,
     # requests' internal latin-1 encoding which can corrupt non-ASCII chars
     credentials = base64.b64encode(f"{login}:{password}".encode("utf-8")).decode("ascii")
     try:
-        r = requests.post(
+        r = _DATAFORSEO_SESSION.post(
             endpoint,
             headers={
                 "Authorization": f"Basic {credentials}",
@@ -4774,7 +4864,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
 
     # SECURITY: Validate LinkedIn URL to prevent SSRF
     # Must be a valid LinkedIn profile URL
-    if not re.match(r'^https?://([a-z]+\.)?linkedin\.com/in/[a-zA-Z0-9\-._~%]+/?$', linkedin_url, re.IGNORECASE):
+    if not _LINKEDIN_VALIDATE_RE.match(linkedin_url):
         logger.warning(f"[Profile Pic] Invalid LinkedIn URL format: {linkedin_url}")
         return None
 
@@ -4785,7 +4875,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get(linkedin_url, headers=headers, timeout=10)
+        response = _HTTP_SESSION.get(linkedin_url, headers=headers, timeout=10)
         
         # Handle rate limiting and forbidden responses
         if response.status_code == 429:
@@ -4795,22 +4885,16 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             logger.warning(f"[Profile Pic] Forbidden by LinkedIn (may require auth): {linkedin_url}")
             # Continue to fallback method
         elif response.status_code == 200:
-            # Parse HTML to find og:image meta tag
-            # Note: LinkedIn may actively block scraping - this is best-effort
-            og_image_match = re.search(r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', response.text, re.IGNORECASE)
-            if not og_image_match:
-                # Try reverse order (content before property)
-                og_image_match = re.search(r'<meta[^>]*content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']', response.text, re.IGNORECASE)
-            
-            if og_image_match:
-                profile_pic_url = og_image_match.group(1)
+            # Parse only the <head> section (first 8 KB is enough for meta tags).
+            # Using a string-search helper instead of complex regex avoids
+            # polynomial ReDoS on adversarial HTML.
+            html_head = response.text[:8192]
+            profile_pic_url = _extract_og_image(html_head)
+            if profile_pic_url:
                 logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
-                
-                # Validate that it's not a placeholder or default image
-                if profile_pic_url and not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
+                if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
                     return profile_pic_url
-                else:
-                    logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
+                logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
     except Exception as e:
         logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
 
@@ -4827,7 +4911,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             from urllib.parse import urlparse
 
             # Extract URL slug (e.g. john-doe-12345)
-            match = re.search(r'linkedin\.com/in/([^/?#]+)', linkedin_url)
+            match = _LINKEDIN_SLUG_RE.search(linkedin_url)
             if not match:
                 logger.warning(f"[Profile Pic] Could not extract profile slug from URL: {linkedin_url}")
                 return None
@@ -4884,7 +4968,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                         "searchType": "image",
                         "num": 5,
                     }
-                    r = requests.get(endpoint, params=params, timeout=15)
+                    r = _HTTP_SESSION.get(endpoint, params=params, timeout=15)
                     r.raise_for_status()
                     items = r.json().get("items", [])
                     for item in items:
@@ -4964,7 +5048,7 @@ def fetch_image_bytes_from_url(image_url: str, max_size_mb=5):
         if _is_private_host(image_url):
             logger.warning(f"[Fetch Image Bytes] SSRF: blocked private-host URL: {image_url}")
             return None
-        response = requests.get(image_url, timeout=15, stream=True)
+        response = _HTTP_SESSION.get(image_url, timeout=15, stream=True)
         response.raise_for_status()
         
         # Check content type
@@ -5297,8 +5381,8 @@ def _get_criteria_filepath(username, role_tag):
     role_tag = (role_tag or "").strip()
     if not username or not role_tag:
         return None
-    safe_role = re.sub(r'[<>:"/\\|?*\.]', '_', role_tag).strip('_')
-    safe_user = re.sub(r'[<>:"/\\|?*\.]', '_', username).strip('_')
+    safe_role = _FILENAME_UNSAFE_RE.sub('_', role_tag).strip('_')
+    safe_user = _FILENAME_UNSAFE_RE.sub('_', username).strip('_')
     if not safe_role or not safe_user:
         return None
     return os.path.join(CRITERIA_OUTPUT_DIR, f"{safe_role} {safe_user}.json")

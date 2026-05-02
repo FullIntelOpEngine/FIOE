@@ -4794,7 +4794,7 @@ async function generateAndStart(){
     if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('start_job'))) return;
     // JD archive file renaming is now handled server-side inside start_job using the
     // authoritative role_tag from the sourcing table, so no separate tag_jd call is needed here.
-    const res=await fetch('/start_job',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const res=await fetch('/start_job',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify(payload)});
     if(!res.ok) throw new Error('HTTP '+res.status+' '+(await res.text()));
     const data=await res.json();
     if(!data.job_id) throw new Error('No job_id in response');
@@ -6126,7 +6126,15 @@ function renderExternalSuggestions(jobs, comps){
           document.cookie = 'username=; Max-Age=0; path=/';
           document.cookie = 'userid=; Max-Age=0; path=/';
         } catch(_) {}
-        location.replace('/login.html');
+        // Call server-side logout to invalidate the session_id (httpOnly cookie)
+        // so the session cannot be replayed after the user leaves the page.
+        fetch('/logout', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        }).catch(function(){}).finally(function(){
+          location.replace('/login.html');
+        });
       });
     }
   } catch(_){}

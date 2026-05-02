@@ -14,6 +14,7 @@ import uuid
 import io
 import hashlib
 import requests
+import functools
 from csv import DictWriter
 from datetime import datetime
 from flask import request, send_from_directory, jsonify, abort, Response, stream_with_context
@@ -140,6 +141,25 @@ import concurrent.futures  # stdlib, no new dep
 # Module-level pool (None until first use) and cost tracking
 _CV_ANALYZE_THREAD_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
 _CV_POOL_LOCK = threading.Lock()
+
+# Bounded thread pool for background job runners (prevents unbounded thread
+# proliferation when many sourcing jobs are started concurrently).
+# Size is configurable via JOB_RUNNER_MAX_WORKERS (default 4).
+_JOB_RUNNER_MAX_WORKERS: int = int(os.getenv("JOB_RUNNER_MAX_WORKERS", "4"))
+_JOB_RUNNER_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
+_JOB_RUNNER_POOL_LOCK = threading.Lock()
+
+
+def _get_job_runner_pool() -> "concurrent.futures.ThreadPoolExecutor":
+    """Return (or lazily create) the bounded job-runner ThreadPoolExecutor."""
+    global _JOB_RUNNER_POOL
+    with _JOB_RUNNER_POOL_LOCK:
+        if _JOB_RUNNER_POOL is None:
+            _JOB_RUNNER_POOL = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_JOB_RUNNER_MAX_WORKERS,
+                thread_name_prefix="job_runner",
+            )
+        return _JOB_RUNNER_POOL
 
 # Cumulative CPU-seconds tracker (reset every hour)
 _cv_cpu_seconds_total: float = 0.0
@@ -1118,14 +1138,15 @@ def start_job():
             logger.warning(f"[StartJob] Worker dispatch failed ({_dispatch_err}), running inline")
 
     if not _worker_dispatched:
-        threading.Thread(target=_job_runner,
-                         args=(job_id, queries, fallback_queries, auto_expand, manual_urls,
-                               search_results_only, country, dynamic_target, job_titles,
-                               _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
-                               _user_linkedin_key,
-                               _selected_search_provider,
-                               _raw_form_fields),
-                         daemon=True).start()
+        _get_job_runner_pool().submit(
+            _job_runner,
+            job_id, queries, fallback_queries, auto_expand, manual_urls,
+            search_results_only, country, dynamic_target, job_titles,
+            _user_search_provider, _user_serper_key, _user_dfs_login, _user_dfs_password,
+            _user_linkedin_key,
+            _selected_search_provider,
+            _raw_form_fields,
+        )
     # Log agentic intent event
     _agentic_filters = []
     if country: _agentic_filters.append(f"country:{country}")
@@ -2100,6 +2121,7 @@ def sourcing_save_profile_json():
         logger.error(f"[Save Profile JSON] {e}")
         return jsonify({"error": str(e)}), 500
 
+@functools.lru_cache(maxsize=4096)
 def _normalize_linkedin_to_path(linkedin_url: str) -> str:
     if not linkedin_url:
         return ""
