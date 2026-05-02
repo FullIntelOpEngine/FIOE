@@ -4894,9 +4894,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                 logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
                 if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
                     return profile_pic_url
-                else:
-                    logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
-                    profile_pic_url = None
+                logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
     except Exception as e:
         logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
 
