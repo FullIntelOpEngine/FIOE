@@ -5004,7 +5004,14 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
     _dfs_active = (_dfs_cfg.get("enabled", "disabled") == "enabled"
                    and bool(_dfs_cfg.get("login")) and bool(_dfs_cfg.get("password")))
     _cse_available = bool(GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX)
-    _provider_label = ("serper" if _serper_active else "dataforseo" if _dfs_active else "google-cse" if _cse_available else None)
+    if _serper_active:
+        _provider_label = "serper"
+    elif _dfs_active:
+        _provider_label = "dataforseo"
+    elif _cse_available:
+        _provider_label = "google-cse"
+    else:
+        _provider_label = None
     if not profile_pic_url and not _provider_label:
         logger.warning(f"[Profile Pic] No search provider configured (CSE/Serper/DFS); skipping search for {linkedin_url}")
     if not profile_pic_url and _provider_label:
