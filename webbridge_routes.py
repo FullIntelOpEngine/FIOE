@@ -113,13 +113,32 @@ _LINKEDIN_VALIDATE_RE = re.compile(
     r'^https?://([a-z]+\.)?linkedin\.com/in/[a-zA-Z0-9\-._~%]+/?$', re.IGNORECASE
 )
 _LINKEDIN_SLUG_RE = re.compile(r'linkedin\.com/in/([^/?#]+)')
-# og:image meta-tag extraction (both attribute orderings)
-_OG_IMAGE_RE = re.compile(
-    r'<meta[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)["\']', re.IGNORECASE
-)
-_OG_IMAGE_ALT_RE = re.compile(
-    r'<meta[^>]*content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']', re.IGNORECASE
-)
+# og:image content-value extraction (applied to a single <meta> tag string, not full HTML)
+_OG_CONTENT_RE = re.compile(r'content=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _extract_og_image(html_head):
+    # type: (str) -> str
+    """Return the og:image URL from an HTML head snippet, or None.
+
+    Finds the og:image occurrence first with a plain string search, then
+    locates the enclosing <meta …> tag and applies a narrow regex to extract
+    the content attribute value.  This avoids applying a complex pattern to
+    the full HTML string, which would cause polynomial backtracking.
+    """
+    idx = html_head.lower().find("og:image")
+    if idx < 0:
+        return None
+    # Locate the opening <meta that precedes the og:image hit.
+    tag_start = html_head.rfind("<meta", 0, idx)
+    if tag_start < 0:
+        return None
+    tag_end = html_head.find(">", tag_start)
+    if tag_end < 0:
+        tag_end = tag_start + 512  # safety cap
+    tag_text = html_head[tag_start : tag_end + 1]
+    m = _OG_CONTENT_RE.search(tag_text)
+    return m.group(1) if m else None
 
 
 class ProviderSearchError(Exception):
@@ -4867,23 +4886,17 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             # Continue to fallback method
         elif response.status_code == 200:
             # Parse only the <head> section (first 8 KB is enough for meta tags).
-            # Capping input prevents polynomial ReDoS on adversarial HTML.
+            # Using a string-search helper instead of complex regex avoids
+            # polynomial ReDoS on adversarial HTML.
             html_head = response.text[:8192]
-            # Note: LinkedIn may actively block scraping - this is best-effort
-            og_image_match = _OG_IMAGE_RE.search(html_head)
-            if not og_image_match:
-                # Try reverse order (content before property)
-                og_image_match = _OG_IMAGE_ALT_RE.search(html_head)
-            
-            if og_image_match:
-                profile_pic_url = og_image_match.group(1)
+            profile_pic_url = _extract_og_image(html_head)
+            if profile_pic_url:
                 logger.info(f"[Profile Pic] Found og:image from LinkedIn profile: {profile_pic_url}")
-                
-                # Validate that it's not a placeholder or default image
-                if profile_pic_url and not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
+                if not any(placeholder in profile_pic_url.lower() for placeholder in ['default', 'placeholder', 'ghost']):
                     return profile_pic_url
                 else:
                     logger.info(f"[Profile Pic] og:image appears to be placeholder, trying fallback")
+                    profile_pic_url = None
     except Exception as e:
         logger.warning(f"[Profile Pic] Failed to fetch og:image from LinkedIn (may be blocked): {e}")
 
