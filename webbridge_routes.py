@@ -4959,14 +4959,14 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             if _bd.get("enabled") == "enabled" and _bd.get("api_key") and _bd.get("zone"):
                 _bd_key  = _bd["api_key"]
                 _bd_zone = _bd["zone"]
-                # Ask BrightData to fetch the LinkedIn page directly and return its HTML.
+                # Ask BrightData to fetch the LinkedIn page and return its HTML.
                 # We send the raw LinkedIn URL (not a Google SERP URL) so BrightData's
                 # web-unlock layer handles the anti-bot challenge transparently.
-                import json as _json_mod
+                # "format": "html" instructs the API to return the raw response body.
                 _bd_payload = {
                     "zone": _bd_zone,
                     "url": _normalized_li_url,
-                    "format": "raw",          # request raw HTML response
+                    "format": "html",
                 }
                 _bd_headers = {
                     "Authorization": f"Bearer {_bd_key}",
@@ -4985,14 +4985,14 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                         p in _og.lower() for p in ['default', 'placeholder', 'ghost']
                     ):
                         profile_pic_url = _og
-                        logger.info(f"[Profile Pic] BrightData og:image: {_og}")
+                        logger.info("[Profile Pic] BrightData og:image found")
                 else:
                     logger.debug(
-                        f"[Profile Pic] BrightData returned HTTP {_bd_resp.status_code} "
-                        f"for {_normalized_li_url}"
+                        "[Profile Pic] BrightData returned HTTP %d",
+                        _bd_resp.status_code,
                     )
         except Exception as _bd_exc:
-            logger.debug(f"[Profile Pic] BrightData fetch skipped: {_bd_exc}")
+            logger.debug("[Profile Pic] BrightData fetch skipped: %s", _bd_exc)
 
     # Method 2 & 3: search fallback (Serper.dev, DataforSEO, or Google CSE)
     _search_cfg = _load_search_provider_config()
@@ -5103,7 +5103,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
             # image will still be verified when fetch_image_bytes_from_url
             # actually downloads it.
             if _is_trusted_cdn_url(profile_pic_url):
-                logger.debug(f"[Profile Pic] Trusted CDN, skipping HEAD: {profile_pic_url}")
+                logger.debug("[Profile Pic] Trusted CDN, skipping HEAD")
                 return profile_pic_url
 
             # SECURITY: reject URLs that resolve to private/loopback addresses (SSRF)
@@ -5142,8 +5142,7 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None):
                         get_status = get_response.status_code
                         if 200 <= get_status < 400 or get_status == 206:
                             logger.info(
-                                f"[Profile Pic] HEAD {status}→GET {get_status}: "
-                                f"accepting {profile_pic_url}"
+                                f"[Profile Pic] HEAD {status}→GET {get_status}: image verified"
                             )
                             return profile_pic_url
                     except Exception:
