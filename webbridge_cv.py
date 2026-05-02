@@ -597,7 +597,12 @@ def _async_backfill_pictures(targets):
         return
     updated = 0
     try:
-        for active_userid, linkedinurl in targets:
+        for target in targets:
+            if len(target) >= 3:
+                active_userid, linkedinurl, display_name = target[:3]
+            else:
+                active_userid, linkedinurl = target
+                display_name = None
             if not linkedinurl:
                 continue
             conn = None
@@ -607,9 +612,12 @@ def _async_backfill_pictures(targets):
                 # LinkedIn/image HTTP calls.  These calls can take many seconds
                 # per candidate; keeping a pooled DB connection checked out for
                 # the whole back-fill can starve auth/session requests.
-                pic_url = get_linkedin_profile_picture(linkedinurl)
+                pic_url = get_linkedin_profile_picture(linkedinurl, display_name=display_name)
                 pic_bytes = fetch_image_bytes_from_url(pic_url) if pic_url else None
-                if not pic_bytes:
+                pic_val = psycopg2.Binary(pic_bytes) if pic_bytes else (
+                    psycopg2.Binary(pic_url.encode('utf-8')) if pic_url else None
+                )
+                if pic_val is None:
                     continue
                 try:
                     conn = _get_pg_conn()
@@ -619,7 +627,7 @@ def _async_backfill_pictures(targets):
                         "UPDATE sourcing SET pic = %s "
                         "WHERE userid = %s AND linkedinurl = %s "
                         "AND (pic IS NULL OR octet_length(pic) = 0)",
-                        (psycopg2.Binary(pic_bytes), active_userid, linkedinurl),
+                        (pic_val, active_userid, linkedinurl),
                     )
                     conn.commit()
                     updated += 1
@@ -883,7 +891,7 @@ def _write_outputs(job_id, rows):
                     # stops the AutoSourcing.html `/job_status` polling loop.
                     if has_pic_column and active_userid and data_rows:
                         _pic_targets = [
-                            (active_userid, r[4]) for r in data_rows
+                            (active_userid, r[4], r[0]) for r in data_rows
                             if r[4] and isinstance(r[4], str)
                         ]
                         if _pic_targets:
@@ -1075,6 +1083,7 @@ def start_job():
                     _login_role_tag = _login_row[0] if _login_row else None
                     _login_session_ts = _login_row[1] if _login_row else None
                     # Transfer role_tag to sourcing table (authoritative source for assessments)
+                    cur_l.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS role_tag TEXT DEFAULT ''")
                     cur_l.execute("UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')", (role_tag_val, username))
                     # Transfer session timestamp to sourcing after validating role_tag matches
                     if _login_role_tag == role_tag_val and _login_session_ts is not None:
