@@ -716,6 +716,15 @@ def _async_backfill_pictures(targets, pg_host, pg_port, pg_user, pg_password, pg
                     )
                     if cse_pic_url:
                         pic_bytes = fetch_image_bytes_from_url(cse_pic_url)
+                        if not pic_bytes:
+                            logger.info(
+                                f"[PicBackfill] Search-fallback URL fetch also returned no bytes "
+                                f"for {linkedin_url} (url={cse_pic_url!r}); skipping"
+                            )
+                    else:
+                        logger.info(
+                            f"[PicBackfill] Search-fallback found no pic URL for {linkedin_url}; skipping"
+                        )
                 if not pic_bytes:
                     logger.info(f"[PicBackfill] All image fetch attempts failed for {linkedin_url}; skipping")
                     continue

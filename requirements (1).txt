@@ -21,7 +21,7 @@ openpyxl>=3.1,<4.0
 # PDF processing (worker image only — heavy dep)
 pdfplumber>=0.11,<1.0
 
-# Image processing — WebP conversion for efficient profile-picture storage
+# Image processing — used for format detection (sniff_image_mime); WebP conversion removed
 Pillow>=10.0,<12.0
 
 # GCP services (PR 1, PR 2, PR 6)
