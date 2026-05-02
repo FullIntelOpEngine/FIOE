@@ -3644,7 +3644,14 @@ def google_cse_search_page(query: str, api_key: str, cx: str, num: int, start_in
             estimated_total=0
         out=[]
         for it in items:
-            out.append({"link":it.get("link") or "","title":it.get("title") or "","snippet":it.get("snippet") or "","displayLink":it.get("displayLink") or ""})
+            entry = {"link":it.get("link") or "","title":it.get("title") or "","snippet":it.get("snippet") or "","displayLink":it.get("displayLink") or ""}
+            # Preserve pagemap so callers (e.g. get_linkedin_profile_picture) can
+            # extract cse_thumbnail / cse_image / metatags from the Google-cached
+            # metadata — this is the primary way profile pictures are obtained when
+            # Google CSE is the configured main search provider.
+            if it.get("pagemap"):
+                entry["pagemap"] = it["pagemap"]
+            out.append(entry)
         return out, estimated_total
     except Exception as e:
         logger.warning(f"[CSE] page fetch failed: {e}")
@@ -5108,7 +5115,10 @@ def get_linkedin_profile_picture(linkedin_url: str, display_name: str = None, se
                 profile_pic_url = _run_text_search(f'site:linkedin.com/in/{profile_slug}')
 
             # ── Method 3: Image search — last resort (Google CSE only) ──
-            if not profile_pic_url and _cse_available and not _serper_active:
+            # Only execute when Google CSE is the active main provider (i.e. neither
+            # Serper nor DataForSEO is enabled). Using CSE here when another provider
+            # is the main provider would violate the single-provider constraint.
+            if not profile_pic_url and _cse_available and not _serper_active and not _dfs_active:
                 try:
                     endpoint = "https://www.googleapis.com/customsearch/v1"
                     # Build image query: display name is more useful than URL slug here
