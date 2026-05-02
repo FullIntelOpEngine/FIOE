@@ -669,18 +669,9 @@ def _analyze_cv_bytes_sync_worker(pdf_bytes: bytes) -> "dict | None":
             obj["total_experience_years"] = recalc["total_experience_years"]
             obj["tenure"] = recalc["tenure"]
             if abs(recalc["total_experience_years"] - float(gemini_total or 0)) > 0.5:
-                logger.info(
-                    "[CV Worker] Recalculated total_experience_years: %s (Gemini: %s)",
-                    recalc["total_experience_years"],
-                    gemini_total,
-                )
+                logger.info("[CV Worker] Recalculated total_experience_years differs from Gemini estimate")
             if abs(recalc["tenure"] - float(gemini_tenure or 0)) > 0.5:
-                logger.info(
-                    "[CV Worker] Recalculated tenure: %s (Gemini: %s, employers: %s)",
-                    recalc["tenure"],
-                    gemini_tenure,
-                    recalc["employer_count"],
-                )
+                logger.info("[CV Worker] Recalculated tenure differs from Gemini estimate")
 
     return obj
 
