@@ -137,7 +137,6 @@ from webbridge_routes import (
     add_message, persist_job, _load_job_from_backend,
     _sanitize_for_excel, _aggregate_company_dropdown,
     _extract_company_from_jobtitle, _gemini_extract_company_from_jobtitle,
-    _role_tag_session_column_ensured,
     CRITERIA_OUTPUT_DIR, _get_criteria_filepath, _read_search_criteria,
     unified_llm_call_text,
     _search_fallback_flag,
@@ -878,7 +877,6 @@ def _gemini_multi_sector(selected, user_job_title, user_company, languages=None)
 @_rate(_make_flask_limit("start_job"))
 @_check_user_rate("start_job")
 def start_job():
-    global _role_tag_session_column_ensured
     data=request.get_json(force=True, silent=True) or {}
     queries=data.get('queries') or []
     fallback_queries=data.get('fallbackQueries') or []
@@ -960,34 +958,55 @@ def start_job():
             # job_titles is a list of strings
             role_tag_val = ", ".join([str(t).strip() for t in job_titles if t]).strip()
             if role_tag_val:
-                conn_l = _get_pg_conn()
-                cur_l = conn_l.cursor()
-                # Ensure role_tag_session column exists (reuse global flag; ADD COLUMN IF NOT EXISTS is idempotent)
-                if not _role_tag_session_column_ensured:
-                    cur_l.execute("ALTER TABLE login ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
-                    cur_l.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
-                    cur_l.execute("ALTER TABLE sourcing ALTER COLUMN session DROP DEFAULT")
-                    _role_tag_session_column_ensured = True
-                # Update login table — set role_tag and generate session timestamp
-                cur_l.execute("UPDATE login SET role_tag=%s, session=NOW() WHERE username=%s", (role_tag_val, username))
-                # Read back the session timestamp
-                cur_l.execute("SELECT role_tag, session FROM login WHERE username=%s", (username,))
-                _login_row = cur_l.fetchone()
-                _login_role_tag = _login_row[0] if _login_row else None
-                _login_session_ts = _login_row[1] if _login_row else None
-                # Transfer role_tag to sourcing table (authoritative source for assessments)
-                cur_l.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS role_tag TEXT DEFAULT ''")
-                cur_l.execute("UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')", (role_tag_val, username))
-                # Transfer session timestamp to sourcing after validating role_tag matches
-                if _login_role_tag == role_tag_val and _login_session_ts is not None:
-                    cur_l.execute(
-                        "UPDATE sourcing SET session=%s WHERE username=%s AND role_tag=%s",
-                        (_login_session_ts, username, role_tag_val)
-                    )
-                conn_l.commit()
-                cur_l.close()
-                conn_l.close()
-                logger.info(f"[StartJob Auto-Update] Set role_tag='{role_tag_val}' session_ts='{_login_session_ts}' for user='{username}' in login and sourcing tables")
+                import webbridge_routes as _wr_cv
+                conn_l = None
+                cur_l = None
+                try:
+                    conn_l = _get_pg_conn()
+                    cur_l = conn_l.cursor()
+                    # DDL column additions are handled once at startup by
+                    # webbridge_routes2._startup_backfill_role_tag_session().
+                    # The _role_tag_session_column_ensured flag in webbridge_routes
+                    # is the canonical guard; check it here to avoid redundant DDL
+                    # (ALTER TABLE takes ACCESS EXCLUSIVE and serialises auth queries).
+                    if not _wr_cv._role_tag_session_column_ensured:
+                        cur_l.execute("ALTER TABLE login ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
+                        cur_l.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS session TIMESTAMPTZ")
+                        cur_l.execute("ALTER TABLE sourcing ALTER COLUMN session DROP DEFAULT")
+                        cur_l.execute("ALTER TABLE sourcing ADD COLUMN IF NOT EXISTS role_tag TEXT DEFAULT ''")
+                        _wr_cv._role_tag_session_column_ensured = True
+                    # Update login table — set role_tag and generate session timestamp
+                    cur_l.execute("UPDATE login SET role_tag=%s, session=NOW() WHERE username=%s", (role_tag_val, username))
+                    # Read back the session timestamp
+                    cur_l.execute("SELECT role_tag, session FROM login WHERE username=%s", (username,))
+                    _login_row = cur_l.fetchone()
+                    _login_role_tag = _login_row[0] if _login_row else None
+                    _login_session_ts = _login_row[1] if _login_row else None
+                    # Transfer role_tag to sourcing table (authoritative source for assessments)
+                    cur_l.execute("UPDATE sourcing SET role_tag=%s WHERE username=%s AND (role_tag IS NULL OR role_tag='')", (role_tag_val, username))
+                    # Transfer session timestamp to sourcing after validating role_tag matches
+                    if _login_role_tag == role_tag_val and _login_session_ts is not None:
+                        cur_l.execute(
+                            "UPDATE sourcing SET session=%s WHERE username=%s AND role_tag=%s",
+                            (_login_session_ts, username, role_tag_val)
+                        )
+                    conn_l.commit()
+                    logger.info(f"[StartJob Auto-Update] Set role_tag='{role_tag_val}' session_ts='{_login_session_ts}' for user='{username}' in login and sourcing tables")
+                finally:
+                    if cur_l is not None:
+                        try:
+                            cur_l.close()
+                        except Exception:
+                            pass
+                    if conn_l is not None:
+                        try:
+                            conn_l.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            conn_l.close()
+                        except Exception:
+                            pass
     except Exception as e_rt:
         logger.warning(f"[StartJob Auto-Update role_tag] Failed: {e_rt}")
     # --- PATCH END ---
