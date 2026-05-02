@@ -3030,7 +3030,7 @@ let _globalSortedRows = null;
 // We retry at increasing intervals until all visible rows have a pic or the
 // maximum number of retries is reached.
 let _picPollTimeouts = [];
-const _PIC_POLL_INTERVALS = [5000, 15000, 30000, 60000]; // ms delays after initial load
+const _PIC_POLL_INTERVALS = [5000, 15000, 30000, 60000]; // Incremental delays: +5s, +15s, +30s, +60s (cumulative: 5s, 20s, 50s, 110s)
 function _cancelPicPoll() {
   _picPollTimeouts.forEach(t => clearTimeout(t));
   _picPollTimeouts = [];
