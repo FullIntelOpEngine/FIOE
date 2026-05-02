@@ -172,11 +172,11 @@ def _cv_worker_init() -> None:
     CV analysis request doesn't pay the import cost.  Runs once per worker
     thread at pool creation time."""
     try:
-        import pypdf  # noqa: F401
+        import pypdf
     except ImportError:
         pass
     try:
-        import pdfplumber  # noqa: F401
+        import pdfplumber
     except ImportError:
         pass
 
@@ -187,7 +187,6 @@ def _analyze_cv_bytes_worker(pdf_bytes: bytes) -> dict:
     t_cpu = time.thread_time()
     result = _analyze_cv_bytes_sync(pdf_bytes)
     if isinstance(result, dict):
-        result = dict(result)
         result['_thread_cpu_s'] = time.thread_time() - t_cpu
     return result
 
