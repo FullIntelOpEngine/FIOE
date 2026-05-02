@@ -4860,6 +4860,9 @@ async function pollJob(jobId){
   const progressFill=document.getElementById('sourcingProgressFill');
   const profileCount=document.getElementById('sourcingProfileCount');
   let interval=2500;
+  // State tracked across ticks to detect meaningful progress.
+  let _lastStatusHtml = null;
+  let _lastProcessed = -1;
   // Keep progress bar hidden — count is shown in button text instead
   if(progressFill){ progressFill.classList.remove('prog-done'); progressFill.classList.add('prog-running'); }
   function extractFinalRowCount(html){ if(!html) return null; const m=/Wrote\s+(\d+)\s+rows/i.exec(html); return m?parseInt(m[1],10):null; }
@@ -4894,11 +4897,24 @@ async function pollJob(jobId){
         return setTimeout(step,interval);
       }
       const data=await r.json();
-      // Exponential backoff: multiply by 1.4 on each successful poll, capped at
-      // 10 s. This reduces poll count from ~100 to ~30 for a 5-minute job while
-      // still giving rapid feedback in the first few seconds (2.5 s → 3.5 s →
-      // 4.9 s → 6.9 s → 9.6 s → 10 s).
-      interval=Math.min(10000, Math.round(interval * 1.4));
+      // Adaptive backoff: reset to minimum when meaningful progress arrives so
+      // the UI stays snappy while the job is actively updating.  During quiet
+      // periods multiply by 1.4 per tick (×1.4, ×1.96, …) to reduce load.
+      // Add ±20% jitter on every interval to desynchronise concurrent pollers
+      // (thundering-herd prevention).
+      const _newStatusHtml = data.status_html || '';
+      const _newProcessed = data.progress && typeof data.progress.processed === 'number'
+        ? data.progress.processed : _lastProcessed;
+      if(_newStatusHtml !== _lastStatusHtml || _newProcessed > _lastProcessed){
+        // Job actively progressing — snap back to a short interval.
+        interval = 2500;
+      } else {
+        interval = Math.min(10000, Math.round(interval * 1.4));
+      }
+      // ±20% jitter (uniform) keeps clients from all hitting the server simultaneously.
+      interval = Math.min(10000, Math.round(interval * (0.8 + Math.random() * 0.4)));
+      _lastStatusHtml = _newStatusHtml;
+      _lastProcessed = _newProcessed;
       if(msg) msg.innerHTML=data.status_html||'';
       renderCounts(data);
       if(data.urls&&data.urls.length){
