@@ -97,7 +97,10 @@ function _writeLogEntry(filePrefix, entry) {
     const date = ts.slice(0, 10);
     const logFile = path.join(_LOG_DIR, `${filePrefix}_${date}.txt`);
     const line = JSON.stringify({ timestamp: ts, ...entry });
-    fs.appendFileSync(logFile, line + '\n', 'utf8');
+    // Non-blocking append — never stall the event loop for a log write.
+    fs.appendFile(logFile, line + '\n', 'utf8', err => {
+      if (err) console.error('[_writeLogEntry] append error:', err.message);
+    });
   } catch (_) { /* never crash the server over a log write */ }
 }
 function _writeErrorLog(entry)    { _writeLogEntry('error_capture', entry); }
@@ -168,6 +171,35 @@ function getGeminiModel(apiKey, modelName = 'gemini-2.5-flash-lite') {
   const model = genAI.getGenerativeModel({ model: modelName });
   _geminiModelCache.set(cacheKey, model);
   return model;
+}
+
+// ── OpenAI / Anthropic client instance caches ────────────────────────────────
+// Avoid recreating SDK client objects on every LLM call; cache by API key.
+const _openaiClientCache    = new Map(); // apiKey → OpenAIClass instance
+const _anthropicClientCache = new Map(); // apiKey → AnthropicClass instance
+
+function _getOpenAIClient(apiKey) {
+  if (!_openaiClientCache.has(apiKey)) _openaiClientCache.set(apiKey, new OpenAIClass({ apiKey }));
+  return _openaiClientCache.get(apiKey);
+}
+function _getAnthropicClient(apiKey) {
+  if (!_anthropicClientCache.has(apiKey)) _anthropicClientCache.set(apiKey, new AnthropicClass({ apiKey }));
+  return _anthropicClientCache.get(apiKey);
+}
+
+// ── LLM concurrency semaphore ─────────────────────────────────────────────────
+// Prevents unbounded parallelism of expensive LLM calls (Gemini / OpenAI / Anthropic).
+// Cap via LLM_MAX_CONCURRENT env var (default 5).
+const _LLM_MAX_CONCURRENT = parseInt(process.env.LLM_MAX_CONCURRENT, 10) || 5;
+let _llmInFlight = 0;
+const _llmWaitQueue = [];
+function _llmAcquire() {
+  if (_llmInFlight < _LLM_MAX_CONCURRENT) { _llmInFlight++; return Promise.resolve(); }
+  return new Promise(resolve => _llmWaitQueue.push(resolve)).then(() => { _llmInFlight++; });
+}
+function _llmRelease() {
+  _llmInFlight--;
+  if (_llmWaitQueue.length > 0) _llmWaitQueue.shift()();
 }
 
 // Returns the Gemini model name for a user.
@@ -250,41 +282,47 @@ async function llmGenerateText(prompt, opts = {}) {
     }
   }
 
-  if (activeProvider === 'openai') {
-    if (!OpenAIClass) throw new Error('OpenAI SDK not installed');
-    const apiKey = (cfg.openai || {}).api_key || '';
-    if (!apiKey) throw new Error('OpenAI API key not configured');
-    const model = (cfg.openai || {}).model || 'gpt-4.1';
-    const client = new OpenAIClass({ apiKey });
-    const resp = await withExponentialBackoff(
-      () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
-      { label }
-    );
-    return (resp.choices[0]?.message?.content || '').trim();
-  }
+  // Acquire concurrency slot before making the (potentially slow) LLM API call.
+  await _llmAcquire();
+  try {
+    if (activeProvider === 'openai') {
+      if (!OpenAIClass) throw new Error('OpenAI SDK not installed');
+      const apiKey = (cfg.openai || {}).api_key || '';
+      if (!apiKey) throw new Error('OpenAI API key not configured');
+      const model = (cfg.openai || {}).model || 'gpt-4.1';
+      const client = _getOpenAIClient(apiKey);
+      const resp = await withExponentialBackoff(
+        () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
+        { label }
+      );
+      return (resp.choices[0]?.message?.content || '').trim();
+    }
 
-  if (activeProvider === 'anthropic') {
-    if (!AnthropicClass) throw new Error('Anthropic SDK not installed');
-    const apiKey = (cfg.anthropic || {}).api_key || '';
-    if (!apiKey) throw new Error('Anthropic API key not configured');
-    const model = (cfg.anthropic || {}).model || 'claude-sonnet-4-5';
-    const client = new AnthropicClass({ apiKey });
-    const resp = await withExponentialBackoff(
-      () => client.messages.create({ model, max_tokens: 4096, messages: [{ role: 'user', content: prompt }] }),
-      { label }
-    );
-    const block = resp.content && resp.content[0];
-    return (block && block.type === 'text' ? block.text : '').trim();
-  }
+    if (activeProvider === 'anthropic') {
+      if (!AnthropicClass) throw new Error('Anthropic SDK not installed');
+      const apiKey = (cfg.anthropic || {}).api_key || '';
+      if (!apiKey) throw new Error('Anthropic API key not configured');
+      const model = (cfg.anthropic || {}).model || 'claude-sonnet-4-5';
+      const client = _getAnthropicClient(apiKey);
+      const resp = await withExponentialBackoff(
+        () => client.messages.create({ model, max_tokens: 4096, messages: [{ role: 'user', content: prompt }] }),
+        { label }
+      );
+      const block = resp.content && resp.content[0];
+      return (block && block.type === 'text' ? block.text : '').trim();
+    }
 
-  // Fallback: Gemini
-  const geminiApiKey = (cfg.gemini || {}).api_key || process.env.GOOGLE_API_KEY || '';
-  if (!geminiApiKey) throw new Error('No LLM API key configured');
-  if (!GoogleGenerativeAIClass) throw new Error('Gemini SDK not installed');
-  const modelName = await resolveGeminiModel(username);
-  const model = getGeminiModel(geminiApiKey, modelName);
-  const result = await withExponentialBackoff(() => model.generateContent(prompt), { label });
-  return result.response.text().trim();
+    // Fallback: Gemini
+    const geminiApiKey = (cfg.gemini || {}).api_key || process.env.GOOGLE_API_KEY || '';
+    if (!geminiApiKey) throw new Error('No LLM API key configured');
+    if (!GoogleGenerativeAIClass) throw new Error('Gemini SDK not installed');
+    const modelName = await resolveGeminiModel(username);
+    const model = getGeminiModel(geminiApiKey, modelName);
+    const result = await withExponentialBackoff(() => model.generateContent(prompt), { label });
+    return result.response.text().trim();
+  } finally {
+    _llmRelease();
+  }
 }
 
 // ── AI Comp in-memory result cache (24h TTL) ──────────────────────────────────
@@ -501,18 +539,29 @@ function _resolveEmailVerifConfigPath() {
   return _EMAIL_VERIF_CONFIG_PATHS[_EMAIL_VERIF_CONFIG_PATHS.length - 1];
 }
 
+const EXTERNAL_API_TIMEOUT_MS = parseInt(process.env.EXTERNAL_API_TIMEOUT_MS, 10) || _SYS.external_api_timeout_ms || 10000; // 10 s timeout for external email verification API calls
+
+// ── Email Verif config in-memory TTL cache ──────────────────────────────────
+// Re-read at most every EMAIL_VERIF_CFG_CACHE_MS (default 10 s) to avoid disk I/O on every request.
+let _emailVerifCfgCache = null, _emailVerifCfgCacheTs = 0;
+const EMAIL_VERIF_CFG_CACHE_MS = parseInt(process.env.EMAIL_VERIF_CFG_CACHE_MS, 10) || _SYS.email_verif_cfg_cache_ms || 10_000;
+
 function loadEmailVerifConfig() {
+  const now = Date.now();
+  if (_emailVerifCfgCache && now - _emailVerifCfgCacheTs < EMAIL_VERIF_CFG_CACHE_MS) return _emailVerifCfgCache;
   const configPath = _resolveEmailVerifConfigPath();
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
-    return JSON.parse(raw);
+    _emailVerifCfgCache = JSON.parse(raw);
   } catch (_) {
-    return {
+    _emailVerifCfgCache = {
       neverbounce: { api_key: '', enabled: 'disabled' },
       zerobounce:  { api_key: '', enabled: 'disabled' },
       bouncer:     { api_key: '', enabled: 'disabled' },
     };
   }
+  _emailVerifCfgCacheTs = now;
+  return _emailVerifCfgCache;
 }
 
 function saveEmailVerifConfig(config) {
@@ -520,9 +569,10 @@ function saveEmailVerifConfig(config) {
   const tmp = configPath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, configPath);
+  // Invalidate cache immediately so the next read sees the new config.
+  _emailVerifCfgCache = config;
+  _emailVerifCfgCacheTs = Date.now();
 }
-
-const EXTERNAL_API_TIMEOUT_MS = parseInt(process.env.EXTERNAL_API_TIMEOUT_MS, 10) || _SYS.external_api_timeout_ms || 10000; // 10 s timeout for external email verification API calls
 
 // Per-(username, feature) sliding-window state
 const _userRateState = new Map(); // key: "username::feature" -> [ timestamp, ... ]
@@ -786,18 +836,26 @@ function _resolveSearchProviderConfigPath() {
   return _SEARCH_PROVIDER_CONFIG_PATHS[0];
 }
 
+// In-memory TTL cache (default 10 s) — avoids disk read on every /generate-contacts request.
+let _searchProviderCfgCache = null, _searchProviderCfgCacheTs = 0;
+const _SEARCH_PROVIDER_CFG_CACHE_MS = parseInt(process.env.SEARCH_PROVIDER_CFG_CACHE_MS, 10) || _SYS.search_provider_cfg_cache_ms || 10_000;
+
 function loadSearchProviderConfig() {
+  const now = Date.now();
+  if (_searchProviderCfgCache && now - _searchProviderCfgCacheTs < _SEARCH_PROVIDER_CFG_CACHE_MS) return _searchProviderCfgCache;
   try {
     const raw = fs.readFileSync(_resolveSearchProviderConfigPath(), 'utf8');
-    return JSON.parse(raw);
+    _searchProviderCfgCache = JSON.parse(raw);
   } catch (_) {
-    return {
+    _searchProviderCfgCache = {
       serper: { api_key: '', enabled: 'disabled' },
       dataforseo: { login: '', password: '', enabled: 'disabled' },
       linkedin: { api_key: '', enabled: 'disabled' },
       google_cse: { api_key: '', cx: '', gemini_key: '' },
     };
   }
+  _searchProviderCfgCacheTs = now;
+  return _searchProviderCfgCache;
 }
 
 function saveSearchProviderConfig(config) {
@@ -805,6 +863,8 @@ function saveSearchProviderConfig(config) {
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, p);
+  _searchProviderCfgCache = config;
+  _searchProviderCfgCacheTs = Date.now();
 }
 
 app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
@@ -888,13 +948,21 @@ function _resolveGetProfilesConfigPath() {
   return _GET_PROFILES_CONFIG_PATHS[0];
 }
 
+// In-memory TTL cache (default 10 s).
+let _getProfilesCfgCache = null, _getProfilesCfgCacheTs = 0;
+const _GET_PROFILES_CFG_CACHE_MS = parseInt(process.env.GET_PROFILES_CFG_CACHE_MS, 10) || _SYS.get_profiles_cfg_cache_ms || 10_000;
+
 function loadGetProfilesConfig() {
+  const now = Date.now();
+  if (_getProfilesCfgCache && now - _getProfilesCfgCacheTs < _GET_PROFILES_CFG_CACHE_MS) return _getProfilesCfgCache;
   try {
     const raw = fs.readFileSync(_resolveGetProfilesConfigPath(), 'utf8');
-    return JSON.parse(raw);
+    _getProfilesCfgCache = JSON.parse(raw);
   } catch (_) {
-    return { linkdapi: { api_key: '', enabled: 'disabled' } };
+    _getProfilesCfgCache = { linkdapi: { api_key: '', enabled: 'disabled' } };
   }
+  _getProfilesCfgCacheTs = now;
+  return _getProfilesCfgCache;
 }
 
 function saveGetProfilesConfig(config) {
@@ -902,6 +970,8 @@ function saveGetProfilesConfig(config) {
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, p);
+  _getProfilesCfgCache = config;
+  _getProfilesCfgCacheTs = Date.now();
 }
 
 app.get('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {

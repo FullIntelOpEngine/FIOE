@@ -2166,11 +2166,21 @@ const SCHEDULER_SLOTS_PATH = process.env.SCHEDULER_SLOTS_PATH
   : path.join(__dirname, 'available_slots.json');
 
 // Read the current slots file; returns [] on any error.
+// Uses a mtime-based in-memory cache so repeated reads within the same second
+// (e.g. concurrent booking requests) skip the disk entirely.
+let _schedulerSlotsCache = null;
+let _schedulerSlotsMtime = 0;
 async function readSchedulerSlots() {
   try {
+    // stat first to check mtime; only re-parse when file has changed.
+    const stat = await fs.promises.stat(SCHEDULER_SLOTS_PATH).catch(() => null);
+    const mtime = stat ? stat.mtimeMs : 0;
+    if (_schedulerSlotsCache !== null && mtime === _schedulerSlotsMtime) return _schedulerSlotsCache;
     const raw = await fs.promises.readFile(SCHEDULER_SLOTS_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    _schedulerSlotsCache = Array.isArray(parsed) ? parsed : [];
+    _schedulerSlotsMtime = mtime;
+    return _schedulerSlotsCache;
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[scheduler] readSchedulerSlots error', e.message);
     return [];
@@ -2178,10 +2188,21 @@ async function readSchedulerSlots() {
 }
 
 // Write the slots array back to the file atomically (write to tmp then rename).
+// Updates the in-memory cache immediately to avoid a re-read on the next call.
 async function writeSchedulerSlots(slots) {
   const tmp = SCHEDULER_SLOTS_PATH + '.' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.tmp';
   await fs.promises.writeFile(tmp, JSON.stringify(slots, null, 2), 'utf8');
   await fs.promises.rename(tmp, SCHEDULER_SLOTS_PATH);
+  // Refresh cache — mtime may differ slightly from Date.now() due to FS precision;
+  // use the actual stat to stay consistent with readSchedulerSlots.
+  try {
+    const stat = await fs.promises.stat(SCHEDULER_SLOTS_PATH);
+    _schedulerSlotsCache = slots;
+    _schedulerSlotsMtime = stat.mtimeMs;
+  } catch (_) {
+    // Non-fatal: cache will be refreshed on the next read.
+    _schedulerSlotsCache = null;
+  }
 }
 
 // POST /scheduler/publish-slots  (requireLogin)
@@ -3118,18 +3139,28 @@ Phone: ...`;
 // ── Compensation Verified JSON helpers ───────────────────────────────────────
 const COMP_VERIFIED_PATH = path.join(__dirname, 'compensation_verified.json');
 
+// In-memory TTL cache (10 s) — avoids per-request disk reads for a rarely-changed file.
+let _compVerifiedCache = null, _compVerifiedCacheTs = 0;
+const _COMP_VERIFIED_CACHE_MS = 10_000;
+
 function loadCompensationVerified() {
+  const now = Date.now();
+  if (_compVerifiedCache !== null && now - _compVerifiedCacheTs < _COMP_VERIFIED_CACHE_MS) return _compVerifiedCache;
   try {
-    return JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
+    _compVerifiedCache = JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
   } catch (_) {
-    return {};
+    _compVerifiedCache = {};
   }
+  _compVerifiedCacheTs = now;
+  return _compVerifiedCache;
 }
 
 function saveCompensationVerified(data) {
   const tmp = COMP_VERIFIED_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, COMP_VERIFIED_PATH);
+  _compVerifiedCache = data;
+  _compVerifiedCacheTs = Date.now();
 }
 
 app.post('/save-compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
@@ -3149,9 +3180,17 @@ app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, 
 // ── Verified Email JSON helpers ───────────────────────────────────────────────
 const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
 
+// In-memory TTL cache (10 s) — avoids per-request disk reads for a file that is
+// written infrequently but read on every /save-verified-email and /generate-email call.
+let _verifiedEmailCache = null, _verifiedEmailCacheTs = 0;
+const _VERIFIED_EMAIL_CACHE_MS = 10_000;
+
 function loadVerifiedEmail() {
+  const now = Date.now();
+  if (_verifiedEmailCache !== null && now - _verifiedEmailCacheTs < _VERIFIED_EMAIL_CACHE_MS) return _verifiedEmailCache;
+  let data;
   try {
-    const data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+    data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
     // Migrate legacy flat-array format to new company-keyed structure
     if (Array.isArray(data)) {
       const converted = {};
@@ -3160,21 +3199,24 @@ function loadVerifiedEmail() {
         if (!converted[companyKey]) converted[companyKey] = { Domain: [], Confidence_threshold: 1 };
         converted[companyKey].Domain.push({ ...entry, company: companyKey, count: entry.count || 1, confidence: entry.confidence != null ? entry.confidence : 1 });
       }
-      return converted;
-    }
-    // Ensure every entry has a count field (handles data saved before count was introduced)
-    for (const companyKey of Object.keys(data)) {
-      const companyData = data[companyKey];
-      if (Array.isArray(companyData.Domain)) {
-        for (const entry of companyData.Domain) {
-          if (entry.count === null || entry.count === undefined) entry.count = 1;
+      data = converted;
+    } else {
+      // Ensure every entry has a count field (handles data saved before count was introduced)
+      for (const companyKey of Object.keys(data)) {
+        const companyData = data[companyKey];
+        if (Array.isArray(companyData.Domain)) {
+          for (const entry of companyData.Domain) {
+            if (entry.count === null || entry.count === undefined) entry.count = 1;
+          }
         }
       }
     }
-    return data;
   } catch (_) {
-    return {};
+    data = {};
   }
+  _verifiedEmailCache = data;
+  _verifiedEmailCacheTs = now;
+  return _verifiedEmailCache;
 }
 
 // Redistribute confidence values across all domain entries for a company
@@ -3200,6 +3242,8 @@ function saveVerifiedEmail(data) {
   const tmp = VERIFIED_EMAIL_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, VERIFIED_EMAIL_PATH);
+  _verifiedEmailCache = data;
+  _verifiedEmailCacheTs = Date.now();
 }
 
 // Gemini-powered email normalization: derive format pattern + fake example for a domain
@@ -5122,29 +5166,63 @@ function decryptBuffer(buf) {
 /**
  * Read the per-user service config. Tries encrypted .enc first, then plaintext .json.
  * Returns the parsed config object, or null if no config exists.
+ * Uses an mtime-based per-username in-memory cache to avoid repeated disk reads and
+ * decryption on every contact-gen / email-verif request within the same session.
  */
+// Cache: Map<username, { data: object|null, mtimeMs: number }>
+const _userSvcCfgCache = new Map();
+
 function readUserServiceConfig(username) {
   const encPath  = userServiceConfigPath(username);
   const jsonPath = _userServiceJsonPath(username);
   console.log('[readUserServiceConfig] %s → checking enc=%s  json=%s', username, encPath, jsonPath);
-  if (fs.existsSync(encPath)) {
+
+  // Determine the mtime of whichever backing file exists (enc takes priority).
+  let activePath = null;
+  let mtime = 0;
+  try {
+    if (fs.existsSync(encPath)) {
+      activePath = encPath;
+      mtime = fs.statSync(encPath).mtimeMs;
+    } else if (fs.existsSync(jsonPath)) {
+      activePath = jsonPath;
+      mtime = fs.statSync(jsonPath).mtimeMs;
+    }
+  } catch (_) { /* ignore stat errors; will re-read below */ }
+
+  if (!activePath) {
+    _userSvcCfgCache.delete(username);
+    return null;
+  }
+
+  const cached = _userSvcCfgCache.get(username);
+  if (cached && cached.mtimeMs === mtime) return cached.data;
+
+  // Cache miss — read and decrypt/parse the file.
+  let data = null;
+  if (activePath === encPath) {
     try {
       const raw = decryptBuffer(fs.readFileSync(encPath));
-      return JSON.parse(raw.toString('utf8'));
+      data = JSON.parse(raw.toString('utf8'));
     } catch (err) {
-      // Decryption may fail if PORTING_SECRET is missing/changed — fall through to .json
       console.error('[readUserServiceConfig] .enc decrypt failed for', username, ':', err.message);
+      // Fall through to JSON fallback.
+      if (fs.existsSync(jsonPath)) {
+        try { data = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch (_) {}
+      }
     }
+  } else {
+    try { data = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch (_) {}
   }
-  if (fs.existsSync(jsonPath)) {
-    return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-  }
-  return null;
+
+  _userSvcCfgCache.set(username, { data, mtimeMs: mtime });
+  return data;
 }
 
 /**
  * Write the per-user service config. Uses encryption when PORTING_SECRET is set,
  * otherwise writes a plaintext JSON file so the system works without a secret.
+ * Invalidates the in-memory cache for this user.
  */
 function writeUserServiceConfig(username, cfg) {
   const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
@@ -5155,15 +5233,18 @@ function writeUserServiceConfig(username, cfg) {
     // the operator has already consented to by not setting PORTING_SECRET.
     fs.writeFileSync(_userServiceJsonPath(username), raw);
   }
+  _userSvcCfgCache.delete(username);
 }
 
 /**
  * Remove all config files for the user (both encrypted and plaintext).
+ * Clears the in-memory cache entry for this user.
  */
 function deleteUserServiceConfig(username) {
   [userServiceConfigPath(username), _userServiceJsonPath(username)].forEach(fp => {
     try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (_) {}
   });
+  _userSvcCfgCache.delete(username);
 }
 
 // GET /api/user-service-config/status
