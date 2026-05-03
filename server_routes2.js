@@ -25,6 +25,13 @@ const _RE_CALC_UM_BULLET   = /^[-*•]\s+/;
 // assess-unmatched: strip markdown code fences from LLM JSON response
 const _RE_ASSESS_CODE_FENCE = /```(?:json)?/g;
 
+// sync-entries / verify-data: strip markdown code fences from LLM text/JSON response
+const _RE_CODE_FENCE = /```json|```/g;
+
+// ai-comp: when uncached row count exceeds this threshold, return immediately with
+// cached results and run the LLM call in the background (fire-and-forget + SSE notify).
+const _AI_COMP_ASYNC_THRESHOLD = parseInt(process.env.AI_COMP_ASYNC_THRESHOLD, 10) || 10;
+
 module.exports = function registerRoutes(app, ctx) {
   const {
     pool,
@@ -425,9 +432,7 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
   // Emit change notification
   try {
     broadcastSSE('candidates_changed', { action: 'bulk_update', count: updatedRows.length });
-    for (const u of updatedRows) {
-      broadcastSSE('candidate_updated', u);
-    }
+    broadcastSSEBulk(updatedRows);
   } catch (e) { /* ignore */ }
 
   res.json({ updatedCount: updatedRows.length, rows: updatedRows });
@@ -775,7 +780,7 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     incrementGeminiQueryCount(req.user.username).catch(() => {});
 
     // Clean potential markdown blocks
-    const jsonStr = text.replace(/```json|```/g, '').trim();
+    const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -944,19 +949,8 @@ app.post('/ai-comp', requireLogin, userRateLimit('ai_comp'), async (req, res) =>
 
     let data = cacheHits;
 
-    if (uncached.length > 0) {
-      const lines = uncached.map(r =>
-        JSON.stringify({
-          id: r.id,
-          company: r.company || '',
-          jobtitle: r.jobtitle || '',
-          seniority: r.seniority || '',
-          country: r.country || '',
-          sector: r.sector || ''
-        })
-      );
-
-      const prompt = `
+    // Helper: build LLM prompt lines from a list of rows
+    const _buildCompPrompt = rows => `
 You are a compensation estimation assistant.
 I will provide a JSON list of candidate records with fields: id, company, jobtitle, seniority, country, sector.
 
@@ -971,13 +965,43 @@ Rules:
 4. Return ONLY the JSON array. No markdown, no explanation.
 
 Input:
-[${lines.join(',\n')}]
-      `.trim();
+[${rows.map(r => JSON.stringify({ id: r.id, company: r.company || '', jobtitle: r.jobtitle || '', seniority: r.seniority || '', country: r.country || '', sector: r.sector || '' })).join(',\n')}]
+    `.trim();
 
-      const text = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/ai-comp' });
-      incrementGeminiQueryCount(req.user.username).catch(() => {});
+    // Helper: run UNNEST batch UPDATE and return mapped rows
+    const _execCompUpdate = async (items, userId) => {
+      const validItems = items.filter(item => {
+        const id = Number(item?.id);
+        const comp = Number(item?.compensation);
+        return Number.isInteger(id) && id > 0 && item.compensation != null && !isNaN(comp);
+      });
+      if (validItems.length === 0) return [];
+      const batchIds = [], batchComps = [];
+      for (const item of validItems) { batchIds.push(Number(item.id)); batchComps.push(Number(item.compensation)); }
+      const batchRes = await pool.query(
+        `UPDATE "process" AS p
+         SET compensation = v.comp
+         FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
+         WHERE p.id = v.id AND p.userid = $3
+         RETURNING p.*`,
+        [batchIds, batchComps, userId]
+      );
+      return batchRes.rows.map(r => ({
+        ...r,
+        compensation: r.compensation ?? null,
+        pic: picToDataUri(r.pic),
+        role: r.role ?? r.jobtitle ?? null,
+        organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
+        jobtitle: r.jobtitle ?? null,
+        company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
+      }));
+    };
 
-      const jsonStr = text.replace(/```json|```/g, '').trim();
+    // Helper: call LLM for uncached rows, populate cache, return merged data array
+    const _runCompLLM = async (uncachedRows, username) => {
+      const text = await llmGenerateText(_buildCompPrompt(uncachedRows), { username, label: 'llm/ai-comp' });
+      incrementGeminiQueryCount(username).catch(() => {});
+      const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
       let geminiData;
       try {
         geminiData = JSON.parse(jsonStr);
@@ -989,15 +1013,65 @@ Input:
           throw new Error(`LLM response could not be parsed for compensation. Response (truncated): ${text.slice(0, 200)}`);
         }
       }
-
       if (!Array.isArray(geminiData)) throw new Error('LLM response is not an array.');
-
-      // Populate per-row cache
       for (const item of geminiData) {
-        const row = uncached.find(r => r.id === item.id);
+        const row = uncachedRows.find(r => r.id === item.id);
         if (row && item.compensation != null) _aiCompCacheSet(row, item.compensation);
       }
+      return geminiData;
+    };
 
+    // ── Background path: uncached batch too large to block the response ──────
+    // Return immediately with whatever was served from cache; run the LLM call
+    // in the background and notify clients via SSE when it completes.
+    if (uncached.length > _AI_COMP_ASYNC_THRESHOLD) {
+      const bgUsername = req.user.username;
+      const bgUserid = String(req.user.id);
+
+      // Flush cache hits to DB right now so the caller gets immediate data.
+      let immediateRows = [];
+      if (cacheHits.length > 0) {
+        immediateRows = await _execCompUpdate(cacheHits, bgUserid);
+        if (immediateRows.length > 0) {
+          try {
+            broadcastSSE('candidates_changed', { action: 'ai_comp_partial', count: immediateRows.length });
+            broadcastSSEBulk(immediateRows);
+          } catch (_) { /* ignore */ }
+        }
+      }
+
+      res.status(cacheHits.length > 0 ? 200 : 202).json({
+        updatedCount: immediateRows.length,
+        rows: immediateRows,
+        pending: uncached.length,
+        message: [
+          immediateRows.length > 0 ? `${immediateRows.length} cached` : '',
+          `${uncached.length} AI estimates in progress…`,
+        ].filter(Boolean).join(', '),
+      });
+
+      // Fire-and-forget: LLM call + DB update + SSE for uncached rows
+      ;(async () => {
+        try {
+          const geminiData = await _runCompLLM(uncached, bgUsername);
+          const bgRows = await _execCompUpdate(geminiData, bgUserid);
+          if (bgRows.length > 0) {
+            try {
+              broadcastSSE('candidates_changed', { action: 'ai_comp', count: bgRows.length });
+              broadcastSSEBulk(bgRows);
+            } catch (_) { /* ignore */ }
+          }
+          _writeApprovalLog({ action: 'ai_comp', username: bgUsername, userid: bgUserid, detail: `AI Comp (bg) updated ${bgRows.length} records`, source: 'server_routes2.js' });
+        } catch (e) {
+          console.error('[AI-COMP BG] error:', e && e.message);
+        }
+      })().catch(() => {});
+      return;
+    }
+
+    // ── Synchronous path: small uncached batch, block until LLM responds ─────
+    if (uncached.length > 0) {
+      const geminiData = await _runCompLLM(uncached, req.user && req.user.username);
       data = [...data, ...geminiData];
     }
 
@@ -1006,57 +1080,15 @@ Input:
     }
 
     // Batch UPDATE compensation using UNNEST — single roundtrip instead of one per row
-    const updatedRows = [];
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      // Filter to valid items with non-null numeric compensation
-      const validItems = data.filter(item => {
-        const id = Number(item?.id);
-        const comp = Number(item?.compensation);
-        return Number.isInteger(id) && id > 0 && item.compensation != null && !isNaN(comp);
-      });
-      if (validItems.length > 0) {
-        // Build both arrays in a single pass
-        const batchIds = [], batchComps = [];
-        for (const item of validItems) { batchIds.push(Number(item.id)); batchComps.push(Number(item.compensation)); }
-        const batchRes = await client.query(
-          `UPDATE "process" AS p
-           SET compensation = v.comp
-           FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
-           WHERE p.id = v.id AND p.userid = $3
-           RETURNING p.*`,
-          [batchIds, batchComps, String(req.user.id)]
-        );
-        for (const r of batchRes.rows) {
-          updatedRows.push({
-            ...r,
-            compensation: r.compensation ?? null,
-            pic: picToDataUri(r.pic),
-            role: r.role ?? r.jobtitle ?? null,
-            organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
-            jobtitle: r.jobtitle ?? null,
-            company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
-          });
-        }
-      }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    const updatedRows = await _execCompUpdate(data, String(req.user.id));
 
     // Broadcast changes
     try {
       broadcastSSE('candidates_changed', { action: 'ai_comp', count: updatedRows.length });
-      for (const u of updatedRows) {
-        broadcastSSE('candidate_updated', u);
-      }
+      broadcastSSEBulk(updatedRows);
     } catch (_) { /* ignore */ }
 
-    _writeApprovalLog({ action: 'ai_comp', username: req.user.username, userid: req.user.id, detail: `AI Comp updated ${updatedRows.length} records`, source: 'server.js' });
+    _writeApprovalLog({ action: 'ai_comp', username: req.user.username, userid: req.user.id, detail: `AI Comp updated ${updatedRows.length} records`, source: 'server_routes2.js' });
     res.json({ updatedCount: updatedRows.length, rows: updatedRows });
 
   } catch (err) {
@@ -1173,7 +1205,7 @@ app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res)
 
     try {
       broadcastSSE('candidates_changed', { action: 'crowd_comp', count: updatedRows.length });
-      for (const u of updatedRows) broadcastSSE('candidate_updated', u);
+      broadcastSSEBulk(updatedRows);
     } catch (_) { /* ignore */ }
 
     _writeApprovalLog({ action: 'crowd_comp', username: req.user.username, userid: req.user.id, detail: `Crowd Comp updated ${updatedRows.length} records`, source: 'server.js' });
@@ -3221,7 +3253,7 @@ Phone: ...`;
     incrementGeminiQueryCount(req.user.username).catch(() => {});
     
     // Clean markdown if present
-    const jsonStr = genText.replace(/```json|```/g, '').trim();
+    const jsonStr = genText.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -3463,7 +3495,7 @@ No markdown, no explanation.`;
       let fake_local_part = '';
       try {
         const llmText = await llmGenerateText(normPrompt, { username: req.user && req.user.username, label: 'llm/email-norm' });
-        const jsonStr = llmText.replace(/```json|```/g, '').trim();
+        const jsonStr = llmText.replace(_RE_CODE_FENCE, '').trim();
         const parsed = JSON.parse(jsonStr);
         format = parsed.format || localPart;
         fake_example = parsed.fake_example || '';
@@ -3736,7 +3768,7 @@ app.post('/verify-email-details', requireLogin, async (req, res) => {
     const text = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/email-validate' });
     incrementGeminiQueryCount(req.user.username).catch(() => {});
 
-    const jsonStr = text.replace(/```json|```/g, '').trim();
+    const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -3776,7 +3808,7 @@ app.post('/draft-email', requireLogin, async (req, res) => {
 
         const text = await llmGenerateText(instruction, { username: req.user && req.user.username, label: 'llm/email-draft' });
         incrementGeminiQueryCount(req.user.username).catch(() => {});
-        const jsonStr = text.replace(/```json|```/g, '').trim();
+        const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
         let data;
         try {
             data = JSON.parse(jsonStr);
@@ -4667,6 +4699,18 @@ function broadcastSSE(event, data) {
     return;
   }
   _broadcastSSEImmediate(event, data);
+}
+
+// Batch broadcast: send N candidate rows as a single `candidates_batch_updated` event
+// instead of N individual `candidate_updated` writes (avoids N×M SSE client writes).
+function broadcastSSEBulk(rows) {
+  if (!rows || rows.length === 0) return;
+  if (rows.length === 1) {
+    // No gain from batching a single row — use the standard path
+    _broadcastSSEImmediate('candidate_updated', rows[0]);
+    return;
+  }
+  _broadcastSSEImmediate('candidates_batch_updated', rows);
 }
 
 // SSE Endpoint for real-time updates
