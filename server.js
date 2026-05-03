@@ -233,18 +233,29 @@ function _readLlmProviderGeminiModel() {
   return _llmCfgCache;
 }
 
+// Per-username TTL cache for resolveGeminiModel — avoids a DB roundtrip on every LLM call.
+// Keyed by username; each entry is { model: string, ts: number }.
+// Short TTL (30 s) so model changes propagate quickly.
+const _resolveGeminiModelCache = new Map();
+const _RESOLVE_GEMINI_MODEL_TTL = parseInt(process.env.RESOLVE_GEMINI_MODEL_TTL, 10) || 30_000;
+
 async function resolveGeminiModel(username) {
   if (!username) return _readLlmProviderGeminiModel();
+  const now = Date.now();
+  const cached = _resolveGeminiModelCache.get(username);
+  if (cached && now - cached.ts < _RESOLVE_GEMINI_MODEL_TTL) return cached.model;
+  let model = _readLlmProviderGeminiModel();
   try {
     const r = await pool.query(
       'SELECT gemini_model, useraccess FROM login WHERE username = $1 LIMIT 1', [username]
     );
     if (r.rows.length > 0 && (r.rows[0].useraccess || '').toLowerCase() === 'byok') {
       const m = r.rows[0].gemini_model;
-      return ALLOWED_GEMINI_MODELS.includes(m) ? m : _readLlmProviderGeminiModel();
+      if (ALLOWED_GEMINI_MODELS.includes(m)) model = m;
     }
   } catch (_) {}
-  return _readLlmProviderGeminiModel();
+  _resolveGeminiModelCache.set(username, { model, ts: now });
+  return model;
 }
 
 // ── Provider-agnostic LLM text generation ────────────────────────────────────
@@ -4973,6 +4984,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       // Output: sector: { sectorName: { companyName: confidence } } — sector-first,
       //         confidence = count(company, sector) / count(company, all sectors) — record-count based.
       const companyRecord = { sector: {}, _users: [], _userCount: 0, last_updated: today };
+      // Use a Set for O(1) dedup during accumulation; convert to array at output.
+      const companyUsersSet = new Set();
       // Accumulate weighted record counts per (company, sector) across all user entries.
       // For each entry: userCount × confidence_in_sector gives the number of records in that bucket.
       const sectorCounts = {};  // { companyName: { sectorName: totalWeightedCount } }
@@ -4983,9 +4996,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
         if (!sectorMap && !sectorDist) continue;
         const { users, count } = entryMeta(keyName, entry);
         companyRecord._userCount += count;
-        for (const u of users) {
-          if (!companyRecord._users.includes(u)) companyRecord._users.push(u);
-        }
+        for (const u of users) companyUsersSet.add(u);
         if (sectorMap && typeof sectorMap === 'object') {
           const sectorMapEntries = Object.entries(sectorMap);
           if (sectorMapEntries.length === 0) continue;
@@ -5032,6 +5043,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           companyRecord.sector[sectorName][companyName] = confidence;
         }
       }
+      companyRecord._users = [...companyUsersSet];
       if (companyRecord._userCount > 0) consolidated.company = { company: companyRecord };
 
       // ── Job Title: merge each unique title independently ──
@@ -5042,6 +5054,12 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       //     { username, job_title: { "<Title>": { job_family:{}, Seniority:{}, top_10_skills:{} }, ... } }
       // In both cases every unique job title is kept as its own independent record and blended only
       // when the same title appears from multiple users/contributions.
+      //
+      // titleLookupIndex: Map<titleNameLower → snakeKey> — O(1) lookup replaces O(n) find().
+      const titleLookupIndex = new Map();
+      // Per-entry Sets for user deduplication; keyed by snakeKey. Converted to arrays at output.
+      const titleUsersSet = new Map(); // snakeKey → Set<username>
+
       function mergeOneJobTitle(titleName, titleData, users, count) {
         // Normalise skills: accept both "top_skills" and "top_10_skills" field names; convert arrays to obj
         const rawSkills = titleData.top_skills || titleData.top_10_skills || null;
@@ -5050,13 +5068,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           : (rawSkills && typeof rawSkills === 'object' ? rawSkills : null);
 
         const snakeKey = titleName.toLowerCase().replace(/\s+/g, '_');
-        const existingKey = Object.keys(consolidated.job_title).find(k => {
-          const e = consolidated.job_title[k];
-          if (!e) return false;
-          // Match by the stored canonical job_title string, or by snake_case key
-          const storedTitle = typeof e.job_title === 'string' ? e.job_title : null;
-          return (storedTitle && storedTitle.toLowerCase() === titleName.toLowerCase()) || k === snakeKey;
-        });
+        // O(1) lookup via index instead of O(n) Object.keys().find()
+        const existingKey = titleLookupIndex.get(titleName.toLowerCase()) ?? (titleLookupIndex.has(snakeKey) ? snakeKey : undefined);
 
         if (existingKey) {
           const existing = consolidated.job_title[existingKey];
@@ -5079,10 +5092,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             existing.top_skills = incomingSkills;
           }
           existing._userCount = existingUserCount + count;
-          if (!existing._users) existing._users = [];
-          for (const u of users) {
-            if (!existing._users.includes(u)) existing._users.push(u);
-          }
+          const usSet = titleUsersSet.get(existingKey);
+          if (usSet) for (const u of users) usSet.add(u);
           // Merge Total_Experience: expand the range to cover both sets of candidates
           if (titleData.Total_Experience) {
             if (typeof titleData.Total_Experience === 'object' && titleData.Total_Experience !== null && 'min' in titleData.Total_Experience && 'max' in titleData.Total_Experience) {
@@ -5112,11 +5123,20 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             ...(incomingSkills ? { top_skills: incomingSkills } : {}),
             ...(titleData.Total_Experience ? { Total_Experience: titleData.Total_Experience } : {}),
             _userCount: count,
-            _users: [...users],
+            _users: [],   // populated from titleUsersSet at output time
             last_updated: today,
           };
           consolidated.job_title[snakeKey] = newEntry;
+          // Register in O(1) lookup index
+          titleLookupIndex.set(titleName.toLowerCase(), snakeKey);
+          titleLookupIndex.set(snakeKey, snakeKey);
+          titleUsersSet.set(snakeKey, new Set(users));
         }
+      }
+
+      // Flush per-title user Sets into the _users arrays now that merging is done.
+      for (const [key, usSet] of titleUsersSet) {
+        if (consolidated.job_title[key]) consolidated.job_title[key]._users = [...usSet];
       }
 
       // Handle both new Job_Families array format and user-keyed dict format (from ML_Holding).
@@ -5234,13 +5254,13 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
 
       function mergeIntoCountryBucket(byCountry, countryKey, minStr, maxStr, cnt, users, lastUpdated) {
         const key = countryKey || COMP_ACC_NO_COUNTRY;
-        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, users: [], last_updated: lastUpdated || today };
+        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, _usersSet: new Set(), last_updated: lastUpdated || today };
         const bucket = byCountry[key];
         const inMin = parseFloat(minStr), inMax = parseFloat(maxStr);
         if (!isNaN(inMin)) bucket.min = Math.min(bucket.min, inMin);
         if (!isNaN(inMax)) bucket.max = Math.max(bucket.max, inMax);
         bucket.count += (cnt || 1);
-        for (const u of users) { if (!bucket.users.includes(u)) bucket.users.push(u); }
+        for (const u of users) bucket._usersSet.add(u);
         if (lastUpdated) bucket.last_updated = lastUpdated;
       }
 
@@ -5323,7 +5343,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             min: String(b.min === Infinity ? 0 : Math.round(b.min)),
             max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
             count: b.count,
-            _users: b.users,
+            _users: [...b._usersSet],
             last_updated: b.last_updated,
           }));
         if (compArray.length > 0) outputEntry.Compensation = compArray;
@@ -5335,7 +5355,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             min: String(b.min === Infinity ? 0 : Math.round(b.min)),
             max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
             count: b.count,
-            _users: b.users,
+            _users: [...b._usersSet],
             last_updated: b.last_updated,
           }));
         if (vcArray.length > 0) outputEntry['Verified Compensation'] = vcArray;
@@ -5557,35 +5577,42 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
 });
 
 // POST /candidates/bulletin-export — write finalized bulletin selections to a JSON file (called during DB Dock Out)
+
+// ── Bulletin-export helpers (module-level to avoid per-request re-creation) ──
+// Extracts a numeric rating score from JSON object, percentage string, or plain integer.
+// Mirrors the LookerDashboard.html extractRatingScore logic.
+function _extractRatingScore(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (typeof val === 'object') {
+    const ts = val.total_score;
+    if (ts !== undefined && ts !== null) {
+      const m = String(ts).match(/(\d+)/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return null;
+  }
+  const s = String(val).trim();
+  if (s.startsWith('{')) {
+    try {
+      const obj = JSON.parse(s);
+      if (obj && obj.total_score !== undefined) {
+        const m = String(obj.total_score).match(/(\d+)/);
+        if (m) return parseInt(m[1], 10);
+      }
+    } catch (_) {}
+  }
+  const m = s.match(/(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+const _SENIORITY_RANK = {intern:0,trainee:0,graduate:0,entry:0,junior:1,jr:1,associate:2,mid:3,intermediate:3,senior:4,sr:4,lead:5,principal:5,specialist:5,manager:6,mgr:6,director:7,dir:7,vp:8,vice:8,head:9,chief:9};
+function _seniorityRank(s) {
+  const lower = (s || '').toLowerCase();
+  return Object.entries(_SENIORITY_RANK).reduce((r, [k,v]) => lower.includes(k) ? Math.max(r,v) : r, -1);
+}
+
 app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    // Helper: extract numeric rating score from JSON object, percentage string, or plain integer.
-    // Matches LookerDashboard.html extractRatingScore logic.
-    function extractRatingScore(val) {
-      if (val === null || val === undefined || val === '') return null;
-      if (typeof val === 'object') {
-        const ts = val.total_score;
-        if (ts !== undefined && ts !== null) {
-          const m = String(ts).match(/(\d+)/);
-          if (m) return parseInt(m[1], 10);
-        }
-        return null;
-      }
-      const s = String(val).trim();
-      // If it looks like a JSON string, try to parse it
-      if (s.startsWith('{')) {
-        try {
-          const obj = JSON.parse(s);
-          if (obj && obj.total_score !== undefined) {
-            const m = String(obj.total_score).match(/(\d+)/);
-            if (m) return parseInt(m[1], 10);
-          }
-        } catch (_) {}
-      }
-      const m = s.match(/(\d+)/);
-      if (m) return parseInt(m[1], 10);
-      return null;
-    }
     const { role_tag, skillsets, countries: selectedCountries, jobfamily, sector, sourcingStatuses, headline, description, imageData, publicPost, company_name } = req.body || {};
     // Fetch cemail for the current user to include in the bulletin JSON
     let cemail = null;
@@ -5594,12 +5621,6 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
       if (emailResult.rows.length > 0) cemail = emailResult.rows[0].cemail || null;
     } catch (emailErr) {
       console.warn('[Bulletin Export] Could not fetch cemail:', emailErr.message);
-    }
-    // Seniority rank helper for sorting junior → senior
-    const SENIORITY_RANK = {intern:0,trainee:0,graduate:0,entry:0,junior:1,jr:1,associate:2,mid:3,intermediate:3,senior:4,sr:4,lead:5,principal:5,specialist:5,manager:6,mgr:6,director:7,dir:7,vp:8,vice:8,head:9,chief:9};
-    function seniorityRank(s) {
-      const lower = (s || '').toLowerCase();
-      return Object.entries(SENIORITY_RANK).reduce((r, [k,v]) => lower.includes(k) ? Math.max(r,v) : r, -1);
     }
     let exportData;
     if (role_tag) {
@@ -5616,11 +5637,11 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
         : rows;
       let totalScore = 0, ratedCount = 0;
       doubleFilteredRows.forEach(r => {
-        const score = extractRatingScore(r.rating);
+        const score = _extractRatingScore(r.rating);
         if (score !== null) { totalScore += score; ratedCount++; }
       });
       const avgRating = ratedCount > 0 ? Math.round(totalScore / ratedCount) + '%' : null;
-      const seniorities = [...new Set(doubleFilteredRows.map(r => r.seniority).filter(Boolean))].sort((a,b) => seniorityRank(a) - seniorityRank(b));
+      const seniorities = [...new Set(doubleFilteredRows.map(r => r.seniority).filter(Boolean))].sort((a,b) => _seniorityRank(a) - _seniorityRank(b));
       const sourcedCount = doubleFilteredRows.length;
       exportData = {
         role_tag,
