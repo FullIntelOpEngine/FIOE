@@ -1381,14 +1381,13 @@ app.post('/admin/appeal-action', dashboardRateLimit, requireAdmin, async (req, r
   try {
     let newToken = null;
     if (action === 'approve' && username) {
-      const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
-      const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
       const r = await pool.query(
         'UPDATE login SET token = COALESCE(token, 0) + $2 WHERE username = $1 RETURNING token, userid',
         [username, _APPEAL_APPROVE_CREDIT]
       );
       if (r.rows.length) {
         newToken = r.rows[0].token;
+        const tokenBefore = newToken - _APPEAL_APPROVE_CREDIT;
         const creditedUserid = r.rows[0].userid != null ? String(r.rows[0].userid) : '';
         _writeFinancialLog({
           username, userid: creditedUserid, feature: 'appeal_approval',
@@ -2888,14 +2887,17 @@ app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), a
       return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
 
-    const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
-    const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
-    const result = await pool.query(
-      'UPDATE login SET token = GREATEST(0, COALESCE(token, 0) - $2) WHERE username = $1 RETURNING token',
+    // Single CTE: lock the row, deduct, and return both old and new token values in one roundtrip
+    const deductRes = await pool.query(
+      `WITH prev AS (SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE)
+       UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
+       WHERE username = $1
+       RETURNING (SELECT old_token FROM prev) AS token_before, login.token AS token_after`,
       [username, _VERIFIED_SELECTION_DEDUCT]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const remaining = result.rows[0].token;
+    if (deductRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const tokenBefore = parseInt(deductRes.rows[0].token_before, 10);
+    const remaining   = deductRes.rows[0].token_after;
     _writeFinancialLog({
       username, userid, feature: 'verified_selection',
       transaction_type: 'spend', transaction_amount: _VERIFIED_SELECTION_DEDUCT,
@@ -2926,22 +2928,25 @@ app.post('/deduct-tokens-contact-gen', requireLogin, userRateLimit('upload_multi
       return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
 
-    // Read current deduct amount from rate_limits.json (always fresh, matches /token-config)
+    // Read current deduct amount from rate_limits config (uses short TTL cache)
     let deductAmt = _CONTACT_GEN_DEDUCT;
     try {
-      const cfg = JSON.parse(fs.readFileSync(RATE_LIMITS_PATH, 'utf8'));
+      const cfg = loadRateLimits();
       const v = (cfg.tokens || {}).contact_gen_deduct;
       if (typeof v === 'number') deductAmt = v;
     } catch (_) {}
 
-    const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
-    const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
-    const result = await pool.query(
-      'UPDATE login SET token = GREATEST(0, COALESCE(token, 0) - $2) WHERE username = $1 RETURNING token',
+    // Single CTE: lock the row, deduct, and return both old and new token values in one roundtrip
+    const deductRes = await pool.query(
+      `WITH prev AS (SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE)
+       UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
+       WHERE username = $1
+       RETURNING (SELECT old_token FROM prev) AS token_before, login.token AS token_after`,
       [username, deductAmt]
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
-    const remaining = result.rows[0].token;
+    if (deductRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const tokenBefore = parseInt(deductRes.rows[0].token_before, 10);
+    const remaining   = deductRes.rows[0].token_after;
     _writeFinancialLog({
       username, userid, feature: 'contact_gen',
       transaction_type: 'spend', transaction_amount: deductAmt,
@@ -2975,8 +2980,8 @@ app.post('/candidates/token-deduct', requireLogin, userRateLimit('upload_multipl
       const current = accessRes.rows.length ? parseInt(accessRes.rows[0].t, 10) : 0;
       return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
-    const beforeRes = await pool.query('SELECT COALESCE(token, 0) AS t FROM login WHERE username = $1', [username]);
-    const tokenBefore = beforeRes.rows.length ? parseInt(beforeRes.rows[0].t, 10) : 0;
+    // `accessRes` already holds the token value; no second SELECT needed
+    const tokenBefore = accessRes.rows.length ? parseInt(accessRes.rows[0].t, 10) : 0;
     const result = await pool.query(
       'UPDATE login SET token = GREATEST(0, COALESCE(token, 0) - $2) WHERE username = $1 RETURNING token',
       [username, count]
@@ -3394,12 +3399,13 @@ app.post('/candidates/bulk', requireLogin, userRateLimit('upload_multiple_cvs'),
       dbClient.release();
     }
 
-    // Best-effort canonical field normalization — runs after the transaction commits
-    for (const { id, organisation, role } of canonicalUpdates) {
-      try {
-        await ensureCanonicalFieldsForId(id, organisation, role, null);
-      } catch (e) { console.warn('[BULK_CANON] row', id, e && e.message); }
-    }
+    // Best-effort canonical field normalization — runs after the transaction commits.
+    // Use Promise.all so all rows are processed in parallel rather than sequentially.
+    await Promise.all(canonicalUpdates.map(({ id, organisation, role }) =>
+      ensureCanonicalFieldsForId(id, organisation, role, null).catch(
+        e => console.warn('[BULK_CANON] row', id, e && e.message)
+      )
+    ));
 
     console.log('Upserted/inserted rows into process:', totalAffected);
 
@@ -4456,6 +4462,8 @@ async function _persistMLUserFile(username, data) {
     // Strip internal _sections property before writing to file
     const { _sections: _ignored, ...fileData } = data;
     fs.writeFileSync(mlFilepath, JSON.stringify(fileData, null, 2), 'utf8');
+    // Invalidate the in-memory mtime cache so the next read picks up the new file
+    _mlProfileCache.delete(safeUsername);
     console.info(`[ml-profile] Updated ${mlFilepath}`);
   } catch (writeErr) {
     console.warn('[ml-profile] Could not write ML user file (non-fatal):', writeErr.message);
@@ -4682,6 +4690,11 @@ app.post('/candidates/ml-summary', requireLogin, dashboardRateLimit, async (req,
   }
 });
 
+// ── ML profile per-username mtime cache ──────────────────────────────────────
+// Keyed by safeUsername. Stores { data, mtime } so we only re-read the file
+// when it has actually changed on disk (same pattern as _userSvcCfgCache).
+const _mlProfileCache = new Map();
+
 // GET /candidates/ml-profile — read the user's ML profile from ML_{username}.json only.
 // The file is recreated on every Dock In from the embedded ML worksheet in the XLS.
 // Returns the stored ML analytics profile so Sync Entries can apply its highest-confidence values.
@@ -4696,9 +4709,18 @@ app.get('/candidates/ml-profile', requireLogin, dashboardRateLimit, async (req, 
     // operate on the individual file explicitly recreated for this user via Dock In.
     const mlFilepath = path.join(ML_OUTPUT_DIR, `ML_${safeUsername}.json`);
     if (fs.existsSync(mlFilepath)) {
-      const raw = fs.readFileSync(mlFilepath, 'utf8');
-      const data = JSON.parse(raw);
-      return res.json({ found: true, profile: data });
+      try {
+        const { mtimeMs } = fs.statSync(mlFilepath);
+        const cached = _mlProfileCache.get(safeUsername);
+        let data;
+        if (cached && cached.mtime === mtimeMs) {
+          data = cached.data;
+        } else {
+          data = JSON.parse(fs.readFileSync(mlFilepath, 'utf8'));
+          _mlProfileCache.set(safeUsername, { data, mtime: mtimeMs });
+        }
+        return res.json({ found: true, profile: data });
+      } catch (_) { /* fall through to on-the-fly build */ }
     }
 
     // File not found (e.g. after Dock Out before Dock In, or on first run).
@@ -4737,6 +4759,8 @@ app.post('/candidates/ml-restore', requireLogin, dashboardRateLimit, async (req,
     // Write (or overwrite) the user-specific ML JSON so Sync Entries can reference it
     const mlFilepath = path.join(ML_OUTPUT_DIR, `ML_${safeUsername}.json`);
     fs.writeFileSync(mlFilepath, JSON.stringify(profile, null, 2), 'utf8');
+    // Invalidate the in-memory mtime cache so the next read picks up the restored file
+    _mlProfileCache.delete(safeUsername);
     console.info(`[ml-restore] Recreated ${mlFilepath} from XLS ML worksheet`);
     res.json({ ok: true });
   } catch (err) {
@@ -5729,22 +5753,50 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
   }
 });
 
+// ── Bulletin in-memory cache (5 s TTL) ───────────────────────────────────────
+// Prevents re-scanning + re-reading every *_bulletin.json file on every request.
+// Separate slots for the authenticated (all) and public subsets.
+const _BULLETIN_CACHE_MS = parseInt(process.env.BULLETIN_CACHE_MS, 10) || 5_000;
+let _bulletinCacheAll    = null, _bulletinCacheAllTs    = 0;
+let _bulletinCachePub    = null, _bulletinCachePubTs    = 0;
+
+function _loadBulletins(publicOnly) {
+  const now = Date.now();
+  if (publicOnly) {
+    if (_bulletinCachePub && now - _bulletinCachePubTs < _BULLETIN_CACHE_MS) return _bulletinCachePub;
+  } else {
+    if (_bulletinCacheAll && now - _bulletinCacheAllTs < _BULLETIN_CACHE_MS) return _bulletinCacheAll;
+  }
+  const bulletinDir = process.env.BULLETIN_OUTPUT_DIR
+    || path.join('F:\\', 'Recruiting Tools', 'Autosourcing', 'output', 'bulletin');
+  if (!fs.existsSync(bulletinDir)) {
+    const empty = [];
+    if (publicOnly) { _bulletinCachePub = empty; _bulletinCachePubTs = now; }
+    else            { _bulletinCacheAll = empty; _bulletinCacheAllTs = now; }
+    return empty;
+  }
+  const files = fs.readdirSync(bulletinDir).filter(f => f.endsWith('_bulletin.json'));
+  const bulletins = [];
+  for (const file of files) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(bulletinDir, file), 'utf8'));
+      if (!publicOnly) {
+        bulletins.push({ file, ...data });
+      } else if (data.public === true) {
+        const { email: _email, ...safeData } = data;
+        bulletins.push({ file, ...safeData });
+      }
+    } catch (_) { /* skip malformed files */ }
+  }
+  if (publicOnly) { _bulletinCachePub = bulletins; _bulletinCachePubTs = now; }
+  else            { _bulletinCacheAll = bulletins; _bulletinCacheAllTs = now; }
+  return bulletins;
+}
+
 // GET /community/bulletins — returns all *_bulletin.json files from BULLETIN_OUTPUT_DIR
 app.get('/community/bulletins', requireLogin, dashboardRateLimit, (req, res) => {
   try {
-    const bulletinDir = process.env.BULLETIN_OUTPUT_DIR
-      || path.join('F:\\', 'Recruiting Tools', 'Autosourcing', 'output', 'bulletin');
-    if (!fs.existsSync(bulletinDir)) return res.json({ bulletins: [] });
-    const files = fs.readdirSync(bulletinDir).filter(f => f.endsWith('_bulletin.json'));
-    const bulletins = [];
-    for (const file of files) {
-      try {
-        const raw = fs.readFileSync(path.join(bulletinDir, file), 'utf8');
-        const data = JSON.parse(raw);
-        bulletins.push({ file, ...data });
-      } catch (_) { /* skip malformed files */ }
-    }
-    res.json({ bulletins });
+    res.json({ bulletins: _loadBulletins(false) });
   } catch (err) {
     console.error('[Community Bulletins] Error reading bulletin dir:', err);
     res.status(500).json({ error: 'Failed to load community bulletins.' });
@@ -5754,23 +5806,7 @@ app.get('/community/bulletins', requireLogin, dashboardRateLimit, (req, res) => 
 // GET /community/bulletins/public — returns only public bulletins (public:true), no login required
 app.get('/community/bulletins/public', dashboardRateLimit, (req, res) => {
   try {
-    const bulletinDir = process.env.BULLETIN_OUTPUT_DIR
-      || path.join('F:\\', 'Recruiting Tools', 'Autosourcing', 'output', 'bulletin');
-    if (!fs.existsSync(bulletinDir)) return res.json({ bulletins: [] });
-    const files = fs.readdirSync(bulletinDir).filter(f => f.endsWith('_bulletin.json'));
-    const bulletins = [];
-    for (const file of files) {
-      try {
-        const raw = fs.readFileSync(path.join(bulletinDir, file), 'utf8');
-        const data = JSON.parse(raw);
-        if (data.public === true) {
-          // Strip email from public response for privacy
-          const { email: _email, ...safeData } = data;
-          bulletins.push({ file, ...safeData });
-        }
-      } catch (_) { /* skip malformed files */ }
-    }
-    res.json({ bulletins });
+    res.json({ bulletins: _loadBulletins(true) });
   } catch (err) {
     console.error('[Community Bulletins Public] Error reading bulletin dir:', err);
     res.status(500).json({ error: 'Failed to load public bulletins.' });
@@ -5971,17 +6007,27 @@ app.post('/generate-skillsets', requireLogin, async (req, res) => {
 
     const candidates = (await pool.query('SELECT id, role_tag, skillset FROM "process"')).rows;
 
-    let updatedCount = 0;
+    // Build update pairs: collect only rows whose skillset would actually change
+    const ids = [], newSkillsets = [];
     for (const candidate of candidates) {
       const roleTag = candidate.role_tag ? candidate.role_tag.trim() : '';
       const newSkillset = skillsetMap[roleTag] || '';
       if (newSkillset && newSkillset !== candidate.skillset) {
-        await pool.query(
-          'UPDATE "process" SET skillset = $1 WHERE id = $2',
-          [newSkillset, candidate.id]
-        );
-        updatedCount++;
+        ids.push(candidate.id);
+        newSkillsets.push(newSkillset);
       }
+    }
+    const updatedCount = ids.length;
+
+    if (updatedCount > 0) {
+      // Single UNNEST batch UPDATE — one roundtrip regardless of how many rows changed
+      await pool.query(
+        `UPDATE "process" AS p
+         SET skillset = v.skillset
+         FROM UNNEST($1::int[], $2::text[]) AS v(id, skillset)
+         WHERE p.id = v.id`,
+        [ids, newSkillsets]
+      );
     }
 
     // Let clients know skillsets changed (they can refetch)

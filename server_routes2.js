@@ -25,6 +25,9 @@ const _RE_CALC_UM_BULLET   = /^[-*•]\s+/;
 // assess-unmatched: strip markdown code fences from LLM JSON response
 const _RE_ASSESS_CODE_FENCE = /```(?:json)?/g;
 
+// sync-entries / verify-data: strip markdown code fences from LLM text/JSON response
+const _RE_CODE_FENCE = /```json|```/g;
+
 module.exports = function registerRoutes(app, ctx) {
   const {
     pool,
@@ -775,7 +778,7 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     incrementGeminiQueryCount(req.user.username).catch(() => {});
 
     // Clean potential markdown blocks
-    const jsonStr = text.replace(/```json|```/g, '').trim();
+    const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -977,7 +980,7 @@ Input:
       const text = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/ai-comp' });
       incrementGeminiQueryCount(req.user.username).catch(() => {});
 
-      const jsonStr = text.replace(/```json|```/g, '').trim();
+      const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
       let geminiData;
       try {
         geminiData = JSON.parse(jsonStr);
@@ -3221,7 +3224,7 @@ Phone: ...`;
     incrementGeminiQueryCount(req.user.username).catch(() => {});
     
     // Clean markdown if present
-    const jsonStr = genText.replace(/```json|```/g, '').trim();
+    const jsonStr = genText.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -3463,7 +3466,7 @@ No markdown, no explanation.`;
       let fake_local_part = '';
       try {
         const llmText = await llmGenerateText(normPrompt, { username: req.user && req.user.username, label: 'llm/email-norm' });
-        const jsonStr = llmText.replace(/```json|```/g, '').trim();
+        const jsonStr = llmText.replace(_RE_CODE_FENCE, '').trim();
         const parsed = JSON.parse(jsonStr);
         format = parsed.format || localPart;
         fake_example = parsed.fake_example || '';
@@ -3736,7 +3739,7 @@ app.post('/verify-email-details', requireLogin, async (req, res) => {
     const text = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/email-validate' });
     incrementGeminiQueryCount(req.user.username).catch(() => {});
 
-    const jsonStr = text.replace(/```json|```/g, '').trim();
+    const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
     let data;
     try {
       data = JSON.parse(jsonStr);
@@ -3776,7 +3779,7 @@ app.post('/draft-email', requireLogin, async (req, res) => {
 
         const text = await llmGenerateText(instruction, { username: req.user && req.user.username, label: 'llm/email-draft' });
         incrementGeminiQueryCount(req.user.username).catch(() => {});
-        const jsonStr = text.replace(/```json|```/g, '').trim();
+        const jsonStr = text.replace(_RE_CODE_FENCE, '').trim();
         let data;
         try {
             data = JSON.parse(jsonStr);
