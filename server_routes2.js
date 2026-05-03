@@ -197,6 +197,10 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
     // Guard against very large batches that would produce slow/expensive LLM calls
     const _ASSESS_BATCH_LIMIT = 50;
     const batchedUnmatched = unmatched.slice(0, _ASSESS_BATCH_LIMIT);
+    const wasTruncated = batchedUnmatched.length < unmatched.length;
+    if (wasTruncated) {
+      console.warn(`[ASSESS_UNMATCHED] input truncated: ${unmatched.length} → ${batchedUnmatched.length} items`);
+    }
 
     // Build an instruction telling the LLM to compare the two lists and classify each unmatched token
     const instruction = `
@@ -234,6 +238,13 @@ Return JSON only:
       verdict: s.verdict || 'true-missing',
       mappedTo: s.mappedTo || s.mapped || null
     }));
+
+    // Inform caller when input was capped so they can paginate or split
+    if (wasTruncated) {
+      parsed.truncated = true;
+      parsed.totalProvided = unmatched.length;
+      parsed.processedCount = batchedUnmatched.length;
+    }
 
     res.json(parsed);
   } catch (err) {
@@ -453,8 +464,9 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     return Object.entries(obj).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   };
   if (mlProfile && typeof mlProfile === 'object') {
-    // Yield the event loop before the CPU-heavy mlProfile parsing so other requests
-    // can be served while waiting (avoids blocking the Node.js event loop).
+    // Yield the event loop before the CPU-heavy mlProfile parsing block so that
+    // other pending I/O callbacks (e.g. incoming requests) can run before this
+    // synchronous work begins.
     await new Promise(r => setImmediate(r));
 
     // ── New grouped format detection (has top-level "Job_Families" array) ──

@@ -337,6 +337,8 @@ async function llmGenerateText(prompt, opts = {}) {
     const modelName = await resolveGeminiModel(username);
     const model = getGeminiModel(geminiApiKey, modelName);
     const geminiMaxTokens = parseInt((cfg.gemini || {}).max_tokens, 10) || 2048;
+    // Object-based GenerateContentRequest (supported since @google/generative-ai v0.1.1+)
+    // passes generationConfig alongside contents so the SDK honours maxOutputTokens.
     const result = await withExponentialBackoff(() => model.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: { maxOutputTokens: geminiMaxTokens }
