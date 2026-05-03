@@ -5069,7 +5069,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
 
         const snakeKey = titleName.toLowerCase().replace(/\s+/g, '_');
         // O(1) lookup via index instead of O(n) Object.keys().find()
-        const existingKey = titleLookupIndex.get(titleName.toLowerCase()) ?? (titleLookupIndex.has(snakeKey) ? snakeKey : undefined);
+        let existingKey = titleLookupIndex.get(titleName.toLowerCase());
+        if (!existingKey && titleLookupIndex.has(snakeKey)) existingKey = snakeKey;
 
         if (existingKey) {
           const existing = consolidated.job_title[existingKey];
@@ -5132,11 +5133,6 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           titleLookupIndex.set(snakeKey, snakeKey);
           titleUsersSet.set(snakeKey, new Set(users));
         }
-      }
-
-      // Flush per-title user Sets into the _users arrays now that merging is done.
-      for (const [key, usSet] of titleUsersSet) {
-        if (consolidated.job_title[key]) consolidated.job_title[key]._users = [...usSet];
       }
 
       // Handle both new Job_Families array format and user-keyed dict format (from ML_Holding).
@@ -5360,6 +5356,11 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           }));
         if (vcArray.length > 0) outputEntry['Verified Compensation'] = vcArray;
         consolidated.compensation.compensation_by_job_title[jt] = outputEntry;
+      }
+
+      // Flush per-title user Sets into _users arrays — all mergeOneJobTitle calls are now done.
+      for (const [key, usSet] of titleUsersSet) {
+        if (consolidated.job_title[key]) consolidated.job_title[key]._users = [...usSet];
       }
 
       return consolidated;
