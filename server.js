@@ -4708,19 +4708,21 @@ app.get('/candidates/ml-profile', requireLogin, dashboardRateLimit, async (req, 
     // ML_Master_Compensation.json) are audit/backup stores only; Sync Entries must
     // operate on the individual file explicitly recreated for this user via Dock In.
     const mlFilepath = path.join(ML_OUTPUT_DIR, `ML_${safeUsername}.json`);
-    if (fs.existsSync(mlFilepath)) {
-      try {
-        const { mtimeMs } = fs.statSync(mlFilepath);
-        const cached = _mlProfileCache.get(safeUsername);
-        let data;
-        if (cached && cached.mtime === mtimeMs) {
-          data = cached.data;
-        } else {
-          data = JSON.parse(fs.readFileSync(mlFilepath, 'utf8'));
-          _mlProfileCache.set(safeUsername, { data, mtime: mtimeMs });
-        }
-        return res.json({ found: true, profile: data });
-      } catch (_) { /* fall through to on-the-fly build */ }
+    try {
+      // statSync gives existence check + mtime in one syscall
+      const { mtimeMs } = fs.statSync(mlFilepath);
+      const cached = _mlProfileCache.get(safeUsername);
+      let data;
+      if (cached && cached.mtime === mtimeMs) {
+        data = cached.data;
+      } else {
+        data = JSON.parse(fs.readFileSync(mlFilepath, 'utf8'));
+        _mlProfileCache.set(safeUsername, { data, mtime: mtimeMs });
+      }
+      return res.json({ found: true, profile: data });
+    } catch (statErr) {
+      if (statErr.code !== 'ENOENT') console.warn('[ml-profile] stat error:', statErr.message);
+      // Fall through to on-the-fly build
     }
 
     // File not found (e.g. after Dock Out before Dock In, or on first run).
@@ -5741,6 +5743,9 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
     const filepath = path.join(bulletinDir, filename);
     try {
       fs.writeFileSync(filepath, JSON.stringify(exportData, null, 2), 'utf8');
+      // Invalidate bulletin caches so the next read picks up the new file
+      _bulletinCacheAll = null; _bulletinCacheAllTs = 0;
+      _bulletinCachePub = null; _bulletinCachePubTs = 0;
     } catch (writeErr) {
       console.error('[Bulletin Export] Could not write bulletin file:', writeErr.message);
       return res.status(500).json({ error: 'Failed to write bulletin file.', detail: writeErr.message });
@@ -5760,7 +5765,7 @@ const _BULLETIN_CACHE_MS = parseInt(process.env.BULLETIN_CACHE_MS, 10) || 5_000;
 let _bulletinCacheAll    = null, _bulletinCacheAllTs    = 0;
 let _bulletinCachePub    = null, _bulletinCachePubTs    = 0;
 
-function _loadBulletins(publicOnly) {
+async function _loadBulletins(publicOnly) {
   const now = Date.now();
   if (publicOnly) {
     if (_bulletinCachePub && now - _bulletinCachePubTs < _BULLETIN_CACHE_MS) return _bulletinCachePub;
@@ -5769,24 +5774,32 @@ function _loadBulletins(publicOnly) {
   }
   const bulletinDir = process.env.BULLETIN_OUTPUT_DIR
     || path.join('F:\\', 'Recruiting Tools', 'Autosourcing', 'output', 'bulletin');
-  if (!fs.existsSync(bulletinDir)) {
+  let files;
+  try {
+    files = (await fs.promises.readdir(bulletinDir)).filter(f => f.endsWith('_bulletin.json'));
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
     const empty = [];
     if (publicOnly) { _bulletinCachePub = empty; _bulletinCachePubTs = now; }
     else            { _bulletinCacheAll = empty; _bulletinCacheAllTs = now; }
     return empty;
   }
-  const files = fs.readdirSync(bulletinDir).filter(f => f.endsWith('_bulletin.json'));
-  const bulletins = [];
-  for (const file of files) {
+  // Read all bulletin files in parallel
+  const results = await Promise.all(files.map(async file => {
     try {
-      const data = JSON.parse(fs.readFileSync(path.join(bulletinDir, file), 'utf8'));
-      if (!publicOnly) {
-        bulletins.push({ file, ...data });
-      } else if (data.public === true) {
-        const { email: _email, ...safeData } = data;
-        bulletins.push({ file, ...safeData });
-      }
-    } catch (_) { /* skip malformed files */ }
+      const raw = await fs.promises.readFile(path.join(bulletinDir, file), 'utf8');
+      return { file, data: JSON.parse(raw) };
+    } catch (_) { return null; }
+  }));
+  const bulletins = [];
+  for (const item of results) {
+    if (!item) continue;
+    if (!publicOnly) {
+      bulletins.push({ file: item.file, ...item.data });
+    } else if (item.data.public === true) {
+      const { email: _email, ...safeData } = item.data;
+      bulletins.push({ file: item.file, ...safeData });
+    }
   }
   if (publicOnly) { _bulletinCachePub = bulletins; _bulletinCachePubTs = now; }
   else            { _bulletinCacheAll = bulletins; _bulletinCacheAllTs = now; }
@@ -5794,9 +5807,9 @@ function _loadBulletins(publicOnly) {
 }
 
 // GET /community/bulletins — returns all *_bulletin.json files from BULLETIN_OUTPUT_DIR
-app.get('/community/bulletins', requireLogin, dashboardRateLimit, (req, res) => {
+app.get('/community/bulletins', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    res.json({ bulletins: _loadBulletins(false) });
+    res.json({ bulletins: await _loadBulletins(false) });
   } catch (err) {
     console.error('[Community Bulletins] Error reading bulletin dir:', err);
     res.status(500).json({ error: 'Failed to load community bulletins.' });
@@ -5804,9 +5817,9 @@ app.get('/community/bulletins', requireLogin, dashboardRateLimit, (req, res) => 
 });
 
 // GET /community/bulletins/public — returns only public bulletins (public:true), no login required
-app.get('/community/bulletins/public', dashboardRateLimit, (req, res) => {
+app.get('/community/bulletins/public', dashboardRateLimit, async (req, res) => {
   try {
-    res.json({ bulletins: _loadBulletins(true) });
+    res.json({ bulletins: await _loadBulletins(true) });
   } catch (err) {
     console.error('[Community Bulletins Public] Error reading bulletin dir:', err);
     res.status(500).json({ error: 'Failed to load public bulletins.' });
