@@ -203,7 +203,9 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
     const _rlUser = (_rlCfg.users || {})[_rlUsername] || {};
     const _rlDef  = (_rlCfg.defaults || {});
     const _rlBatch = _rlUser.analytic_batch_size || _rlDef.analytic_batch_size;
-    const _ASSESS_BATCH_LIMIT = parseInt((_rlBatch || {}).requests, 10) || 50;
+    const _ASSESS_BATCH_LIMIT = (_rlBatch && parseInt(_rlBatch.requests, 10) > 0)
+      ? parseInt(_rlBatch.requests, 10)
+      : 50;
     const batchedUnmatched = unmatched.slice(0, _ASSESS_BATCH_LIMIT);
     const wasTruncated = batchedUnmatched.length < unmatched.length;
     if (wasTruncated) {
