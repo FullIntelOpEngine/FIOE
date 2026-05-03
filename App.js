@@ -2089,11 +2089,6 @@ const DOCK_IN_WEIGHT_CATEGORIES = [
   { key: 'country',           label: 'Country'   },
   { key: 'tenure',            label: 'Tenure'    },
 ];
-// Delay (ms) before the second silent candidates re-fetch after analytic Dock In.
-// bulk_assess marks the job 'done' before all vskillset writes are committed to Postgres;
-// this gap gives the DB enough time to flush so the follow-up fetch returns complete data.
-const ASSESSMENT_DB_COMMIT_DELAY_MS = 1500;
-
 // ── CandidatesTable — static field definitions and advanced-field keys ──
 const CANDIDATE_TABLE_FIELDS = [
   { key: 'name', label: 'Name', type: 'text', editable: true },
@@ -3618,11 +3613,6 @@ function CandidatesTable({
           setDockInUploading(false);
           setDockInAnalyticProgress('');
           setDockInAnalyticPct(0);
-          // bulk_assess writes vskillset to DB asynchronously; auto-reload after
-          // a short delay so all assessment data (vskillset etc.) is captured from
-          // a fully-committed DB state without requiring a manual browser refresh.
-          // Use onRefresh() (same as the Refresh button) so isRefreshingRef is set.
-          setTimeout(() => { if (typeof onRefresh === 'function') onRefresh(); }, ASSESSMENT_DB_COMMIT_DELAY_MS);
         } else {
           // ── Normal DB mode: no assessment required ──
           setDockInWizOpen(false);

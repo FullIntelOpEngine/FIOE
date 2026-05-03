@@ -1509,26 +1509,42 @@ function _isPrivateHost(hostname) {
   return false;
 }
 
+// ── Pre-compiled ICS regex constants ─────────────────────────────────────────
+// Hoisted to module level so they are compiled once rather than on every call
+// inside the hot ICS-line-processing loop.
+const _RE_ICS_UTC_DT      = /^\d{8}T\d{6}Z$/i;   // YYYYMMDDTHHMMSSZ
+const _RE_ICS_FLOAT_DT    = /^\d{8}T\d{6}$/;      // YYYYMMDDTHHMMSS (floating)
+const _RE_ICS_DATE        = /^\d{8}$/;             // YYYYMMDD (all-day)
+const _RE_ICS_TZID        = /TZID=([^;:]+)/i;
+const _RE_ICS_FBTYPE      = /FBTYPE=([^;:]+)/i;
+const _RE_ICS_DURATION_P  = /^P/i;                // starts with P = duration value
+const _RE_DURATION        = /P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/;
+const _RE_RRULE_FREQ      = /FREQ=([A-Z]+)/;
+const _RE_RRULE_INTERVAL  = /INTERVAL=(\d+)/;
+const _RE_RRULE_COUNT     = /COUNT=(\d+)/;
+const _RE_RRULE_UNTIL     = /UNTIL=([^\s;]+)/;
+const _RE_RRULE_BYDAY     = /BYDAY=([^;]+)/;
+
 // Helper: parse an ICS date/datetime string to a UTC timestamp (ms)
 function parseIcsDate(dateStr) {
   if (!dateStr) return NaN;
   const s = dateStr.trim();
   // UTC: YYYYMMDDTHHMMSSZ
-  if (/^\d{8}T\d{6}Z$/i.test(s)) {
+  if (_RE_ICS_UTC_DT.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
       parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
     );
   }
   // Floating (no Z, no TZID in value): YYYYMMDDTHHMMSS — treat as UTC
-  if (/^\d{8}T\d{6}$/.test(s)) {
+  if (_RE_ICS_FLOAT_DT.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
       parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
     );
   }
   // All-day date: YYYYMMDD
-  if (/^\d{8}$/.test(s)) {
+  if (_RE_ICS_DATE.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10)
     );
@@ -1552,9 +1568,9 @@ function parseIcsDateWithTzid(dateStr, tzid) {
   if (!tzid) return parseIcsDate(dateStr);
   const s = (dateStr || '').trim();
   // Already UTC — no timezone adjustment needed
-  if (/^\d{8}T\d{6}Z$/i.test(s)) return parseIcsDate(s);
+  if (_RE_ICS_UTC_DT.test(s)) return parseIcsDate(s);
   // Floating datetime: YYYYMMDDTHHMMSS — convert from tzid to UTC via Intl
-  if (/^\d{8}T\d{6}$/.test(s)) {
+  if (_RE_ICS_FLOAT_DT.test(s)) {
     try {
       const y  = parseInt(s.slice(0, 4), 10);
       const mo = parseInt(s.slice(4, 6), 10) - 1;
@@ -1588,6 +1604,8 @@ function parseIcsDateWithTzid(dateStr, tzid) {
 
 // Helper: fetch an ICS URL and return busy [{start, end}] intervals overlapping [startISO, endISO]
 // Supports http://, https://, and webcal:// (remapped to https://).
+// ICS content is stream-parsed line-by-line as chunks arrive (RFC 5545 folding handled across
+// chunk boundaries). Avoids buffering the entire file; allows early exit once past rangeEnd.
 async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   // Validate and normalise the URL
   const normalised = icsUrl.trim().replace(/^webcal:/i, 'https:');
@@ -1611,47 +1629,11 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   const rangeStart = new Date(startISO).getTime();
   const rangeEnd   = new Date(endISO).getTime();
 
-  // Fetch with a redirect budget (max 3 hops)
-  async function doFetch(fetchUrl, hops) {
-    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
-    const u = new URL(fetchUrl);
-    const mod = u.protocol === 'https:' ? https : http;
-    return new Promise((resolve, reject) => {
-      const req = mod.request(
-        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
-          path: u.pathname + (u.search || ''), method: 'GET',
-          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
-          timeout: 12000 },
-        (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
-          }
-          if (res.statusCode !== 200) {
-            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
-          }
-          let raw = '';
-          res.setEncoding('utf8');
-          res.on('data', chunk => { raw += chunk; if (raw.length > 5 * 1024 * 1024) { req.destroy(); reject(new Error('ICS feed too large (>5 MB).')); } });
-          res.on('end', () => resolve(raw));
-        }
-      );
-      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
-      req.on('error', reject);
-      req.end();
-    });
-  }
-
-  const rawIcs = await doFetch(normalised, 3);
-
-  // Unfold continuation lines (RFC 5545 §3.1)
-  const unfolded = rawIcs.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
-  const lines = unfolded.split(/\r\n|\n|\r/);
-
-  // Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds
+  // ── Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds ─────
   function _parseDurationMs(durStr) {
     const d = (durStr || '').toUpperCase();
     let ms = 0;
-    const m = d.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+    const m = d.match(_RE_DURATION);
     if (m) {
       ms = ((parseInt(m[1], 10) || 0) * 7 * 86400
            + (parseInt(m[2], 10) || 0) * 86400
@@ -1662,7 +1644,7 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     return ms;
   }
 
-  // Helper: expand a recurring event's occurrences within [rangeStart, rangeEnd]
+  // ── Helper: expand recurring event occurrences within [rangeStart, rangeEnd] ─
   // Supports RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with COUNT/UNTIL/INTERVAL/BYDAY.
   // EXDATE entries (comma-separated) are excluded.
   function _expandRecurrence(evt, durationMs) {
@@ -1670,21 +1652,21 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     if (!rule) return [];
     const intervals = [];
 
-    const freqMatch = rule.match(/FREQ=([A-Z]+)/);
+    const freqMatch = rule.match(_RE_RRULE_FREQ);
     if (!freqMatch) return [];
     const freq = freqMatch[1]; // DAILY | WEEKLY | MONTHLY | YEARLY
 
-    const intervalMatch = rule.match(/INTERVAL=(\d+)/);
+    const intervalMatch = rule.match(_RE_RRULE_INTERVAL);
     const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 1;
 
-    const countMatch = rule.match(/COUNT=(\d+)/);
+    const countMatch = rule.match(_RE_RRULE_COUNT);
     const maxCount = countMatch ? parseInt(countMatch[1], 10) : Infinity;
 
-    const untilMatch = rule.match(/UNTIL=([^\s;]+)/);
+    const untilMatch = rule.match(_RE_RRULE_UNTIL);
     const untilMs = untilMatch ? parseIcsDate(untilMatch[1]) : Infinity;
 
     // BYDAY for WEEKLY: e.g. BYDAY=MO,WE,FR
-    const bydayMatch = rule.match(/BYDAY=([^;]+)/);
+    const bydayMatch = rule.match(_RE_RRULE_BYDAY);
     const byDays = bydayMatch
       ? bydayMatch[1].split(',').map(d => d.trim().slice(-2).toUpperCase())
       : null;
@@ -1761,20 +1743,21 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     return intervals;
   }
 
+  // ── Streaming ICS line processor ─────────────────────────────────────────
+  // Shared parser state; populated by processLogicalLine() called from the stream.
   const busyIntervals = [];
-  let inVevent   = false;
+  let inVevent    = false;
   let inVfreebusy = false;
   let evt = {};
   let vfb = {};
 
-  for (const line of lines) {
+  function processLogicalLine(line) {
     const upper = line.toUpperCase();
 
     // ── VFREEBUSY handling (RFC 5545 §3.6.4) ─────────────────────────────────
-    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; continue; }
+    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; return; }
     if (upper === 'END:VFREEBUSY') {
       inVfreebusy = false;
-      // FREEBUSY property contains one or more period values: start/end or start/duration
       if (vfb.freebusy) {
         for (const fbLine of vfb.freebusy) {
           const periods = fbLine.split(',');
@@ -1783,7 +1766,7 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
             if (parts.length !== 2) continue;
             const pStart = parseIcsDate(parts[0].trim());
             let pEnd;
-            if (/^P/i.test(parts[1].trim())) {
+            if (_RE_ICS_DURATION_P.test(parts[1].trim())) {
               pEnd = pStart + _parseDurationMs(parts[1].trim());
             } else {
               pEnd = parseIcsDate(parts[1].trim());
@@ -1795,30 +1778,29 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         }
       }
       vfb = {};
-      continue;
+      return;
     }
     if (inVfreebusy) {
       const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) continue;
+      if (colonIdx === -1) return;
       const rawProp = line.substring(0, colonIdx);
       const value   = line.substring(colonIdx + 1);
       const semiIdx = rawProp.indexOf(';');
       const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
       if (propKey === 'FREEBUSY') {
-        // Skip FREE periods; only collect BUSY (default when FBTYPE absent or FBTYPE=BUSY)
         const fbType = semiIdx !== -1
-          ? (rawProp.substring(semiIdx + 1).match(/FBTYPE=([^;:]+)/i) || [])[1] || 'BUSY'
+          ? (rawProp.substring(semiIdx + 1).match(_RE_ICS_FBTYPE) || [])[1] || 'BUSY'
           : 'BUSY';
         if (fbType.toUpperCase() !== 'FREE') {
           if (!vfb.freebusy) vfb.freebusy = [];
           vfb.freebusy.push(value);
         }
       }
-      continue;
+      return;
     }
 
     // ── VEVENT handling ───────────────────────────────────────────────────────
-    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; continue; }
+    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; return; }
     if (upper === 'END:VEVENT') {
       inVevent = false;
       if (evt.dtstart) {
@@ -1832,12 +1814,10 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
           } else if (evt.duration) {
             durationMs = _parseDurationMs(evt.duration);
           } else {
-            // All-day event with no DTEND: treat as 1 day
-            durationMs = 86400000;
+            durationMs = 86400000; // all-day event: 1 day
           }
           if (!isNaN(startMs) && durationMs > 0) {
             if (evt.rrule) {
-              // Expand recurring event occurrences within the query window
               const occurrences = _expandRecurrence(evt, durationMs);
               busyIntervals.push(...occurrences);
             } else {
@@ -1850,13 +1830,13 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         }
       }
       evt = {};
-      continue;
+      return;
     }
-    if (!inVevent) continue;
+    if (!inVevent) return;
 
-    // Split into property name (+ params) and value
+    // ── Parse VEVENT property ─────────────────────────────────────────────────
     const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) return;
     const rawProp = line.substring(0, colonIdx);
     const value   = line.substring(colonIdx + 1);
     const semiIdx = rawProp.indexOf(';');
@@ -1865,13 +1845,13 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     if (propKey === 'DTSTART') {
       evt.dtstart = value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.dtstart_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'DTEND') {
       evt.dtend = value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.dtend_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'DURATION') {
@@ -1879,11 +1859,10 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     } else if (propKey === 'RRULE') {
       evt.rrule = value;
     } else if (propKey === 'EXDATE') {
-      // Multiple EXDATE lines are allowed; accumulate comma-separated values
       const existing = evt.exdate ? evt.exdate + ',' : '';
       evt.exdate = existing + value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.exdate_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'STATUS') {
@@ -1893,7 +1872,90 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     }
   }
 
-  return busyIntervals;
+  // ── Fetch with redirect budget (max 3 hops), stream-parsing each chunk ────
+  // RFC 5545 §3.1: long lines are folded by inserting CRLF + SPACE/TAB.
+  // We handle folding across chunk boundaries via `pendingLogical`.
+  async function doFetch(fetchUrl, hops) {
+    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
+    const u = new URL(fetchUrl);
+    const mod = u.protocol === 'https:' ? https : http;
+    return new Promise((resolve, reject) => {
+      const req = mod.request(
+        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+          path: u.pathname + (u.search || ''), method: 'GET',
+          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
+          timeout: 12000 },
+        (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
+          }
+          if (res.statusCode !== 200) {
+            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
+          }
+
+          let bytesReceived = 0;
+          let chunkTail = '';       // incomplete physical line at the end of the last chunk
+          let pendingLogical = '';  // current logical line being assembled (handles RFC 5545 folding)
+
+          res.setEncoding('utf8');
+          res.on('data', chunk => {
+            bytesReceived += chunk.length;
+            if (bytesReceived > 5 * 1024 * 1024) {
+              req.destroy();
+              reject(new Error('ICS feed too large (>5 MB).'));
+              return;
+            }
+
+            // Combine leftover from previous chunk with new data, then split physical lines.
+            const buf = chunkTail + chunk;
+            // Find the last newline to determine the incomplete tail
+            const lastNl = Math.max(buf.lastIndexOf('\n'), buf.lastIndexOf('\r'));
+            if (lastNl === -1) {
+              // No complete line in this chunk yet — accumulate
+              chunkTail = buf;
+              return;
+            }
+            chunkTail = buf.slice(lastNl + 1); // remainder after last newline
+            const completeData = buf.slice(0, lastNl + 1);
+            // Split by any line ending variant
+            const physLines = completeData.split(/\r\n|\r|\n/);
+
+            for (const physLine of physLines) {
+              if (physLine.length === 0) continue; // skip blank lines between CRLF endings
+              // RFC 5545 fold: a physical line beginning with SP or HT is a continuation
+              if (physLine.charCodeAt(0) === 0x20 || physLine.charCodeAt(0) === 0x09) {
+                pendingLogical += physLine.slice(1);
+              } else {
+                // Emit the completed logical line and start a new one
+                if (pendingLogical) processLogicalLine(pendingLogical);
+                pendingLogical = physLine;
+              }
+            }
+          });
+
+          res.on('end', () => {
+            // Flush any leftover tail and pending logical line
+            const remaining = chunkTail;
+            if (remaining.length > 0) {
+              if (remaining.charCodeAt(0) === 0x20 || remaining.charCodeAt(0) === 0x09) {
+                pendingLogical += remaining.slice(1);
+              } else {
+                if (pendingLogical) processLogicalLine(pendingLogical);
+                pendingLogical = remaining;
+              }
+            }
+            if (pendingLogical) processLogicalLine(pendingLogical);
+            resolve(busyIntervals);
+          });
+        }
+      );
+      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  return doFetch(normalised, 3);
 }
 
 // Helper: compute simple free slots between timeMin/timeMax avoiding busy intervals
