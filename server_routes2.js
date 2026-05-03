@@ -5208,11 +5208,19 @@ function readUserServiceConfig(username) {
       console.error('[readUserServiceConfig] .enc decrypt failed for', username, ':', err.message);
       // Fall through to JSON fallback.
       if (fs.existsSync(jsonPath)) {
-        try { data = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch (_) {}
+        try {
+          data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        } catch (parseErr) {
+          console.error('[readUserServiceConfig] .json parse failed for', username, ':', parseErr.message);
+        }
       }
     }
   } else {
-    try { data = JSON.parse(fs.readFileSync(jsonPath, 'utf8')); } catch (_) {}
+    try {
+      data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    } catch (parseErr) {
+      console.error('[readUserServiceConfig] .json parse failed for', username, ':', parseErr.message);
+    }
   }
 
   _userSvcCfgCache.set(username, { data, mtimeMs: mtime });

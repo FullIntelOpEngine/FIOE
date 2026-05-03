@@ -195,11 +195,17 @@ let _llmInFlight = 0;
 const _llmWaitQueue = [];
 function _llmAcquire() {
   if (_llmInFlight < _LLM_MAX_CONCURRENT) { _llmInFlight++; return Promise.resolve(); }
-  return new Promise(resolve => _llmWaitQueue.push(resolve)).then(() => { _llmInFlight++; });
+  // Waiter inherits the slot: _llmInFlight is NOT decremented in _llmRelease when
+  // there are waiters, so the counter stays consistent without a race window.
+  return new Promise(resolve => _llmWaitQueue.push(resolve));
 }
 function _llmRelease() {
-  _llmInFlight--;
-  if (_llmWaitQueue.length > 0) _llmWaitQueue.shift()();
+  if (_llmWaitQueue.length > 0) {
+    // Pass the slot directly to the next waiter — no decrement/re-increment needed.
+    _llmWaitQueue.shift()();
+  } else {
+    _llmInFlight--;
+  }
 }
 
 // Returns the Gemini model name for a user.
