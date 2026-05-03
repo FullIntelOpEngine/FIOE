@@ -2887,12 +2887,18 @@ app.post('/deduct-tokens', requireLogin, userRateLimit('upload_multiple_cvs'), a
       return res.json({ tokensLeft: current, accountTokens: current, skipped: true });
     }
 
-    // Single CTE: lock the row, deduct, and return both old and new token values in one roundtrip
+    // Single CTE: lock the row, compute new token, and return both values in one roundtrip.
+    // Uses a multi-step CTE to avoid a repeated scalar subquery in RETURNING.
     const deductRes = await pool.query(
-      `WITH prev AS (SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE)
-       UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
-       WHERE username = $1
-       RETURNING (SELECT old_token FROM prev) AS token_before, login.token AS token_after`,
+      `WITH prev AS (
+         SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE
+       ),
+       upd AS (
+         UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
+         WHERE username = $1
+         RETURNING login.token AS new_token
+       )
+       SELECT prev.old_token AS token_before, upd.new_token AS token_after FROM prev, upd`,
       [username, _VERIFIED_SELECTION_DEDUCT]
     );
     if (deductRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -2936,12 +2942,18 @@ app.post('/deduct-tokens-contact-gen', requireLogin, userRateLimit('upload_multi
       if (typeof v === 'number') deductAmt = v;
     } catch (_) {}
 
-    // Single CTE: lock the row, deduct, and return both old and new token values in one roundtrip
+    // Single CTE: lock the row, compute new token, and return both values in one roundtrip.
+    // Uses a multi-step CTE to avoid a repeated scalar subquery in RETURNING.
     const deductRes = await pool.query(
-      `WITH prev AS (SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE)
-       UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
-       WHERE username = $1
-       RETURNING (SELECT old_token FROM prev) AS token_before, login.token AS token_after`,
+      `WITH prev AS (
+         SELECT COALESCE(token, 0) AS old_token FROM login WHERE username = $1 FOR UPDATE
+       ),
+       upd AS (
+         UPDATE login SET token = GREATEST(0, (SELECT old_token FROM prev) - $2)
+         WHERE username = $1
+         RETURNING login.token AS new_token
+       )
+       SELECT prev.old_token AS token_before, upd.new_token AS token_after FROM prev, upd`,
       [username, deductAmt]
     );
     if (deductRes.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -5789,7 +5801,10 @@ async function _loadBulletins(publicOnly) {
     try {
       const raw = await fs.promises.readFile(path.join(bulletinDir, file), 'utf8');
       return { file, data: JSON.parse(raw) };
-    } catch (_) { return null; }
+    } catch (e) {
+      console.warn('[Community Bulletins] Could not read/parse bulletin file:', file, e.message);
+      return null;
+    }
   }));
   const bulletins = [];
   for (const item of results) {
