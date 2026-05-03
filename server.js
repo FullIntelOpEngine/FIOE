@@ -307,9 +307,10 @@ async function llmGenerateText(prompt, opts = {}) {
       const apiKey = (cfg.openai || {}).api_key || '';
       if (!apiKey) throw new Error('OpenAI API key not configured');
       const model = (cfg.openai || {}).model || 'gpt-4.1';
+      const maxTokens = parseInt((cfg.openai || {}).max_tokens, 10) || 2048;
       const client = _getOpenAIClient(apiKey);
       const resp = await withExponentialBackoff(
-        () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
+        () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0, max_tokens: maxTokens }),
         { label }
       );
       return (resp.choices[0]?.message?.content || '').trim();
@@ -335,7 +336,11 @@ async function llmGenerateText(prompt, opts = {}) {
     if (!GoogleGenerativeAIClass) throw new Error('Gemini SDK not installed');
     const modelName = await resolveGeminiModel(username);
     const model = getGeminiModel(geminiApiKey, modelName);
-    const result = await withExponentialBackoff(() => model.generateContent(prompt), { label });
+    const geminiMaxTokens = parseInt((cfg.gemini || {}).max_tokens, 10) || 2048;
+    const result = await withExponentialBackoff(() => model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: geminiMaxTokens }
+    }), { label });
     return result.response.text().trim();
   } finally {
     _llmRelease();

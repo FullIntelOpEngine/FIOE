@@ -7984,6 +7984,9 @@ export default function App() {
   // State for calculating unmatched skills
   const [calculatingUnmatched, setCalculatingUnmatched] = useState(false);
   const [unmatchedCalculated, setUnmatchedCalculated] = useState({});  // Store by candidate ID
+  // Tracks candidate IDs whose calculate-unmatched job is processing in the background (202 response).
+  // When the matching `candidate_updated` SSE event arrives the ref is cleared and loading ends.
+  const _pendingUnmatchedCalcRef = React.useRef(new Set());
 
   // State for skillset management
   const [newSkillInput, setNewSkillInput] = useState('');
@@ -8529,6 +8532,17 @@ export default function App() {
             setEditRows(prev => ({ ...(prev || {}), [updated.id]: { ...updated, ...(prev[updated.id] || {}) } }));
             // Update resume candidate in view if selected
             setResumeCandidate(prev => (prev && String(prev.id) === String(updated.id) ? { ...prev, ...updated } : prev));
+            // Finalise a background calculate-unmatched job (202 fire-and-forget)
+            const sid = String(updated.id);
+            if (_pendingUnmatchedCalcRef.current.has(sid) && updated.lskillset !== undefined) {
+              _pendingUnmatchedCalcRef.current.delete(sid);
+              setCalculatingUnmatched(false);
+              setUnmatchedCalculated(prev => {
+                const next = { ...prev, [sid]: true };
+                try { localStorage.setItem('unmatchedCalculated', JSON.stringify(next)); } catch (_) {}
+                return next;
+              });
+            }
           } catch (err) {
             console.warn('[SSE] Error parsing candidate_updated:', err);
           }
@@ -9413,12 +9427,23 @@ export default function App() {
   const handleCalculateUnmatched = async () => {
       if (!resumeCandidate || !resumeCandidate.id) return;
       setCalculatingUnmatched(true);
+      let isQueued = false;
       try {
           const res = await fetch(`http://localhost:${API_PORT}/candidates/${resumeCandidate.id}/calculate-unmatched`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               credentials: 'include'
           });
+
+          if (res.status === 202) {
+              // Server accepted the job and is processing it in the background.
+              // Keep the "Calculating..." state active; it will be cleared when the
+              // `candidate_updated` SSE event arrives with the computed lskillset.
+              isQueued = true;
+              _pendingUnmatchedCalcRef.current.add(String(resumeCandidate.id));
+              return;
+          }
+
           if (!res.ok) {
              const data = await res.json();
              throw new Error(data.error || 'Failed to calculate');
@@ -9452,7 +9477,7 @@ export default function App() {
       } catch (e) {
           alert("Error: " + e.message);
       } finally {
-          setCalculatingUnmatched(false);
+          if (!isQueued) setCalculatingUnmatched(false);
       }
   };
 

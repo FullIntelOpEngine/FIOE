@@ -12,6 +12,19 @@ const crypto = require('crypto');
 const net    = require('net');
 const dns    = require('dns').promises;
 
+// ── Module-level pre-compiled regexes ────────────────────────────────────────
+// Compiled once at startup; avoids per-request RegExp construction overhead.
+
+// calculate-unmatched: strip LLM preamble / structural chars from output
+const _RE_CALC_UM_INTRO    = /^(Here are|The following|These are).*?[:\n]/gim;
+const _RE_CALC_UM_LONG     = /Here are the skills present[^:\n]*[:\s]*/i;
+const _RE_CALC_UM_BRACKETS = /[\[\]"']/g;
+const _RE_CALC_UM_DELIM    = /[\n\r,]+/g;
+const _RE_CALC_UM_BULLET   = /^[-*•]\s+/;
+
+// assess-unmatched: strip markdown code fences from LLM JSON response
+const _RE_ASSESS_CODE_FENCE = /```(?:json)?/g;
+
 module.exports = function registerRoutes(app, ctx) {
   const {
     pool,
@@ -107,63 +120,59 @@ app.post('/candidates/:id/calculate-unmatched', requireLogin, async (req, res) =
             Return the result as a simple list. Do NOT include any introductory or explanatory text.
         `;
 
-        const rawText = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/skill-gap' });
-        incrementGeminiQueryCount(req.user.username).catch(() => {});
+        // Return 202 immediately so the HTTP connection is freed; LLM + DB work runs in the background.
+        // The client receives the result via the `candidate_updated` SSE event when the job completes.
+        const bgUsername = req.user && req.user.username;
+        res.status(202).json({ queued: true, id });
 
-        // 5. Data Cleansing
-        // Strip explanatory text using strict patterns
-        let cleaned = rawText.replace(/^(Here are|The following|These are).*?[:\n]/gim, '');
-        cleaned = cleaned.replace(/Here are the skills present in the JD Skillset but missing or unmatched in the Candidate Skillset[:\s]*/i, '');
-        
-        // Remove JSON structural chars
-        cleaned = cleaned.replace(/[\[\]"']/g, '');
-        
-        // Replace newlines and commas with semicolons
-        cleaned = cleaned.replace(/[\n\r,]+/g, ';');
-        
-        // Split, trim, remove leading bullets (hyphens), and filter empty
-        const tokens = cleaned
-          .split(';')
-          .map(s => s.trim().replace(/^[-*•]\s+/, '').replace(/^[-*•]/, '')) // Remove leading bullet/hyphen
-          .filter(s => s.length > 0);
-        
-        const unmatchedStr = tokens.join('; ');
+        // Fire-and-forget background job (pool/broadcastSSE/helpers remain in scope)
+        (async () => {
+            try {
+                const rawText = await llmGenerateText(prompt, { username: bgUsername, label: 'llm/skill-gap' });
+                incrementGeminiQueryCount(bgUsername).catch(() => {});
 
-        // 6. Update process table column 'lskillset' ONLY
-        const updateRes = await pool.query(
-            'UPDATE "process" SET lskillset = $1 WHERE id = $2 RETURNING *',
-            [unmatchedStr, id]
-        );
+                // 5. Data Cleansing — use pre-compiled module-level regexes
+                let cleaned = rawText.replace(_RE_CALC_UM_INTRO, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_LONG, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_BRACKETS, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_DELIM, ';');
 
-        const r = updateRes.rows[0];
+                const tokens = cleaned
+                  .split(';')
+                  .map(s => s.trim().replace(_RE_CALC_UM_BULLET, '').replace(/^[-*•]/, ''))
+                  .filter(s => s.length > 0);
 
-        // 7. Return standard updated object
-        // Use standard mapping helper logic manually here to ensure consistency
-        // compensation sourced from process table
-        const companyCanonical = normalizeCompanyName(r.company || r.organisation || '');
-        
-        const mapped = {
-            ...r,
-            jobtitle: r.jobtitle ?? null,
-            company: companyCanonical ?? (r.company ?? null),
-            lskillset: r.lskillset ?? null,
-            linkedinurl: r.linkedinurl ?? null,
-            jskillset: r.jskillset ?? null,
-            pic: picToDataUri(r.pic),
-            
-            // fallbacks
-            role: r.role ?? r.jobtitle ?? null,
-            organisation: companyCanonical ?? (r.organisation ?? r.company ?? null),
-            type: r.product ?? null,
-            compensation: r.compensation ?? null
-        };
+                const unmatchedStr = tokens.join('; ');
 
-        // Emit update
-        try {
-            broadcastSSE('candidate_updated', mapped);
-        } catch (_) {}
+                // 6. Update process table column 'lskillset' ONLY
+                const updateRes = await pool.query(
+                    'UPDATE "process" SET lskillset = $1 WHERE id = $2 RETURNING *',
+                    [unmatchedStr, id]
+                );
 
-        res.json({ lskillset: unmatchedStr, fullUpdate: mapped });
+                const r = updateRes.rows[0];
+                if (!r) return;
+
+                // 7. Build mapped object and broadcast SSE so the client updates live
+                const companyCanonical = normalizeCompanyName(r.company || r.organisation || '');
+                const mapped = {
+                    ...r,
+                    jobtitle: r.jobtitle ?? null,
+                    company: companyCanonical ?? (r.company ?? null),
+                    lskillset: r.lskillset ?? null,
+                    linkedinurl: r.linkedinurl ?? null,
+                    jskillset: r.jskillset ?? null,
+                    pic: picToDataUri(r.pic),
+                    role: r.role ?? r.jobtitle ?? null,
+                    organisation: companyCanonical ?? (r.organisation ?? r.company ?? null),
+                    type: r.product ?? null,
+                    compensation: r.compensation ?? null
+                };
+                try { broadcastSSE('candidate_updated', mapped); } catch (_) {}
+            } catch (bgErr) {
+                console.error('[CALC_UNMATCHED BG] error for id', id, bgErr && bgErr.message);
+            }
+        })();
 
     } catch (err) {
         console.error('Calculate unmatched error:', err);
@@ -185,11 +194,15 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
       return res.status(400).json({ error: 'No unmatched skills provided.' });
     }
 
+    // Guard against very large batches that would produce slow/expensive LLM calls
+    const _ASSESS_BATCH_LIMIT = 50;
+    const batchedUnmatched = unmatched.slice(0, _ASSESS_BATCH_LIMIT);
+
     // Build an instruction telling the LLM to compare the two lists and classify each unmatched token
     const instruction = `
 You are a skill matching assistant. Inputs:
 - sourceSkills: canonical skillset list (comma-separated): ${JSON.stringify(sourceSkills)}
-- unmatched: list of tokens to check (array): ${JSON.stringify(unmatched)}
+- unmatched: list of tokens to check (array): ${JSON.stringify(batchedUnmatched)}
 
 For each entry in unmatched, return JSON item:
 { "original": "<raw token>", "normalized": "<canonical label or null>", "verdict": "<true-missing|synonym|ignore>", "mappedTo": "<if synonym then canonical skill>" }
@@ -200,8 +213,8 @@ Return JSON only:
 
     const text = await llmGenerateText(instruction, { username: req.user && req.user.username, label: 'llm/suggestions' });
 
-    // Attempt to robustly extract JSON
-    const cleaned = text.replace(/```(?:json)?/g, '').trim();
+    // Attempt to robustly extract JSON — use pre-compiled module-level code-fence regex
+    const cleaned = text.replace(_RE_ASSESS_CODE_FENCE, '').trim();
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
@@ -270,9 +283,11 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
   };
 
   const client = await pool.connect();
+  const updatedRows = [];
+  const canonicalBatch = [];  // collected for parallel post-commit canonicalization
+  const updatedIds     = [];  // collected for post-commit batch reload
   try {
     await client.query('BEGIN');
-    const updatedRows = [];
 
     // Batch-fetch ownership for all incoming IDs in a single query (was 1 SELECT per row)
     const allIncomingIds = rows
@@ -331,17 +346,39 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
       // eslint-disable-next-line no-await-in-loop
       const result = await client.query(sql, values);
       if (result.rowCount === 1) {
-        let r = result.rows[0];
-        // Persist canonical fields for this updated row
-        try {
-          await ensureCanonicalFieldsForId(r.id, r.company || r.organisation, r.jobtitle || r.role, null);
-          // reload to reflect persisted canonicalization
-          r = (await client.query('SELECT * FROM "process" WHERE id = $1', [r.id])).rows[0];
-        } catch (e) {
-          console.warn('[BULK_UPDATE_CANON] failed for id', r.id, e && e.message);
-        }
+        const r = result.rows[0];
+        // Collect for parallel canonicalization after COMMIT (avoid blocking the transaction)
+        canonicalBatch.push({ id: r.id, company: r.company || r.organisation, jobtitle: r.jobtitle || r.role });
+        updatedIds.push(r.id);
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Bulk update error:', err);
+    res.status(500).json({ error: 'Bulk update failed.' });
+    return;
+  } finally {
+    client.release();
+  }
 
-        const mapped = {
+  // Run canonicalization in parallel now that the transaction is committed
+  if (canonicalBatch.length > 0) {
+    await Promise.all(canonicalBatch.map(({ id, company, jobtitle }) =>
+      ensureCanonicalFieldsForId(id, company, jobtitle, null)
+        .catch(e => console.warn('[BULK_UPDATE_CANON] failed for id', id, e && e.message))
+    ));
+  }
+
+  // Batch-reload all updated rows to get fully canonicalized values
+  if (updatedIds.length > 0) {
+    try {
+      const reloadRes = await pool.query(
+        'SELECT * FROM "process" WHERE id = ANY($1::int[])',
+        [updatedIds]
+      );
+      for (const r of reloadRes.rows) {
+        updatedRows.push({
           ...r,
           jobtitle: r.jobtitle ?? null,
           company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
@@ -357,29 +394,23 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
           type: r.product ?? null,
           compensation: r.compensation ?? null,
           jskillset: r.jskillset ?? null
-        };
-        updatedRows.push(mapped);
+        });
       }
+    } catch (e) {
+      console.warn('[BULK_UPDATE_RELOAD] failed to reload rows after canonicalization:', e && e.message);
     }
-    await client.query('COMMIT');
-
-    // Emit change notification
-    try {
-      broadcastSSE('candidates_changed', { action: 'bulk_update', count: updatedRows.length });
-      for (const u of updatedRows) {
-        broadcastSSE('candidate_updated', u);
-      }
-    } catch (e) { /* ignore */ }
-
-    res.json({ updatedCount: updatedRows.length, rows: updatedRows });
-    _writeApprovalLog({ action: 'bulk_candidates_update', username: req.user.username, userid: req.user.id, detail: `Bulk updated ${updatedRows.length} candidates`, source: 'server.js' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Bulk update error:', err);
-    res.status(500).json({ error: 'Bulk update failed.' });
-  } finally {
-    client.release();
   }
+
+  // Emit change notification
+  try {
+    broadcastSSE('candidates_changed', { action: 'bulk_update', count: updatedRows.length });
+    for (const u of updatedRows) {
+      broadcastSSE('candidate_updated', u);
+    }
+  } catch (e) { /* ignore */ }
+
+  res.json({ updatedCount: updatedRows.length, rows: updatedRows });
+  _writeApprovalLog({ action: 'bulk_candidates_update', username: req.user.username, userid: req.user.id, detail: `Bulk updated ${updatedRows.length} candidates`, source: 'server.js' });
 });
 
 /**
@@ -422,6 +453,9 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     return Object.entries(obj).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   };
   if (mlProfile && typeof mlProfile === 'object') {
+    // Yield the event loop before the CPU-heavy mlProfile parsing so other requests
+    // can be served while waiting (avoids blocking the Node.js event loop).
+    await new Promise(r => setImmediate(r));
 
     // ── New grouped format detection (has top-level "Job_Families" array) ──
     if (Array.isArray(mlProfile.Job_Families)) {
