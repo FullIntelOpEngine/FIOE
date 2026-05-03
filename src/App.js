@@ -1017,7 +1017,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     const params = new URLSearchParams();
     if (cc) params.append('cc', cc);
     if (bcc) params.append('bcc', bcc);
-    if (subject) params.append('subject', subject);
+    if (subject) params.append('subject', applyTags(subject));
     
     let finalBody = body;
     finalBody = applyTags(finalBody);
@@ -1119,7 +1119,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         // Single-candidate send or group send (all recipients see each other)
         let finalBody = appendMeetLink(applyTags(body), meetLink);
         const payload = {
-          to, cc, bcc, subject,
+          to, cc, bcc, subject: applyTags(subject),
           body: finalBody,
           from,
           smtpConfig,

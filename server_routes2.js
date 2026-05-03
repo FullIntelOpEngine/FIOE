@@ -42,6 +42,7 @@ module.exports = function registerRoutes(app, ctx) {
     getOrCreateTransporter,
     getSaveStatePath,
     loadEmailVerifConfig,
+    loadRateLimits,
     loadSmtpConfig,
     normalizeCompanyName,
     normalizeCountry,
@@ -194,8 +195,15 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
       return res.status(400).json({ error: 'No unmatched skills provided.' });
     }
 
-    // Guard against very large batches that would produce slow/expensive LLM calls
-    const _ASSESS_BATCH_LIMIT = 50;
+    // Guard against very large batches that would produce slow/expensive LLM calls.
+    // The cap is driven by the 'analytic_batch_size' entry in rate_limits.json
+    // (admin-configurable via admin_rate_limits.html).  Falls back to 50 when unset.
+    const _rlCfg = loadRateLimits();
+    const _rlUsername = req.user && req.user.username;
+    const _rlUser = (_rlCfg.users || {})[_rlUsername] || {};
+    const _rlDef  = (_rlCfg.defaults || {});
+    const _rlBatch = _rlUser.analytic_batch_size || _rlDef.analytic_batch_size;
+    const _ASSESS_BATCH_LIMIT = parseInt((_rlBatch || {}).requests, 10) || 50;
     const batchedUnmatched = unmatched.slice(0, _ASSESS_BATCH_LIMIT);
     const wasTruncated = batchedUnmatched.length < unmatched.length;
     if (wasTruncated) {

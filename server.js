@@ -6319,6 +6319,7 @@ require('./server_routes2')(app, {
   getOrCreateTransporter,
   getSaveStatePath,
   loadEmailVerifConfig,
+  loadRateLimits,
   loadSmtpConfig,
   normalizeCompanyName,
   normalizeCountry,
