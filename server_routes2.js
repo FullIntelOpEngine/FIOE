@@ -273,25 +273,34 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
   try {
     await client.query('BEGIN');
     const updatedRows = [];
+
+    // Batch-fetch ownership for all incoming IDs in a single query (was 1 SELECT per row)
+    const allIncomingIds = rows
+      .map(item => Number(item?.id))
+      .filter(n => Number.isInteger(n) && n > 0);
+    const ownedIds = new Set();
+    if (allIncomingIds.length > 0) {
+      try {
+        const ownerQ = await client.query(
+          'SELECT id, userid FROM "process" WHERE id = ANY($1::int[])',
+          [allIncomingIds]
+        );
+        for (const r of ownerQ.rows) {
+          if (String(r.userid) === String(req.user.id)) ownedIds.add(r.id);
+        }
+      } catch (e) {
+        console.warn('[BULK_UPDATE_AUTH] failed batch ownership check', e && e.message);
+        // Proceed with empty ownedIds — all rows will be skipped safely
+      }
+    }
+
     for (const item of rows) {
       const id = Number(item?.id);
       if (!Number.isInteger(id) || id <= 0) continue;
+      if (!ownedIds.has(id)) continue;  // not owned or does not exist
 
       const keys = Object.keys(item).filter(k => k !== 'id' && Object.prototype.hasOwnProperty.call(fieldMap, k));
       if (!keys.length) continue;
-
-      // Ownership check: skip rows not owned by this user
-      try {
-        const ownerQ = await client.query('SELECT userid FROM "process" WHERE id = $1', [id]);
-        if (ownerQ.rows.length === 0) continue; // row doesn't exist
-        if (String(ownerQ.rows[0].userid) !== String(req.user.id)) {
-          // Skip updating rows not owned by user (optional: collect skipped ids)
-          continue;
-        }
-      } catch (e) {
-        console.warn('[BULK_UPDATE_AUTH] failed ownership check for id', id, e && e.message);
-        continue;
-      }
 
       // Build unique column -> value map to prevent multiple assignments to same column
       const colValueMap = new Map();
@@ -940,24 +949,29 @@ Input:
       throw new Error('Gemini response is not an array.');
     }
 
-    // Update compensation in DB for each returned item (skip nulls)
+    // Batch UPDATE compensation using UNNEST — single roundtrip instead of one per row
     const updatedRows = [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const item of data) {
+      // Filter to valid items with non-null numeric compensation
+      const validItems = data.filter(item => {
         const id = Number(item?.id);
-        if (!Number.isInteger(id) || id <= 0) continue;
-        if (item.compensation == null) continue;
-        const comp = Number(item.compensation);
-        if (isNaN(comp)) continue;
-
-        const result = await client.query(
-          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
-          [comp, id, String(req.user.id)]
+        const comp = Number(item?.compensation);
+        return Number.isInteger(id) && id > 0 && item.compensation != null && !isNaN(comp);
+      });
+      if (validItems.length > 0) {
+        const batchIds = validItems.map(item => Number(item.id));
+        const batchComps = validItems.map(item => Number(item.compensation));
+        const batchRes = await client.query(
+          `UPDATE "process" AS p
+           SET compensation = v.comp
+           FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
+           WHERE p.id = v.id AND p.userid = $3
+           RETURNING p.*`,
+          [batchIds, batchComps, String(req.user.id)]
         );
-        if (result.rowCount === 1) {
-          const r = result.rows[0];
+        for (const r of batchRes.rows) {
           updatedRows.push({
             ...r,
             compensation: r.compensation ?? null,
@@ -1028,35 +1042,27 @@ app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res)
       rows = result.rows;
     }
 
-    // Load ML_Master_Compensation.json
-    const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
-    let compData = {};
-    try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
-    const compByJobTitle = compData.compensation_by_job_title || {};
-
-    const norm = s => (s || '').trim().toLowerCase();
+    // Load ML_Master_Compensation.json (cached, with Map index for O(1) lookup)
+    const { compMap } = _loadCompMasterCached();
 
     // Match each row against Verified Compensation data
     const matched = [];
     for (const row of rows) {
-      const jtNorm = norm(row.jobtitle);
-      const jfNorm = norm(row.jobfamily);
-      const ctryNorm = norm(row.country);
+      const jtNorm = _normCompTitle(row.jobtitle);
+      const jfNorm = _normCompTitle(row.jobfamily);
+      const ctryNorm = _normCompTitle(row.country);
       if (!jtNorm) continue;
 
-      // Find job title entry (case-insensitive)
-      let jtEntry = null;
-      for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
-        if (norm(jtKey) === jtNorm) { jtEntry = jtVal; break; }
-      }
+      // O(1) lookup via pre-built Map (was O(n) linear scan)
+      const jtEntry = compMap.get(jtNorm);
       if (!jtEntry || typeof jtEntry !== 'object') continue;
 
       // Job family must match when both candidate and entry have values
-      if (jfNorm && jtEntry.job_family && norm(jtEntry.job_family) !== jfNorm) continue;
+      if (jfNorm && jtEntry.job_family && _normCompTitle(jtEntry.job_family) !== jfNorm) continue;
 
       // Find matching country in Verified Compensation
       const vcEntries = Array.isArray(jtEntry['Verified Compensation']) ? jtEntry['Verified Compensation'] : [];
-      const vcMatch = vcEntries.find(e => norm(e.country) === ctryNorm);
+      const vcMatch = vcEntries.find(e => _normCompTitle(e.country) === ctryNorm);
       if (!vcMatch) continue;
 
       const min = Number(vcMatch.min) || 0;
@@ -1071,28 +1077,34 @@ app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res)
       return res.json({ rows: [] });
     }
 
-    // Update compensation in DB for matched records
+    // Batch UPDATE compensation using UNNEST — single roundtrip instead of one per row
     const updatedRows = [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const item of matched) {
-        const result = await client.query(
-          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
-          [item.avg, item.id, String(req.user.id)]
-        );
-        if (result.rowCount === 1) {
-          const r = result.rows[0];
-          updatedRows.push({
-            ...item,
-            compensation: r.compensation ?? item.avg,
-            pic: picToDataUri(r.pic),
-            role: r.role ?? r.jobtitle ?? null,
-            organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
-            jobtitle: r.jobtitle ?? null,
-            company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
-          });
-        }
+      const batchIds = matched.map(item => item.id);
+      const batchComps = matched.map(item => item.avg);
+      const batchRes = await client.query(
+        `UPDATE "process" AS p
+         SET compensation = v.comp
+         FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
+         WHERE p.id = v.id AND p.userid = $3
+         RETURNING p.*`,
+        [batchIds, batchComps, String(req.user.id)]
+      );
+      // Build a lookup from the matched array to carry through min/max/count
+      const matchedById = new Map(matched.map(m => [m.id, m]));
+      for (const r of batchRes.rows) {
+        const m = matchedById.get(r.id) || {};
+        updatedRows.push({
+          ...m,
+          compensation: r.compensation ?? m.avg,
+          pic: picToDataUri(r.pic),
+          role: r.role ?? r.jobtitle ?? null,
+          organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
+          jobtitle: r.jobtitle ?? null,
+          company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
+        });
       }
       await client.query('COMMIT');
     } catch (e) {
@@ -3138,6 +3150,30 @@ Phone: ...`;
 
 // ── Compensation Verified JSON helpers ───────────────────────────────────────
 const COMP_VERIFIED_PATH = path.join(__dirname, 'compensation_verified.json');
+
+// ── ML_Master_Compensation.json TTL cache ────────────────────────────────────
+// Avoids a synchronous file read on every /crowd-comp request.
+// _compMasterCache.compMap is a Map<normalizedTitle, entry> for O(1) lookups.
+let _compMasterCache = null, _compMasterCacheTs = 0;
+const _COMP_MASTER_CACHE_MS = parseInt(process.env.COMP_MASTER_CACHE_MS, 10) || 60_000;
+const _normCompTitle = s => (s || '').trim().toLowerCase();
+
+function _loadCompMasterCached() {
+  const now = Date.now();
+  if (_compMasterCache && now - _compMasterCacheTs < _COMP_MASTER_CACHE_MS) return _compMasterCache;
+  const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
+  let compData = {};
+  try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
+  const compByJobTitle = compData.compensation_by_job_title || {};
+  // Build Map for O(1) title lookup (avoids O(n) scan per candidate row)
+  const compMap = new Map();
+  for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
+    compMap.set(_normCompTitle(jtKey), jtVal);
+  }
+  _compMasterCache = { compMap };
+  _compMasterCacheTs = now;
+  return _compMasterCache;
+}
 
 // In-memory TTL cache (10 s) — avoids per-request disk reads for a rarely-changed file.
 let _compVerifiedCache = null, _compVerifiedCacheTs = 0;

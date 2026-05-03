@@ -1780,6 +1780,36 @@ const mappingPath = path.resolve(__dirname, 'skillset-mapping.json');
 
 // ========================= HELPERS: COMPANY & JOB TITLE NORMALIZATION =========================
 
+// ── Pre-compiled module-level regexes ────────────────────────────────────────
+// Hoisted so they are compiled once at module load rather than recreated per call
+// in hot paths like bulk-update and verify-data loops.
+
+// normalizeCompanyName regexes
+const _RE_COMPANY_LEGAL  = /\b(Co|Co\.|Company|LLC|Inc|Inc\.|Ltd|Ltd\.|GmbH|AG|S\.A\.|Pty Ltd|Sdn Bhd|SAS|S\.A\.S\.|KK|BV)\b/gi;
+const _RE_COMPANY_NOISE  = /\b(Group|Studios|Studio|Games|Entertainment|Interactive)\b/gi;
+const _RE_COMPANY_SPECIAL = /[^a-zA-Z0-9\s]/g;
+const _RE_MULTI_SPACE    = /\s{2,}/g;
+
+// standardizeSeniority regexes
+const _RE_SEN_CLEAN1   = /[.,]/g;
+const _RE_SEN_CLEAN2   = /[_\-\/]+/g;
+const _RE_SEN_JUNIOR_EXACT     = /^(junior|jr)$/;
+const _RE_SEN_MID_EXACT        = /^(mid|middle|mid level|mid-level|midlevel|intermediate)$/;
+const _RE_SEN_SENIOR_EXACT     = /^(senior|sr)$/;
+const _RE_SEN_LEAD_EXACT       = /^(lead)$/;
+const _RE_SEN_MANAGER_EXACT    = /^(manager|mgr)$/;
+const _RE_SEN_DIRECTOR_EXACT   = /^(director|dir)$/;
+const _RE_SEN_EXPERT_EXACT     = /^(expert|principal|staff)$/;
+const _RE_SEN_EXECUTIVE_EXACT  = /^(executive|exec|vp|cxo|chief|head|svp)$/;
+const _RE_SEN_JUNIOR    = /\b(junior|jr)\b/;
+const _RE_SEN_MID       = /\b(mid|middle|intermediate|mid level|mid-level|midlevel)\b/;
+const _RE_SEN_SENIOR    = /\b(senior|sr)\b/;
+const _RE_SEN_LEAD      = /\blead\b/;
+const _RE_SEN_MANAGER   = /\b(manager|mgr)\b/;
+const _RE_SEN_DIRECTOR  = /\bdirector\b/;
+const _RE_SEN_EXPERT    = /\b(expert|principal|staff)\b/;
+const _RE_SEN_EXECUTIVE = /\b(executive|exec|vp|cxo|chief|head|svp)\b/;
+
 // Small alias map for common company variants (extend as needed)
 const COMPANY_ALIAS_MAP = [
   { re: /\bnexon(?:\s+games)?\b/i, canonical: 'Nexon' },
@@ -1842,10 +1872,10 @@ function normalizeCompanyName(raw) {
   }
   // Remove known suffixes/words that are noise and all special characters
   let cleaned = s
-    .replace(/\b(Co|Co\.|Company|LLC|Inc|Inc\.|Ltd|Ltd\.|GmbH|AG|S\.A\.|Pty Ltd|Sdn Bhd|SAS|S\.A\.S\.|KK|BV)\b/gi, '')
-    .replace(/\b(Group|Studios|Studio|Games|Entertainment|Interactive)\b/gi, '')
-    .replace(/[^a-zA-Z0-9\s]/g, '') // Remove all special characters (non-alphanumeric except spaces)
-    .replace(/\s{2,}/g, ' ')
+    .replace(_RE_COMPANY_LEGAL, '')
+    .replace(_RE_COMPANY_NOISE, '')
+    .replace(_RE_COMPANY_SPECIAL, '') // Remove all special characters (non-alphanumeric except spaces)
+    .replace(_RE_MULTI_SPACE, ' ')
     .trim();
 
   // map again after cleaning
@@ -1944,29 +1974,29 @@ function standardizeSeniority(raw) {
   if (!raw) return null;
   // Normalize: lowercase, remove punctuation that separates tokens, convert hyphens/underscores to spaces
   let s = String(raw).trim().toLowerCase();
-  s = s.replace(/[.,]/g, '');            // remove commas/dots
-  s = s.replace(/[_\-\/]+/g, ' ');       // convert hyphen/underscore/slash to space
-  s = s.replace(/\s{2,}/g, ' ').trim();  // collapse multiple spaces
+  s = s.replace(_RE_SEN_CLEAN1, '');           // remove commas/dots
+  s = s.replace(_RE_SEN_CLEAN2, ' ');          // convert hyphen/underscore/slash to space
+  s = s.replace(_RE_MULTI_SPACE, ' ').trim();  // collapse multiple spaces
 
   // Exact/Strong matches (tokenized)
-  if (/^(junior|jr)$/.test(s)) return 'Junior';
-  if (/^(mid|middle|mid level|mid-level|midlevel|intermediate)$/.test(s)) return 'Mid';
-  if (/^(senior|sr)$/.test(s)) return 'Senior';
-  if (/^(lead)$/.test(s)) return 'Lead';
-  if (/^(manager|mgr)$/.test(s)) return 'Manager';
-  if (/^(director|dir)$/.test(s)) return 'Director';
-  if (/^(expert|principal|staff)$/.test(s)) return 'Expert';
-  if (/^(executive|exec|vp|cxo|chief|head|svp)$/.test(s)) return 'Executive';
+  if (_RE_SEN_JUNIOR_EXACT.test(s))    return 'Junior';
+  if (_RE_SEN_MID_EXACT.test(s))       return 'Mid';
+  if (_RE_SEN_SENIOR_EXACT.test(s))    return 'Senior';
+  if (_RE_SEN_LEAD_EXACT.test(s))      return 'Lead';
+  if (_RE_SEN_MANAGER_EXACT.test(s))   return 'Manager';
+  if (_RE_SEN_DIRECTOR_EXACT.test(s))  return 'Director';
+  if (_RE_SEN_EXPERT_EXACT.test(s))    return 'Expert';
+  if (_RE_SEN_EXECUTIVE_EXACT.test(s)) return 'Executive';
 
   // Fuzzy / contains checks for multi-word or noisy strings
-  if (/\b(junior|jr)\b/.test(s)) return 'Junior';
-  if (/\b(mid|middle|intermediate|mid level|mid-level|midlevel)\b/.test(s)) return 'Mid';
-  if (/\b(senior|sr)\b/.test(s)) return 'Senior';
-  if (/\blead\b/.test(s)) return 'Lead';
-  if (/\b(manager|mgr)\b/.test(s)) return 'Manager';
-  if (/\bdirector\b/.test(s)) return 'Director';
-  if (/\b(expert|principal|staff)\b/.test(s)) return 'Expert';
-  if (/\b(executive|exec|vp|cxo|chief|head|svp)\b/.test(s)) return 'Executive';
+  if (_RE_SEN_JUNIOR.test(s))    return 'Junior';
+  if (_RE_SEN_MID.test(s))       return 'Mid';
+  if (_RE_SEN_SENIOR.test(s))    return 'Senior';
+  if (_RE_SEN_LEAD.test(s))      return 'Lead';
+  if (_RE_SEN_MANAGER.test(s))   return 'Manager';
+  if (_RE_SEN_DIRECTOR.test(s))  return 'Director';
+  if (_RE_SEN_EXPERT.test(s))    return 'Expert';
+  if (_RE_SEN_EXECUTIVE.test(s)) return 'Executive';
 
   return null;
 }
