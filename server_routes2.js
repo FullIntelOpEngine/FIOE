@@ -1512,12 +1512,12 @@ function _isPrivateHost(hostname) {
 // ── Pre-compiled ICS regex constants ─────────────────────────────────────────
 // Hoisted to module level so they are compiled once rather than on every call
 // inside the hot ICS-line-processing loop.
-const _RE_ICS_UTC_DT      = /^\d{8}T\d{6}Z$/i;   // YYYYMMDDTHHMMSSZ
+const _RE_ICS_UTC_DT      = /^\d{8}T\d{6}Z$/;    // YYYYMMDDTHHMMSSZ — Z must be uppercase per RFC 5545
 const _RE_ICS_FLOAT_DT    = /^\d{8}T\d{6}$/;      // YYYYMMDDTHHMMSS (floating)
 const _RE_ICS_DATE        = /^\d{8}$/;             // YYYYMMDD (all-day)
-const _RE_ICS_TZID        = /TZID=([^;:]+)/i;
-const _RE_ICS_FBTYPE      = /FBTYPE=([^;:]+)/i;
-const _RE_ICS_DURATION_P  = /^P/i;                // starts with P = duration value
+const _RE_ICS_TZID        = /TZID=([^;:]+)/;       // property parameters are uppercase per RFC 5545
+const _RE_ICS_FBTYPE      = /FBTYPE=([^;:]+)/;     // property parameters are uppercase per RFC 5545
+const _RE_ICS_DURATION_P  = /^P/;                  // duration starts with uppercase P per RFC 5545
 const _RE_DURATION        = /P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/;
 const _RE_RRULE_FREQ      = /FREQ=([A-Z]+)/;
 const _RE_RRULE_INTERVAL  = /INTERVAL=(\d+)/;
