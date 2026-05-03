@@ -1017,7 +1017,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
     const params = new URLSearchParams();
     if (cc) params.append('cc', cc);
     if (bcc) params.append('bcc', bcc);
-    if (subject) params.append('subject', subject);
+    if (subject) params.append('subject', applyTags(subject));
     
     let finalBody = body;
     finalBody = applyTags(finalBody);
@@ -1119,7 +1119,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
         // Single-candidate send or group send (all recipients see each other)
         let finalBody = appendMeetLink(applyTags(body), meetLink);
         const payload = {
-          to, cc, bcc, subject,
+          to, cc, bcc, subject: applyTags(subject),
           body: finalBody,
           from,
           smtpConfig,
@@ -1768,7 +1768,7 @@ function SelfSchedulerModal({ isOpen, onClose, onPublished, provider = 'google',
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [duration, setDuration] = useState(30);
-  const maxSlots = 200; // server returns up to 200 slots; not user-configurable
+  const maxSlots = 1000; // server returns up to 1000 slots; not user-configurable
   const [generating, setGenerating] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [generatedSlots, setGeneratedSlots] = useState([]); // all slots from freebusy
@@ -2395,11 +2395,6 @@ const DOCK_IN_WEIGHT_CATEGORIES = [
   { key: 'country',           label: 'Country'   },
   { key: 'tenure',            label: 'Tenure'    },
 ];
-// Delay (ms) before the second silent candidates re-fetch after analytic Dock In.
-// bulk_assess marks the job 'done' before all vskillset writes are committed to Postgres;
-// this gap gives the DB enough time to flush so the follow-up fetch returns complete data.
-const ASSESSMENT_DB_COMMIT_DELAY_MS = 1500;
-
 // ── CandidatesTable — static field definitions and advanced-field keys ──
 const CANDIDATE_TABLE_FIELDS = [
   { key: 'name', label: 'Name', type: 'text', editable: true },
@@ -4047,11 +4042,6 @@ function CandidatesTable({
           setDockInUploading(false);
           setDockInAnalyticProgress('');
           setDockInAnalyticPct(0);
-          // bulk_assess writes vskillset to DB asynchronously; auto-reload after
-          // a short delay so all assessment data (vskillset etc.) is captured from
-          // a fully-committed DB state without requiring a manual browser refresh.
-          // Use onRefresh() (same as the Refresh button) so isRefreshingRef is set.
-          setTimeout(() => { if (typeof onRefresh === 'function') onRefresh(); }, ASSESSMENT_DB_COMMIT_DELAY_MS);
         } else {
           // ── Normal DB mode: no assessment required ──
           setDockInWizOpen(false);
@@ -7994,6 +7984,9 @@ export default function App() {
   // State for calculating unmatched skills
   const [calculatingUnmatched, setCalculatingUnmatched] = useState(false);
   const [unmatchedCalculated, setUnmatchedCalculated] = useState({});  // Store by candidate ID
+  // Tracks candidate IDs whose calculate-unmatched job is processing in the background (202 response).
+  // When the matching `candidate_updated` SSE event arrives the ref is cleared and loading ends.
+  const _pendingUnmatchedCalcRef = React.useRef(new Set());
 
   // State for skillset management
   const [newSkillInput, setNewSkillInput] = useState('');
@@ -8539,6 +8532,17 @@ export default function App() {
             setEditRows(prev => ({ ...(prev || {}), [updated.id]: { ...updated, ...(prev[updated.id] || {}) } }));
             // Update resume candidate in view if selected
             setResumeCandidate(prev => (prev && String(prev.id) === String(updated.id) ? { ...prev, ...updated } : prev));
+            // Finalise a background calculate-unmatched job (202 fire-and-forget)
+            const sid = String(updated.id);
+            if (_pendingUnmatchedCalcRef.current.has(sid) && updated.lskillset !== undefined) {
+              _pendingUnmatchedCalcRef.current.delete(sid);
+              setCalculatingUnmatched(false);
+              setUnmatchedCalculated(prev => {
+                const next = { ...prev, [sid]: true };
+                try { localStorage.setItem('unmatchedCalculated', JSON.stringify(next)); } catch (_) {}
+                return next;
+              });
+            }
           } catch (err) {
             console.warn('[SSE] Error parsing candidate_updated:', err);
           }
@@ -9423,12 +9427,23 @@ export default function App() {
   const handleCalculateUnmatched = async () => {
       if (!resumeCandidate || !resumeCandidate.id) return;
       setCalculatingUnmatched(true);
+      let isQueued = false;
       try {
           const res = await fetch(`http://localhost:${API_PORT}/candidates/${resumeCandidate.id}/calculate-unmatched`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
               credentials: 'include'
           });
+
+          if (res.status === 202) {
+              // Server accepted the job and is processing it in the background.
+              // Keep the "Calculating..." state active; it will be cleared when the
+              // `candidate_updated` SSE event arrives with the computed lskillset.
+              isQueued = true;
+              _pendingUnmatchedCalcRef.current.add(String(resumeCandidate.id));
+              return;
+          }
+
           if (!res.ok) {
              const data = await res.json();
              throw new Error(data.error || 'Failed to calculate');
@@ -9462,7 +9477,7 @@ export default function App() {
       } catch (e) {
           alert("Error: " + e.message);
       } finally {
-          setCalculatingUnmatched(false);
+          if (!isQueued) setCalculatingUnmatched(false);
       }
   };
 
