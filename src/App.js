@@ -3026,7 +3026,11 @@ function CandidatesTable({
             return next;
           });
         }
-        aiMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
+        // Use server-supplied message; append pending notice when background job is running
+        const baseMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
+        aiMsg = (payload?.pending > 0 && !payload?.message)
+          ? `${baseMsg} (${payload.pending} AI estimates in progress…)`
+          : baseMsg;
       }
 
       const crowdMsg = crowdMatchedIds.size > 0 ? `${crowdMatchedIds.size} crowd-sourced` : '';
@@ -8545,6 +8549,35 @@ export default function App() {
             }
           } catch (err) {
             console.warn('[SSE] Error parsing candidate_updated:', err);
+          }
+        });
+
+        // Batch variant: N rows sent as a single event to avoid N×M SSE writes per bulk operation.
+        // Semantics match the individual candidate_updated handler above.
+        eventSource.addEventListener('candidates_batch_updated', (e) => {
+          try {
+            const items = JSON.parse(e.data);
+            if (!Array.isArray(items) || items.length === 0) return;
+            const updateMap = new Map(
+              items.filter(u => u && u.id != null).map(u => [String(u.id), u])
+            );
+            if (updateMap.size === 0) return;
+            setCandidates(prev => prev.map(c => {
+              const u = updateMap.get(String(c.id));
+              return u ? { ...c, ...u } : c;
+            }));
+            setEditRows(prev => {
+              const next = { ...prev };
+              updateMap.forEach((u, id) => { next[id] = { ...u, ...(prev[id] || {}) }; });
+              return next;
+            });
+            setResumeCandidate(prev => {
+              if (!prev || prev.id == null) return prev;
+              const u = updateMap.get(String(prev.id));
+              return u ? { ...prev, ...u } : prev;
+            });
+          } catch (err) {
+            console.warn('[SSE] Error parsing candidates_batch_updated:', err);
           }
         });
 
