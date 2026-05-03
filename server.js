@@ -67,7 +67,7 @@ const _SSE_COALESCE_DELAY_MS     = parseInt(process.env.SSE_COALESCE_DELAY_MS, 1
 const _SMTP_MAX_CONNECTIONS      = parseInt(process.env.SMTP_MAX_CONNECTIONS, 10)       || _SYS.smtp_max_connections      || 3;
 const _SESSION_COOKIE_MAX_AGE_MS = parseInt(process.env.SESSION_COOKIE_MAX_AGE_MS, 10) || _SYS.session_cookie_max_age_ms || 2592000000;
 const _SCHEDULER_DEFAULT_DURATION  = parseInt(process.env.SCHEDULER_DEFAULT_DURATION, 10)  || _SYS.scheduler_default_duration  || 30;
-const _SCHEDULER_DEFAULT_MAX_SLOTS = parseInt(process.env.SCHEDULER_DEFAULT_MAX_SLOTS, 10) || _SYS.scheduler_default_max_slots || 50;
+const _SCHEDULER_DEFAULT_MAX_SLOTS = parseInt(process.env.SCHEDULER_DEFAULT_MAX_SLOTS, 10) || _SYS.scheduler_default_max_slots || 1000;
 const _PORTING_UPLOAD_MAX_BYTES  = parseInt(process.env.PORTING_UPLOAD_MAX_BYTES, 10)   || _SYS.porting_upload_max_bytes  || 1024 * 1024;
 const _DASHBOARD_DEFAULT_REQUESTS       = parseInt(process.env.DEFAULT_DASHBOARD_REQUESTS, 10)        || _SYS.dashboard_default_requests       || 50;
 const _DASHBOARD_DEFAULT_WINDOW_SECONDS = parseInt(process.env.DEFAULT_DASHBOARD_WINDOW_SECONDS, 10)  || _SYS.dashboard_default_window_seconds || 60;
@@ -97,7 +97,10 @@ function _writeLogEntry(filePrefix, entry) {
     const date = ts.slice(0, 10);
     const logFile = path.join(_LOG_DIR, `${filePrefix}_${date}.txt`);
     const line = JSON.stringify({ timestamp: ts, ...entry });
-    fs.appendFileSync(logFile, line + '\n', 'utf8');
+    // Non-blocking append — never stall the event loop for a log write.
+    fs.appendFile(logFile, line + '\n', 'utf8', err => {
+      if (err) console.error('[_writeLogEntry] append error:', err.message);
+    });
   } catch (_) { /* never crash the server over a log write */ }
 }
 function _writeErrorLog(entry)    { _writeLogEntry('error_capture', entry); }
@@ -170,6 +173,41 @@ function getGeminiModel(apiKey, modelName = 'gemini-2.5-flash-lite') {
   return model;
 }
 
+// ── OpenAI / Anthropic client instance caches ────────────────────────────────
+// Avoid recreating SDK client objects on every LLM call; cache by API key.
+const _openaiClientCache    = new Map(); // apiKey → OpenAIClass instance
+const _anthropicClientCache = new Map(); // apiKey → AnthropicClass instance
+
+function _getOpenAIClient(apiKey) {
+  if (!_openaiClientCache.has(apiKey)) _openaiClientCache.set(apiKey, new OpenAIClass({ apiKey }));
+  return _openaiClientCache.get(apiKey);
+}
+function _getAnthropicClient(apiKey) {
+  if (!_anthropicClientCache.has(apiKey)) _anthropicClientCache.set(apiKey, new AnthropicClass({ apiKey }));
+  return _anthropicClientCache.get(apiKey);
+}
+
+// ── LLM concurrency semaphore ─────────────────────────────────────────────────
+// Prevents unbounded parallelism of expensive LLM calls (Gemini / OpenAI / Anthropic).
+// Cap via LLM_MAX_CONCURRENT env var (default 5).
+const _LLM_MAX_CONCURRENT = parseInt(process.env.LLM_MAX_CONCURRENT, 10) || 5;
+let _llmInFlight = 0;
+const _llmWaitQueue = [];
+function _llmAcquire() {
+  if (_llmInFlight < _LLM_MAX_CONCURRENT) { _llmInFlight++; return Promise.resolve(); }
+  // Waiter inherits the slot: _llmInFlight is NOT decremented in _llmRelease when
+  // there are waiters, so the counter stays consistent without a race window.
+  return new Promise(resolve => _llmWaitQueue.push(resolve));
+}
+function _llmRelease() {
+  if (_llmWaitQueue.length > 0) {
+    // Pass the slot directly to the next waiter — no decrement/re-increment needed.
+    _llmWaitQueue.shift()();
+  } else {
+    _llmInFlight--;
+  }
+}
+
 // Returns the Gemini model name for a user.
 // For BYOK users, uses their saved preference; all others use the global LLM config default.
 const ALLOWED_GEMINI_MODELS = [
@@ -195,18 +233,29 @@ function _readLlmProviderGeminiModel() {
   return _llmCfgCache;
 }
 
+// Per-username TTL cache for resolveGeminiModel — avoids a DB roundtrip on every LLM call.
+// Keyed by username; each entry is { model: string, ts: number }.
+// Short TTL (30 s) so model changes propagate quickly.
+const _resolveGeminiModelCache = new Map();
+const _RESOLVE_GEMINI_MODEL_TTL = parseInt(process.env.RESOLVE_GEMINI_MODEL_TTL, 10) || 30_000;
+
 async function resolveGeminiModel(username) {
   if (!username) return _readLlmProviderGeminiModel();
+  const now = Date.now();
+  const cached = _resolveGeminiModelCache.get(username);
+  if (cached && now - cached.ts < _RESOLVE_GEMINI_MODEL_TTL) return cached.model;
+  let model = _readLlmProviderGeminiModel();
   try {
     const r = await pool.query(
       'SELECT gemini_model, useraccess FROM login WHERE username = $1 LIMIT 1', [username]
     );
     if (r.rows.length > 0 && (r.rows[0].useraccess || '').toLowerCase() === 'byok') {
       const m = r.rows[0].gemini_model;
-      return ALLOWED_GEMINI_MODELS.includes(m) ? m : _readLlmProviderGeminiModel();
+      if (ALLOWED_GEMINI_MODELS.includes(m)) model = m;
     }
   } catch (_) {}
-  return _readLlmProviderGeminiModel();
+  _resolveGeminiModelCache.set(username, { model, ts: now });
+  return model;
 }
 
 // ── Provider-agnostic LLM text generation ────────────────────────────────────
@@ -250,41 +299,54 @@ async function llmGenerateText(prompt, opts = {}) {
     }
   }
 
-  if (activeProvider === 'openai') {
-    if (!OpenAIClass) throw new Error('OpenAI SDK not installed');
-    const apiKey = (cfg.openai || {}).api_key || '';
-    if (!apiKey) throw new Error('OpenAI API key not configured');
-    const model = (cfg.openai || {}).model || 'gpt-4.1';
-    const client = new OpenAIClass({ apiKey });
-    const resp = await withExponentialBackoff(
-      () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0 }),
-      { label }
-    );
-    return (resp.choices[0]?.message?.content || '').trim();
-  }
+  // Acquire concurrency slot before making the (potentially slow) LLM API call.
+  await _llmAcquire();
+  try {
+    if (activeProvider === 'openai') {
+      if (!OpenAIClass) throw new Error('OpenAI SDK not installed');
+      const apiKey = (cfg.openai || {}).api_key || '';
+      if (!apiKey) throw new Error('OpenAI API key not configured');
+      const model = (cfg.openai || {}).model || 'gpt-4.1';
+      const maxTokens = parseInt((cfg.openai || {}).max_tokens, 10) || 2048;
+      const client = _getOpenAIClient(apiKey);
+      const resp = await withExponentialBackoff(
+        () => client.chat.completions.create({ model, messages: [{ role: 'user', content: prompt }], temperature: 0, max_tokens: maxTokens }),
+        { label }
+      );
+      return (resp.choices[0]?.message?.content || '').trim();
+    }
 
-  if (activeProvider === 'anthropic') {
-    if (!AnthropicClass) throw new Error('Anthropic SDK not installed');
-    const apiKey = (cfg.anthropic || {}).api_key || '';
-    if (!apiKey) throw new Error('Anthropic API key not configured');
-    const model = (cfg.anthropic || {}).model || 'claude-sonnet-4-5';
-    const client = new AnthropicClass({ apiKey });
-    const resp = await withExponentialBackoff(
-      () => client.messages.create({ model, max_tokens: 4096, messages: [{ role: 'user', content: prompt }] }),
-      { label }
-    );
-    const block = resp.content && resp.content[0];
-    return (block && block.type === 'text' ? block.text : '').trim();
-  }
+    if (activeProvider === 'anthropic') {
+      if (!AnthropicClass) throw new Error('Anthropic SDK not installed');
+      const apiKey = (cfg.anthropic || {}).api_key || '';
+      if (!apiKey) throw new Error('Anthropic API key not configured');
+      const model = (cfg.anthropic || {}).model || 'claude-sonnet-4-5';
+      const client = _getAnthropicClient(apiKey);
+      const resp = await withExponentialBackoff(
+        () => client.messages.create({ model, max_tokens: 4096, messages: [{ role: 'user', content: prompt }] }),
+        { label }
+      );
+      const block = resp.content && resp.content[0];
+      return (block && block.type === 'text' ? block.text : '').trim();
+    }
 
-  // Fallback: Gemini
-  const geminiApiKey = (cfg.gemini || {}).api_key || process.env.GOOGLE_API_KEY || '';
-  if (!geminiApiKey) throw new Error('No LLM API key configured');
-  if (!GoogleGenerativeAIClass) throw new Error('Gemini SDK not installed');
-  const modelName = await resolveGeminiModel(username);
-  const model = getGeminiModel(geminiApiKey, modelName);
-  const result = await withExponentialBackoff(() => model.generateContent(prompt), { label });
-  return result.response.text().trim();
+    // Fallback: Gemini
+    const geminiApiKey = (cfg.gemini || {}).api_key || process.env.GOOGLE_API_KEY || '';
+    if (!geminiApiKey) throw new Error('No LLM API key configured');
+    if (!GoogleGenerativeAIClass) throw new Error('Gemini SDK not installed');
+    const modelName = await resolveGeminiModel(username);
+    const model = getGeminiModel(geminiApiKey, modelName);
+    const geminiMaxTokens = parseInt((cfg.gemini || {}).max_tokens, 10) || 2048;
+    // Object-based GenerateContentRequest (supported since @google/generative-ai v0.1.1+)
+    // passes generationConfig alongside contents so the SDK honours maxOutputTokens.
+    const result = await withExponentialBackoff(() => model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: geminiMaxTokens }
+    }), { label });
+    return result.response.text().trim();
+  } finally {
+    _llmRelease();
+  }
 }
 
 // ── AI Comp in-memory result cache (24h TTL) ──────────────────────────────────
@@ -501,18 +563,29 @@ function _resolveEmailVerifConfigPath() {
   return _EMAIL_VERIF_CONFIG_PATHS[_EMAIL_VERIF_CONFIG_PATHS.length - 1];
 }
 
+const EXTERNAL_API_TIMEOUT_MS = parseInt(process.env.EXTERNAL_API_TIMEOUT_MS, 10) || _SYS.external_api_timeout_ms || 10000; // 10 s timeout for external email verification API calls
+
+// ── Email Verif config in-memory TTL cache ──────────────────────────────────
+// Re-read at most every EMAIL_VERIF_CFG_CACHE_MS (default 10 s) to avoid disk I/O on every request.
+let _emailVerifCfgCache = null, _emailVerifCfgCacheTs = 0;
+const EMAIL_VERIF_CFG_CACHE_MS = parseInt(process.env.EMAIL_VERIF_CFG_CACHE_MS, 10) || _SYS.email_verif_cfg_cache_ms || 10_000;
+
 function loadEmailVerifConfig() {
+  const now = Date.now();
+  if (_emailVerifCfgCache && now - _emailVerifCfgCacheTs < EMAIL_VERIF_CFG_CACHE_MS) return _emailVerifCfgCache;
   const configPath = _resolveEmailVerifConfigPath();
   try {
     const raw = fs.readFileSync(configPath, 'utf8');
-    return JSON.parse(raw);
+    _emailVerifCfgCache = JSON.parse(raw);
   } catch (_) {
-    return {
+    _emailVerifCfgCache = {
       neverbounce: { api_key: '', enabled: 'disabled' },
       zerobounce:  { api_key: '', enabled: 'disabled' },
       bouncer:     { api_key: '', enabled: 'disabled' },
     };
   }
+  _emailVerifCfgCacheTs = now;
+  return _emailVerifCfgCache;
 }
 
 function saveEmailVerifConfig(config) {
@@ -520,9 +593,10 @@ function saveEmailVerifConfig(config) {
   const tmp = configPath + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, configPath);
+  // Invalidate cache immediately so the next read sees the new config.
+  _emailVerifCfgCache = config;
+  _emailVerifCfgCacheTs = Date.now();
 }
-
-const EXTERNAL_API_TIMEOUT_MS = parseInt(process.env.EXTERNAL_API_TIMEOUT_MS, 10) || _SYS.external_api_timeout_ms || 10000; // 10 s timeout for external email verification API calls
 
 // Per-(username, feature) sliding-window state
 const _userRateState = new Map(); // key: "username::feature" -> [ timestamp, ... ]
@@ -786,18 +860,26 @@ function _resolveSearchProviderConfigPath() {
   return _SEARCH_PROVIDER_CONFIG_PATHS[0];
 }
 
+// In-memory TTL cache (default 10 s) — avoids disk read on every /generate-contacts request.
+let _searchProviderCfgCache = null, _searchProviderCfgCacheTs = 0;
+const _SEARCH_PROVIDER_CFG_CACHE_MS = parseInt(process.env.SEARCH_PROVIDER_CFG_CACHE_MS, 10) || _SYS.search_provider_cfg_cache_ms || 10_000;
+
 function loadSearchProviderConfig() {
+  const now = Date.now();
+  if (_searchProviderCfgCache && now - _searchProviderCfgCacheTs < _SEARCH_PROVIDER_CFG_CACHE_MS) return _searchProviderCfgCache;
   try {
     const raw = fs.readFileSync(_resolveSearchProviderConfigPath(), 'utf8');
-    return JSON.parse(raw);
+    _searchProviderCfgCache = JSON.parse(raw);
   } catch (_) {
-    return {
+    _searchProviderCfgCache = {
       serper: { api_key: '', enabled: 'disabled' },
       dataforseo: { login: '', password: '', enabled: 'disabled' },
       linkedin: { api_key: '', enabled: 'disabled' },
       google_cse: { api_key: '', cx: '', gemini_key: '' },
     };
   }
+  _searchProviderCfgCacheTs = now;
+  return _searchProviderCfgCache;
 }
 
 function saveSearchProviderConfig(config) {
@@ -805,6 +887,8 @@ function saveSearchProviderConfig(config) {
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, p);
+  _searchProviderCfgCache = config;
+  _searchProviderCfgCacheTs = Date.now();
 }
 
 app.get('/admin/search-provider-config', dashboardRateLimit, requireAdmin, (req, res) => {
@@ -888,13 +972,21 @@ function _resolveGetProfilesConfigPath() {
   return _GET_PROFILES_CONFIG_PATHS[0];
 }
 
+// In-memory TTL cache (default 10 s).
+let _getProfilesCfgCache = null, _getProfilesCfgCacheTs = 0;
+const _GET_PROFILES_CFG_CACHE_MS = parseInt(process.env.GET_PROFILES_CFG_CACHE_MS, 10) || _SYS.get_profiles_cfg_cache_ms || 10_000;
+
 function loadGetProfilesConfig() {
+  const now = Date.now();
+  if (_getProfilesCfgCache && now - _getProfilesCfgCacheTs < _GET_PROFILES_CFG_CACHE_MS) return _getProfilesCfgCache;
   try {
     const raw = fs.readFileSync(_resolveGetProfilesConfigPath(), 'utf8');
-    return JSON.parse(raw);
+    _getProfilesCfgCache = JSON.parse(raw);
   } catch (_) {
-    return { linkdapi: { api_key: '', enabled: 'disabled' } };
+    _getProfilesCfgCache = { linkdapi: { api_key: '', enabled: 'disabled' } };
   }
+  _getProfilesCfgCacheTs = now;
+  return _getProfilesCfgCache;
 }
 
 function saveGetProfilesConfig(config) {
@@ -902,6 +994,8 @@ function saveGetProfilesConfig(config) {
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf8');
   fs.renameSync(tmp, p);
+  _getProfilesCfgCache = config;
+  _getProfilesCfgCacheTs = Date.now();
 }
 
 app.get('/admin/get-profiles-config', dashboardRateLimit, requireAdmin, (req, res) => {
@@ -1693,6 +1787,36 @@ const mappingPath = path.resolve(__dirname, 'skillset-mapping.json');
 
 // ========================= HELPERS: COMPANY & JOB TITLE NORMALIZATION =========================
 
+// ── Pre-compiled module-level regexes ────────────────────────────────────────
+// Hoisted so they are compiled once at module load rather than recreated per call
+// in hot paths like bulk-update and verify-data loops.
+
+// normalizeCompanyName regexes
+const _RE_COMPANY_LEGAL  = /\b(Co|Co\.|Company|LLC|Inc|Inc\.|Ltd|Ltd\.|GmbH|AG|S\.A\.|Pty Ltd|Sdn Bhd|SAS|S\.A\.S\.|KK|BV)\b/gi;
+const _RE_COMPANY_NOISE  = /\b(Group|Studios|Studio|Games|Entertainment|Interactive)\b/gi;
+const _RE_COMPANY_SPECIAL = /[^a-zA-Z0-9\s]/g;
+const _RE_MULTI_SPACE    = /\s{2,}/g;
+
+// standardizeSeniority regexes
+const _RE_SEN_CLEAN1   = /[.,]/g;
+const _RE_SEN_CLEAN2   = /[_\-\/]+/g;
+const _RE_SEN_JUNIOR_EXACT     = /^(junior|jr)$/;
+const _RE_SEN_MID_EXACT        = /^(mid|middle|mid level|mid-level|midlevel|intermediate)$/;
+const _RE_SEN_SENIOR_EXACT     = /^(senior|sr)$/;
+const _RE_SEN_LEAD_EXACT       = /^(lead)$/;
+const _RE_SEN_MANAGER_EXACT    = /^(manager|mgr)$/;
+const _RE_SEN_DIRECTOR_EXACT   = /^(director|dir)$/;
+const _RE_SEN_EXPERT_EXACT     = /^(expert|principal|staff)$/;
+const _RE_SEN_EXECUTIVE_EXACT  = /^(executive|exec|vp|cxo|chief|head|svp)$/;
+const _RE_SEN_JUNIOR    = /\b(junior|jr)\b/;
+const _RE_SEN_MID       = /\b(mid|middle|intermediate|mid level|mid-level|midlevel)\b/;
+const _RE_SEN_SENIOR    = /\b(senior|sr)\b/;
+const _RE_SEN_LEAD      = /\blead\b/;
+const _RE_SEN_MANAGER   = /\b(manager|mgr)\b/;
+const _RE_SEN_DIRECTOR  = /\bdirector\b/;
+const _RE_SEN_EXPERT    = /\b(expert|principal|staff)\b/;
+const _RE_SEN_EXECUTIVE = /\b(executive|exec|vp|cxo|chief|head|svp)\b/;
+
 // Small alias map for common company variants (extend as needed)
 const COMPANY_ALIAS_MAP = [
   { re: /\bnexon(?:\s+games)?\b/i, canonical: 'Nexon' },
@@ -1755,10 +1879,10 @@ function normalizeCompanyName(raw) {
   }
   // Remove known suffixes/words that are noise and all special characters
   let cleaned = s
-    .replace(/\b(Co|Co\.|Company|LLC|Inc|Inc\.|Ltd|Ltd\.|GmbH|AG|S\.A\.|Pty Ltd|Sdn Bhd|SAS|S\.A\.S\.|KK|BV)\b/gi, '')
-    .replace(/\b(Group|Studios|Studio|Games|Entertainment|Interactive)\b/gi, '')
-    .replace(/[^a-zA-Z0-9\s]/g, '') // Remove all special characters (non-alphanumeric except spaces)
-    .replace(/\s{2,}/g, ' ')
+    .replace(_RE_COMPANY_LEGAL, '')
+    .replace(_RE_COMPANY_NOISE, '')
+    .replace(_RE_COMPANY_SPECIAL, '') // Remove all special characters (non-alphanumeric except spaces)
+    .replace(_RE_MULTI_SPACE, ' ')
     .trim();
 
   // map again after cleaning
@@ -1857,29 +1981,29 @@ function standardizeSeniority(raw) {
   if (!raw) return null;
   // Normalize: lowercase, remove punctuation that separates tokens, convert hyphens/underscores to spaces
   let s = String(raw).trim().toLowerCase();
-  s = s.replace(/[.,]/g, '');            // remove commas/dots
-  s = s.replace(/[_\-\/]+/g, ' ');       // convert hyphen/underscore/slash to space
-  s = s.replace(/\s{2,}/g, ' ').trim();  // collapse multiple spaces
+  s = s.replace(_RE_SEN_CLEAN1, '');           // remove commas/dots
+  s = s.replace(_RE_SEN_CLEAN2, ' ');          // convert hyphen/underscore/slash to space
+  s = s.replace(_RE_MULTI_SPACE, ' ').trim();  // collapse multiple spaces
 
   // Exact/Strong matches (tokenized)
-  if (/^(junior|jr)$/.test(s)) return 'Junior';
-  if (/^(mid|middle|mid level|mid-level|midlevel|intermediate)$/.test(s)) return 'Mid';
-  if (/^(senior|sr)$/.test(s)) return 'Senior';
-  if (/^(lead)$/.test(s)) return 'Lead';
-  if (/^(manager|mgr)$/.test(s)) return 'Manager';
-  if (/^(director|dir)$/.test(s)) return 'Director';
-  if (/^(expert|principal|staff)$/.test(s)) return 'Expert';
-  if (/^(executive|exec|vp|cxo|chief|head|svp)$/.test(s)) return 'Executive';
+  if (_RE_SEN_JUNIOR_EXACT.test(s))    return 'Junior';
+  if (_RE_SEN_MID_EXACT.test(s))       return 'Mid';
+  if (_RE_SEN_SENIOR_EXACT.test(s))    return 'Senior';
+  if (_RE_SEN_LEAD_EXACT.test(s))      return 'Lead';
+  if (_RE_SEN_MANAGER_EXACT.test(s))   return 'Manager';
+  if (_RE_SEN_DIRECTOR_EXACT.test(s))  return 'Director';
+  if (_RE_SEN_EXPERT_EXACT.test(s))    return 'Expert';
+  if (_RE_SEN_EXECUTIVE_EXACT.test(s)) return 'Executive';
 
   // Fuzzy / contains checks for multi-word or noisy strings
-  if (/\b(junior|jr)\b/.test(s)) return 'Junior';
-  if (/\b(mid|middle|intermediate|mid level|mid-level|midlevel)\b/.test(s)) return 'Mid';
-  if (/\b(senior|sr)\b/.test(s)) return 'Senior';
-  if (/\blead\b/.test(s)) return 'Lead';
-  if (/\b(manager|mgr)\b/.test(s)) return 'Manager';
-  if (/\bdirector\b/.test(s)) return 'Director';
-  if (/\b(expert|principal|staff)\b/.test(s)) return 'Expert';
-  if (/\b(executive|exec|vp|cxo|chief|head|svp)\b/.test(s)) return 'Executive';
+  if (_RE_SEN_JUNIOR.test(s))    return 'Junior';
+  if (_RE_SEN_MID.test(s))       return 'Mid';
+  if (_RE_SEN_SENIOR.test(s))    return 'Senior';
+  if (_RE_SEN_LEAD.test(s))      return 'Lead';
+  if (_RE_SEN_MANAGER.test(s))   return 'Manager';
+  if (_RE_SEN_DIRECTOR.test(s))  return 'Director';
+  if (_RE_SEN_EXPERT.test(s))    return 'Expert';
+  if (_RE_SEN_EXECUTIVE.test(s)) return 'Executive';
 
   return null;
 }
@@ -4897,6 +5021,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       // Output: sector: { sectorName: { companyName: confidence } } — sector-first,
       //         confidence = count(company, sector) / count(company, all sectors) — record-count based.
       const companyRecord = { sector: {}, _users: [], _userCount: 0, last_updated: today };
+      // Use a Set for O(1) dedup during accumulation; convert to array at output.
+      const companyUsersSet = new Set();
       // Accumulate weighted record counts per (company, sector) across all user entries.
       // For each entry: userCount × confidence_in_sector gives the number of records in that bucket.
       const sectorCounts = {};  // { companyName: { sectorName: totalWeightedCount } }
@@ -4907,9 +5033,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
         if (!sectorMap && !sectorDist) continue;
         const { users, count } = entryMeta(keyName, entry);
         companyRecord._userCount += count;
-        for (const u of users) {
-          if (!companyRecord._users.includes(u)) companyRecord._users.push(u);
-        }
+        for (const u of users) companyUsersSet.add(u);
         if (sectorMap && typeof sectorMap === 'object') {
           const sectorMapEntries = Object.entries(sectorMap);
           if (sectorMapEntries.length === 0) continue;
@@ -4956,6 +5080,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           companyRecord.sector[sectorName][companyName] = confidence;
         }
       }
+      companyRecord._users = [...companyUsersSet];
       if (companyRecord._userCount > 0) consolidated.company = { company: companyRecord };
 
       // ── Job Title: merge each unique title independently ──
@@ -4966,6 +5091,12 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
       //     { username, job_title: { "<Title>": { job_family:{}, Seniority:{}, top_10_skills:{} }, ... } }
       // In both cases every unique job title is kept as its own independent record and blended only
       // when the same title appears from multiple users/contributions.
+      //
+      // titleLookupIndex: Map<titleNameLower → snakeKey> — O(1) lookup replaces O(n) find().
+      const titleLookupIndex = new Map();
+      // Per-entry Sets for user deduplication; keyed by snakeKey. Converted to arrays at output.
+      const titleUsersSet = new Map(); // snakeKey → Set<username>
+
       function mergeOneJobTitle(titleName, titleData, users, count) {
         // Normalise skills: accept both "top_skills" and "top_10_skills" field names; convert arrays to obj
         const rawSkills = titleData.top_skills || titleData.top_10_skills || null;
@@ -4974,13 +5105,9 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
           : (rawSkills && typeof rawSkills === 'object' ? rawSkills : null);
 
         const snakeKey = titleName.toLowerCase().replace(/\s+/g, '_');
-        const existingKey = Object.keys(consolidated.job_title).find(k => {
-          const e = consolidated.job_title[k];
-          if (!e) return false;
-          // Match by the stored canonical job_title string, or by snake_case key
-          const storedTitle = typeof e.job_title === 'string' ? e.job_title : null;
-          return (storedTitle && storedTitle.toLowerCase() === titleName.toLowerCase()) || k === snakeKey;
-        });
+        // O(1) lookup via index instead of O(n) Object.keys().find()
+        let existingKey = titleLookupIndex.get(titleName.toLowerCase());
+        if (!existingKey && titleLookupIndex.has(snakeKey)) existingKey = snakeKey;
 
         if (existingKey) {
           const existing = consolidated.job_title[existingKey];
@@ -5003,10 +5130,8 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             existing.top_skills = incomingSkills;
           }
           existing._userCount = existingUserCount + count;
-          if (!existing._users) existing._users = [];
-          for (const u of users) {
-            if (!existing._users.includes(u)) existing._users.push(u);
-          }
+          const usSet = titleUsersSet.get(existingKey);
+          if (usSet) for (const u of users) usSet.add(u);
           // Merge Total_Experience: expand the range to cover both sets of candidates
           if (titleData.Total_Experience) {
             if (typeof titleData.Total_Experience === 'object' && titleData.Total_Experience !== null && 'min' in titleData.Total_Experience && 'max' in titleData.Total_Experience) {
@@ -5036,10 +5161,14 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             ...(incomingSkills ? { top_skills: incomingSkills } : {}),
             ...(titleData.Total_Experience ? { Total_Experience: titleData.Total_Experience } : {}),
             _userCount: count,
-            _users: [...users],
+            _users: [],   // populated from titleUsersSet at output time
             last_updated: today,
           };
           consolidated.job_title[snakeKey] = newEntry;
+          // Register in O(1) lookup index
+          titleLookupIndex.set(titleName.toLowerCase(), snakeKey);
+          titleLookupIndex.set(snakeKey, snakeKey);
+          titleUsersSet.set(snakeKey, new Set(users));
         }
       }
 
@@ -5158,13 +5287,13 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
 
       function mergeIntoCountryBucket(byCountry, countryKey, minStr, maxStr, cnt, users, lastUpdated) {
         const key = countryKey || COMP_ACC_NO_COUNTRY;
-        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, users: [], last_updated: lastUpdated || today };
+        if (!byCountry[key]) byCountry[key] = { min: Infinity, max: -Infinity, count: 0, _usersSet: new Set(), last_updated: lastUpdated || today };
         const bucket = byCountry[key];
         const inMin = parseFloat(minStr), inMax = parseFloat(maxStr);
         if (!isNaN(inMin)) bucket.min = Math.min(bucket.min, inMin);
         if (!isNaN(inMax)) bucket.max = Math.max(bucket.max, inMax);
         bucket.count += (cnt || 1);
-        for (const u of users) { if (!bucket.users.includes(u)) bucket.users.push(u); }
+        for (const u of users) bucket._usersSet.add(u);
         if (lastUpdated) bucket.last_updated = lastUpdated;
       }
 
@@ -5247,7 +5376,7 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             min: String(b.min === Infinity ? 0 : Math.round(b.min)),
             max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
             count: b.count,
-            _users: b.users,
+            _users: [...b._usersSet],
             last_updated: b.last_updated,
           }));
         if (compArray.length > 0) outputEntry.Compensation = compArray;
@@ -5259,11 +5388,16 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
             min: String(b.min === Infinity ? 0 : Math.round(b.min)),
             max: String(b.max === -Infinity ? 0 : Math.round(b.max)),
             count: b.count,
-            _users: b.users,
+            _users: [...b._usersSet],
             last_updated: b.last_updated,
           }));
         if (vcArray.length > 0) outputEntry['Verified Compensation'] = vcArray;
         consolidated.compensation.compensation_by_job_title[jt] = outputEntry;
+      }
+
+      // Flush per-title user Sets into _users arrays — all mergeOneJobTitle calls are now done.
+      for (const [key, usSet] of titleUsersSet) {
+        if (consolidated.job_title[key]) consolidated.job_title[key]._users = [...usSet];
       }
 
       return consolidated;
@@ -5481,35 +5615,42 @@ app.post('/admin/ml-integrate', dashboardRateLimit, requireAdmin, async (req, re
 });
 
 // POST /candidates/bulletin-export — write finalized bulletin selections to a JSON file (called during DB Dock Out)
+
+// ── Bulletin-export helpers (module-level to avoid per-request re-creation) ──
+// Extracts a numeric rating score from JSON object, percentage string, or plain integer.
+// Mirrors the LookerDashboard.html extractRatingScore logic.
+function _extractRatingScore(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (typeof val === 'object') {
+    const ts = val.total_score;
+    if (ts !== undefined && ts !== null) {
+      const m = String(ts).match(/(\d+)/);
+      if (m) return parseInt(m[1], 10);
+    }
+    return null;
+  }
+  const s = String(val).trim();
+  if (s.startsWith('{')) {
+    try {
+      const obj = JSON.parse(s);
+      if (obj && obj.total_score !== undefined) {
+        const m = String(obj.total_score).match(/(\d+)/);
+        if (m) return parseInt(m[1], 10);
+      }
+    } catch (_) {}
+  }
+  const m = s.match(/(\d+)/);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+const _SENIORITY_RANK = {intern:0,trainee:0,graduate:0,entry:0,junior:1,jr:1,associate:2,mid:3,intermediate:3,senior:4,sr:4,lead:5,principal:5,specialist:5,manager:6,mgr:6,director:7,dir:7,vp:8,vice:8,head:9,chief:9};
+function _seniorityRank(s) {
+  const lower = (s || '').toLowerCase();
+  return Object.entries(_SENIORITY_RANK).reduce((r, [k,v]) => lower.includes(k) ? Math.max(r,v) : r, -1);
+}
+
 app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async (req, res) => {
   try {
-    // Helper: extract numeric rating score from JSON object, percentage string, or plain integer.
-    // Matches LookerDashboard.html extractRatingScore logic.
-    function extractRatingScore(val) {
-      if (val === null || val === undefined || val === '') return null;
-      if (typeof val === 'object') {
-        const ts = val.total_score;
-        if (ts !== undefined && ts !== null) {
-          const m = String(ts).match(/(\d+)/);
-          if (m) return parseInt(m[1], 10);
-        }
-        return null;
-      }
-      const s = String(val).trim();
-      // If it looks like a JSON string, try to parse it
-      if (s.startsWith('{')) {
-        try {
-          const obj = JSON.parse(s);
-          if (obj && obj.total_score !== undefined) {
-            const m = String(obj.total_score).match(/(\d+)/);
-            if (m) return parseInt(m[1], 10);
-          }
-        } catch (_) {}
-      }
-      const m = s.match(/(\d+)/);
-      if (m) return parseInt(m[1], 10);
-      return null;
-    }
     const { role_tag, skillsets, countries: selectedCountries, jobfamily, sector, sourcingStatuses, headline, description, imageData, publicPost, company_name } = req.body || {};
     // Fetch cemail for the current user to include in the bulletin JSON
     let cemail = null;
@@ -5518,12 +5659,6 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
       if (emailResult.rows.length > 0) cemail = emailResult.rows[0].cemail || null;
     } catch (emailErr) {
       console.warn('[Bulletin Export] Could not fetch cemail:', emailErr.message);
-    }
-    // Seniority rank helper for sorting junior → senior
-    const SENIORITY_RANK = {intern:0,trainee:0,graduate:0,entry:0,junior:1,jr:1,associate:2,mid:3,intermediate:3,senior:4,sr:4,lead:5,principal:5,specialist:5,manager:6,mgr:6,director:7,dir:7,vp:8,vice:8,head:9,chief:9};
-    function seniorityRank(s) {
-      const lower = (s || '').toLowerCase();
-      return Object.entries(SENIORITY_RANK).reduce((r, [k,v]) => lower.includes(k) ? Math.max(r,v) : r, -1);
     }
     let exportData;
     if (role_tag) {
@@ -5540,11 +5675,11 @@ app.post('/candidates/bulletin-export', requireLogin, dashboardRateLimit, async 
         : rows;
       let totalScore = 0, ratedCount = 0;
       doubleFilteredRows.forEach(r => {
-        const score = extractRatingScore(r.rating);
+        const score = _extractRatingScore(r.rating);
         if (score !== null) { totalScore += score; ratedCount++; }
       });
       const avgRating = ratedCount > 0 ? Math.round(totalScore / ratedCount) + '%' : null;
-      const seniorities = [...new Set(doubleFilteredRows.map(r => r.seniority).filter(Boolean))].sort((a,b) => seniorityRank(a) - seniorityRank(b));
+      const seniorities = [...new Set(doubleFilteredRows.map(r => r.seniority).filter(Boolean))].sort((a,b) => _seniorityRank(a) - _seniorityRank(b));
       const sourcedCount = doubleFilteredRows.length;
       exportData = {
         role_tag,
@@ -6184,6 +6319,7 @@ require('./server_routes2')(app, {
   getOrCreateTransporter,
   getSaveStatePath,
   loadEmailVerifConfig,
+  loadRateLimits,
   loadSmtpConfig,
   normalizeCompanyName,
   normalizeCountry,

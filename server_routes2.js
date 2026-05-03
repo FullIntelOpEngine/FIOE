@@ -12,6 +12,19 @@ const crypto = require('crypto');
 const net    = require('net');
 const dns    = require('dns').promises;
 
+// ── Module-level pre-compiled regexes ────────────────────────────────────────
+// Compiled once at startup; avoids per-request RegExp construction overhead.
+
+// calculate-unmatched: strip LLM preamble / structural chars from output
+const _RE_CALC_UM_INTRO    = /^(Here are|The following|These are).*?[:\n]/gim;
+const _RE_CALC_UM_LONG     = /Here are the skills present[^:\n]*[:\s]*/i;
+const _RE_CALC_UM_BRACKETS = /[\[\]"']/g;
+const _RE_CALC_UM_DELIM    = /[\n\r,]+/g;
+const _RE_CALC_UM_BULLET   = /^[-*•]\s+/;
+
+// assess-unmatched: strip markdown code fences from LLM JSON response
+const _RE_ASSESS_CODE_FENCE = /```(?:json)?/g;
+
 module.exports = function registerRoutes(app, ctx) {
   const {
     pool,
@@ -29,6 +42,7 @@ module.exports = function registerRoutes(app, ctx) {
     getOrCreateTransporter,
     getSaveStatePath,
     loadEmailVerifConfig,
+    loadRateLimits,
     loadSmtpConfig,
     normalizeCompanyName,
     normalizeCountry,
@@ -107,63 +121,59 @@ app.post('/candidates/:id/calculate-unmatched', requireLogin, async (req, res) =
             Return the result as a simple list. Do NOT include any introductory or explanatory text.
         `;
 
-        const rawText = await llmGenerateText(prompt, { username: req.user && req.user.username, label: 'llm/skill-gap' });
-        incrementGeminiQueryCount(req.user.username).catch(() => {});
+        // Return 202 immediately so the HTTP connection is freed; LLM + DB work runs in the background.
+        // The client receives the result via the `candidate_updated` SSE event when the job completes.
+        const bgUsername = req.user && req.user.username;
+        res.status(202).json({ queued: true, id });
 
-        // 5. Data Cleansing
-        // Strip explanatory text using strict patterns
-        let cleaned = rawText.replace(/^(Here are|The following|These are).*?[:\n]/gim, '');
-        cleaned = cleaned.replace(/Here are the skills present in the JD Skillset but missing or unmatched in the Candidate Skillset[:\s]*/i, '');
-        
-        // Remove JSON structural chars
-        cleaned = cleaned.replace(/[\[\]"']/g, '');
-        
-        // Replace newlines and commas with semicolons
-        cleaned = cleaned.replace(/[\n\r,]+/g, ';');
-        
-        // Split, trim, remove leading bullets (hyphens), and filter empty
-        const tokens = cleaned
-          .split(';')
-          .map(s => s.trim().replace(/^[-*•]\s+/, '').replace(/^[-*•]/, '')) // Remove leading bullet/hyphen
-          .filter(s => s.length > 0);
-        
-        const unmatchedStr = tokens.join('; ');
+        // Fire-and-forget background job (pool/broadcastSSE/helpers remain in scope)
+        (async () => {
+            try {
+                const rawText = await llmGenerateText(prompt, { username: bgUsername, label: 'llm/skill-gap' });
+                incrementGeminiQueryCount(bgUsername).catch(() => {});
 
-        // 6. Update process table column 'lskillset' ONLY
-        const updateRes = await pool.query(
-            'UPDATE "process" SET lskillset = $1 WHERE id = $2 RETURNING *',
-            [unmatchedStr, id]
-        );
+                // 5. Data Cleansing — use pre-compiled module-level regexes
+                let cleaned = rawText.replace(_RE_CALC_UM_INTRO, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_LONG, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_BRACKETS, '');
+                cleaned = cleaned.replace(_RE_CALC_UM_DELIM, ';');
 
-        const r = updateRes.rows[0];
+                const tokens = cleaned
+                  .split(';')
+                  .map(s => s.trim().replace(_RE_CALC_UM_BULLET, '').replace(/^[-*•]/, ''))
+                  .filter(s => s.length > 0);
 
-        // 7. Return standard updated object
-        // Use standard mapping helper logic manually here to ensure consistency
-        // compensation sourced from process table
-        const companyCanonical = normalizeCompanyName(r.company || r.organisation || '');
-        
-        const mapped = {
-            ...r,
-            jobtitle: r.jobtitle ?? null,
-            company: companyCanonical ?? (r.company ?? null),
-            lskillset: r.lskillset ?? null,
-            linkedinurl: r.linkedinurl ?? null,
-            jskillset: r.jskillset ?? null,
-            pic: picToDataUri(r.pic),
-            
-            // fallbacks
-            role: r.role ?? r.jobtitle ?? null,
-            organisation: companyCanonical ?? (r.organisation ?? r.company ?? null),
-            type: r.product ?? null,
-            compensation: r.compensation ?? null
-        };
+                const unmatchedStr = tokens.join('; ');
 
-        // Emit update
-        try {
-            broadcastSSE('candidate_updated', mapped);
-        } catch (_) {}
+                // 6. Update process table column 'lskillset' ONLY
+                const updateRes = await pool.query(
+                    'UPDATE "process" SET lskillset = $1 WHERE id = $2 RETURNING *',
+                    [unmatchedStr, id]
+                );
 
-        res.json({ lskillset: unmatchedStr, fullUpdate: mapped });
+                const r = updateRes.rows[0];
+                if (!r) return;
+
+                // 7. Build mapped object and broadcast SSE so the client updates live
+                const companyCanonical = normalizeCompanyName(r.company || r.organisation || '');
+                const mapped = {
+                    ...r,
+                    jobtitle: r.jobtitle ?? null,
+                    company: companyCanonical ?? (r.company ?? null),
+                    lskillset: r.lskillset ?? null,
+                    linkedinurl: r.linkedinurl ?? null,
+                    jskillset: r.jskillset ?? null,
+                    pic: picToDataUri(r.pic),
+                    role: r.role ?? r.jobtitle ?? null,
+                    organisation: companyCanonical ?? (r.organisation ?? r.company ?? null),
+                    type: r.product ?? null,
+                    compensation: r.compensation ?? null
+                };
+                try { broadcastSSE('candidate_updated', mapped); } catch (_) {}
+            } catch (bgErr) {
+                console.error('[CALC_UNMATCHED BG] error for id', id, bgErr && bgErr.message);
+            }
+        })();
 
     } catch (err) {
         console.error('Calculate unmatched error:', err);
@@ -185,11 +195,28 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
       return res.status(400).json({ error: 'No unmatched skills provided.' });
     }
 
+    // Guard against very large batches that would produce slow/expensive LLM calls.
+    // The cap is driven by the 'analytic_batch_size' entry in rate_limits.json
+    // (admin-configurable via admin_rate_limits.html).  Falls back to 50 when unset.
+    const _rlCfg = loadRateLimits();
+    const _rlUsername = req.user && req.user.username;
+    const _rlUser = (_rlCfg.users || {})[_rlUsername] || {};
+    const _rlDef  = (_rlCfg.defaults || {});
+    const _rlBatch = _rlUser.analytic_batch_size || _rlDef.analytic_batch_size;
+    const _ASSESS_BATCH_LIMIT = (_rlBatch && parseInt(_rlBatch.requests, 10) > 0)
+      ? parseInt(_rlBatch.requests, 10)
+      : 50;
+    const batchedUnmatched = unmatched.slice(0, _ASSESS_BATCH_LIMIT);
+    const wasTruncated = batchedUnmatched.length < unmatched.length;
+    if (wasTruncated) {
+      console.warn(`[ASSESS_UNMATCHED] input truncated: ${unmatched.length} → ${batchedUnmatched.length} items`);
+    }
+
     // Build an instruction telling the LLM to compare the two lists and classify each unmatched token
     const instruction = `
 You are a skill matching assistant. Inputs:
 - sourceSkills: canonical skillset list (comma-separated): ${JSON.stringify(sourceSkills)}
-- unmatched: list of tokens to check (array): ${JSON.stringify(unmatched)}
+- unmatched: list of tokens to check (array): ${JSON.stringify(batchedUnmatched)}
 
 For each entry in unmatched, return JSON item:
 { "original": "<raw token>", "normalized": "<canonical label or null>", "verdict": "<true-missing|synonym|ignore>", "mappedTo": "<if synonym then canonical skill>" }
@@ -200,8 +227,8 @@ Return JSON only:
 
     const text = await llmGenerateText(instruction, { username: req.user && req.user.username, label: 'llm/suggestions' });
 
-    // Attempt to robustly extract JSON
-    const cleaned = text.replace(/```(?:json)?/g, '').trim();
+    // Attempt to robustly extract JSON — use pre-compiled module-level code-fence regex
+    const cleaned = text.replace(_RE_ASSESS_CODE_FENCE, '').trim();
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
@@ -221,6 +248,13 @@ Return JSON only:
       verdict: s.verdict || 'true-missing',
       mappedTo: s.mappedTo || s.mapped || null
     }));
+
+    // Inform caller when input was capped so they can paginate or split
+    if (wasTruncated) {
+      parsed.truncated = true;
+      parsed.totalProvided = unmatched.length;
+      parsed.processedCount = batchedUnmatched.length;
+    }
 
     res.json(parsed);
   } catch (err) {
@@ -270,28 +304,39 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
   };
 
   const client = await pool.connect();
+  const updatedRows = [];
+  const canonicalBatch = [];  // collected for parallel post-commit canonicalization
+  const updatedIds     = [];  // collected for post-commit batch reload
   try {
     await client.query('BEGIN');
-    const updatedRows = [];
+
+    // Batch-fetch ownership for all incoming IDs in a single query (was 1 SELECT per row)
+    const allIncomingIds = rows
+      .map(item => Number(item?.id))
+      .filter(n => Number.isInteger(n) && n > 0);
+    const ownedIds = new Set();
+    if (allIncomingIds.length > 0) {
+      try {
+        const ownerQ = await client.query(
+          'SELECT id, userid FROM "process" WHERE id = ANY($1::int[])',
+          [allIncomingIds]
+        );
+        for (const r of ownerQ.rows) {
+          if (String(r.userid) === String(req.user.id)) ownedIds.add(r.id);
+        }
+      } catch (e) {
+        console.warn('[BULK_UPDATE_AUTH] failed batch ownership check', e && e.message);
+        // Proceed with empty ownedIds — all rows will be skipped safely
+      }
+    }
+
     for (const item of rows) {
       const id = Number(item?.id);
       if (!Number.isInteger(id) || id <= 0) continue;
+      if (!ownedIds.has(id)) continue;  // not owned or does not exist
 
       const keys = Object.keys(item).filter(k => k !== 'id' && Object.prototype.hasOwnProperty.call(fieldMap, k));
       if (!keys.length) continue;
-
-      // Ownership check: skip rows not owned by this user
-      try {
-        const ownerQ = await client.query('SELECT userid FROM "process" WHERE id = $1', [id]);
-        if (ownerQ.rows.length === 0) continue; // row doesn't exist
-        if (String(ownerQ.rows[0].userid) !== String(req.user.id)) {
-          // Skip updating rows not owned by user (optional: collect skipped ids)
-          continue;
-        }
-      } catch (e) {
-        console.warn('[BULK_UPDATE_AUTH] failed ownership check for id', id, e && e.message);
-        continue;
-      }
 
       // Build unique column -> value map to prevent multiple assignments to same column
       const colValueMap = new Map();
@@ -322,17 +367,39 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
       // eslint-disable-next-line no-await-in-loop
       const result = await client.query(sql, values);
       if (result.rowCount === 1) {
-        let r = result.rows[0];
-        // Persist canonical fields for this updated row
-        try {
-          await ensureCanonicalFieldsForId(r.id, r.company || r.organisation, r.jobtitle || r.role, null);
-          // reload to reflect persisted canonicalization
-          r = (await client.query('SELECT * FROM "process" WHERE id = $1', [r.id])).rows[0];
-        } catch (e) {
-          console.warn('[BULK_UPDATE_CANON] failed for id', r.id, e && e.message);
-        }
+        const r = result.rows[0];
+        // Collect for parallel canonicalization after COMMIT (avoid blocking the transaction)
+        canonicalBatch.push({ id: r.id, company: r.company || r.organisation, jobtitle: r.jobtitle || r.role });
+        updatedIds.push(r.id);
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Bulk update error:', err);
+    res.status(500).json({ error: 'Bulk update failed.' });
+    return;
+  } finally {
+    client.release();
+  }
 
-        const mapped = {
+  // Run canonicalization in parallel now that the transaction is committed
+  if (canonicalBatch.length > 0) {
+    await Promise.all(canonicalBatch.map(({ id, company, jobtitle }) =>
+      ensureCanonicalFieldsForId(id, company, jobtitle, null)
+        .catch(e => console.warn('[BULK_UPDATE_CANON] failed for id', id, e && e.message))
+    ));
+  }
+
+  // Batch-reload all updated rows to get fully canonicalized values
+  if (updatedIds.length > 0) {
+    try {
+      const reloadRes = await pool.query(
+        'SELECT * FROM "process" WHERE id = ANY($1::int[])',
+        [updatedIds]
+      );
+      for (const r of reloadRes.rows) {
+        updatedRows.push({
           ...r,
           jobtitle: r.jobtitle ?? null,
           company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
@@ -348,29 +415,23 @@ app.post('/candidates/bulk-update', requireLogin, async (req, res) => {
           type: r.product ?? null,
           compensation: r.compensation ?? null,
           jskillset: r.jskillset ?? null
-        };
-        updatedRows.push(mapped);
+        });
       }
+    } catch (e) {
+      console.warn('[BULK_UPDATE_RELOAD] failed to reload rows after canonicalization:', e && e.message);
     }
-    await client.query('COMMIT');
-
-    // Emit change notification
-    try {
-      broadcastSSE('candidates_changed', { action: 'bulk_update', count: updatedRows.length });
-      for (const u of updatedRows) {
-        broadcastSSE('candidate_updated', u);
-      }
-    } catch (e) { /* ignore */ }
-
-    res.json({ updatedCount: updatedRows.length, rows: updatedRows });
-    _writeApprovalLog({ action: 'bulk_candidates_update', username: req.user.username, userid: req.user.id, detail: `Bulk updated ${updatedRows.length} candidates`, source: 'server.js' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Bulk update error:', err);
-    res.status(500).json({ error: 'Bulk update failed.' });
-  } finally {
-    client.release();
   }
+
+  // Emit change notification
+  try {
+    broadcastSSE('candidates_changed', { action: 'bulk_update', count: updatedRows.length });
+    for (const u of updatedRows) {
+      broadcastSSE('candidate_updated', u);
+    }
+  } catch (e) { /* ignore */ }
+
+  res.json({ updatedCount: updatedRows.length, rows: updatedRows });
+  _writeApprovalLog({ action: 'bulk_candidates_update', username: req.user.username, userid: req.user.id, detail: `Bulk updated ${updatedRows.length} candidates`, source: 'server.js' });
 });
 
 /**
@@ -413,6 +474,10 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     return Object.entries(obj).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   };
   if (mlProfile && typeof mlProfile === 'object') {
+    // Yield the event loop before the CPU-heavy mlProfile parsing block so that
+    // other pending I/O callbacks (e.g. incoming requests) can run before this
+    // synchronous work begins.
+    await new Promise(r => setImmediate(r));
 
     // ── New grouped format detection (has top-level "Job_Families" array) ──
     if (Array.isArray(mlProfile.Job_Families)) {
@@ -940,24 +1005,30 @@ Input:
       throw new Error('Gemini response is not an array.');
     }
 
-    // Update compensation in DB for each returned item (skip nulls)
+    // Batch UPDATE compensation using UNNEST — single roundtrip instead of one per row
     const updatedRows = [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const item of data) {
+      // Filter to valid items with non-null numeric compensation
+      const validItems = data.filter(item => {
         const id = Number(item?.id);
-        if (!Number.isInteger(id) || id <= 0) continue;
-        if (item.compensation == null) continue;
-        const comp = Number(item.compensation);
-        if (isNaN(comp)) continue;
-
-        const result = await client.query(
-          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
-          [comp, id, String(req.user.id)]
+        const comp = Number(item?.compensation);
+        return Number.isInteger(id) && id > 0 && item.compensation != null && !isNaN(comp);
+      });
+      if (validItems.length > 0) {
+        // Build both arrays in a single pass
+        const batchIds = [], batchComps = [];
+        for (const item of validItems) { batchIds.push(Number(item.id)); batchComps.push(Number(item.compensation)); }
+        const batchRes = await client.query(
+          `UPDATE "process" AS p
+           SET compensation = v.comp
+           FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
+           WHERE p.id = v.id AND p.userid = $3
+           RETURNING p.*`,
+          [batchIds, batchComps, String(req.user.id)]
         );
-        if (result.rowCount === 1) {
-          const r = result.rows[0];
+        for (const r of batchRes.rows) {
           updatedRows.push({
             ...r,
             compensation: r.compensation ?? null,
@@ -1028,35 +1099,27 @@ app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res)
       rows = result.rows;
     }
 
-    // Load ML_Master_Compensation.json
-    const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
-    let compData = {};
-    try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
-    const compByJobTitle = compData.compensation_by_job_title || {};
-
-    const norm = s => (s || '').trim().toLowerCase();
+    // Load ML_Master_Compensation.json (cached, with Map index for O(1) lookup)
+    const { compMap } = _loadCompMasterCached();
 
     // Match each row against Verified Compensation data
     const matched = [];
     for (const row of rows) {
-      const jtNorm = norm(row.jobtitle);
-      const jfNorm = norm(row.jobfamily);
-      const ctryNorm = norm(row.country);
+      const jtNorm = _normCompTitle(row.jobtitle);
+      const jfNorm = _normCompTitle(row.jobfamily);
+      const ctryNorm = _normCompTitle(row.country);
       if (!jtNorm) continue;
 
-      // Find job title entry (case-insensitive)
-      let jtEntry = null;
-      for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
-        if (norm(jtKey) === jtNorm) { jtEntry = jtVal; break; }
-      }
+      // O(1) lookup via pre-built Map (was O(n) linear scan)
+      const jtEntry = compMap.get(jtNorm);
       if (!jtEntry || typeof jtEntry !== 'object') continue;
 
       // Job family must match when both candidate and entry have values
-      if (jfNorm && jtEntry.job_family && norm(jtEntry.job_family) !== jfNorm) continue;
+      if (jfNorm && jtEntry.job_family && _normCompTitle(jtEntry.job_family) !== jfNorm) continue;
 
       // Find matching country in Verified Compensation
       const vcEntries = Array.isArray(jtEntry['Verified Compensation']) ? jtEntry['Verified Compensation'] : [];
-      const vcMatch = vcEntries.find(e => norm(e.country) === ctryNorm);
+      const vcMatch = vcEntries.find(e => _normCompTitle(e.country) === ctryNorm);
       if (!vcMatch) continue;
 
       const min = Number(vcMatch.min) || 0;
@@ -1071,28 +1134,34 @@ app.post('/crowd-comp', requireLogin, userRateLimit('ai_comp'), async (req, res)
       return res.json({ rows: [] });
     }
 
-    // Update compensation in DB for matched records
+    // Batch UPDATE compensation using UNNEST — single roundtrip instead of one per row
     const updatedRows = [];
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const item of matched) {
-        const result = await client.query(
-          'UPDATE "process" SET compensation = $1 WHERE id = $2 AND userid = $3 RETURNING *',
-          [item.avg, item.id, String(req.user.id)]
-        );
-        if (result.rowCount === 1) {
-          const r = result.rows[0];
-          updatedRows.push({
-            ...item,
-            compensation: r.compensation ?? item.avg,
-            pic: picToDataUri(r.pic),
-            role: r.role ?? r.jobtitle ?? null,
-            organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
-            jobtitle: r.jobtitle ?? null,
-            company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
-          });
-        }
+      const batchIds = matched.map(item => item.id);
+      const batchComps = matched.map(item => item.avg);
+      const batchRes = await client.query(
+        `UPDATE "process" AS p
+         SET compensation = v.comp
+         FROM UNNEST($1::int[], $2::double precision[]) AS v(id, comp)
+         WHERE p.id = v.id AND p.userid = $3
+         RETURNING p.*`,
+        [batchIds, batchComps, String(req.user.id)]
+      );
+      // Build a lookup from the matched array to carry through min/max/count
+      const matchedById = new Map(matched.map(m => [m.id, m]));
+      for (const r of batchRes.rows) {
+        const m = matchedById.get(r.id) || {};
+        updatedRows.push({
+          ...m,
+          compensation: r.compensation ?? m.avg,
+          pic: picToDataUri(r.pic),
+          role: r.role ?? r.jobtitle ?? null,
+          organisation: normalizeCompanyName(r.company || r.organisation) ?? (r.organisation ?? r.company ?? null),
+          jobtitle: r.jobtitle ?? null,
+          company: normalizeCompanyName(r.company || r.organisation) ?? (r.company ?? null),
+        });
       }
       await client.query('COMMIT');
     } catch (e) {
@@ -1496,26 +1565,42 @@ function _isPrivateHost(hostname) {
   return false;
 }
 
+// ── Pre-compiled ICS regex constants ─────────────────────────────────────────
+// Hoisted to module level so they are compiled once rather than on every call
+// inside the hot ICS-line-processing loop.
+const _RE_ICS_UTC_DT      = /^\d{8}T\d{6}Z$/;    // YYYYMMDDTHHMMSSZ — Z must be uppercase per RFC 5545
+const _RE_ICS_FLOAT_DT    = /^\d{8}T\d{6}$/;      // YYYYMMDDTHHMMSS (floating)
+const _RE_ICS_DATE        = /^\d{8}$/;             // YYYYMMDD (all-day)
+const _RE_ICS_TZID        = /TZID=([^;:]+)/;       // property parameters are uppercase per RFC 5545
+const _RE_ICS_FBTYPE      = /FBTYPE=([^;:]+)/;     // property parameters are uppercase per RFC 5545
+const _RE_ICS_DURATION_P  = /^P/;                  // duration starts with uppercase P per RFC 5545
+const _RE_DURATION        = /P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/;
+const _RE_RRULE_FREQ      = /FREQ=([A-Z]+)/;
+const _RE_RRULE_INTERVAL  = /INTERVAL=(\d+)/;
+const _RE_RRULE_COUNT     = /COUNT=(\d+)/;
+const _RE_RRULE_UNTIL     = /UNTIL=([^\s;]+)/;
+const _RE_RRULE_BYDAY     = /BYDAY=([^;]+)/;
+
 // Helper: parse an ICS date/datetime string to a UTC timestamp (ms)
 function parseIcsDate(dateStr) {
   if (!dateStr) return NaN;
   const s = dateStr.trim();
   // UTC: YYYYMMDDTHHMMSSZ
-  if (/^\d{8}T\d{6}Z$/i.test(s)) {
+  if (_RE_ICS_UTC_DT.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
       parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
     );
   }
   // Floating (no Z, no TZID in value): YYYYMMDDTHHMMSS — treat as UTC
-  if (/^\d{8}T\d{6}$/.test(s)) {
+  if (_RE_ICS_FLOAT_DT.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10),
       parseInt(s.slice(9, 11), 10), parseInt(s.slice(11, 13), 10), parseInt(s.slice(13, 15), 10)
     );
   }
   // All-day date: YYYYMMDD
-  if (/^\d{8}$/.test(s)) {
+  if (_RE_ICS_DATE.test(s)) {
     return Date.UTC(
       parseInt(s.slice(0, 4), 10), parseInt(s.slice(4, 6), 10) - 1, parseInt(s.slice(6, 8), 10)
     );
@@ -1539,9 +1624,9 @@ function parseIcsDateWithTzid(dateStr, tzid) {
   if (!tzid) return parseIcsDate(dateStr);
   const s = (dateStr || '').trim();
   // Already UTC — no timezone adjustment needed
-  if (/^\d{8}T\d{6}Z$/i.test(s)) return parseIcsDate(s);
+  if (_RE_ICS_UTC_DT.test(s)) return parseIcsDate(s);
   // Floating datetime: YYYYMMDDTHHMMSS — convert from tzid to UTC via Intl
-  if (/^\d{8}T\d{6}$/.test(s)) {
+  if (_RE_ICS_FLOAT_DT.test(s)) {
     try {
       const y  = parseInt(s.slice(0, 4), 10);
       const mo = parseInt(s.slice(4, 6), 10) - 1;
@@ -1575,6 +1660,8 @@ function parseIcsDateWithTzid(dateStr, tzid) {
 
 // Helper: fetch an ICS URL and return busy [{start, end}] intervals overlapping [startISO, endISO]
 // Supports http://, https://, and webcal:// (remapped to https://).
+// ICS content is stream-parsed line-by-line as chunks arrive (RFC 5545 folding handled across
+// chunk boundaries). Avoids buffering the entire file; allows early exit once past rangeEnd.
 async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   // Validate and normalise the URL
   const normalised = icsUrl.trim().replace(/^webcal:/i, 'https:');
@@ -1598,47 +1685,11 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
   const rangeStart = new Date(startISO).getTime();
   const rangeEnd   = new Date(endISO).getTime();
 
-  // Fetch with a redirect budget (max 3 hops)
-  async function doFetch(fetchUrl, hops) {
-    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
-    const u = new URL(fetchUrl);
-    const mod = u.protocol === 'https:' ? https : http;
-    return new Promise((resolve, reject) => {
-      const req = mod.request(
-        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
-          path: u.pathname + (u.search || ''), method: 'GET',
-          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
-          timeout: 12000 },
-        (res) => {
-          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
-          }
-          if (res.statusCode !== 200) {
-            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
-          }
-          let raw = '';
-          res.setEncoding('utf8');
-          res.on('data', chunk => { raw += chunk; if (raw.length > 5 * 1024 * 1024) { req.destroy(); reject(new Error('ICS feed too large (>5 MB).')); } });
-          res.on('end', () => resolve(raw));
-        }
-      );
-      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
-      req.on('error', reject);
-      req.end();
-    });
-  }
-
-  const rawIcs = await doFetch(normalised, 3);
-
-  // Unfold continuation lines (RFC 5545 §3.1)
-  const unfolded = rawIcs.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
-  const lines = unfolded.split(/\r\n|\n|\r/);
-
-  // Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds
+  // ── Helper: parse a DURATION string (e.g. P1DT2H30M) into milliseconds ─────
   function _parseDurationMs(durStr) {
     const d = (durStr || '').toUpperCase();
     let ms = 0;
-    const m = d.match(/P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?/);
+    const m = d.match(_RE_DURATION);
     if (m) {
       ms = ((parseInt(m[1], 10) || 0) * 7 * 86400
            + (parseInt(m[2], 10) || 0) * 86400
@@ -1649,7 +1700,7 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     return ms;
   }
 
-  // Helper: expand a recurring event's occurrences within [rangeStart, rangeEnd]
+  // ── Helper: expand recurring event occurrences within [rangeStart, rangeEnd] ─
   // Supports RRULE FREQ=DAILY/WEEKLY/MONTHLY/YEARLY with COUNT/UNTIL/INTERVAL/BYDAY.
   // EXDATE entries (comma-separated) are excluded.
   function _expandRecurrence(evt, durationMs) {
@@ -1657,21 +1708,21 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     if (!rule) return [];
     const intervals = [];
 
-    const freqMatch = rule.match(/FREQ=([A-Z]+)/);
+    const freqMatch = rule.match(_RE_RRULE_FREQ);
     if (!freqMatch) return [];
     const freq = freqMatch[1]; // DAILY | WEEKLY | MONTHLY | YEARLY
 
-    const intervalMatch = rule.match(/INTERVAL=(\d+)/);
+    const intervalMatch = rule.match(_RE_RRULE_INTERVAL);
     const interval = intervalMatch ? parseInt(intervalMatch[1], 10) : 1;
 
-    const countMatch = rule.match(/COUNT=(\d+)/);
+    const countMatch = rule.match(_RE_RRULE_COUNT);
     const maxCount = countMatch ? parseInt(countMatch[1], 10) : Infinity;
 
-    const untilMatch = rule.match(/UNTIL=([^\s;]+)/);
+    const untilMatch = rule.match(_RE_RRULE_UNTIL);
     const untilMs = untilMatch ? parseIcsDate(untilMatch[1]) : Infinity;
 
     // BYDAY for WEEKLY: e.g. BYDAY=MO,WE,FR
-    const bydayMatch = rule.match(/BYDAY=([^;]+)/);
+    const bydayMatch = rule.match(_RE_RRULE_BYDAY);
     const byDays = bydayMatch
       ? bydayMatch[1].split(',').map(d => d.trim().slice(-2).toUpperCase())
       : null;
@@ -1748,20 +1799,21 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     return intervals;
   }
 
+  // ── Streaming ICS line processor ─────────────────────────────────────────
+  // Shared parser state; populated by processLogicalLine() called from the stream.
   const busyIntervals = [];
-  let inVevent   = false;
+  let inVevent    = false;
   let inVfreebusy = false;
   let evt = {};
   let vfb = {};
 
-  for (const line of lines) {
+  function processLogicalLine(line) {
     const upper = line.toUpperCase();
 
     // ── VFREEBUSY handling (RFC 5545 §3.6.4) ─────────────────────────────────
-    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; continue; }
+    if (upper === 'BEGIN:VFREEBUSY') { inVfreebusy = true; vfb = {}; return; }
     if (upper === 'END:VFREEBUSY') {
       inVfreebusy = false;
-      // FREEBUSY property contains one or more period values: start/end or start/duration
       if (vfb.freebusy) {
         for (const fbLine of vfb.freebusy) {
           const periods = fbLine.split(',');
@@ -1770,7 +1822,7 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
             if (parts.length !== 2) continue;
             const pStart = parseIcsDate(parts[0].trim());
             let pEnd;
-            if (/^P/i.test(parts[1].trim())) {
+            if (_RE_ICS_DURATION_P.test(parts[1].trim())) {
               pEnd = pStart + _parseDurationMs(parts[1].trim());
             } else {
               pEnd = parseIcsDate(parts[1].trim());
@@ -1782,30 +1834,29 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         }
       }
       vfb = {};
-      continue;
+      return;
     }
     if (inVfreebusy) {
       const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) continue;
+      if (colonIdx === -1) return;
       const rawProp = line.substring(0, colonIdx);
       const value   = line.substring(colonIdx + 1);
       const semiIdx = rawProp.indexOf(';');
       const propKey = (semiIdx === -1 ? rawProp : rawProp.substring(0, semiIdx)).toUpperCase();
       if (propKey === 'FREEBUSY') {
-        // Skip FREE periods; only collect BUSY (default when FBTYPE absent or FBTYPE=BUSY)
         const fbType = semiIdx !== -1
-          ? (rawProp.substring(semiIdx + 1).match(/FBTYPE=([^;:]+)/i) || [])[1] || 'BUSY'
+          ? (rawProp.substring(semiIdx + 1).match(_RE_ICS_FBTYPE) || [])[1] || 'BUSY'
           : 'BUSY';
         if (fbType.toUpperCase() !== 'FREE') {
           if (!vfb.freebusy) vfb.freebusy = [];
           vfb.freebusy.push(value);
         }
       }
-      continue;
+      return;
     }
 
     // ── VEVENT handling ───────────────────────────────────────────────────────
-    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; continue; }
+    if (upper === 'BEGIN:VEVENT') { inVevent = true; evt = {}; return; }
     if (upper === 'END:VEVENT') {
       inVevent = false;
       if (evt.dtstart) {
@@ -1819,12 +1870,10 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
           } else if (evt.duration) {
             durationMs = _parseDurationMs(evt.duration);
           } else {
-            // All-day event with no DTEND: treat as 1 day
-            durationMs = 86400000;
+            durationMs = 86400000; // all-day event: 1 day
           }
           if (!isNaN(startMs) && durationMs > 0) {
             if (evt.rrule) {
-              // Expand recurring event occurrences within the query window
               const occurrences = _expandRecurrence(evt, durationMs);
               busyIntervals.push(...occurrences);
             } else {
@@ -1837,13 +1886,13 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
         }
       }
       evt = {};
-      continue;
+      return;
     }
-    if (!inVevent) continue;
+    if (!inVevent) return;
 
-    // Split into property name (+ params) and value
+    // ── Parse VEVENT property ─────────────────────────────────────────────────
     const colonIdx = line.indexOf(':');
-    if (colonIdx === -1) continue;
+    if (colonIdx === -1) return;
     const rawProp = line.substring(0, colonIdx);
     const value   = line.substring(colonIdx + 1);
     const semiIdx = rawProp.indexOf(';');
@@ -1852,13 +1901,13 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     if (propKey === 'DTSTART') {
       evt.dtstart = value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.dtstart_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'DTEND') {
       evt.dtend = value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.dtend_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'DURATION') {
@@ -1866,11 +1915,10 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     } else if (propKey === 'RRULE') {
       evt.rrule = value;
     } else if (propKey === 'EXDATE') {
-      // Multiple EXDATE lines are allowed; accumulate comma-separated values
       const existing = evt.exdate ? evt.exdate + ',' : '';
       evt.exdate = existing + value;
       if (semiIdx !== -1) {
-        const tzMatch = rawProp.substring(semiIdx + 1).match(/TZID=([^;:]+)/i);
+        const tzMatch = rawProp.substring(semiIdx + 1).match(_RE_ICS_TZID);
         if (tzMatch) evt.exdate_tzid = tzMatch[1].trim();
       }
     } else if (propKey === 'STATUS') {
@@ -1880,7 +1928,90 @@ async function fetchAndParseIcsBusy(icsUrl, startISO, endISO) {
     }
   }
 
-  return busyIntervals;
+  // ── Fetch with redirect budget (max 3 hops), stream-parsing each chunk ────
+  // RFC 5545 §3.1: long lines are folded by inserting CRLF + SPACE/TAB.
+  // We handle folding across chunk boundaries via `pendingLogical`.
+  async function doFetch(fetchUrl, hops) {
+    if (hops <= 0) throw new Error('Too many redirects fetching ICS feed.');
+    const u = new URL(fetchUrl);
+    const mod = u.protocol === 'https:' ? https : http;
+    return new Promise((resolve, reject) => {
+      const req = mod.request(
+        { hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+          path: u.pathname + (u.search || ''), method: 'GET',
+          headers: { 'User-Agent': 'FIOE-Calendar/1.0', 'Accept': 'text/calendar,*/*' },
+          timeout: 12000 },
+        (res) => {
+          if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+            return doFetch(res.headers.location, hops - 1).then(resolve).catch(reject);
+          }
+          if (res.statusCode !== 200) {
+            return reject(new Error(`ICS fetch returned HTTP ${res.statusCode}.`));
+          }
+
+          let bytesReceived = 0;
+          let chunkTail = '';       // incomplete physical line at the end of the last chunk
+          let pendingLogical = '';  // current logical line being assembled (handles RFC 5545 folding)
+
+          res.setEncoding('utf8');
+          res.on('data', chunk => {
+            bytesReceived += chunk.length;
+            if (bytesReceived > 5 * 1024 * 1024) {
+              req.destroy();
+              reject(new Error('ICS feed too large (>5 MB).'));
+              return;
+            }
+
+            // Combine leftover from previous chunk with new data, then split physical lines.
+            const buf = chunkTail + chunk;
+            // Find the last newline to determine the incomplete tail
+            const lastNl = Math.max(buf.lastIndexOf('\n'), buf.lastIndexOf('\r'));
+            if (lastNl === -1) {
+              // No complete line in this chunk yet — accumulate
+              chunkTail = buf;
+              return;
+            }
+            chunkTail = buf.slice(lastNl + 1); // remainder after last newline
+            const completeData = buf.slice(0, lastNl + 1);
+            // Split by any line ending variant
+            const physLines = completeData.split(/\r\n|\r|\n/);
+
+            for (const physLine of physLines) {
+              if (physLine.length === 0) continue; // skip blank lines between CRLF endings
+              // RFC 5545 fold: a physical line beginning with SP or HT is a continuation
+              if (physLine.charCodeAt(0) === 0x20 || physLine.charCodeAt(0) === 0x09) {
+                pendingLogical += physLine.slice(1);
+              } else {
+                // Emit the completed logical line and start a new one
+                if (pendingLogical) processLogicalLine(pendingLogical);
+                pendingLogical = physLine;
+              }
+            }
+          });
+
+          res.on('end', () => {
+            // Flush any leftover tail and pending logical line
+            const remaining = chunkTail;
+            if (remaining.length > 0) {
+              if (remaining.charCodeAt(0) === 0x20 || remaining.charCodeAt(0) === 0x09) {
+                pendingLogical += remaining.slice(1);
+              } else {
+                if (pendingLogical) processLogicalLine(pendingLogical);
+                pendingLogical = remaining;
+              }
+            }
+            if (pendingLogical) processLogicalLine(pendingLogical);
+            resolve(busyIntervals);
+          });
+        }
+      );
+      req.on('timeout', () => { req.destroy(); reject(new Error('ICS fetch timed out.')); });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  return doFetch(normalised, 3);
 }
 
 // Helper: compute simple free slots between timeMin/timeMax avoiding busy intervals
@@ -2002,7 +2133,7 @@ app.post('/calendar/freebusy', requireLogin, async (req, res) => {
       primaryBusy = (fb.data && fb.data.calendars && fb.data.calendars.primary && fb.data.calendars.primary.busy) ? fb.data.calendars.primary.busy : [];
     }
 
-    const slots = computeFreeSlots(primaryBusy, startISO, endISO, durationMinutes, { startHour: 0, endHour: 24 }, 200);
+    const slots = computeFreeSlots(primaryBusy, startISO, endISO, durationMinutes, { startHour: 0, endHour: 24 }, 1000);
     res.json({ ok: true, slots });
   } catch (err) {
     console.error('/calendar/freebusy error', err);
@@ -2166,11 +2297,21 @@ const SCHEDULER_SLOTS_PATH = process.env.SCHEDULER_SLOTS_PATH
   : path.join(__dirname, 'available_slots.json');
 
 // Read the current slots file; returns [] on any error.
+// Uses a mtime-based in-memory cache so repeated reads within the same second
+// (e.g. concurrent booking requests) skip the disk entirely.
+let _schedulerSlotsCache = null;
+let _schedulerSlotsMtime = 0;
 async function readSchedulerSlots() {
   try {
+    // stat first to check mtime; only re-parse when file has changed.
+    const stat = await fs.promises.stat(SCHEDULER_SLOTS_PATH).catch(() => null);
+    const mtime = stat ? stat.mtimeMs : 0;
+    if (_schedulerSlotsCache !== null && mtime === _schedulerSlotsMtime) return _schedulerSlotsCache;
     const raw = await fs.promises.readFile(SCHEDULER_SLOTS_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    _schedulerSlotsCache = Array.isArray(parsed) ? parsed : [];
+    _schedulerSlotsMtime = mtime;
+    return _schedulerSlotsCache;
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[scheduler] readSchedulerSlots error', e.message);
     return [];
@@ -2178,10 +2319,21 @@ async function readSchedulerSlots() {
 }
 
 // Write the slots array back to the file atomically (write to tmp then rename).
+// Updates the in-memory cache immediately to avoid a re-read on the next call.
 async function writeSchedulerSlots(slots) {
   const tmp = SCHEDULER_SLOTS_PATH + '.' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.tmp';
   await fs.promises.writeFile(tmp, JSON.stringify(slots, null, 2), 'utf8');
   await fs.promises.rename(tmp, SCHEDULER_SLOTS_PATH);
+  // Refresh cache — mtime may differ slightly from Date.now() due to FS precision;
+  // use the actual stat to stay consistent with readSchedulerSlots.
+  try {
+    const stat = await fs.promises.stat(SCHEDULER_SLOTS_PATH);
+    _schedulerSlotsCache = slots;
+    _schedulerSlotsMtime = stat.mtimeMs;
+  } catch (_) {
+    // Non-fatal: cache will be refreshed on the next read.
+    _schedulerSlotsCache = null;
+  }
 }
 
 // POST /scheduler/publish-slots  (requireLogin)
@@ -3118,18 +3270,54 @@ Phone: ...`;
 // ── Compensation Verified JSON helpers ───────────────────────────────────────
 const COMP_VERIFIED_PATH = path.join(__dirname, 'compensation_verified.json');
 
-function loadCompensationVerified() {
-  try {
-    return JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
-  } catch (_) {
-    return {};
+// ── ML_Master_Compensation.json TTL cache ────────────────────────────────────
+// Avoids a synchronous file read on every /crowd-comp request.
+// _compMasterCache.compMap is a Map<normalizedTitle, entry> for O(1) lookups.
+let _compMasterCache = null, _compMasterCacheTs = 0;
+const _COMP_MASTER_CACHE_MS = parseInt(process.env.COMP_MASTER_CACHE_MS, 10) || 60_000;
+const _normCompTitle = s => (s || '').trim().toLowerCase();
+
+function _loadCompMasterCached() {
+  const now = Date.now();
+  if (_compMasterCache && now - _compMasterCacheTs < _COMP_MASTER_CACHE_MS) return _compMasterCache;
+  const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
+  let compData = {};
+  try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (e) {
+    console.warn('[crowd-comp] failed to load ML_Master_Compensation.json:', e && e.message);
   }
+  const compByJobTitle = compData.compensation_by_job_title || {};
+  // Build Map for O(1) title lookup (avoids O(n) scan per candidate row)
+  const compMap = new Map();
+  for (const [jtKey, jtVal] of Object.entries(compByJobTitle)) {
+    compMap.set(_normCompTitle(jtKey), jtVal);
+  }
+  _compMasterCache = { compMap };
+  _compMasterCacheTs = now;
+  return _compMasterCache;
+}
+
+// In-memory TTL cache (10 s) — avoids per-request disk reads for a rarely-changed file.
+let _compVerifiedCache = null, _compVerifiedCacheTs = 0;
+const _COMP_VERIFIED_CACHE_MS = 10_000;
+
+function loadCompensationVerified() {
+  const now = Date.now();
+  if (_compVerifiedCache !== null && now - _compVerifiedCacheTs < _COMP_VERIFIED_CACHE_MS) return _compVerifiedCache;
+  try {
+    _compVerifiedCache = JSON.parse(fs.readFileSync(COMP_VERIFIED_PATH, 'utf8'));
+  } catch (_) {
+    _compVerifiedCache = {};
+  }
+  _compVerifiedCacheTs = now;
+  return _compVerifiedCache;
 }
 
 function saveCompensationVerified(data) {
   const tmp = COMP_VERIFIED_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, COMP_VERIFIED_PATH);
+  _compVerifiedCache = data;
+  _compVerifiedCacheTs = Date.now();
 }
 
 app.post('/save-compensation-verified', requireLogin, dashboardRateLimit, async (req, res) => {
@@ -3149,9 +3337,17 @@ app.get('/compensation-verified', requireLogin, dashboardRateLimit, async (req, 
 // ── Verified Email JSON helpers ───────────────────────────────────────────────
 const VERIFIED_EMAIL_PATH = path.join(__dirname, 'verified_email.json');
 
+// In-memory TTL cache (10 s) — avoids per-request disk reads for a file that is
+// written infrequently but read on every /save-verified-email and /generate-email call.
+let _verifiedEmailCache = null, _verifiedEmailCacheTs = 0;
+const _VERIFIED_EMAIL_CACHE_MS = 10_000;
+
 function loadVerifiedEmail() {
+  const now = Date.now();
+  if (_verifiedEmailCache !== null && now - _verifiedEmailCacheTs < _VERIFIED_EMAIL_CACHE_MS) return _verifiedEmailCache;
+  let data;
   try {
-    const data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
+    data = JSON.parse(fs.readFileSync(VERIFIED_EMAIL_PATH, 'utf8'));
     // Migrate legacy flat-array format to new company-keyed structure
     if (Array.isArray(data)) {
       const converted = {};
@@ -3160,21 +3356,24 @@ function loadVerifiedEmail() {
         if (!converted[companyKey]) converted[companyKey] = { Domain: [], Confidence_threshold: 1 };
         converted[companyKey].Domain.push({ ...entry, company: companyKey, count: entry.count || 1, confidence: entry.confidence != null ? entry.confidence : 1 });
       }
-      return converted;
-    }
-    // Ensure every entry has a count field (handles data saved before count was introduced)
-    for (const companyKey of Object.keys(data)) {
-      const companyData = data[companyKey];
-      if (Array.isArray(companyData.Domain)) {
-        for (const entry of companyData.Domain) {
-          if (entry.count === null || entry.count === undefined) entry.count = 1;
+      data = converted;
+    } else {
+      // Ensure every entry has a count field (handles data saved before count was introduced)
+      for (const companyKey of Object.keys(data)) {
+        const companyData = data[companyKey];
+        if (Array.isArray(companyData.Domain)) {
+          for (const entry of companyData.Domain) {
+            if (entry.count === null || entry.count === undefined) entry.count = 1;
+          }
         }
       }
     }
-    return data;
   } catch (_) {
-    return {};
+    data = {};
   }
+  _verifiedEmailCache = data;
+  _verifiedEmailCacheTs = now;
+  return _verifiedEmailCache;
 }
 
 // Redistribute confidence values across all domain entries for a company
@@ -3200,6 +3399,8 @@ function saveVerifiedEmail(data) {
   const tmp = VERIFIED_EMAIL_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
   fs.renameSync(tmp, VERIFIED_EMAIL_PATH);
+  _verifiedEmailCache = data;
+  _verifiedEmailCacheTs = Date.now();
 }
 
 // Gemini-powered email normalization: derive format pattern + fake example for a domain
@@ -5122,29 +5323,71 @@ function decryptBuffer(buf) {
 /**
  * Read the per-user service config. Tries encrypted .enc first, then plaintext .json.
  * Returns the parsed config object, or null if no config exists.
+ * Uses an mtime-based per-username in-memory cache to avoid repeated disk reads and
+ * decryption on every contact-gen / email-verif request within the same session.
  */
+// Cache: Map<username, { data: object|null, mtimeMs: number }>
+const _userSvcCfgCache = new Map();
+
 function readUserServiceConfig(username) {
   const encPath  = userServiceConfigPath(username);
   const jsonPath = _userServiceJsonPath(username);
   console.log('[readUserServiceConfig] %s → checking enc=%s  json=%s', username, encPath, jsonPath);
-  if (fs.existsSync(encPath)) {
+
+  // Determine the mtime of whichever backing file exists (enc takes priority).
+  let activePath = null;
+  let mtime = 0;
+  try {
+    if (fs.existsSync(encPath)) {
+      activePath = encPath;
+      mtime = fs.statSync(encPath).mtimeMs;
+    } else if (fs.existsSync(jsonPath)) {
+      activePath = jsonPath;
+      mtime = fs.statSync(jsonPath).mtimeMs;
+    }
+  } catch (_) { /* ignore stat errors; will re-read below */ }
+
+  if (!activePath) {
+    _userSvcCfgCache.delete(username);
+    return null;
+  }
+
+  const cached = _userSvcCfgCache.get(username);
+  if (cached && cached.mtimeMs === mtime) return cached.data;
+
+  // Cache miss — read and decrypt/parse the file.
+  let data = null;
+  if (activePath === encPath) {
     try {
       const raw = decryptBuffer(fs.readFileSync(encPath));
-      return JSON.parse(raw.toString('utf8'));
+      data = JSON.parse(raw.toString('utf8'));
     } catch (err) {
-      // Decryption may fail if PORTING_SECRET is missing/changed — fall through to .json
       console.error('[readUserServiceConfig] .enc decrypt failed for', username, ':', err.message);
+      // Fall through to JSON fallback.
+      if (fs.existsSync(jsonPath)) {
+        try {
+          data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        } catch (parseErr) {
+          console.error('[readUserServiceConfig] .json parse failed for', username, ':', parseErr.message);
+        }
+      }
+    }
+  } else {
+    try {
+      data = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+    } catch (parseErr) {
+      console.error('[readUserServiceConfig] .json parse failed for', username, ':', parseErr.message);
     }
   }
-  if (fs.existsSync(jsonPath)) {
-    return JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-  }
-  return null;
+
+  _userSvcCfgCache.set(username, { data, mtimeMs: mtime });
+  return data;
 }
 
 /**
  * Write the per-user service config. Uses encryption when PORTING_SECRET is set,
  * otherwise writes a plaintext JSON file so the system works without a secret.
+ * Invalidates the in-memory cache for this user.
  */
 function writeUserServiceConfig(username, cfg) {
   const raw = Buffer.from(JSON.stringify(cfg), 'utf8');
@@ -5155,15 +5398,18 @@ function writeUserServiceConfig(username, cfg) {
     // the operator has already consented to by not setting PORTING_SECRET.
     fs.writeFileSync(_userServiceJsonPath(username), raw);
   }
+  _userSvcCfgCache.delete(username);
 }
 
 /**
  * Remove all config files for the user (both encrypted and plaintext).
+ * Clears the in-memory cache entry for this user.
  */
 function deleteUserServiceConfig(username) {
   [userServiceConfigPath(username), _userServiceJsonPath(username)].forEach(fp => {
     try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch (_) {}
   });
+  _userSvcCfgCache.delete(username);
 }
 
 // GET /api/user-service-config/status
