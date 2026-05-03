@@ -961,8 +961,9 @@ Input:
         return Number.isInteger(id) && id > 0 && item.compensation != null && !isNaN(comp);
       });
       if (validItems.length > 0) {
-        const batchIds = validItems.map(item => Number(item.id));
-        const batchComps = validItems.map(item => Number(item.compensation));
+        // Build both arrays in a single pass
+        const batchIds = [], batchComps = [];
+        for (const item of validItems) { batchIds.push(Number(item.id)); batchComps.push(Number(item.compensation)); }
         const batchRes = await client.query(
           `UPDATE "process" AS p
            SET compensation = v.comp
@@ -3163,7 +3164,9 @@ function _loadCompMasterCached() {
   if (_compMasterCache && now - _compMasterCacheTs < _COMP_MASTER_CACHE_MS) return _compMasterCache;
   const compPath = path.join(ML_OUTPUT_DIR, 'ML_Master_Compensation.json');
   let compData = {};
-  try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (_) {}
+  try { compData = JSON.parse(fs.readFileSync(compPath, 'utf8')); } catch (e) {
+    console.warn('[crowd-comp] failed to load ML_Master_Compensation.json:', e && e.message);
+  }
   const compByJobTitle = compData.compensation_by_job_title || {};
   // Build Map for O(1) title lookup (avoids O(n) scan per candidate row)
   const compMap = new Map();
