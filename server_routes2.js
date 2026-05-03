@@ -2077,7 +2077,7 @@ app.post('/calendar/freebusy', requireLogin, async (req, res) => {
       primaryBusy = (fb.data && fb.data.calendars && fb.data.calendars.primary && fb.data.calendars.primary.busy) ? fb.data.calendars.primary.busy : [];
     }
 
-    const slots = computeFreeSlots(primaryBusy, startISO, endISO, durationMinutes, { startHour: 0, endHour: 24 }, 200);
+    const slots = computeFreeSlots(primaryBusy, startISO, endISO, durationMinutes, { startHour: 0, endHour: 24 }, 1000);
     res.json({ ok: true, slots });
   } catch (err) {
     console.error('/calendar/freebusy error', err);
