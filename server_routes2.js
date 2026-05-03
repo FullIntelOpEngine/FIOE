@@ -1088,7 +1088,7 @@ Input:
       broadcastSSEBulk(updatedRows);
     } catch (_) { /* ignore */ }
 
-    _writeApprovalLog({ action: 'ai_comp', username: req.user.username, userid: req.user.id, detail: `AI Comp updated ${updatedRows.length} records`, source: 'server.js' });
+    _writeApprovalLog({ action: 'ai_comp', username: req.user.username, userid: req.user.id, detail: `AI Comp updated ${updatedRows.length} records`, source: 'server_routes2.js' });
     res.json({ updatedCount: updatedRows.length, rows: updatedRows });
 
   } catch (err) {

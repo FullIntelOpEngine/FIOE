@@ -3026,11 +3026,8 @@ function CandidatesTable({
             return next;
           });
         }
-        // Use server-supplied message; append pending notice when background job is running
-        const baseMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
-        aiMsg = (payload?.pending > 0 && !payload?.message)
-          ? `${baseMsg} (${payload.pending} AI estimates in progress…)`
-          : baseMsg;
+        // Server-supplied message already includes pending info when background path is active.
+        aiMsg = payload?.message || `AI estimated ${payload?.updatedCount ?? updatedRows.length} record(s).`;
       }
 
       const crowdMsg = crowdMatchedIds.size > 0 ? `${crowdMatchedIds.size} crowd-sourced` : '';
