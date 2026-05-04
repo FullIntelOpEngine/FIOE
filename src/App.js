@@ -275,11 +275,16 @@ const getMaxDbId = rows => rows.reduce((max, row) => {
 // Normalises a string to lowercase alphanumeric only — for filename / candidate-name comparisons.
 const _normalizeForResume = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-// Escapes XML-special characters for SpreadsheetML cell/attribute content.
-const _xmlEscape = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// SpreadsheetML / OOXML maximum characters per cell.
+const _XML_CELL_MAX = 32767;
 
-// Truncates a value to the SpreadsheetML 32 767-char per-cell limit.
-const _xmlCellStr = v => { const s = v == null ? '' : String(v); return s.length > 32767 ? s.slice(0, 32767) : s; };
+// Escapes XML-special characters for SpreadsheetML cell/attribute content.
+// Single-pass replace avoids creating four intermediate strings.
+const _XML_ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+const _xmlEscape = s => String(s ?? '').replace(/[&<>"]/g, c => _XML_ESC_MAP[c]);
+
+// Truncates a value to the SpreadsheetML per-cell character limit.
+const _xmlCellStr = v => { const s = v == null ? '' : String(v); return s.length > _XML_CELL_MAX ? s.slice(0, _XML_CELL_MAX) : s; };
 
 // Returns true when a required candidate field is blank / missing.
 const _isBlankField = v => !v || !String(v).trim();
@@ -4671,10 +4676,8 @@ function CandidatesTable({
     // vskillset/assessment data written asynchronously by bulk_assess after Dock In).
     // Falls back to the in-memory allCandidates prop for non-Dock-Out callers.
     const exportCandidates = freshCandidates !== null ? freshCandidates : allCandidates;
-    // Max cell length (SpreadsheetML / OOXML spec) — enforced via module-level _xmlCellStr.
-    const MAX_LEN = 32767;
     // Use module-level _xmlEscape for XML attribute/element escaping,
-    // and _xmlCellStr for cell-value truncation.
+    // and _xmlCellStr for cell-value truncation (both enforce the 32 767-char limit).
     const ex = _xmlEscape;
     const cellStr = _xmlCellStr;
 
@@ -4803,7 +4806,7 @@ function CandidatesTable({
     // Keep JSON rows as individual strings for Blob part streaming (avoids extra string concat).
     const jsonRowArr = rawJsonStrings.map(s => {
       const chunks = [];
-      for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
+      for (let i = 0; i < s.length; i += _XML_CELL_MAX) chunks.push(s.slice(i, i + _XML_CELL_MAX));
       const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
       return `<Row>${cells}</Row>`;
     });
