@@ -898,7 +898,7 @@
             max-width: 260px; /* a bit wider to contain long department names */
             position: relative;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            transition: transform 0.3s ease, border-color 0.3s ease; /* box-shadow intentionally excluded: non-compositable property causes full paint on every frame */
+            transition: transform 0.3s ease; /* border-color and box-shadow intentionally excluded: non-compositable properties cause full paint on every frame */
             z-index: 2;
             overflow-wrap: anywhere; /* keep long text inside */
             word-break: break-word;
@@ -1403,11 +1403,11 @@
             transition: transform 0.2s ease;
             overflow: hidden;
             position: relative;
-            will-change: transform; /* promote to compositor layer for hover translate */
         }
         .template-box:hover {
             transform: translateY(-2px);
             border-color: var(--primary);
+            will-change: transform; /* promote compositor layer only during active hover */
         }
         .template-header {
             padding: 12px;
