@@ -2372,7 +2372,38 @@ async function ensureProcessTable() {
     console.error('[INIT] Failed to ensure process table/columns exist:', err);
   }
 }
-ensureProcessTable();
+
+// ========== DB indexes: add after columns exist to avoid missing-column errors ==========
+async function ensureProcessIndexes() {
+  const idxDefs = [
+    // Primary lookup: all candidate queries filter by userid
+    { name: 'idx_process_userid',        sql: `CREATE INDEX IF NOT EXISTS idx_process_userid        ON "process" (userid)` },
+    // LinkedIn dedup check (dock-in, CV lookup)
+    { name: 'idx_process_linkedinurl',   sql: `CREATE INDEX IF NOT EXISTS idx_process_linkedinurl   ON "process" (linkedinurl)` },
+    // ML / compensation analytics filter
+    { name: 'idx_process_role_tag',      sql: `CREATE INDEX IF NOT EXISTS idx_process_role_tag      ON "process" (role_tag)` },
+    // assess-unmatched ORDER BY id DESC paging
+    { name: 'idx_process_userid_id',     sql: `CREATE INDEX IF NOT EXISTS idx_process_userid_id     ON "process" (userid, id DESC)` },
+    // bulk-update / ownership check id=ANY(...)
+    { name: 'idx_process_id',            sql: `CREATE INDEX IF NOT EXISTS idx_process_id            ON "process" (id)` },
+    // login table: session auth lookup
+    { name: 'idx_login_username',        sql: `CREATE INDEX IF NOT EXISTS idx_login_username        ON "login" (username)` },
+    // login table: gemini_query_count admin queries
+    { name: 'idx_login_gemini_query_count', sql: `CREATE INDEX IF NOT EXISTS idx_login_gemini_query_count ON "login" (gemini_query_count)` },
+    // sourcing dedup
+    { name: 'idx_sourcing_linkedinurl',  sql: `CREATE INDEX IF NOT EXISTS idx_sourcing_linkedinurl  ON sourcing (linkedinurl)` },
+    { name: 'idx_sourcing_userid',       sql: `CREATE INDEX IF NOT EXISTS idx_sourcing_userid       ON sourcing (userid)` },
+  ];
+  for (const { name, sql } of idxDefs) {
+    try {
+      await pool.query(sql);
+    } catch (err) {
+      console.error(`[INIT] Index ${name} skipped:`, err.message);
+    }
+  }
+}
+// Run after ensureProcessTable so columns exist before we index them
+ensureProcessTable().then(() => ensureProcessIndexes()).catch(() => {});
 // ========== END NEW ==========
 
 
@@ -6417,6 +6448,38 @@ require('./server_routes2')(app, {
   CONTACT_GEN_IN_EMAIL_VERIF,
 });
 
+
+// ── Job queue + LLM worker initialisation ────────────────────────────────────
+// Initialised here so the worker shares the same llmGenerateText, pool, and
+// normalizeCompanyName helpers as the rest of server.js.
+// broadcastSSE / broadcastSSEBulk are set on the server_routes2 module.exports
+// inside registerRoutes() (called synchronously above), so they are available now.
+const { queueStats }             = require('./server/queue');
+const { initLlmWorker, getLlmQueue } = require('./server/workers/llmWorker');
+
+(function _initQueue() {
+  const routes2 = require('./server_routes2');
+  initLlmWorker({
+    pool,
+    llmGenerateText,
+    incrementGeminiQueryCount,
+    normalizeCompanyName,
+    picToDataUri,
+    broadcastSSE:     routes2._broadcastSSE     || null,
+    broadcastSSEBulk: routes2._broadcastSSEBulk || null,
+  });
+})();
+
+// Expose the shared LLM queue so other modules can enqueue jobs.
+// Usage: require('./server').llmQueue.enqueue({ type: 'calc-unmatched', … })
+module.exports.llmQueue = getLlmQueue();
+
+// ── Monitoring: queue depth endpoint ─────────────────────────────────────────
+// GET /api/queue-stats — returns per-queue depth and in-flight counts.
+// Requires auth so it is not exposed publicly.
+app.get('/api/queue-stats', dashboardRateLimit, requireLogin, (req, res) => {
+  res.json({ queues: queueStats(), ts: new Date().toISOString() });
+});
 
 // Create HTTP server
 const server = http.createServer(app);

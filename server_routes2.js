@@ -4760,6 +4760,12 @@ function broadcastSSEBulk(rows) {
   _broadcastSSEImmediate('candidates_batch_updated', rows);
 }
 
+// Export broadcast helpers so external modules (e.g. server/workers/llmWorker.js)
+// can call them without creating a circular require.  These are set here, inside
+// registerRoutes, because broadcastSSE / broadcastSSEBulk are closure-scoped.
+module.exports._broadcastSSE     = broadcastSSE;
+module.exports._broadcastSSEBulk = broadcastSSEBulk;
+
 // SSE Endpoint for real-time updates
 app.get('/api/events', (req, res) => {
   // Set headers for SSE

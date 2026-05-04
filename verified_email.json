@@ -121,5 +121,21 @@
       }
     ],
     "Confidence_threshold": 1
+  },
+  "samsung_sds": {
+    "Domain": [
+      {
+        "company": "samsung_sds",
+        "domain": "samsung.com",
+        "format": "first_name.last_name",
+        "fake_example": "oliver.chan@samsung.com",
+        "fake_local_part": "oliver.chan",
+        "saved_at": "2026-05-03T17:05:57.479Z",
+        "candidateId": "19654",
+        "count": 1,
+        "confidence": 1
+      }
+    ],
+    "Confidence_threshold": 1
   }
 }
