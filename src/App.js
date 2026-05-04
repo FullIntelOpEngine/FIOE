@@ -171,13 +171,25 @@ function parseDbCopySheet(raw) {
   return { dataStartRow, sha256InFile, rawJsonStrings, rawDbContent };
 }
 
+// Precompiled regex constants — defined once at module level to avoid recreation on every call.
+const _RE_NON_HUMAN_NAME = /(http|www\.|Font|License|Version|Copyright|Authors|Open Font|Project|games|game)/i;
+const _RE_NON_ALPHA_NAME = /[a-zA-Z\s\-']/g;
+const _RE_TIER_EXECUTIVE   = /\b(?:executive|chief|vp|vice president|cxo)\b/;
+const _RE_TIER_SR_DIRECTOR = /\bsenior director\b/;
+const _RE_TIER_DIRECTOR    = /\bdirector\b/;
+const _RE_TIER_SR_MANAGER  = /\b(?:senior manager|sr manager|sr mgr)\b/;
+const _RE_TIER_MANAGER     = /\b(?:manager|mgr)\b/;
+const _RE_TIER_LEAD        = /\blead\b/;
+const _RE_TIER_SENIOR      = /\b(?:senior|sr)\b/;
+const _RE_TIER_MID         = /\b(?:mid(?:dle)?|intermediate)\b/;
+const _RE_TIER_JUNIOR      = /\b(?:junior|jr)\b/;
+
 function isHumanName(name) {
   if (!name || typeof name !== 'string') return false;
-  const nonHumanPatterns = /(http|www\.|Font|License|Version|Copyright|Authors|Open Font|Project|games|game)/i;
   if (name.length < 2 || name.length > 60) return false;
-  const nonAlpha = name.replace(/[a-zA-Z\s\-']/g, '');
+  const nonAlpha = name.replace(_RE_NON_ALPHA_NAME, '');
   if (nonAlpha.length > 8) return false;
-  return !nonHumanPatterns.test(name);
+  return !_RE_NON_HUMAN_NAME.test(name);
 }
 function normalizeTier(s) {
   if (!s) return '';
@@ -192,15 +204,15 @@ function normalizeTier(s) {
   if (v === 'sr director' || v === 'senior director' || v === 'sr dir' || v === 'svp' || v.includes('sr director')) return 'Sr Director';
   if (v === 'director' || v === 'dir' || v.includes(' director')) return 'Director';
   if (v === 'executive' || v === 'exec' || v === 'cxo' || v === 'vp' || v === 'chief' || v.includes('executive') || v.includes('vice president') || v.includes('chief')) return 'Executive';
-  if (/\bexecutive|chief|vp|vice president|cxo\b/.test(v)) return 'Executive';
-  if (/\bsenior director\b/.test(v)) return 'Sr Director';
-  if (/\bdirector\b/.test(v)) return 'Director';
-  if (/\bsenior manager\b|\bsr manager\b|\bsr mgr\b/.test(v)) return 'Sr Manager';
-  if (/\bmanager\b|\bmgr\b/.test(v)) return 'Manager';
-  if (/\blead\b/.test(v)) return 'Lead';
-  if (/\bsenior\b|\bsr\b/.test(v)) return 'Senior';
-  if (/\bmid(dle)?\b|\bintermediate\b/.test(v)) return 'Mid';
-  if (/\bjunior\b|\bjr\b/.test(v)) return 'Junior';
+  if (_RE_TIER_EXECUTIVE.test(v))   return 'Executive';
+  if (_RE_TIER_SR_DIRECTOR.test(v)) return 'Sr Director';
+  if (_RE_TIER_DIRECTOR.test(v))    return 'Director';
+  if (_RE_TIER_SR_MANAGER.test(v))  return 'Sr Manager';
+  if (_RE_TIER_MANAGER.test(v))     return 'Manager';
+  if (_RE_TIER_LEAD.test(v))        return 'Lead';
+  if (_RE_TIER_SENIOR.test(v))      return 'Senior';
+  if (_RE_TIER_MID.test(v))         return 'Mid';
+  if (_RE_TIER_JUNIOR.test(v))      return 'Junior';
   const cap = v.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
   return cap;
 }
@@ -209,6 +221,12 @@ function inferSeniority(candidate) {
     normalizeTier(candidate?.role_tag) ||
     '';
 }
+
+// Module-level URL/name normalizers — pure functions used by _buildDbCopyFinder inside
+// CandidatesTable. Defined here so they are allocated once, not on every render.
+const _normalizeLinkedInUrlForDock = u => (u || '').trim().toLowerCase().replace(/\/+$/, '');
+const _normalizeNameForDock        = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
 async function fetchSkillsetMapping() {
   try {
     const res = await fetch(`http://localhost:${API_PORT}/skillset-mapping`);
@@ -594,6 +612,7 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
   const [copiedTag, setCopiedTag] = useState('');
   const [glossaryLocked, setGlossaryLocked] = useState(false);
   const glossaryRef = useRef(null);
+  const _templateSaveTimerRef = useRef(null); // debounce timer for localStorage template writes
 
   // Insert scheduler booking link into email body when user clicks "Insert into Email" in the modal
   useEffect(() => {
@@ -742,8 +761,12 @@ function EmailComposeModal({ isOpen, onClose, toAddresses, candidateName, candid
 
   // Template Management
   // Persist only user-authored templates (exclude built-ins whose id starts with 'builtin-')
+  // Debounced: coalesces rapid saves (e.g. repeated edits) into a single localStorage write.
   const persistUserTemplates = (list) => {
-    localStorage.setItem('emailTemplates', JSON.stringify(list.filter(t => !String(t.id).startsWith('builtin-'))));
+    if (_templateSaveTimerRef.current) clearTimeout(_templateSaveTimerRef.current);
+    _templateSaveTimerRef.current = setTimeout(() => {
+      localStorage.setItem('emailTemplates', JSON.stringify(list.filter(t => !String(t.id).startsWith('builtin-'))));
+    }, 400);
   };
 
   const handleSaveTemplate = () => {
@@ -2655,6 +2678,8 @@ function CandidatesTable({
     [showAdvancedFields]
   );
 
+  const _colWidthsSaveTimerRef = useRef(null); // debounce timer for colWidths localStorage write
+
   useEffect(() => {
     const stored = (() => {
       try { return JSON.parse(localStorage.getItem(COLUMN_WIDTHS_KEY) || '{}'); } catch { return {}; }
@@ -2671,7 +2696,12 @@ function CandidatesTable({
 
   useEffect(() => {
     if (colWidths && Object.keys(colWidths).length) {
-      localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(colWidths));
+      // Debounce: only write to localStorage after the user has stopped resizing for 400 ms
+      // to avoid expensive synchronous writes on every mouse-move pixel during column drag.
+      if (_colWidthsSaveTimerRef.current) clearTimeout(_colWidthsSaveTimerRef.current);
+      _colWidthsSaveTimerRef.current = setTimeout(() => {
+        localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(colWidths));
+      }, 400);
     }
   }, [colWidths]);
 
@@ -2833,20 +2863,29 @@ function CandidatesTable({
   };
 
   const handleSaveAll = async () => {
-    if (typeof onSave !== 'function') return;
     setSavingAll(true);
     setSaveMessage('');
     setSaveError('');
     try {
-      for (const c of candidates) {
-        const id = c.id;
-        const payload = { ...(c || {}), ...(editRows && editRows[id] ? editRows[id] : {}) };
-        try {
-          await onSave(id, payload);
-        } catch (e) {
-          console.warn('saveAll row save error', e && e.message);
-        }
+      // Collect all existing-record rows merged with pending edits, then send in one batch
+      // request to /candidates/bulk-update instead of N sequential PUT calls.
+      const rows = candidates
+        .filter(c => Number.isInteger(Number(c.id)) && Number(c.id) > 0)
+        .map(c => {
+          const id = c.id;
+          return { ...(c || {}), ...(editRows && editRows[id] ? editRows[id] : {}) };
+        });
+      if (rows.length === 0) {
+        setSaveMessage('Nothing to save.');
+        return;
       }
+      const res = await fetch(`http://localhost:${API_PORT}/candidates/bulk-update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ rows }),
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`bulk-update failed with status ${res.status}`);
       setSaveMessage('All visible candidates saved.');
     } catch (e) {
       setSaveError('Failed to save all candidates.');
@@ -3242,12 +3281,18 @@ function CandidatesTable({
     setColResizing({ active: true, field, startX: e.clientX, startW: colWidths[field] });
   };
   useEffect(() => {
+    let rafId = null; // pending rAF handle — throttles setState to one update per frame
     const move = e => {
       if (!colResizing.active) return;
-      setColWidths(prev => {
-        const maxForField = FIELD_MAX_WIDTHS[colResizing.field] || GLOBAL_MAX_WIDTH;
-        const nw = Math.max(MIN_WIDTH, Math.min(maxForField, colResizing.startW + (e.clientX - colResizing.startX)));
-        return { ...prev, [colResizing.field]: nw };
+      if (rafId !== null) return; // already have a frame queued; skip this event
+      const clientX = e.clientX;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        setColWidths(prev => {
+          const maxForField = FIELD_MAX_WIDTHS[colResizing.field] || GLOBAL_MAX_WIDTH;
+          const nw = Math.max(MIN_WIDTH, Math.min(maxForField, colResizing.startW + (clientX - colResizing.startX)));
+          return { ...prev, [colResizing.field]: nw };
+        });
       });
     };
     const up = () => setColResizing({ active: false, field: '', startX: 0, startW: 0 });
@@ -3258,6 +3303,7 @@ function CandidatesTable({
     return () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, [colResizing]);
 
@@ -3453,8 +3499,7 @@ function CandidatesTable({
   // Sheet 1 rows against DB Copy rows by LinkedIn URL (primary) or name (secondary).
   // Index-based alignment breaks when some records are excluded from DB Copy by the
   // eligibility filter during Dock Out; URL/name lookup avoids that misalignment.
-  const _normalizeLinkedInUrlForDock = u => (u || '').trim().toLowerCase().replace(/\/+$/, '');
-  const _normalizeNameForDock        = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  // (_normalizeLinkedInUrlForDock and _normalizeNameForDock are module-level constants)
   // Build lookup maps from an array of DB Copy objects and return a finder function.
   // The finder matches by LinkedIn URL first, then by name (consuming duplicates in order).
   const _buildDbCopyFinder = dbCopyRows => {
@@ -8002,6 +8047,10 @@ export default function App() {
   // Tracks whether a background verify-data (Sync Entries) job is in flight.
   // Set to true on 202 response; cleared by the `verify_data_complete` SSE listener.
   const verifyDataPendingRef = React.useRef(false);
+  // SSE candidate_updated coalescing: buffer rapid individual updates and flush as a batch.
+  // Mirrors the candidates_batch_updated handler to avoid N×setState per burst of SSE events.
+  const _sseUpdateBufferRef  = React.useRef(new Map()); // id → latest updated object
+  const _sseFlushTimerRef    = React.useRef(null);       // pending flush setTimeout handle
 
   // State for skillset management
   const [newSkillInput, setNewSkillInput] = useState('');
@@ -8539,16 +8588,9 @@ export default function App() {
           try {
             const updated = JSON.parse(e.data);
             if (!updated || updated.id == null) return;
-            setCandidates(prev => {
-              const exists = prev.some(c => String(c.id) === String(updated.id));
-              if (!exists) return prev;
-              return prev.map(c => (String(c.id) === String(updated.id) ? { ...c, ...updated } : c));
-            });
-            setEditRows(prev => ({ ...(prev || {}), [updated.id]: { ...updated, ...(prev[updated.id] || {}) } }));
-            // Update resume candidate in view if selected
-            setResumeCandidate(prev => (prev && String(prev.id) === String(updated.id) ? { ...prev, ...updated } : prev));
-            // Finalise a background calculate-unmatched job (202 fire-and-forget)
             const sid = String(updated.id);
+
+            // Immediately resolve any pending calculate-unmatched job (time-sensitive UX state).
             if (_pendingUnmatchedCalcRef.current.has(sid) && updated.lskillset !== undefined) {
               _pendingUnmatchedCalcRef.current.delete(sid);
               setCalculatingUnmatched(false);
@@ -8558,6 +8600,32 @@ export default function App() {
                 return next;
               });
             }
+
+            // Buffer the update and coalesce rapid SSE events into a single batch setState flush.
+            // This mirrors the candidates_batch_updated handler and avoids one setState per event
+            // when many rows arrive in quick succession (e.g. after a bulk server operation).
+            _sseUpdateBufferRef.current.set(sid, updated);
+            if (_sseFlushTimerRef.current !== null) return; // flush already scheduled
+            _sseFlushTimerRef.current = setTimeout(() => {
+              _sseFlushTimerRef.current = null;
+              const updateMap = _sseUpdateBufferRef.current;
+              _sseUpdateBufferRef.current = new Map();
+              if (updateMap.size === 0) return;
+              setCandidates(prev => prev.map(c => {
+                const u = updateMap.get(String(c.id));
+                return u ? { ...c, ...u } : c;
+              }));
+              setEditRows(prev => {
+                const next = { ...prev };
+                updateMap.forEach((u, id) => { next[id] = { ...u, ...(prev[id] || {}) }; });
+                return next;
+              });
+              setResumeCandidate(prev => {
+                if (!prev || prev.id == null) return prev;
+                const u = updateMap.get(String(prev.id));
+                return u ? { ...prev, ...u } : prev;
+              });
+            }, 50);
           } catch (err) {
             console.warn('[SSE] Error parsing candidate_updated:', err);
           }
@@ -8701,6 +8769,11 @@ export default function App() {
       mounted = false;
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
+      }
+      // Clear any pending SSE batch-flush timer to prevent stale state updates after unmount.
+      if (_sseFlushTimerRef.current !== null) {
+        clearTimeout(_sseFlushTimerRef.current);
+        _sseFlushTimerRef.current = null;
       }
       try {
         eventSourceRef.current?.close();
