@@ -943,6 +943,27 @@
                 }
             });
 
+            // Also expand org-chart cards — they carry contain:layout paint + height:500px
+            // which clips content and creates visual patches in the PDF capture.
+            grid.querySelectorAll('.org-chart-card').forEach(card => {
+                if (_expandedCards.has(card)) return; // already handled above
+                _expandedCards.add(card);
+                const cs = card.style;
+                _layoutRestores.push({ el: card, overflow: cs.overflow, height: cs.height, maxHeight: cs.maxHeight, contain: cs.contain });
+                cs.overflow  = 'visible';
+                cs.height    = 'auto';
+                cs.maxHeight = 'none';
+                cs.contain   = 'none';
+                const scroll = card.querySelector('.org-chart-scroll');
+                if (scroll) {
+                    const ss = scroll.style;
+                    _layoutRestores.push({ el: scroll, overflow: ss.overflow, height: ss.height, maxHeight: ss.maxHeight });
+                    ss.overflow  = 'visible';
+                    ss.height    = 'auto';
+                    ss.maxHeight = 'none';
+                }
+            });
+
             // One animation-frame so the browser can reflow the expanded content
             await new Promise(r => requestAnimationFrame(r));
 
@@ -1068,6 +1089,27 @@
                 };
             });
 
+            // Collect inner-element boundaries (table rows, org-group-containers) so that
+            // findBreak can avoid cutting through a row or org tree group when no clean
+            // card-level boundary exists within the current page range.
+            const innerBlockRects = [];
+            grid.querySelectorAll('.table-wrapper tr').forEach(el => {
+                const r = el.getBoundingClientRect();
+                if (r.height < 1) return;
+                innerBlockRects.push({
+                    top:    (r.top    - gridRect.top) * SCALE,
+                    bottom: (r.bottom - gridRect.top) * SCALE
+                });
+            });
+            grid.querySelectorAll('.org-group-container').forEach(el => {
+                const r = el.getBoundingClientRect();
+                if (r.height < 1) return;
+                innerBlockRects.push({
+                    top:    (r.top    - gridRect.top) * SCALE,
+                    bottom: (r.bottom - gridRect.top) * SCALE
+                });
+            });
+
             // Letter landscape: 279.4 × 215.9 mm
             const PAGE_W = 279.4, PAGE_H = 215.9;
             const MARGIN = 8;
@@ -1082,8 +1124,14 @@
             const mmPerPx   = contentW / totalW_px;
             const pxPerPage = Math.floor(contentH / mmPerPx);
 
-            // Find the best page-break height — prefer cuts below a card's bottom edge
+            // Find the best page-break height:
+            //  1. Prefer a cut exactly at a card's bottom edge (no card straddles the cut).
+            //  2. Failing that, cut after the last complete inner block (table row or
+            //     org-group-container) that fits within the page — prevents any tile from
+            //     being split across a page boundary.
+            //  3. Last resort: cut at the full page height (maxPx).
             function findBreak(pxOffset, maxPx) {
+                // ── Primary: card-level boundaries ──────────────────────────────────────
                 const candidates = [];
                 for (const r of cardRects) {
                     if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
@@ -1095,6 +1143,14 @@
                     const straddles = cardRects.some(r => r.top < cutAbs && r.bottom > cutAbs);
                     if (!straddles) return cutAbs - pxOffset;
                 }
+                // ── Secondary: inner-block boundaries (rows / org-group-containers) ────
+                let bestInner = -1;
+                for (const r of innerBlockRects) {
+                    if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
+                        if (r.bottom > bestInner) bestInner = r.bottom;
+                    }
+                }
+                if (bestInner > 0) return bestInner - pxOffset;
                 return maxPx;
             }
 
