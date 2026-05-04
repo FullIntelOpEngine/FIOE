@@ -227,6 +227,33 @@ function inferSeniority(candidate) {
 const _normalizeLinkedInUrlForDock = u => (u || '').trim().toLowerCase().replace(/\/+$/, '');
 const _normalizeNameForDock        = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+// Pure helpers hoisted to module level so they are allocated once, not re-created on
+// every component render.  No component state dependencies.
+function normalizeVskillArray(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (typeof raw === 'object') {
+    const keys = Object.keys(raw).filter(k => !isNaN(k)).sort((a, b) => Number(a) - Number(b));
+    return keys.map(k => raw[k]).filter(Boolean);
+  }
+  return [];
+}
+
+// Small FIFO cache — avoids re-splitting the same skillset string on every render.
+const _parseSkillsetCache = new Map();
+const _PARSE_SKILLSET_CACHE_MAX = 300;
+function parseSkillsetString(skillsetStr) {
+  if (!skillsetStr) return [];
+  const key = String(skillsetStr);
+  if (_parseSkillsetCache.has(key)) return _parseSkillsetCache.get(key);
+  const result = key.split(/[;,|]+/).map(s => s.trim()).filter(Boolean);
+  if (_parseSkillsetCache.size >= _PARSE_SKILLSET_CACHE_MAX) {
+    _parseSkillsetCache.delete(_parseSkillsetCache.keys().next().value);
+  }
+  _parseSkillsetCache.set(key, result);
+  return result;
+}
+
 async function fetchSkillsetMapping() {
   try {
     const res = await fetch(`http://localhost:${API_PORT}/skillset-mapping`);
@@ -2520,7 +2547,9 @@ function CandidatesTable({
   const [bulletinAiPrompt, setBulletinAiPrompt] = useState('');
   const [bulletinAiLoading, setBulletinAiLoading] = useState(false);
   const [bulletinShowAi, setBulletinShowAi] = useState(false);
-  const [bulletinImageData, setBulletinImageData] = useState(''); // base64 data URL of selected card image
+  const [bulletinImageObjUrl, setBulletinImageObjUrl] = useState(''); // Object URL for preview (revoked on clear/change)
+  const _bulletinImgBlobRef     = useRef(null);  // Blob held in ref — not in state — avoids storing base64 in React state
+  const _bulletinImgFilenameRef = useRef('');    // filename for gallery selection highlight
   const [bulletinImageGallery, setBulletinImageGallery] = useState([]); // list of image filenames from server
   const [bulletinImageGalleryOpen, setBulletinImageGalleryOpen] = useState(false);
   const [bulletinImageGalleryLoading, setBulletinImageGalleryLoading] = useState(false);
@@ -2565,7 +2594,10 @@ function CandidatesTable({
     setBulletinDescription('');
     setBulletinAiPrompt('');
     setBulletinShowAi(false);
-    setBulletinImageData('');
+    if (bulletinImageObjUrl) URL.revokeObjectURL(bulletinImageObjUrl);
+    _bulletinImgBlobRef.current = null;
+    _bulletinImgFilenameRef.current = '';
+    setBulletinImageObjUrl('');
     setBulletinImageGallery([]);
     setBulletinImageGalleryOpen(false);
     setBulletinPublicPost(false);
@@ -3233,6 +3265,11 @@ function CandidatesTable({
     'Level Design', 'Production Management'
   ]);
   function prettifySkillset(raw) {
+    // Fast path for string inputs — most common case (cell values already serialized).
+    const origKey = typeof raw === 'string' ? raw : null;
+    if (origKey !== null) {
+      if (_parseSkillsetCache.has('pfy:' + origKey)) return _parseSkillsetCache.get('pfy:' + origKey);
+    }
     if (raw == null) return '';
     if (Array.isArray(raw)) {
       raw = raw.filter(v => v != null && v !== '').map(v => String(v).trim()).join(', ');
@@ -3272,7 +3309,15 @@ function CandidatesTable({
       merged.push(cur);
     }
     const deduped = merged.filter((t, i) => i === 0 || t !== merged[i - 1]);
-    return deduped.join(', ');
+    const result = deduped.join(', ');
+    // Cache the result keyed on the original string input.
+    if (origKey !== null) {
+      if (_parseSkillsetCache.size >= _PARSE_SKILLSET_CACHE_MAX) {
+        _parseSkillsetCache.delete(_parseSkillsetCache.keys().next().value);
+      }
+      _parseSkillsetCache.set('pfy:' + origKey, result);
+    }
+    return result;
   }
 
   const [colResizing, setColResizing] = useState({ active: false, field: '', startX: 0, startW: 0 });
@@ -4572,7 +4617,7 @@ function CandidatesTable({
           setBulletinDescription('');
           setBulletinAiPrompt('');
           setBulletinShowAi(false);
-          setBulletinImageData('');
+          if (_bulletinImgBlobRef.current) { URL.revokeObjectURL(bulletinImageObjUrl); _bulletinImgBlobRef.current = null; _bulletinImgFilenameRef.current = ''; setBulletinImageObjUrl(''); }
           setBulletinImageGallery([]);
           setBulletinImageGalleryOpen(false);
           setBulletinPublicPost(false);
@@ -4649,9 +4694,11 @@ function CandidatesTable({
 
     // Build header + data rows for Sheet 1
     const headerRow = `<Row>${S1_COLS.map(col => `<Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(col.header)}</Data></Cell>`).join('')}</Row>`;
-    const dataRows  = (exportCandidates || []).map(c =>
+    // Keep rows as individual strings — passed as separate Blob parts to avoid an intermediate
+    // full-string concatenation, reducing peak memory usage for large candidate sets.
+    const dataRowArr = (exportCandidates || []).map(c =>
       `<Row>${S1_COLS.map(col => `<Cell><Data ss:Type="String">${ex(cellStr(col.get(c)))}</Data></Cell>`).join('')}</Row>`
-    ).join('');
+    );
     const colDefs = S1_COLS.map(col =>
       `<Column ss:Width="${['linkedinurl','skillset'].includes(col.header) ? 200 : 110}"/>`
     ).join('');
@@ -4726,12 +4773,13 @@ function CandidatesTable({
     const rawJsonStrings = dockOutEligible.map(c => {
       try { return JSON.stringify(slimCandidate(c)); } catch { return '{}'; }
     });
-    const jsonRows = rawJsonStrings.map(s => {
+    // Keep JSON rows as individual strings for Blob part streaming (avoids extra string concat).
+    const jsonRowArr = rawJsonStrings.map(s => {
       const chunks = [];
       for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
       const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
       return `<Row>${cells}</Row>`;
-    }).join('');
+    });
 
     // Sign the DB Copy content so Dock In can verify it hasn't been tampered with.
     // rawDbContent is the data rows only (no sentinel/hash rows) — used for both SHA-256 and ECDSA.
@@ -4753,117 +4801,120 @@ function CandidatesTable({
 hiddenProtectedOptions() +
 `</Worksheet>\n`;
 
-    const xml = `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
-`<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
-` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
-` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
-` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n` +
-` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
-` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n` +
-` <Worksheet ss:Name="Candidate Data">\n` +
-`  <Table ss:DefaultColumnWidth="110">${colDefs}${headerRow}${dataRows}</Table>\n` +
-`  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">\n` +
-`   <FreezePanes/>\n` +
-`   <FrozenNoSplit/>\n` +
-`   <SplitHorizontal>1</SplitHorizontal>\n` +
-`   <TopRowBottomPane>1</TopRowBottomPane>\n` +
-`   <ActivePane>2</ActivePane>\n` +
-`  </WorksheetOptions>\n` +
-`  ${validationXml}\n` +
-` </Worksheet>\n` +
-` <Worksheet ss:Name="DB Copy" ss:Visible="SheetHidden">\n` +
-`  <Table>${jsonHeaderRow}${sha256SentinelRow}${jsonRows}</Table>\n` +
-hiddenProtectedOptions() +
-` </Worksheet>\n` +
-sigSheet +
+    // Build the Blob from an array of parts instead of one giant concatenated string.
+    // This avoids creating an intermediate string of the full XML in memory before the Blob.
+    const blobParts = [
+      // ── Workbook header + styles ──────────────────────────────────────────────────────────
+      `<?xml version="1.0"?>\n<?mso-application progid="Excel.Sheet"?>\n` +
+      `<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+      ` xmlns:o="urn:schemas-microsoft-com:office:office"\n` +
+      ` xmlns:x="urn:schemas-microsoft-com:office:excel"\n` +
+      ` xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"\n` +
+      ` xmlns:html="http://www.w3.org/TR/REC-html40">\n` +
+      ` <Styles><Style ss:ID="hdr"><Font ss:Bold="1"/></Style></Styles>\n`,
+      // ── Sheet 1: Candidate Data ───────────────────────────────────────────────────────────
+      ` <Worksheet ss:Name="Candidate Data">\n` +
+      `  <Table ss:DefaultColumnWidth="110">` + colDefs + headerRow,
+      // One Blob part per candidate row — avoids O(N) string concat to form dataRows.
+      ...dataRowArr,
+      `</Table>\n` +
+      `  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">\n` +
+      `   <FreezePanes/>\n` +
+      `   <FrozenNoSplit/>\n` +
+      `   <SplitHorizontal>1</SplitHorizontal>\n` +
+      `   <TopRowBottomPane>1</TopRowBottomPane>\n` +
+      `   <ActivePane>2</ActivePane>\n` +
+      `  </WorksheetOptions>\n` +
+      `  ${validationXml}\n` +
+      ` </Worksheet>\n`,
+      // ── Sheet 2: DB Copy (hidden) ─────────────────────────────────────────────────────────
+      ` <Worksheet ss:Name="DB Copy" ss:Visible="SheetHidden">\n  <Table>` +
+      jsonHeaderRow + sha256SentinelRow,
+      // One Blob part per JSON row — avoids O(N) string concat for jsonRows.
+      ...jsonRowArr,
+      `</Table>\n` + hiddenProtectedOptions() + ` </Worksheet>\n`,
+      // ── Remaining sheets (signature, criteria, org/dashboard state, ML) ──────────────────
+      sigSheet,
 // Criteria sheets: hidden worksheets named Criteria1, Criteria2, …
 // Row 0: File | {filename}  — used when reconstructing on Dock In
 // Row 1: JSON | {raw JSON}  — full lossless roundtrip
 // Rows 2+: flattened key-value pairs for human readability when unhidden
-criteriaSheets.map((cf, idx) => {
-  const sheetName = ex(`Criteria${idx + 1}`);
-  let rows = '';
-  try {
-    const obj = typeof cf.content === 'string' ? JSON.parse(cf.content) : cf.content;
-    const rawJson = JSON.stringify(obj);
-    // Flatten to key-value pairs for readable rows
-    const flatten = (o, prefix = '') => {
-      const result = [];
-      for (const [k, v] of Object.entries(o || {})) {
-        const key = prefix ? `${prefix}.${k}` : k;
-        if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-          result.push(...flatten(v, key));
-        } else {
-          result.push([key, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
+      criteriaSheets.map((cf, idx) => {
+        const sheetName = ex(`Criteria${idx + 1}`);
+        let rows = '';
+        try {
+          const obj = typeof cf.content === 'string' ? JSON.parse(cf.content) : cf.content;
+          const rawJson = JSON.stringify(obj);
+          // Flatten to key-value pairs for readable rows
+          const flatten = (o, prefix = '') => {
+            const result = [];
+            for (const [k, v] of Object.entries(o || {})) {
+              const key = prefix ? `${prefix}.${k}` : k;
+              if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+                result.push(...flatten(v, key));
+              } else {
+                result.push([key, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
+              }
+            }
+            return result;
+          };
+          const pairs = flatten(obj);
+          rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(cf.name || '')}</Data></Cell></Row>` +
+            `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>` +
+            `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Key</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Value</Data></Cell></Row>` +
+            pairs.map(([k, v]) => `<Row><Cell><Data ss:Type="String">${ex(k)}</Data></Cell><Cell><Data ss:Type="String">${ex(String(v))}</Data></Cell></Row>`).join('');
+        } catch (_) {
+          // Fallback: single cell with raw content
+          rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(cf.name || '')}</Data></Cell></Row>` +
+            `<Row><Cell><Data ss:Type="String">${ex(String(cf.content || ''))}</Data></Cell></Row>`;
         }
-      }
-      return result;
-    };
-    const pairs = flatten(obj);
-    rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(cf.name || '')}</Data></Cell></Row>` +
-      `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>` +
-      `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Key</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Value</Data></Cell></Row>` +
-      pairs.map(([k, v]) => `<Row><Cell><Data ss:Type="String">${ex(k)}</Data></Cell><Cell><Data ss:Type="String">${ex(String(v))}</Data></Cell></Row>`).join('');
-  } catch (_) {
-    // Fallback: single cell with raw content
-    rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(cf.name || '')}</Data></Cell></Row>` +
-      `<Row><Cell><Data ss:Type="String">${ex(String(cf.content || ''))}</Data></Cell></Row>`;
-  }
-  return `<Worksheet ss:Name="${sheetName}" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="220"/><Column ss:Width="400"/>${rows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
-}).join('') +
-// State sheets: hidden worksheets for orgchart and dashboard save-state (lossless roundtrip)
-// Row 0: File | <filename>   Row 1: JSON | <raw JSON>
-[
-  orgchartStateData  ? { sheetName: 'orgchart',   data: orgchartStateData  } : null,
-  dashboardStateData ? { sheetName: 'dashboard',  data: dashboardStateData } : null,
-].filter(Boolean).map(({ sheetName, data }) => {
-  const username = (data && data.username) ? String(data.username) : '';
-  const safe = username.replace(/[^a-zA-Z0-9_\-]/g, '_');
-  const fileName = `${sheetName}_${safe}.json`;
-  let rawJson = '';
-  try { rawJson = JSON.stringify(data); } catch (_) { rawJson = '{}'; }
-  const rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(fileName)}</Data></Cell></Row>` +
-    `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>`;
-  return `<Worksheet ss:Name="${ex(sheetName)}" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="220"/><Column ss:Width="400"/>${rows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
-}).join('') +
-// ML worksheet: hidden sheet storing the ML analytics profile in exact JSON format for lossless
-// Dock In recreation, plus flattened key-value pairs for human readability if unhidden.
-// New grouped format: { Job_Families: [{ Job_Family, last_updated, username, useraccess,
-//   Family_Core_DNA: { Must_Have_Skills, Confidence_Threshold },
-//   Jobtitle: { "<title>": { Record_Count_Jobtitle, Seniority, Unique_Skills, Total_Experience, Confidence } } }, ...], company, ... }
-// Row 0: ["Username", <username>]
-// Row 1: ["JSON", <full JSON string>]   ← used by Dock In to recreate ML_{username}.json
-// Row 2: (blank separator)
-// Row 3: ["Key", "Value"]               ← human-readable header
-// Row 4+: flattened key-value pairs (arrays joined as comma-separated strings)
-(() => {
-  if (!mlSummaryData) return '';
-  const mlUsername = (user && user.username) ? String(user.username) : '';
-  const flatten = (o, prefix = '') => {
-    const result = [];
-    for (const [k, v] of Object.entries(o || {})) {
-      const key = prefix ? `${prefix}.${k}` : k;
-      if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-        result.push(...flatten(v, key));
-      } else {
-        result.push([key, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
-      }
-    }
-    return result;
-  };
-  const pairs = flatten(mlSummaryData);
-  const rawJson = JSON.stringify(mlSummaryData);
-  const mlRows =
-    `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Username</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(mlUsername)}</Data></Cell></Row>` +
-    `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>` +
-    `<Row></Row>` +
-    `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Key</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Value</Data></Cell></Row>` +
-    pairs.map(([k, v]) => `<Row><Cell><Data ss:Type="String">${ex(k)}</Data></Cell><Cell><Data ss:Type="String">${ex(String(v))}</Data></Cell></Row>`).join('');
-  return `<Worksheet ss:Name="ML" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="260"/><Column ss:Width="400"/>${mlRows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
-})() +
-`</Workbook>`;
+        return `<Worksheet ss:Name="${sheetName}" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="220"/><Column ss:Width="400"/>${rows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
+      }).join(''),
+      // State sheets: hidden worksheets for orgchart and dashboard save-state (lossless roundtrip)
+      // Row 0: File | <filename>   Row 1: JSON | <raw JSON>
+      [
+        orgchartStateData  ? { sheetName: 'orgchart',   data: orgchartStateData  } : null,
+        dashboardStateData ? { sheetName: 'dashboard',  data: dashboardStateData } : null,
+      ].filter(Boolean).map(({ sheetName, data }) => {
+        const username = (data && data.username) ? String(data.username) : '';
+        const safe = username.replace(/[^a-zA-Z0-9_\-]/g, '_');
+        const fileName = `${sheetName}_${safe}.json`;
+        let rawJson = '';
+        try { rawJson = JSON.stringify(data); } catch (_) { rawJson = '{}'; }
+        const rows = `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">File</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(fileName)}</Data></Cell></Row>` +
+          `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>`;
+        return `<Worksheet ss:Name="${ex(sheetName)}" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="220"/><Column ss:Width="400"/>${rows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
+      }).join(''),
+      // ML worksheet — see comment block in original for full format spec.
+      (() => {
+        if (!mlSummaryData) return '';
+        const mlUsername = (user && user.username) ? String(user.username) : '';
+        const flatten = (o, prefix = '') => {
+          const result = [];
+          for (const [k, v] of Object.entries(o || {})) {
+            const key = prefix ? `${prefix}.${k}` : k;
+            if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+              result.push(...flatten(v, key));
+            } else {
+              result.push([key, Array.isArray(v) ? v.join(', ') : String(v ?? '')]);
+            }
+          }
+          return result;
+        };
+        const pairs = flatten(mlSummaryData);
+        const rawJson = JSON.stringify(mlSummaryData);
+        const mlRows =
+          `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Username</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">${ex(mlUsername)}</Data></Cell></Row>` +
+          `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">JSON</Data></Cell><Cell><Data ss:Type="String">${ex(rawJson)}</Data></Cell></Row>` +
+          `<Row></Row>` +
+          `<Row><Cell ss:StyleID="hdr"><Data ss:Type="String">Key</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Value</Data></Cell></Row>` +
+          pairs.map(([k, v]) => `<Row><Cell><Data ss:Type="String">${ex(k)}</Data></Cell><Cell><Data ss:Type="String">${ex(String(v))}</Data></Cell></Row>`).join('');
+        return `<Worksheet ss:Name="ML" ss:Visible="SheetHidden">\n <Table ss:DefaultColumnWidth="220"><Column ss:Width="260"/><Column ss:Width="400"/>${mlRows}</Table>\n${hiddenProtectedOptions()}</Worksheet>\n`;
+      })(),
+      `</Workbook>`,
+    ];
 
-    const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
+    const blob = new Blob(blobParts, { type: 'application/vnd.ms-excel' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
     a.href     = url;
@@ -6641,13 +6692,13 @@ criteriaSheets.map((cf, idx) => {
                       >
                         🖼 Select Image
                       </button>
-                      {bulletinImageData
+                      {bulletinImageObjUrl
                         ? (
                           <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <img src={bulletinImageData} alt="preview" style={{ height: 40, width: 64, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} />
+                            <img src={bulletinImageObjUrl} alt="preview" style={{ height: 40, width: 64, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} />
                             <button
                               type="button"
-                              onClick={() => setBulletinImageData('')}
+                              onClick={() => { URL.revokeObjectURL(bulletinImageObjUrl); _bulletinImgBlobRef.current = null; _bulletinImgFilenameRef.current = ''; setBulletinImageObjUrl(''); }}
                               style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 11, color: 'var(--argent)' }}
                             >✕ Remove</button>
                           </span>
@@ -6672,23 +6723,23 @@ criteriaSheets.map((cf, idx) => {
                                   <div
                                     key={fname}
                                     onClick={() => {
-                                      // Fetch the image and convert to base64
+                                      // Use Object URL for preview — avoids storing large base64 string in React state.
+                                      // The Blob is held in a ref and converted to base64 only on Confirm.
                                       fetch(`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
                                         .then(r => r.blob())
                                         .then(blob => {
-                                          const reader = new FileReader();
-                                          reader.onload = ev => {
-                                            setBulletinImageData(ev.target.result);
-                                            setBulletinImageGalleryOpen(false);
-                                          };
-                                          reader.readAsDataURL(blob);
+                                          if (bulletinImageObjUrl) URL.revokeObjectURL(bulletinImageObjUrl);
+                                          _bulletinImgBlobRef.current = blob;
+                                          _bulletinImgFilenameRef.current = fname;
+                                          setBulletinImageObjUrl(URL.createObjectURL(blob));
+                                          setBulletinImageGalleryOpen(false);
                                         })
                                         .catch(() => {});
                                     }}
                                     style={{
                                       cursor: 'pointer', borderRadius: 6, overflow: 'hidden',
                                       border: '2px solid transparent',
-                                      outline: bulletinImageData.includes(fname) ? '2px solid var(--robins-egg)' : 'none',
+                                      outline: _bulletinImgFilenameRef.current === fname ? '2px solid var(--robins-egg)' : 'none',
                                     }}
                                   >
                                     <img
@@ -6729,7 +6780,17 @@ criteriaSheets.map((cf, idx) => {
                   </button>
                   <button
                     disabled={!canConfirm}
-                    onClick={() => {
+                    onClick={async () => {
+                      // Convert blob to base64 only at confirm time — keeps base64 out of React state.
+                      let imageData = null;
+                      if (_bulletinImgBlobRef.current) {
+                        imageData = await new Promise((resolve, reject) => {
+                          const reader = new FileReader();
+                          reader.onload = e => resolve(e.target.result);
+                          reader.onerror = reject;
+                          reader.readAsDataURL(_bulletinImgBlobRef.current);
+                        }).catch(() => null);
+                      }
                       setBulletinFinalized({
                         role_tag: bulletinRoleTags[0],
                         skillsets: bulletinSkillsets,
@@ -6739,7 +6800,7 @@ criteriaSheets.map((cf, idx) => {
                         sourcingStatuses: bulletinSelectedSourcing,
                         headline: bulletinHeadline.trim(),
                         description: bulletinDescription.trim(),
-                        imageData: bulletinImageData || null,
+                        imageData: imageData || null,
                         publicPost: bulletinPublicPost,
                         company_name: bulletinPublishCompany ? (user?.corporation || null) : null,
                       });
@@ -9812,23 +9873,6 @@ export default function App() {
     
     // Save to backend
     saveCandidateDebounced(id, { skillset: newSkillset, lskillset: newLSkillset });
-  };
-
-  // Helper to normalize vskillset array
-  const normalizeVskillArray = (raw) => {
-    if (!raw) return [];
-    if (Array.isArray(raw)) return raw.filter(Boolean);
-    if (typeof raw === 'object') {
-      // If it's an object with numeric keys, convert to array
-      const keys = Object.keys(raw).filter(k => !isNaN(k)).sort((a, b) => Number(a) - Number(b));
-      return keys.map(k => raw[k]).filter(Boolean);
-    }
-    return [];
-  };
-
-  // Helper to parse skillset string into array
-  const parseSkillsetString = (skillsetStr) => {
-    return skillsetStr ? String(skillsetStr).split(/[;,|]+/).map(s => s.trim()).filter(Boolean) : [];
   };
 
   // Helper to update candidate in both state locations
