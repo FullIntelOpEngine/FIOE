@@ -3175,11 +3175,52 @@ def admin_run_tests():
         status = "pass" if proc.returncode == 0 else "fail"
         return jsonify({"status": status, "output": output, "returncode": proc.returncode}), 200
 
-    # ── pytest branch ────────────────────────────────────────────────────────
+    # ── Jest branch ──────────────────────────────────────────────────────────
     tests_dir = os.path.join(backend_dir, "tests")
 
+    if test_file.startswith("tests/") and test_file.endswith(".test.js"):
+        full_path = os.path.normpath(os.path.join(backend_dir, test_file))
+        if not full_path.startswith(os.path.normpath(tests_dir) + os.sep):
+            return jsonify({"error": "Path traversal detected."}), 400
+
+        test_name = (body.get("testName") or "").strip()
+        # Allow only characters that appear in Jest test descriptions; exclude shell/regex
+        # metacharacters that are not needed (\, ^, $, *, +, ?, [, ], |) to reduce risk.
+        if test_name and not re.match(r'^[\w\s\-\.\(\)\'\"\/\#\:\,\%]+$', test_name):
+            return jsonify({"error": "testName contains invalid characters."}), 400
+
+        npx_exe = _shutil.which("npx") or _shutil.which("npx.cmd") or "npx"
+        cmd = [npx_exe, "jest", test_file, "--no-coverage", "--forceExit", "--reporters=default"]
+        if test_name:
+            cmd += ["-t", test_name]
+
+        try:
+            proc = _sp.run(
+                cmd,
+                cwd=backend_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except _sp.TimeoutExpired:
+            return jsonify({"status": "skip", "output": "Jest timed out after 120 s.", "returncode": -1}), 200
+        except FileNotFoundError:
+            return jsonify({"status": "skip", "output": "npx/Jest not installed. Run: npm install", "returncode": -1}), 200
+        except Exception:
+            return jsonify({"status": "skip", "output": "Unexpected error launching Jest. Run manually: npx jest " + test_file, "returncode": -1}), 200
+
+        output_parts = []
+        if proc.stdout.strip():
+            output_parts.append(proc.stdout.strip())
+        if proc.stderr.strip():
+            output_parts.append("--- stderr ---\n" + proc.stderr.strip())
+        output = "\n".join(output_parts)
+        status = "pass" if proc.returncode == 0 else "fail"
+        return jsonify({"status": status, "output": output, "returncode": proc.returncode}), 200
+
+    # ── pytest branch ────────────────────────────────────────────────────────
     if not test_file.startswith("tests/") or not test_file.endswith(".py"):
-        return jsonify({"error": "Invalid test file path. Must match 'tests/*.py' OR 'ui/e2e/*.spec.js'."}), 400
+        return jsonify({"error": "Invalid test file path. Must match 'tests/*.py', 'tests/*.test.js', OR 'ui/e2e/*.spec.js'."}), 400
 
     full_path = os.path.normpath(os.path.join(backend_dir, test_file))
     if not full_path.startswith(os.path.normpath(tests_dir) + os.sep):

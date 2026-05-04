@@ -1143,6 +1143,7 @@ const FEATURES = [
   { key: 'analytic_cv_limit',   label: 'Analytic DB CV Upload Limit',  tab: 'talent',       priority: 'mid'  },
   { key: 'candidates',          label: 'Candidates List',              tab: 'cms',          priority: 'mid'  },
   { key: 'bulk_delete',         label: 'Bulk Delete',                  tab: 'cms',          priority: 'low'  },
+  { key: 'gemini_model',        label: 'Gemini Model Rate Limit',      tab: 'cms',          priority: 'mid'  },
   { key: 'dashboard',           label: 'Dashboard (static)',           tab: 'dashboard',    priority: 'high' },
   { key: 'admin_endpoints',     label: 'Admin Endpoints (all)',        tab: 'dashboard',    priority: 'mid'  },
 ];
@@ -7627,10 +7628,11 @@ function _buildCopilotPrompt(errorMessage, source, explanation, suggestedFix, te
 // ── Test Monitor ──────────────────────────────────────────────────────────────
 // All test suites referenced by the test coverage plan.
 // ── Test autoCheck factory helpers ────────────────────────────────────────────
-// _tBE  → backend (pytest)  – calls /admin/run-tests; real pass/fail/skip
-// _tE2E → end-to-end (Playwright) – calls /admin/run-tests; real pass/fail/skip
-// _tK6  → load test (k6) – immediate skip with run command
-// _tAPI → live API check from browser (real fetch, pass/fail/skip on timeout)
+// _tBE   → backend (pytest)  – calls /admin/run-tests; real pass/fail/skip
+// _tE2E  → end-to-end (Playwright) – calls /admin/run-tests; real pass/fail/skip
+// _tJest → unit test (Jest/jsdom) – calls /admin/run-tests; real pass/fail/skip
+// _tK6   → load test (k6) – immediate skip with run command
+// _tAPI  → live API check from browser (real fetch, pass/fail/skip on timeout)
 function _tBE(file, testKey) {
   const cmd = `pytest ${file}${testKey ? ' -k ' + testKey : ''}`;
   return { type: 'run-tests', file, testKey: testKey || null, cmd };
@@ -7638,6 +7640,11 @@ function _tBE(file, testKey) {
 function _tE2E(file, grepPat) {
   const cmd = `npx playwright test ${file}${grepPat ? ' --grep "' + grepPat + '"' : ''}`;
   return { type: 'run-e2e', file, grepPat: grepPat || null, cmd };
+}
+function _tJest(file, testName) {
+  const tFlag = testName ? ` -t "${testName}"` : '';
+  const cmd = `npx jest ${file}${tFlag} --no-coverage --forceExit`;
+  return { type: 'run-jest', file, testName: testName || null, cmd };
 }
 function _tK6(file) {
   return { type: 'loadtest', skipReason: `Requires k6 load-testing tool + running app server.\nMissing condition: k6 installed, app server running.\nRun: k6 run ${file}` };
@@ -7709,6 +7716,19 @@ const TM_SUITES = [
       { id: 'make_flask_limit_reads_json', name: '_make_flask_limit: reads requests/window_seconds from rate_limits.json per call',  autoCheck: _tBE('tests/test_admin_rate_limits.py', 'make_flask_limit_reads_json') },
       { id: 'make_flask_limit_defaults',   name: '_make_flask_limit: uses default_req/default_win when key absent from JSON',        autoCheck: _tBE('tests/test_admin_rate_limits.py', 'make_flask_limit_defaults') },
       { id: 'make_flask_limit_live_reload', name: '_make_flask_limit: limit changes in rate_limits.json take effect immediately',     autoCheck: _tBE('tests/test_admin_rate_limits.py', 'make_flask_limit_live_reload') },
+    ],
+  },
+  {
+    id: 'client_rl', name: 'Client-Side Rate Limiting (App.js / Dashboard)', priority: 'critical',
+    file: 'tests/rateLimitEnforcer.test.js',
+    impactedFiles: ['src/App.js', 'src/LookerDashboard.html', 'rate-limit-enforcer.js', 'ui/rate-limit-enforcer.js', 'rate_limits.json'],
+    tests: [
+      { id: 'enforcer_init',          name: 'RateLimitEnforcer.init() — check() returns true for first request (under limit)',            autoCheck: _tJest('tests/rateLimitEnforcer.test.js', 'returns true for the first request') },
+      { id: 'enforcer_check_blocks',  name: 'RateLimitEnforcer.check(): over-limit request returns false and shows #rle-overlay',         autoCheck: _tJest('tests/rateLimitEnforcer.test.js', 'returns false after exactly maxReq') },
+      { id: 'enforcer_overlay_dom',   name: 'RateLimitEnforcer.check(): overlay is injected into DOM when limit is reached',              autoCheck: _tJest('tests/rateLimitEnforcer.test.js', 'creates #rle-overlay in the DOM when limit is reached') },
+      { id: 'enforcer_refresh_on_config', name: 'RateLimitEnforcer.refresh(): re-fetches /user/rate-limits and uses new values',         autoCheck: _tJest('tests/rateLimitEnforcer.test.js', 'fetch is called again after refresh') },
+      { id: 'server_429_overlay',     name: 'Fetch interceptor: server 429 with JSON body shows #rle-overlay with feature + window_seconds', autoCheck: _tJest('tests/rateLimitEnforcer.test.js', 'shows #rle-overlay on 429 with JSON body') },
+      { id: 'user_rate_limits_api',   name: 'GET /user/rate-limits returns {ok:true, limits:{}} with per-feature config',                 autoCheck: _tAPI('/user/rate-limits', 200) },
     ],
   },
   {
@@ -7892,7 +7912,7 @@ const TM_SUITES = [
   {
     id: 'frontend', name: 'Frontend UI Flows', priority: 'high',
     file: 'ui/e2e/login.spec.js',
-    impactedFiles: ['webbridge_client.js', 'webbridge.py', 'admin_rate_limits.html'],
+    impactedFiles: ['webbridge_client.js', 'webbridge.py', 'admin_rate_limits.html', 'src/App.js', 'src/LookerDashboard.html'],
     tests: [
       { id: 'login_success',   name: 'Login page: success/error displays, session persistence',                           autoCheck: _tE2E('ui/e2e/login.spec.js', 'login') },
       { id: 'weight_sliders',  name: 'Weight sliders: valid 100% locks weights; invalid totals rejected',                 autoCheck: _tE2E('ui/e2e/login.spec.js', 'weight sliders') },
@@ -8731,6 +8751,36 @@ async function _tmRunTest(suite, test, domBtn, skipReasonEl) {
           result = { status: 'pass', reason: out || 'All Playwright tests passed.' };
         } else if (data.status === 'fail') {
           result = { status: 'fail', reason: out || `Playwright exited ${data.returncode}` };
+        } else {
+          result = { status: 'skip', reason: out || `No tests collected (exit ${data.returncode}).\nRun manually: ${autoCheck.cmd}` };
+        }
+      }
+    } catch (err) {
+      result = { status: 'skip', reason: `Could not reach /admin/run-tests: ${err.message}\nRun manually: ${autoCheck.cmd}` };
+    }
+  } else if (autoCheck.type === 'run-jest') {
+    // ── Jest unit tests — call /admin/run-tests with the .test.js file ────────
+    try {
+      const resp = await fetch(`${API}/admin/run-tests`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-CSRF-Token': (document.querySelector('meta[name="csrf-token"]') || {}).content || ''
+        },
+        body: JSON.stringify({ file: autoCheck.file, testName: autoCheck.testName })
+      });
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => resp.status);
+        result = { status: 'skip', reason: `Server returned HTTP ${resp.status}: ${txt}\nRun manually: ${autoCheck.cmd}` };
+      } else {
+        const data = await resp.json();
+        const out = (data.output || '').trim();
+        if (data.status === 'pass') {
+          result = { status: 'pass', reason: out || 'All Jest tests passed.' };
+        } else if (data.status === 'fail') {
+          result = { status: 'fail', reason: out || `Jest exited ${data.returncode}` };
         } else {
           result = { status: 'skip', reason: out || `No tests collected (exit ${data.returncode}).\nRun manually: ${autoCheck.cmd}` };
         }
