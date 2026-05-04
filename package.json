@@ -12,10 +12,10 @@
   "jest": {
     "testEnvironment": "jsdom",
     "testMatch": [
-      "<rootDir>/Candidate Analyser/backend/tests/**/*.test.js"
+      "<rootDir>/tests/**/*.test.js"
     ],
     "setupFiles": [
-      "<rootDir>/Candidate Analyser/backend/tests/setup.js"
+      "<rootDir>/tests/setup.js"
     ],
     "transform": {}
   },

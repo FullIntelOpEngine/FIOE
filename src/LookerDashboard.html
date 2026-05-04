@@ -775,6 +775,18 @@
                 buildOrgChart();
             });
         } catch (bcErr) { console.warn('[Dashboard] orgchart BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
+
+        // Refresh client-side rate-limit cache when the admin saves new limits
+        // via admin_rate_limits.html (which broadcasts on 'fioe_api_config').
+        try {
+            const _rlCfgChannel = new BroadcastChannel('fioe_api_config');
+            _rlCfgChannel.addEventListener('message', e => {
+                if (!e || !e.data || e.data.type !== 'api-config-changed') return;
+                if (typeof RateLimitEnforcer !== 'undefined') {
+                    RateLimitEnforcer.refresh();
+                }
+            });
+        } catch (bcErr) { console.warn('[Dashboard] rate-limit BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
     }
 
     // ================= THEME LOGIC =================

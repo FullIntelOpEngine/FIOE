@@ -33,7 +33,7 @@ function loadEnforcer() {
 
   const fs = require('fs');
   const path = require('path');
-  const src = fs.readFileSync(path.resolve(__dirname, '../../../rate-limit-enforcer.js'), 'utf8');
+  const src = fs.readFileSync(path.resolve(__dirname, '../rate-limit-enforcer.js'), 'utf8');
 
   // Execute the IIFE in the jsdom global context. In the jsdom test environment,
   // `window === global`, so the IIFE attaches `RateLimitEnforcer` to the test global.
