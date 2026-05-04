@@ -9462,8 +9462,9 @@ export default function App() {
                const prob = emailToProbMap[e];
                let conf;
                if (isVerified) {
-                 const pct = prob != null ? prob + '%' : (data.confidence != null ? Math.round(data.confidence * 100) + '%' : '');
-                 conf = 'FIOE' + (pct ? ' · ' + pct : '');
+                 const numPct = prob != null ? prob : (data.confidence != null ? Math.round(data.confidence * 100) : null);
+                 const level = numPct != null ? (numPct >= 70 ? 'High' : numPct >= 40 ? 'Medium' : 'Low') : null;
+                 conf = 'FIOE' + (level ? ' · ' + level : '');
                } else {
                  const geminiLabels = ['High', 'Medium', 'Low'];
                  conf = geminiLabels[idx] || 'Low';
