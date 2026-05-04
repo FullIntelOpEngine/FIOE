@@ -3184,7 +3184,9 @@ def admin_run_tests():
             return jsonify({"error": "Path traversal detected."}), 400
 
         test_name = (body.get("testName") or "").strip()
-        if test_name and not re.match(r'^[\w\s\-\.\*\+\?\[\]\(\)\^\$\|\\\/\'\"]+$', test_name):
+        # Allow only characters that appear in Jest test descriptions; exclude shell/regex
+        # metacharacters that are not needed (\, ^, $, *, +, ?, [, ], |) to reduce risk.
+        if test_name and not re.match(r'^[\w\s\-\.\(\)\'\"\/\#\:\,\%]+$', test_name):
             return jsonify({"error": "testName contains invalid characters."}), 400
 
         npx_exe = _shutil.which("npx") or _shutil.which("npx.cmd") or "npx"
@@ -3204,8 +3206,8 @@ def admin_run_tests():
             return jsonify({"status": "skip", "output": "Jest timed out after 120 s.", "returncode": -1}), 200
         except FileNotFoundError:
             return jsonify({"status": "skip", "output": "npx/Jest not installed. Run: npm install", "returncode": -1}), 200
-        except Exception as exc:
-            return jsonify({"status": "skip", "output": str(exc), "returncode": -1}), 200
+        except Exception:
+            return jsonify({"status": "skip", "output": "Unexpected error launching Jest. Run manually: npx jest " + test_file, "returncode": -1}), 200
 
         output_parts = []
         if proc.stdout.strip():
