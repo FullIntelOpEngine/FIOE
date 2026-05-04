@@ -403,19 +403,19 @@
             font-family: "Orbitron", sans-serif;
             font-weight: 700;
             letter-spacing: 0.2px;
-            transition: all 0.12s ease;
+            transition: background-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
         }
         
         .btn-primary {
             background: var(--azure-dragon);
             border: 1px solid var(--cool-blue);
             color: #fff;
-            box-shadow: 0 8px 30px rgba(7,54,121,0.16), 0 0 18px rgba(109,234,249,0.06);
+            box-shadow: 0 4px 14px rgba(7,54,121,0.16);
             padding: 10px;
         }
         .btn-primary:hover {
             transform: translateY(-1px);
-            box-shadow: 0 12px 40px rgba(7,54,121,0.22), 0 0 26px rgba(109,234,249,0.12);
+            box-shadow: 0 8px 20px rgba(7,54,121,0.22);
         }
 
         .btn-danger {
@@ -584,7 +584,7 @@
             font-family: inherit;
             font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background-color 0.2s, color 0.2s, border-color 0.2s;
         }
         .nav-actions button.primary {
             background: var(--primary);
@@ -668,7 +668,7 @@
             display: flex;
             align-items: center;
             gap: 6px;
-            transition: all 0.2s;
+            transition: background-color 0.2s, color 0.2s, border-color 0.2s;
             text-transform: uppercase;
             font-weight: 600;
         }
@@ -716,8 +716,6 @@
             grid-template-columns: repeat(8, 1fr);
             gap: 24px;
             grid-auto-rows: auto;
-            /* NEW: allow packing gaps created by resizes/reorders */
-            grid-auto-flow: dense;
         }
 
         /* Generic Card Style */
@@ -731,6 +729,7 @@
             box-shadow: var(--shadow);
             overflow: hidden;
             position: relative; /* for tile controls */
+            contain: layout paint; /* isolate repaint to card bounds */
         }
         
         .card-header {
@@ -839,7 +838,7 @@
         .org-tree ul {
             padding-top: 20px; 
             position: relative;
-            transition: all 0.5s;
+            transition: opacity 0.5s;
             display: flex;
             justify-content: center;
         }
@@ -849,7 +848,7 @@
             list-style-type: none;
             position: relative;
             padding: 20px 5px 0 5px;
-            transition: all 0.5s;
+            transition: opacity 0.5s;
         }
 
         /* Connectors */
@@ -900,7 +899,7 @@
             max-width: 260px; /* a bit wider to contain long department names */
             position: relative;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            transition: all 0.3s;
+            transition: box-shadow 0.3s ease, transform 0.3s ease, border-color 0.3s ease;
             z-index: 2;
             overflow-wrap: anywhere; /* keep long text inside */
             word-break: break-word;
@@ -1375,7 +1374,7 @@
             font-weight: 600;
             padding: 12px 4px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: color 0.2s, border-bottom-color 0.2s;
         }
         .tab-btn:hover { color: var(--primary); }
         .tab-btn.active { 
@@ -1403,7 +1402,7 @@
             display: flex;
             flex-direction: column;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
             overflow: hidden;
             position: relative;
         }
@@ -1818,7 +1817,7 @@
             color: var(--text-sub);
             font-size: 12px;
             cursor: pointer;
-            transition: all 0.15s;
+            transition: background-color 0.15s, color 0.15s, border-color 0.15s;
             display: inline-flex;
             align-items: center;
             gap: 6px;

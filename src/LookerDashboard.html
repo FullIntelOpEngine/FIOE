@@ -4,30 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Talent Intelligence Dashboard</title>
-    <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;700&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
-    <!-- Leaflet for Map -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="" defer></script>
-    <!-- html2pdf.js for PDF Export -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" defer></script>
-    <!-- html2canvas for PNG export of slides -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
-    <!-- jsPDF for multi-page PDF export — loaded from local node_modules via /vendor route;
-         falls back to jsDelivr CDN if the local file is unavailable. -->
-    <script src="/vendor/jspdf.umd.min.js" defer onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';document.head.appendChild(s);"></script>
-    <!-- PptxGenJS for PPTX export of slides -->
-    <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js" defer></script>
+    <!-- Fonts: limited weights + font-display:swap for non-blocking render -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Orbitron:wght@400;700&family=Roboto+Condensed:wght@400;700&display=swap" rel="stylesheet">
     <!-- Left Column Navigation -->
     <link rel="stylesheet" href="nav-sidebar.css">
     <script src="nav-sidebar.js" defer></script>
 
     <link rel="stylesheet" href="LookerDashboard.css">
 <!-- Rate-limit enforcement (client-side guard matching admin-configured limits) -->
-<script src="ui/rate-limit-enforcer.js"></script>
-<script>RateLimitEnforcer.init({ prefetch: true });</script>
+<script src="ui/rate-limit-enforcer.js" defer></script>
 </head>
 <body class="theme-fioe">
 <!-- ===== Page Shell: sidebar + main ===== -->
@@ -440,6 +425,89 @@
         window.location.replace(API_BASE + '/LookerDashboard.html');
     }
 
+    // ================= LAZY SCRIPT / LINK LOADERS =================
+    // Tracks in-flight (and completed) loads so concurrent callers share the same Promise.
+    // Failed loads are evicted so they can be retried.
+    const _scriptLoading = {};
+    function _loadScript(src, opts = {}) {
+        if (_scriptLoading[src]) return _scriptLoading[src];
+        if (document.querySelector(`script[src="${src}"]`)) return (_scriptLoading[src] = Promise.resolve());
+        _scriptLoading[src] = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            if (opts.integrity)   { s.integrity   = opts.integrity; }
+            if (opts.crossorigin) { s.crossOrigin  = opts.crossorigin; }
+            s.onload  = resolve;
+            s.onerror = (err) => {
+                // Evict so a future call can retry the load
+                delete _scriptLoading[src];
+                reject(err);
+            };
+            document.head.appendChild(s);
+        });
+        return _scriptLoading[src];
+    }
+    const _linkLoading = {};
+    function _loadLink(href, opts = {}) {
+        if (_linkLoading[href]) return _linkLoading[href];
+        if (document.querySelector(`link[href="${href}"]`)) return (_linkLoading[href] = Promise.resolve());
+        _linkLoading[href] = new Promise((resolve, reject) => {
+            const l = document.createElement('link');
+            l.rel  = 'stylesheet';
+            l.href = href;
+            if (opts.integrity)   { l.integrity   = opts.integrity; }
+            if (opts.crossorigin) { l.crossOrigin  = opts.crossorigin; }
+            l.onload  = resolve;
+            l.onerror = (err) => {
+                console.warn('[Dashboard] Failed to load stylesheet:', href, err);
+                delete _linkLoading[href];
+                reject(err);
+            };
+            document.head.appendChild(l);
+        });
+        return _linkLoading[href];
+    }
+    // Ensure Chart.js is available; resolves immediately if already loaded.
+    async function _ensureChartJs() {
+        if (typeof Chart === 'undefined') {
+            await _loadScript('https://cdn.jsdelivr.net/npm/chart.js');
+        }
+    }
+    // Ensure Leaflet CSS + JS are available; resolves immediately if already loaded.
+    async function _ensureLeaflet() {
+        if (typeof L === 'undefined') {
+            await _loadLink('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', {
+                integrity:   'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=',
+                crossorigin: 'anonymous'
+            });
+            await _loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', {
+                integrity:   'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=',
+                crossorigin: 'anonymous'
+            });
+        }
+    }
+    // Ensure html2canvas is available.
+    async function _ensureHtml2canvas() {
+        if (typeof html2canvas === 'undefined') {
+            await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+        }
+    }
+    // Ensure jsPDF is available (local vendor first, CDN fallback).
+    async function _ensureJsPDF() {
+        if ((window.jspdf && window.jspdf.jsPDF) || window.jsPDF) return;
+        try {
+            await _loadScript('/vendor/jspdf.umd.min.js');
+        } catch (_) {
+            await _loadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+        }
+    }
+    // Ensure PptxGenJS is available.
+    async function _ensurePptxGenJS() {
+        if (typeof PptxGenJS === 'undefined') {
+            await _loadScript('https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js');
+        }
+    }
+
     let currentUser = null;
     let eventSource = null;
     let isPorting = false; // Flag to track porting process
@@ -601,12 +669,20 @@
         window.location.href = 'http://localhost:8091/login.html?next=' + encodeURIComponent(window.location.href);
     }
 
+    // Debounce timer lives outside initSocket so it survives EventSource reconnections
+    let _sseRefreshTimer = null;
+    function _debouncedRefresh() {
+        clearTimeout(_sseRefreshTimer);
+        _sseRefreshTimer = setTimeout(() => refreshDashboard(), 300);
+    }
+
     function initSocket() {
         if(eventSource) eventSource.close();
         eventSource = new EventSource(`${API_BASE}/api/events`, { withCredentials: true });
         eventSource.addEventListener('connected', () => console.log('Connected to realtime updates'));
-        eventSource.addEventListener('candidates_changed', () => refreshDashboard());
-        eventSource.addEventListener('candidate_updated', () => refreshDashboard());
+        // Coalesce rapid SSE events (e.g. bulk updates) into a single refresh call
+        eventSource.addEventListener('candidates_changed', _debouncedRefresh);
+        eventSource.addEventListener('candidate_updated',  _debouncedRefresh);
         eventSource.onerror = () => {
             eventSource.close();
             // Reconnect after 5 seconds
@@ -616,18 +692,27 @@
 
     // ================= INITIALIZATION =================
     document.addEventListener('DOMContentLoaded', async () => {
+        // Init rate-limit enforcer now that deferred script is executed
+        if (typeof RateLimitEnforcer !== 'undefined') {
+            RateLimitEnforcer.init({ prefetch: true });
+        } else {
+            console.warn('[Dashboard] RateLimitEnforcer not loaded — rate-limit enforcement is inactive.');
+        }
         // Start with Auth Check
         checkAuthOnLoad();
     });
 
     async function initDashboard() {
+        // Lazy-load Chart.js and Leaflet before first use
+        await Promise.all([_ensureChartJs(), _ensureLeaflet()]);
+
         initFilters();
         
         // Restore filters from save state before fetching/filtering data
         restoreFilters(); 
         
         // Init map (using saved position if present)
-        initMap();
+        await initMap();
 
         // Load org chart manual overrides from server before first render
         await loadOrgChartOverrides();
@@ -692,10 +777,12 @@
         
         // If switching to dashboard, ensure map/charts resize correctly
         if(tabId === 'dashboard') {
-            setTimeout(() => {
+            // Use rAF (two frames) so the browser has painted the newly-visible tab
+            // before we ask Leaflet/Chart.js to measure their containers.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
                 if(mapInstance) { try { mapInstance.invalidateSize(); } catch (_) {} }
                 Object.values(charts).forEach(c => c.resize());
-            }, 100);
+            }));
         }
     }
     
@@ -736,7 +823,14 @@
     async function exportToPDF() {
         const grid = document.getElementById('dashboardGrid');
         if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
-        if (typeof html2canvas === 'undefined') { alert('html2canvas not loaded — please check your connection.'); return; }
+
+        // Lazy-load html2canvas and jsPDF on first use
+        try {
+            await Promise.all([_ensureHtml2canvas(), _ensureJsPDF()]);
+        } catch (loadErr) {
+            alert('Failed to load PDF export libraries — please check your connection.');
+            return;
+        }
 
         const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
         if (!jsPDFCtor) { alert('jsPDF not available — please check your connection.'); return; }
@@ -1056,7 +1150,8 @@
     }
 
     // ================= MAP LOGIC =================
-    function initMap() {
+    async function initMap() {
+        await _ensureLeaflet();
         // Check for saved state
         let center = [20, 0];
         let zoom = 2;
@@ -5589,17 +5684,20 @@ stateXml +
     };
 
     // Export the current slide content as a PNG image download
-    function exportSlideAsPNG() {
+    async function exportSlideAsPNG() {
         const content = document.getElementById('slideshowContent');
         if (!content) return;
-        if (typeof html2canvas === 'undefined') {
+        const exportBtn = document.getElementById('exportSlidePngBtn');
+        if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = '⏳ Exporting…'; }
+        try {
+            await _ensureHtml2canvas();
+        } catch (_) {
             alert('html2canvas not loaded — please check your internet connection.');
+            if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = '📷 Export PNG'; }
             return;
         }
         const slide = slides[currentSlideIndex];
         const slideName = (slide && slide.name) ? slide.name : `Slide ${currentSlideIndex + 1}`;
-        const exportBtn = document.getElementById('exportSlidePngBtn');
-        if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = '⏳ Exporting…'; }
         html2canvas(content, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }).then(canvas => {
             const link = document.createElement('a');
             link.download = slideName.replace(/[^a-z0-9]/gi, '_') + '.png';
@@ -5616,12 +5714,10 @@ stateXml +
     // Export all slides as a PPTX file — each slide becomes a 16:9 PPTX slide image
     async function exportSlidesAsPPTX() {
         if (slides.length === 0) { alert('No slides to export.'); return; }
-        if (typeof html2canvas === 'undefined') {
-            alert('html2canvas not loaded — please check your internet connection.');
-            return;
-        }
-        if (typeof PptxGenJS === 'undefined') {
-            alert('PptxGenJS not loaded — please check your internet connection.');
+        try {
+            await Promise.all([_ensureHtml2canvas(), _ensurePptxGenJS()]);
+        } catch (_) {
+            alert('Export libraries not loaded — please check your internet connection.');
             return;
         }
 
