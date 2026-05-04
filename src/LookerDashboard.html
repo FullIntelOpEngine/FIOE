@@ -985,7 +985,10 @@
                         // Render permanent tooltip text (e.g. count labels on clustered markers)
                         const tip = m._tooltip;
                         if (tip && tip.options && tip.options.permanent) {
-                            const txt = String(tip._content || '').replace(/<[^>]*>/g, '').trim();
+                                // Use DOM parsing to safely extract text content (avoids regex-based HTML stripping)
+                            const _tmp = document.createElement('span');
+                            _tmp.innerHTML = String(tip._content || '');
+                            const txt = (_tmp.textContent || _tmp.innerText || '').trim();
                             if (txt) {
                                 const fs = Math.max(Math.round(r * 1.1), 8);
                                 ctx.font         = `bold ${fs}px Arial`;
