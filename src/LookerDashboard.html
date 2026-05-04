@@ -886,8 +886,7 @@
     // ================= PDF EXPORT LOGIC =================
     async function exportToPDF() {
         const grid = document.getElementById('dashboardGrid');
-        const cards = grid ? Array.from(grid.querySelectorAll('.card')) : [];
-        if (!cards.length) { alert('No tiles to export.'); return; }
+        if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
 
         // Lazy-load html2canvas and jsPDF on first use
         try {
@@ -914,49 +913,90 @@
         try {
             const SCALE = 2;
 
+            // Record card positions relative to the grid BEFORE any capture.
+            // All positions are in canvas pixels (CSS px × SCALE).
+            const gridRect  = grid.getBoundingClientRect();
+            const gridH_css = grid.scrollHeight; // total scrollable height in CSS px
+            const gridW_css = grid.scrollWidth;
+            const cardRects = Array.from(grid.querySelectorAll('.card')).map(c => {
+                const r = c.getBoundingClientRect();
+                return {
+                    top:    (r.top    - gridRect.top) * SCALE,
+                    bottom: (r.bottom - gridRect.top) * SCALE
+                };
+            });
+
             // Letter landscape: 279.4 × 215.9 mm
             const PAGE_W = 279.4, PAGE_H = 215.9;
             const MARGIN = 8;
-            const contentW = PAGE_W - 2 * MARGIN;
-            const contentH = PAGE_H - 2 * MARGIN;
+            const contentW = PAGE_W - 2 * MARGIN; // printable width in mm
+            const contentH = PAGE_H - 2 * MARGIN; // printable height in mm
+
+            // Total canvas height in pixels (same as what a full-grid capture would produce)
+            const totalH_px = Math.round(gridH_css * SCALE);
+            const totalW_px = Math.round(gridW_css * SCALE);
+
+            // How many canvas pixels fit on one PDF page (height)
+            const mmPerPx   = contentW / totalW_px;
+            const pxPerPage = Math.floor(contentH / mmPerPx);
+
+            // Find the best page-break height — prefer cuts below a card's bottom edge
+            function findBreak(pxOffset, maxPx) {
+                const candidates = [];
+                for (const r of cardRects) {
+                    if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
+                        candidates.push(r.bottom);
+                    }
+                }
+                candidates.sort((a, b) => b - a);
+                for (const cutAbs of candidates) {
+                    const straddles = cardRects.some(r => r.top < cutAbs && r.bottom > cutAbs);
+                    if (!straddles) return cutAbs - pxOffset;
+                }
+                return maxPx;
+            }
+
+            // Pre-compute all page slice offsets/heights
+            const slices = [];
+            let pxOffset = 0;
+            while (pxOffset < totalH_px) {
+                const remaining = totalH_px - pxOffset;
+                const slicePx = remaining <= pxPerPage
+                    ? remaining
+                    : findBreak(pxOffset, pxPerPage);
+                slices.push({ offset: pxOffset, height: slicePx });
+                pxOffset += slicePx;
+            }
 
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
-            // Per-card sequential capture: each card produces its own small canvas, avoiding
-            // the large peak allocation of a full-grid capture.  Cards are packed onto pages
-            // top-to-bottom; a new page starts whenever the next card would overflow.
-            let pageY = MARGIN; // current Y cursor on the PDF page (mm)
-            let firstCard = true;
-
+            // Capture each page slice independently — avoids allocating one huge canvas
             const h2cBase = {
                 scale:       SCALE,
                 useCORS:     true,
                 backgroundColor: bgColor,
                 logging:     false,
-                scrollX:     -window.scrollX,
-                scrollY:     -window.scrollY
+                scrollX:     0,
+                scrollY:     0,
+                windowWidth:  gridW_css,
+                windowHeight: gridH_css
             };
 
-            for (const card of cards) {
-                const rect = card.getBoundingClientRect();
-                if (rect.width < 1 || rect.height < 1) continue; // skip invisible cards
+            for (let i = 0; i < slices.length; i++) {
+                const { offset, height: slicePx } = slices[i];
+                if (i > 0) pdf.addPage();
 
-                const cardCvs = await html2canvas(card, { ...h2cBase });
+                // html2canvas x/y/width/height clip the capture to this rect (CSS px)
+                const sliceCvs = await html2canvas(grid, {
+                    ...h2cBase,
+                    x:      0,
+                    y:      Math.round(offset / SCALE),
+                    width:  gridW_css,
+                    height: Math.round(slicePx / SCALE)
+                });
 
-                // Scale the captured canvas to fit the printable width
-                const aspectRatio = cardCvs.height / cardCvs.width;
-                const cardW_mm = contentW;
-                const cardH_mm = cardW_mm * aspectRatio;
-
-                // Start a new page if this card won't fit in the remaining space
-                if (!firstCard && pageY + cardH_mm > PAGE_H - MARGIN) {
-                    pdf.addPage();
-                    pageY = MARGIN;
-                }
-
-                pdf.addImage(cardCvs.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, pageY, cardW_mm, cardH_mm);
-                pageY += cardH_mm + 4; // 4 mm gap between cards
-                firstCard = false;
+                const sliceH_mm = slicePx * mmPerPx;
+                pdf.addImage(sliceCvs.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH_mm);
             }
 
             pdf.save('dashboard_export.pdf');
