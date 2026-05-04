@@ -19,11 +19,13 @@
 const EventEmitter = require('events');
 
 // ── Configuration ─────────────────────────────────────────────────────────────
-const QUEUE_CONCURRENCY  = parseInt(process.env.QUEUE_CONCURRENCY,  10) || 4;
-const QUEUE_MAX_RETRIES  = parseInt(process.env.QUEUE_MAX_RETRIES,  10) || 3;
+const QUEUE_CONCURRENCY   = parseInt(process.env.QUEUE_CONCURRENCY,   10) || 4;
+const QUEUE_MAX_RETRIES   = parseInt(process.env.QUEUE_MAX_RETRIES,   10) || 3;
 const QUEUE_RETRY_BASE_MS = parseInt(process.env.QUEUE_RETRY_BASE_MS, 10) || 500;
-// Max per-job execution time (ms); job is marked failed if it exceeds this.
-const QUEUE_JOB_TIMEOUT_MS = parseInt(process.env.QUEUE_JOB_TIMEOUT_MS, 10) || 5 * 60 * 1000; // 5 min
+// Max per-job execution time; job is marked failed if it exceeds this.
+const _DEFAULT_JOB_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const QUEUE_JOB_TIMEOUT_MS    = parseInt(process.env.QUEUE_JOB_TIMEOUT_MS, 10) || _DEFAULT_JOB_TIMEOUT_MS;
+const _TIMEOUT_LABEL = `${Math.round(QUEUE_JOB_TIMEOUT_MS / 60_000)} minute(s)`;
 
 // ── Internal state ────────────────────────────────────────────────────────────
 const _queues   = new Map(); // name → InProcessQueue
@@ -91,7 +93,7 @@ class InProcessQueue extends EventEmitter {
       const result = await Promise.race([
         handler(job),
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`Job ${job.id} timed out after ${QUEUE_JOB_TIMEOUT_MS}ms`)), QUEUE_JOB_TIMEOUT_MS);
+          timer = setTimeout(() => reject(new Error(`Job ${job.id} timed out after ${_TIMEOUT_LABEL}`)), QUEUE_JOB_TIMEOUT_MS);
         }),
       ]);
       clearTimeout(timer);

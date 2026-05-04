@@ -2389,7 +2389,7 @@ async function ensureProcessIndexes() {
     // login table: session auth lookup
     { name: 'idx_login_username',        sql: `CREATE INDEX IF NOT EXISTS idx_login_username        ON "login" (username)` },
     // login table: gemini_query_count admin queries
-    { name: 'idx_login_gemini_qcount',   sql: `CREATE INDEX IF NOT EXISTS idx_login_gemini_qcount  ON "login" (gemini_query_count)` },
+    { name: 'idx_login_gemini_query_count', sql: `CREATE INDEX IF NOT EXISTS idx_login_gemini_query_count ON "login" (gemini_query_count)` },
     // sourcing dedup
     { name: 'idx_sourcing_linkedinurl',  sql: `CREATE INDEX IF NOT EXISTS idx_sourcing_linkedinurl  ON sourcing (linkedinurl)` },
     { name: 'idx_sourcing_userid',       sql: `CREATE INDEX IF NOT EXISTS idx_sourcing_userid       ON sourcing (userid)` },
@@ -6477,7 +6477,7 @@ module.exports.llmQueue = getLlmQueue();
 // ── Monitoring: queue depth endpoint ─────────────────────────────────────────
 // GET /api/queue-stats — returns per-queue depth and in-flight counts.
 // Requires auth so it is not exposed publicly.
-app.get('/api/queue-stats', requireLogin, (req, res) => {
+app.get('/api/queue-stats', dashboardRateLimit, requireLogin, (req, res) => {
   res.json({ queues: queueStats(), ts: new Date().toISOString() });
 });
 

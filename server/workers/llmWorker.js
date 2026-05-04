@@ -58,10 +58,11 @@ function initLlmWorker(ctx) {
   const _RE_CALC_UM_BULLET   = /^[-*•]\s+/;
   const _RE_ASSESS_CODE_FENCE = /```(?:json)?/g;
 
-  // broadcastSSE is a module-level closure in server_routes2.js; we accept it
-  // optionally via ctx so the worker can notify SSE clients.
-  const broadcastSSE     = ctx.broadcastSSE     || (() => {});
-  const broadcastSSEBulk = ctx.broadcastSSEBulk || (() => {});
+  // broadcastSSE is set on the server_routes2 module.exports inside registerRoutes() (called
+  // synchronously before initLlmWorker).  If it is missing, log a warning so developers know
+  // real-time SSE updates won't be delivered from background jobs.
+  const broadcastSSE     = ctx.broadcastSSE     || ((...args) => { console.warn('[llmWorker] broadcastSSE not available; SSE event dropped:', args[0]); });
+  const broadcastSSEBulk = ctx.broadcastSSEBulk || ((...args) => { console.warn('[llmWorker] broadcastSSEBulk not available; batch SSE event dropped (rows:', (args[0] || []).length, ')'); });
 
   // ── Handler: calc-unmatched ────────────────────────────────────────────────
   async function handleCalcUnmatched(data) {

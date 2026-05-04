@@ -19,7 +19,7 @@
 const fs   = require('fs');
 const path = require('path');
 
-const LOG_DIR     = process.env.AUTOSOURCING_LOG_DIR || String.raw`F:\Recruiting Tools\Autosourcing\log`;
+const LOG_DIR     = process.env.AUTOSOURCING_LOG_DIR || './logs';
 const RETAIN_DAYS = parseInt(process.env.LOG_RETAIN_DAYS || '30', 10);
 const DRY_RUN     = process.env.LOG_ROTATE_DRY_RUN === '1';
 const NOW_MS      = Date.now();
