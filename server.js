@@ -488,6 +488,10 @@ app.get('/community.html', dashboardRateLimit, (req, res) => {
 app.get('/nav-sidebar.css', dashboardRateLimit, (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/src/nav-sidebar.css'));
 });
+// Serve extracted dashboard stylesheet (extracted from inline styles for performance)
+app.get('/LookerDashboard.css', dashboardRateLimit, (req, res) => {
+  res.sendFile(path.join(path.dirname(lookerDashboardFile), 'LookerDashboard.css'));
+});
 app.get('/nav-sidebar.js', dashboardRateLimit, (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/src/nav-sidebar.js'));
 });
