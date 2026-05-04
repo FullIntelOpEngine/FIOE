@@ -928,15 +928,18 @@
                 ws.overflow  = 'visible';
                 ws.height    = 'auto';
                 ws.maxHeight = 'none';
-                // Also expand the parent card so the extra rows aren't clipped by it
+                // Also expand the parent card so the extra rows aren't clipped by it.
+                // contain:paint (set on .card in CSS) clips descendants to the border-box
+                // regardless of overflow, so we must clear it as well.
                 const card = wrapper.closest('.card');
                 if (card && !_expandedCards.has(card)) {
                     _expandedCards.add(card);
                     const cs = card.style;
-                    _layoutRestores.push({ el: card, overflow: cs.overflow, height: cs.height, maxHeight: cs.maxHeight });
+                    _layoutRestores.push({ el: card, overflow: cs.overflow, height: cs.height, maxHeight: cs.maxHeight, contain: cs.contain });
                     cs.overflow  = 'visible';
                     cs.height    = 'auto';
                     cs.maxHeight = 'none';
+                    cs.contain   = 'none';
                 }
             });
 
@@ -964,9 +967,45 @@
                 const ctx = cvs.getContext('2d');
                 ctx.scale(SCALE, SCALE);
 
-                // Fill with Leaflet's default ocean colour (tiles won't load via html2canvas)
+                // Fill with Leaflet's default ocean colour as background
                 ctx.fillStyle = '#b0c4de';
                 ctx.fillRect(0, 0, w, h);
+
+                // ── Draw actual tile images ────────────────────────────────────────────
+                // OSM tiles are served with Access-Control-Allow-Origin:* and Leaflet
+                // now requests them with crossOrigin:'anonymous', so the <img> elements
+                // are CORS-clean and can be drawn onto a canvas without tainting it.
+                // We probe one tile first; if the probe canvas stays clean we draw all
+                // tiles via getBoundingClientRect() (which correctly accounts for all
+                // CSS transforms that Leaflet applies to the tile pane).
+                (function _drawTiles() {
+                    const tileImgs = Array.from(container.querySelectorAll('img.leaflet-tile'));
+                    const readyTile = tileImgs.find(t => t.complete && t.naturalWidth > 0);
+                    if (!readyTile) return;
+                    // Safety probe: draw one pixel on a throwaway canvas; toDataURL() throws
+                    // a SecurityError if the image is CORS-tainted.
+                    try {
+                        const probe = document.createElement('canvas');
+                        probe.width = probe.height = 1;
+                        probe.getContext('2d').drawImage(readyTile, 0, 0, 1, 1);
+                        probe.toDataURL(); // throws if tainted
+                    } catch (_) {
+                        return; // tiles are CORS-tainted – keep the solid background
+                    }
+                    const containerRect = container.getBoundingClientRect();
+                    for (const tile of tileImgs) {
+                        if (!tile.complete || !tile.naturalWidth) continue;
+                        try {
+                            const tr = tile.getBoundingClientRect();
+                            ctx.drawImage(
+                                tile,
+                                tr.left - containerRect.left,
+                                tr.top  - containerRect.top,
+                                tr.width, tr.height
+                            );
+                        } catch (_) { /* skip individual un-drawable tile */ }
+                    }
+                })();
 
                 // Draw each marker at its exact container-pixel position
                 for (const m of markers) {
@@ -1114,10 +1153,11 @@
                 origNodes.forEach(n => container.appendChild(n));
             }
             // Restore expanded table wrappers and cards
-            for (const { el, overflow, height, maxHeight } of _layoutRestores) {
-                el.style.overflow  = overflow  != null ? overflow  : '';
-                el.style.height    = height    != null ? height    : '';
-                el.style.maxHeight = maxHeight != null ? maxHeight : '';
+            for (const item of _layoutRestores) {
+                item.el.style.overflow  = item.overflow  != null ? item.overflow  : '';
+                item.el.style.height    = item.height    != null ? item.height    : '';
+                item.el.style.maxHeight = item.maxHeight != null ? item.maxHeight : '';
+                if ('contain' in item) item.el.style.contain = item.contain != null ? item.contain : '';
             }
             if (btn) {
                 btn.disabled = false;
@@ -1378,7 +1418,8 @@
             maxZoom: 18,
             minZoom: 2,
             noWrap: true,
-            bounds: [[-90, -180], [90, 180]]
+            bounds: [[-90, -180], [90, 180]],
+            crossOrigin: 'anonymous'
         }).addTo(mapInstance);
 
         // Render markers now that the instance is ready (handles race where
@@ -1498,7 +1539,8 @@
                 attribution: '',
                 maxZoom: 18,
                 minZoom: 1,
-                noWrap: true
+                noWrap: true,
+                crossOrigin: 'anonymous'
             }).addTo(skillMapInstance);
 
             const container = document.getElementById(containerId);
@@ -1759,7 +1801,7 @@
             .setView([20, 0], 1);
         mapDiv._leafletMap = map;
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap', maxZoom: 18, minZoom: 1, noWrap: true
+            attribution: '© OpenStreetMap', maxZoom: 18, minZoom: 1, noWrap: true, crossOrigin: 'anonymous'
         }).addTo(map);
 
         // Add one marker per country using the dominant (top) skill colour
