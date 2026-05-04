@@ -557,6 +557,20 @@
     // Map update cache — skip full marker rebuild when counts are unchanged
     let _mapLastCountryKey = '';
 
+    // Skill-map render dedup — skip marker clear/re-add when zoom+data are unchanged
+    let _lastSkillMapRenderKey = '';
+
+    // Table render dedup — skip tbody rebuild when top-50 row ids are unchanged
+    let _lastTableKey = '';
+
+    // Global-data fingerprint — skip updateAllVisuals on SSE no-ops (data didn't change)
+    let _globalDataFingerprint = '';
+
+    // Lazy chart init — defer off-screen chart builds on the initial dashboard load
+    let _dashboardInitialized = false;
+    const _pendingChartUpdates = new Map(); // canvasId → update function
+    let _chartViewObserver = null;
+
     const COUNTRY_COORDS = {
         'Singapore': [1.3521, 103.8198], 'United States': [37.0902, -95.7129], 'USA': [37.0902, -95.7129],
         'US': [37.0902, -95.7129], 'China': [35.8617, 104.1954], 'India': [20.5937, 78.9629],
@@ -709,6 +723,24 @@
         } else {
             console.warn('[Dashboard] RateLimitEnforcer not loaded — rate-limit enforcement is inactive.');
         }
+
+        // Set up a shared IntersectionObserver used by updateAllVisuals({ defer: true })
+        // to build off-screen chart cards lazily as they scroll into view.
+        if (typeof IntersectionObserver !== 'undefined') {
+            _chartViewObserver = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    const id = entry.target.id;
+                    const fn = _pendingChartUpdates.get(id);
+                    if (fn) {
+                        _pendingChartUpdates.delete(id);
+                        _chartViewObserver.unobserve(entry.target);
+                        fn();
+                    }
+                });
+            }, { threshold: 0.05 });
+        }
+
         // Start with Auth Check
         checkAuthOnLoad();
     });
@@ -854,7 +886,8 @@
     // ================= PDF EXPORT LOGIC =================
     async function exportToPDF() {
         const grid = document.getElementById('dashboardGrid');
-        if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
+        const cards = grid ? Array.from(grid.querySelectorAll('.card')) : [];
+        if (!cards.length) { alert('No tiles to export.'); return; }
 
         // Lazy-load html2canvas and jsPDF on first use
         try {
@@ -881,90 +914,49 @@
         try {
             const SCALE = 2;
 
-            // Record card positions relative to the grid BEFORE any capture.
-            // All positions are in canvas pixels (CSS px × SCALE).
-            const gridRect  = grid.getBoundingClientRect();
-            const gridH_css = grid.scrollHeight; // total scrollable height in CSS px
-            const gridW_css = grid.scrollWidth;
-            const cardRects = Array.from(grid.querySelectorAll('.card')).map(c => {
-                const r = c.getBoundingClientRect();
-                return {
-                    top:    (r.top    - gridRect.top) * SCALE,
-                    bottom: (r.bottom - gridRect.top) * SCALE
-                };
-            });
-
             // Letter landscape: 279.4 × 215.9 mm
             const PAGE_W = 279.4, PAGE_H = 215.9;
             const MARGIN = 8;
-            const contentW = PAGE_W - 2 * MARGIN; // printable width in mm
-            const contentH = PAGE_H - 2 * MARGIN; // printable height in mm
-
-            // Total canvas height in pixels (same as what a full-grid capture would produce)
-            const totalH_px = Math.round(gridH_css * SCALE);
-            const totalW_px = Math.round(gridW_css * SCALE);
-
-            // How many canvas pixels fit on one PDF page (height)
-            const mmPerPx   = contentW / totalW_px;
-            const pxPerPage = Math.floor(contentH / mmPerPx);
-
-            // Find the best page-break height — same logic as before
-            function findBreak(pxOffset, maxPx) {
-                const candidates = [];
-                for (const r of cardRects) {
-                    if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
-                        candidates.push(r.bottom);
-                    }
-                }
-                candidates.sort((a, b) => b - a);
-                for (const cutAbs of candidates) {
-                    const straddles = cardRects.some(r => r.top < cutAbs && r.bottom > cutAbs);
-                    if (!straddles) return cutAbs - pxOffset;
-                }
-                return maxPx;
-            }
-
-            // Pre-compute all page slice offsets/heights so we know the page count
-            const slices = [];
-            let pxOffset = 0;
-            while (pxOffset < totalH_px) {
-                const remaining = totalH_px - pxOffset;
-                const slicePx = remaining <= pxPerPage
-                    ? remaining
-                    : findBreak(pxOffset, pxPerPage);
-                slices.push({ offset: pxOffset, height: slicePx });
-                pxOffset += slicePx;
-            }
+            const contentW = PAGE_W - 2 * MARGIN;
+            const contentH = PAGE_H - 2 * MARGIN;
 
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
-            // Capture each page slice independently — avoids allocating one huge canvas
+            // Per-card sequential capture: each card produces its own small canvas, avoiding
+            // the large peak allocation of a full-grid capture.  Cards are packed onto pages
+            // top-to-bottom; a new page starts whenever the next card would overflow.
+            let pageY = MARGIN; // current Y cursor on the PDF page (mm)
+            let firstCard = true;
+
             const h2cBase = {
                 scale:       SCALE,
                 useCORS:     true,
                 backgroundColor: bgColor,
                 logging:     false,
-                scrollX:     0,
-                scrollY:     0,
-                windowWidth:  gridW_css,
-                windowHeight: gridH_css
+                scrollX:     -window.scrollX,
+                scrollY:     -window.scrollY
             };
 
-            for (let i = 0; i < slices.length; i++) {
-                const { offset, height: slicePx } = slices[i];
-                if (i > 0) pdf.addPage();
+            for (const card of cards) {
+                const rect = card.getBoundingClientRect();
+                if (rect.width < 1 || rect.height < 1) continue; // skip invisible cards
 
-                // html2canvas x/y/width/height clip the capture to this rect (CSS px)
-                const sliceCvs = await html2canvas(grid, {
-                    ...h2cBase,
-                    x:      0,
-                    y:      Math.round(offset / SCALE),
-                    width:  gridW_css,
-                    height: Math.round(slicePx / SCALE)
-                });
+                const cardCvs = await html2canvas(card, { ...h2cBase });
 
-                const sliceH_mm = slicePx * mmPerPx;
-                pdf.addImage(sliceCvs.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH_mm);
+                // Scale the captured canvas to fit the printable width
+                const aspectRatio = cardCvs.height / cardCvs.width;
+                const cardW_mm = contentW;
+                const cardH_mm = cardW_mm * aspectRatio;
+
+                // Start a new page if this card won't fit in the remaining space
+                if (!firstCard && pageY + cardH_mm > PAGE_H - MARGIN) {
+                    pdf.addPage();
+                    pageY = MARGIN;
+                }
+
+                pdf.addImage(cardCvs.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, pageY, cardW_mm, cardH_mm);
+                pageY += cardH_mm + 4; // 4 mm gap between cards
+                firstCard = false;
             }
 
             pdf.save('dashboard_export.pdf');
@@ -1490,12 +1482,17 @@
 
     function renderSkillMapMarkers() {
         if(!skillMapInstance || !skillMapDataCache) return;
+
+        const zoom = skillMapInstance.getZoom();
+        // Skip the expensive clear-and-rebuild when zoom level and data haven't changed.
+        const renderKey = zoom + ':' + skillMapDataCache.countries.map(c => c.name + c.totalCount).join(',');
+        if (renderKey === _lastSkillMapRenderKey) return;
+        _lastSkillMapRenderKey = renderKey;
         
         // Clear existing markers
         skillMapMarkers.forEach(m => skillMapInstance.removeLayer(m));
         skillMapMarkers = [];
 
-        const zoom = skillMapInstance.getZoom();
         const thresholdZoom = 4; // Zoom level to switch between aggregate and detailed view
 
         skillMapDataCache.countries.forEach(c => {
@@ -1658,8 +1655,12 @@
         const loader = document.getElementById('globalLoader');
         loader.classList.add('active');
         try {
-            await fetchGlobalData();
-            updateAllVisuals();
+            const changed = await fetchGlobalData();
+            // Skip a full re-render when SSE fires but the data hasn't actually changed.
+            if (changed !== false) {
+                updateAllVisuals({ defer: !_dashboardInitialized });
+                _dashboardInitialized = true;
+            }
         } catch (e) {
             console.error("Dashboard Refresh Error", e);
         } finally {
@@ -1669,7 +1670,7 @@
 
     async function fetchGlobalData() {
         // Client-side rate-limit check before fetching candidates
-        if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('candidates'))) return;
+        if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('candidates'))) return false;
         const res = await fetch(`${API_BASE}/candidates`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json' },
@@ -1678,19 +1679,41 @@
         if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data)) {
+                // Build a cheap fingerprint: length + first/last id. If unchanged, skip re-render.
+                const fp = data.length + ':' + (data[0]?.id ?? '') + ':' + (data[data.length - 1]?.id ?? '');
+                if (fp === _globalDataFingerprint) return false;
+                _globalDataFingerprint = fp;
+
                 globalData = data;
                 // Invalidate all per-data caches
                 _filteredDataCache = null;
                 _filterOptionsCache.clear();
                 _mapLastCountryKey = '';
+                _lastTableKey = '';
+                _lastSkillMapRenderKey = '';
                 _skillMapDirty = true;
             }
         }
     }
 
-    function updateAllVisuals() {
+    function updateAllVisuals(opts) {
         // Mark skill-map data as dirty so next render recomputes aggregates
         _skillMapDirty = true;
+
+        // On the very first load (opts.defer === true), chart cards that are outside the
+        // viewport are queued for lazy rendering via _chartViewObserver. All subsequent
+        // calls (filter changes, SSE refreshes) render immediately so interactivity stays sharp.
+        const shouldDefer = !!(opts && opts.defer) && !!_chartViewObserver;
+        function _runOrDefer(canvasId, fn) {
+            if (!shouldDefer) { fn(); return; }
+            const el = document.getElementById(canvasId);
+            if (!el) { fn(); return; }
+            const rect = el.getBoundingClientRect();
+            const visible = rect.top < window.innerHeight && rect.bottom > 0;
+            if (visible) { fn(); return; }
+            _pendingChartUpdates.set(canvasId, fn);
+            _chartViewObserver.observe(el);
+        }
 
         // Only reset charts to defaults if they weren't restored by load state
         // The charts state restoration is handled by direct calls or localstorage checks
@@ -1701,38 +1724,38 @@
         
         // Geo Chart
         const geoSelect = document.querySelector('select[onchange^="updateChartType(\'geoChart\'"]');
-        if(geoSelect) updateChartType('geoChart', 'country', geoSelect.value);
+        if(geoSelect) _runOrDefer('geoChart', () => updateChartType('geoChart', 'country', geoSelect.value));
         
         // Family Chart
         const familySelect = document.querySelector('select[onchange^="updateChartType(\'familyChart\'"]');
-        if(familySelect) updateChartType('familyChart', 'jobfamily', familySelect.value);
+        if(familySelect) _runOrDefer('familyChart', () => updateChartType('familyChart', 'jobfamily', familySelect.value));
         
         // Seniority Chart
         const senioritySelect = document.querySelector('select[onchange^="updateChartType(\'seniorityChart\'"]');
-        if(senioritySelect) updateChartType('seniorityChart', 'seniority', senioritySelect.value);
+        if(senioritySelect) _runOrDefer('seniorityChart', () => updateChartType('seniorityChart', 'seniority', senioritySelect.value));
         
         // Skill Chart
         const skillSelect = document.querySelector('select[onchange^="updateChartType(\'skillChart\'"]');
         if(skillSelect) {
-             updateChartType('skillChart', 'skillset', skillSelect.value);
+             _runOrDefer('skillChart', () => updateChartType('skillChart', 'skillset', skillSelect.value));
         } else {
-             updateChartType('skillChart', 'skillset', 'map'); 
+             _runOrDefer('skillChart', () => updateChartType('skillChart', 'skillset', 'map'));
         }
         
         // Gap Chart
         const gapSelect = document.querySelector('select[onchange^="updateChartType(\'gapChart\'"]');
-        if(gapSelect) updateChartType('gapChart', 'lskillset', gapSelect.value);
+        if(gapSelect) _runOrDefer('gapChart', () => updateChartType('gapChart', 'lskillset', gapSelect.value));
         
         // Product Chart
         const prodSelect = document.querySelector('select[onchange^="updateChartType(\'productChart\'"]');
-        if(prodSelect) updateChartType('productChart', 'product', prodSelect.value);
+        if(prodSelect) _runOrDefer('productChart', () => updateChartType('productChart', 'product', prodSelect.value));
         
         // Location Chart
         const locSelect = document.querySelector('select[onchange^="updateChartType(\'locationChart\'"]');
         if(locSelect) {
-             updateChartType('locationChart', 'country', locSelect.value);
+             _runOrDefer('locationChart', () => updateChartType('locationChart', 'country', locSelect.value));
         } else {
-             updateChartType('locationChart', 'country', 'map'); 
+             _runOrDefer('locationChart', () => updateChartType('locationChart', 'country', 'map'));
         }
 
         updateKPIS();
@@ -2338,10 +2361,17 @@
 
     function updateTable() {
         const filtered = getFilteredData();
+        const top50 = filtered.slice(0, 50);
+
+        // Skip a full DOM rebuild when the top-50 visible rows haven't changed.
+        const newKey = top50.map(r => (r.id ?? r.name ?? '')).join('\x00');
+        if (newKey === _lastTableKey) return;
+        _lastTableKey = newKey;
+
         const tbody = document.querySelector('#dataTable tbody');
         tbody.innerHTML = '';
 
-        filtered.slice(0, 50).forEach(row => {
+        top50.forEach(row => {
             const tr = document.createElement('tr');
             let score = extractRatingScore(row.rating) || '-';
             const nameHtml = row.linkedinurl 
