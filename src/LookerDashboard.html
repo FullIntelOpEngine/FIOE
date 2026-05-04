@@ -753,10 +753,24 @@
         const bgColor = getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa';
 
         try {
+            const SCALE = 2;
+
+            // Record card positions relative to the grid BEFORE the async capture so
+            // that scrolling or reflow during capture does not affect the measurements.
+            const gridRect  = grid.getBoundingClientRect();
+            // cardRects: top/bottom in canvas pixels (CSS px × SCALE)
+            const cardRects = Array.from(grid.querySelectorAll('.card')).map(c => {
+                const r = c.getBoundingClientRect();
+                return {
+                    top:    (r.top    - gridRect.top) * SCALE,
+                    bottom: (r.bottom - gridRect.top) * SCALE
+                };
+            });
+
             // Capture the entire dashboard grid as one screenshot so the PDF layout
             // exactly mirrors the on-screen arrangement (column spans, card sizes, gaps).
             const cvs = await html2canvas(grid, {
-                scale: 2,
+                scale: SCALE,
                 useCORS: true,
                 backgroundColor: bgColor,
                 logging: false,
@@ -778,6 +792,29 @@
             // How many canvas pixels fit on one PDF page (height)
             const pxPerPage = Math.floor(contentH / mmPerPx);
 
+            // Find the best page-break height starting at pxOffset within a budget of
+            // maxPx pixels: pick the latest card-bottom that fits without any card
+            // straddling the cut.  Falls back to the full budget when a single tile is
+            // taller than a page (unavoidable cut).
+            function findBreak(pxOffset, maxPx) {
+                // Collect card-bottom positions that fall inside the current page window
+                const candidates = [];
+                for (const r of cardRects) {
+                    if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
+                        candidates.push(r.bottom);
+                    }
+                }
+                // Try from the latest (largest) candidate downward
+                candidates.sort((a, b) => b - a);
+                for (const cutAbs of candidates) {
+                    // Accept this cut only if no card straddles it
+                    const straddles = cardRects.some(r => r.top < cutAbs && r.bottom > cutAbs);
+                    if (!straddles) return cutAbs - pxOffset; // slice height in pixels
+                }
+                // No clean break: fall back to full page height
+                return maxPx;
+            }
+
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
             let pxOffset = 0;
@@ -787,7 +824,10 @@
                 if (!firstPage) pdf.addPage();
                 firstPage = false;
 
-                const slicePx = Math.min(pxPerPage, cvs.height - pxOffset);
+                const remaining = cvs.height - pxOffset;
+                const slicePx = remaining <= pxPerPage
+                    ? remaining
+                    : findBreak(pxOffset, pxPerPage);
 
                 // Draw only the current page's slice onto a temporary canvas
                 const pageCanvas = document.createElement('canvas');
@@ -802,7 +842,7 @@
                 const sliceH = slicePx * mmPerPx; // height of this slice in mm
                 pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH);
 
-                pxOffset += pxPerPage;
+                pxOffset += slicePx;
             }
 
             pdf.save('dashboard_export.pdf');
