@@ -289,6 +289,87 @@ const _xmlCellStr = v => { const s = v == null ? '' : String(v); return s.length
 // Returns true when a required candidate field is blank / missing.
 const _isBlankField = v => !v || !String(v).trim();
 
+// Multi-word skill pairs recognised by prettifySkillset when merging adjacent tokens.
+const _multiWordSet = new Set([
+  'Project Management', 'Version Control', 'Milestone Planning', 'Team Coordination',
+  'Visual Style Guides', 'Team Leadership', 'Creative Direction', 'Game Design',
+  'Level Design', 'Production Management'
+]);
+
+// Prettifies a raw skillset value (string, array, or object) for display.
+// Hoisted to module level so it is allocated once rather than re-created on every
+// CandidatesTable render. Uses the shared skillset cache with a 'pfy:' namespace.
+function prettifySkillset(raw) {
+  // Fast path for string inputs — most common case (cell values already serialized).
+  // 'pfy:' prefix namespaces prettifySkillset entries in the shared cache (distinct from 'parseSkillsetString' entries).
+  const origKey = typeof raw === 'string' ? raw : null;
+  if (origKey !== null) {
+    if (_sharedSkillsetCache.has('pfy:' + origKey)) return _sharedSkillsetCache.get('pfy:' + origKey);
+  }
+  if (raw == null) return '';
+  if (Array.isArray(raw)) {
+    raw = raw.filter(v => v != null && v !== '').map(v => String(v).trim()).join(', ');
+  } else if (typeof raw === 'object') {
+    try {
+      const vals = Object.values(raw)
+        .filter(v => v != null && (typeof v === 'string' || typeof v === 'number'))
+        .map(v => String(v).trim())
+        .filter(Boolean);
+      if (vals.length) raw = vals.join(', ');
+      else raw = String(raw);
+    } catch {
+      raw = String(raw);
+    }
+  } else {
+    raw = String(raw);
+  }
+  raw = raw.trim();
+  if (!raw) return '';
+  if (/[;,]/.test(raw)) {
+    return raw.split(/[;,]/).map(s => s.trim()).filter(Boolean).join(', ');
+  }
+  const withDelims = raw.replace(/([a-z])([A-Z])/g, '$1|$2');
+  let tokens = withDelims.split(/[\s|]+/).filter(Boolean);
+  const merged = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const cur = tokens[i];
+    const next = tokens[i + 1];
+    if (next) {
+      const pair = cur + ' ' + next;
+      if (_multiWordSet.has(pair)) {
+        merged.push(pair);
+        i++;
+        continue;
+      }
+    }
+    merged.push(cur);
+  }
+  const deduped = merged.filter((t, i) => i === 0 || t !== merged[i - 1]);
+  const result = deduped.join(', ');
+  // Cache the result keyed on the original string input.
+  if (origKey !== null) {
+    if (_sharedSkillsetCache.size >= _SHARED_SKILLSET_CACHE_MAX) {
+      _sharedSkillsetCache.delete(_sharedSkillsetCache.keys().next().value);
+    }
+    _sharedSkillsetCache.set('pfy:' + origKey, result);
+  }
+  return result;
+}
+
+// Table row height constant used by CandidatesTable cells — hoisted to avoid
+// recreation on every render of the (very large) CandidatesTable component.
+const HEADER_ROW_HEIGHT = 38;
+
+// Maps Sheet 1 column names → DB Copy field names for Dock In merging.
+// Hoisted to module level so it is allocated once, not re-created per render.
+const S1_TO_DB_DOCK = {
+  name: 'name', company: 'company', jobtitle: 'jobtitle', country: 'country',
+  linkedinurl: 'linkedinurl', product: 'product', sector: 'sector',
+  jobfamily: 'jobfamily', geographic: 'geographic', seniority: 'seniority',
+  skillset: 'skillset', sourcingstatus: 'sourcingstatus', email: 'email',
+  mobile: 'mobile', office: 'office', comment: 'comment', compensation: 'compensation',
+};
+
 /* ========================= LOGIN COMPONENT ========================= */
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState('');
@@ -3207,17 +3288,17 @@ function CandidatesTable({
         return { ...prev, ...updates };
       });
 
-      // Save to database via onSave callback for all targeted IDs
+      // Save to database via onSave callback for all targeted IDs — run in parallel
       if (typeof onSave === 'function') {
-        for (const id of idsToUpdate) {
+        await Promise.all(idsToUpdate.map(id => {
           const candidate = candidates.find(c => c.id === id);
           const payload = {
             ...(candidate || {}),
             ...(editRows[id] || {}),
             [dbField]: renameValue.trim()
           };
-          await onSave(id, payload);
-        }
+          return onSave(id, payload);
+        }));
       }
 
       // Show success message and clear rename UI after successful update
@@ -3296,68 +3377,6 @@ function CandidatesTable({
       return { ...prev, [id]: nextRow };
     });
   };
-
-  const multiWordSet = new Set([
-    'Project Management', 'Version Control', 'Milestone Planning', 'Team Coordination',
-    'Visual Style Guides', 'Team Leadership', 'Creative Direction', 'Game Design',
-    'Level Design', 'Production Management'
-  ]);
-  function prettifySkillset(raw) {
-    // Fast path for string inputs — most common case (cell values already serialized).
-    // 'pfy:' prefix namespaces prettifySkillset entries in the shared cache (distinct from 'parseSkillsetString' entries).
-    const origKey = typeof raw === 'string' ? raw : null;
-    if (origKey !== null) {
-      if (_sharedSkillsetCache.has('pfy:' + origKey)) return _sharedSkillsetCache.get('pfy:' + origKey);
-    }
-    if (raw == null) return '';
-    if (Array.isArray(raw)) {
-      raw = raw.filter(v => v != null && v !== '').map(v => String(v).trim()).join(', ');
-    } else if (typeof raw === 'object') {
-      try {
-        const vals = Object.values(raw)
-          .filter(v => v != null && (typeof v === 'string' || typeof v === 'number'))
-          .map(v => String(v).trim())
-          .filter(Boolean);
-        if (vals.length) raw = vals.join(', ');
-        else raw = String(raw);
-      } catch {
-        raw = String(raw);
-      }
-    } else {
-      raw = String(raw);
-    }
-    raw = raw.trim();
-    if (!raw) return '';
-    if (/[;,]/.test(raw)) {
-      return raw.split(/[;,]/).map(s => s.trim()).filter(Boolean).join(', ');
-    }
-    const withDelims = raw.replace(/([a-z])([A-Z])/g, '$1|$2');
-    let tokens = withDelims.split(/[\s|]+/).filter(Boolean);
-    const merged = [];
-    for (let i = 0; i < tokens.length; i++) {
-      const cur = tokens[i];
-      const next = tokens[i + 1];
-      if (next) {
-        const pair = cur + ' ' + next;
-        if (multiWordSet.has(pair)) {
-          merged.push(pair);
-          i++;
-          continue;
-        }
-      }
-      merged.push(cur);
-    }
-    const deduped = merged.filter((t, i) => i === 0 || t !== merged[i - 1]);
-    const result = deduped.join(', ');
-    // Cache the result keyed on the original string input.
-    if (origKey !== null) {
-      if (_sharedSkillsetCache.size >= _SHARED_SKILLSET_CACHE_MAX) {
-        _sharedSkillsetCache.delete(_sharedSkillsetCache.keys().next().value);
-      }
-      _sharedSkillsetCache.set('pfy:' + origKey, result);
-    }
-    return result;
-  }
 
   const [colResizing, setColResizing] = useState({ active: false, field: '', startX: 0, startW: 0 });
   const onMouseDown = (field, e) => {
@@ -3450,8 +3469,6 @@ function CandidatesTable({
       autoSizeColumn(fieldKey);
     }
   }
-
-  const HEADER_ROW_HEIGHT = 38;
 
   // Computes { fieldKey: leftOffset } for all user-pinned middle columns in order
   const computePinnedLeftOffsets = useMemo(() => {
@@ -3571,14 +3588,6 @@ function CandidatesTable({
   };
 
   // ── DB Dock In: import a DB Port export file and deploy ──
-  const S1_TO_DB_DOCK = {
-    name: 'name', company: 'company', jobtitle: 'jobtitle', country: 'country',
-    linkedinurl: 'linkedinurl', product: 'product', sector: 'sector',
-    jobfamily: 'jobfamily', geographic: 'geographic', seniority: 'seniority',
-    skillset: 'skillset', sourcingstatus: 'sourcingstatus', email: 'email',
-    mobile: 'mobile', office: 'office', comment: 'comment', compensation: 'compensation',
-  };
-
   // Shared helpers used by both handleDockIn and peekFileForNewRecords to match
   // Sheet 1 rows against DB Copy rows by LinkedIn URL (primary) or name (secondary).
   // Index-based alignment breaks when some records are excluded from DB Copy by the
@@ -8061,6 +8070,63 @@ function NavSidebar({ activePage = 'candidate-management' }) {
   );
 }
 
+// ── Module-level constants/helpers used by App() ──────────────────────────────
+// Hoisted so they are allocated once, not re-created on every App render.
+
+const VSKILLSET_CATEGORY_COLORS = {
+  'High': '#10b981',
+  'Medium': '#f59e0b',
+  'Low': '#87888a',
+  'Unknown': '#87888a'
+};
+
+const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
+
+// Star display styles — allocated once at module level to avoid object creation per renderStarRating call.
+const _STAR_FULL_STYLE  = { color: '#fbbf24', fontSize: 20 };
+const _STAR_EMPTY_STYLE = { color: 'var(--border)', fontSize: 20 };
+
+// Pure function — no component state dependencies; hoisted so it is not re-created on every App render.
+function renderStarRating(starsValue) {
+  if (!starsValue) return null;
+
+  let starCount = 0;
+  if (typeof starsValue === 'string') {
+    const fullStars = (starsValue.match(/[★⭐]/g) || []).length;
+    const numMatch = starsValue.match(/(\d+\.?\d*)/);
+    if (numMatch) {
+      starCount = parseFloat(numMatch[1]);
+    } else {
+      starCount = fullStars;
+    }
+  } else if (typeof starsValue === 'number') {
+    starCount = starsValue;
+  }
+
+  starCount = Math.min(starCount, 5);
+
+  const stars = [];
+  for (let i = 1; i <= 5; i++) {
+    if (i <= Math.floor(starCount)) {
+      stars.push(<span key={i} style={_STAR_FULL_STYLE}>★</span>);
+    } else if (i === Math.ceil(starCount) && starCount % 1 !== 0) {
+      stars.push(<span key={i} style={{ color: '#fbbf24', fontSize: 20, opacity: 0.5 }}>★</span>);
+    } else {
+      stars.push(<span key={i} style={_STAR_EMPTY_STYLE}>★</span>);
+    }
+  }
+
+  return (
+    <div
+      style={{ display: 'flex', gap: 2 }}
+      role="img"
+      aria-label={`${starCount} out of 5 stars`}
+    >
+      {stars}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -8229,67 +8295,6 @@ export default function App() {
       .catch(() => {});
   }, [user]);
 
-  // Category colors for verified skillset
-  const VSKILLSET_CATEGORY_COLORS = {
-    'High': '#10b981',
-    'Medium': '#f59e0b',
-    'Low': '#87888a',
-    'Unknown': '#87888a'
-  };
-
-  // Helper function to render star rating from text or number
-  const renderStarRating = (starsValue) => {
-    if (!starsValue) return null;
-    
-    // If it's a string with star characters, count them
-    let starCount = 0;
-    if (typeof starsValue === 'string') {
-      // Count ★ or ⭐ characters
-      const fullStars = (starsValue.match(/[★⭐]/g) || []).length;
-      // Also try to parse as number if it's like "4.5" or "5"
-      const numMatch = starsValue.match(/(\d+\.?\d*)/);
-      if (numMatch) {
-        starCount = parseFloat(numMatch[1]);
-      } else {
-        starCount = fullStars;
-      }
-    } else if (typeof starsValue === 'number') {
-      starCount = starsValue;
-    }
-    
-    // Cap at 5 stars
-    starCount = Math.min(starCount, 5);
-    
-    // Star styling constants
-    const fullStarStyle = { color: '#fbbf24', fontSize: 20 };
-    const emptyStarStyle = { color: 'var(--border)', fontSize: 20 };
-    
-    // Generate star display
-    const stars = [];
-    for (let i = 1; i <= 5; i++) {
-      if (i <= Math.floor(starCount)) {
-        // Full star
-        stars.push(<span key={i} style={fullStarStyle}>★</span>);
-      } else if (i === Math.ceil(starCount) && starCount % 1 !== 0) {
-        // Half star - use hollow star with lighter color for better cross-browser support
-        stars.push(<span key={i} style={{ color: '#fbbf24', fontSize: 20, opacity: 0.5 }}>★</span>);
-      } else {
-        // Empty star
-        stars.push(<span key={i} style={emptyStarStyle}>★</span>);
-      }
-    }
-    
-    return (
-      <div 
-        style={{ display: 'flex', gap: 2 }}
-        role="img"
-        aria-label={`${starCount} out of 5 stars`}
-      >
-        {stars}
-      </div>
-    );
-  };
-
   // Token state - only Account Token and Tokens Left
   const [accountTokens, setAccountTokens] = useState(0);
   const [tokensLeft, setTokensLeft] = useState(0);
@@ -8302,7 +8307,6 @@ export default function App() {
   const [customContactGenProvider, setCustomContactGenProvider] = useState('');
 
   // Status Management State
-  const DEFAULT_STATUSES = ['New', 'Reviewing', 'Contacted', 'Unresponsive', 'Declined', 'Unavailable', 'Screened', 'Not Proceeding', 'Prospected'];
   const [statusOptions, setStatusOptions] = useState(DEFAULT_STATUSES);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
 
@@ -8371,13 +8375,6 @@ export default function App() {
         const cp = (svcData.providers.contact_gen || '').toLowerCase();
         userContactGen = cp === 'contactout' || cp === 'apollo' || cp === 'rocketreach';
       }
-      // Admin platform flags (from admin_rate_limits.html) — detected so App.js
-      // can confirm it reads both config sources, but intentionally excluded from
-      // token logic.  Only per-user keys (api_porting.html) suppress deduction / hide UI.
-      const platEmailVerif = !!(platformData && platformData.email_verif_custom);
-      const platLlm = !!(platformData && platformData.llm_custom);
-      console.log('[ServiceConfig] per-user emailVerif=%s llm=%s contactGen=%s | admin emailVerif=%s llm=%s',
-        userEmailVerif, userLlm, userContactGen, platEmailVerif, platLlm);
       // Only per-user flags control token deduction and visibility
       setHasCustomEmailVerif(userEmailVerif);
       setHasCustomLlm(userLlm);
@@ -8957,16 +8954,6 @@ export default function App() {
       }
       const raw=await res.json();
       const candidatesList = Array.isArray(raw)?raw:[];
-      
-      // Log vskillset data for debugging
-      const withVskillset = candidatesList.filter(c => c.vskillset);
-      if (withVskillset.length > 0) {
-        console.log(`[fetchCandidates] Found ${withVskillset.length} candidates with vskillset data`);
-        console.log('[fetchCandidates] Sample vskillset:', withVskillset[0].vskillset);
-      } else {
-        console.log('[fetchCandidates] No candidates with vskillset data found');
-      }
-      
       setCandidates(candidatesList);
       setPage(1);
     }catch{
@@ -9062,13 +9049,29 @@ export default function App() {
     );
   }, [mergedCandidates, selectedJobFamily, selectedOrganisation, selectedCountry, baseFilter]);
 
+  // Pre-compute a lowercase search string per candidate, indexed by ID.
+  // This memo only re-runs when mergedCandidates changes (not on every globalSearch keystroke),
+  // so each subsequent filter pass is a simple Map lookup + substring test instead of
+  // reconstructing Object.values() + N String() conversions per candidate per keystroke.
+  const _candidateSearchStrings = useMemo(() => {
+    const m = new Map();
+    (mergedCandidates || []).forEach(c => {
+      if (c.id != null) {
+        m.set(c.id, Object.values(c).filter(v => v != null).map(v => String(v)).join('\x00').toLowerCase());
+      }
+    });
+    return m;
+  }, [mergedCandidates]);
+
   const filteredCandidates = useMemo(()=>{
     const q = (globalSearch || '').trim().toLowerCase();
     if (!q) return intersectionFiltered;
     return intersectionFiltered.filter(c => {
+      const str = _candidateSearchStrings.get(c.id);
+      if (str !== undefined) return str.includes(q);
       return Object.values(c).some(v => v != null && String(v).toLowerCase().includes(q));
     });
-  },[intersectionFiltered, globalSearch]);
+  },[intersectionFiltered, globalSearch, _candidateSearchStrings]);
 
   const totalPages = Math.max(1, Math.ceil((filteredCandidates||[]).length / PER_PAGE));
   const pagedCandidates = useMemo(()=> (filteredCandidates||[]).slice((page-1)*PER_PAGE, page*PER_PAGE), [filteredCandidates,page]);
@@ -9150,15 +9153,6 @@ export default function App() {
 
   // Handler for viewing profile
   const handleViewProfile = (candidate) => {
-    console.log('[handleViewProfile] Candidate data:', {
-      id: candidate.id,
-      name: candidate.name,
-      hasVskillset: !!candidate.vskillset,
-      vskillsetType: typeof candidate.vskillset,
-      vskillsetLength: Array.isArray(candidate.vskillset) ? candidate.vskillset.length : 'N/A',
-      vskillsetSample: candidate.vskillset ? (Array.isArray(candidate.vskillset) ? candidate.vskillset[0] : candidate.vskillset) : null
-    });
-    
     const rawEmails = (candidate.email || '').split(/[;,]+/).map(s => s.trim()).filter(Boolean);
     // Initialize emails list with check state, and default confidence for existing emails (N/A)
     setResumeEmailList(rawEmails.map(e => ({ value: e, checked: false, confidence: 'Stored (N/A)' })));
