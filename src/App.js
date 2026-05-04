@@ -264,6 +264,31 @@ async function fetchSkillsetMapping() {
   }
 }
 
+// ── Module-level pure helpers — allocated once, not re-created per render ──
+
+// Returns the largest numeric id in an array of row objects (used by peekFileForNewRecords).
+const getMaxDbId = rows => rows.reduce((max, row) => {
+  const v = parseInt(row.id || 0, 10);
+  return !isNaN(v) && v > max ? v : max;
+}, 0);
+
+// Normalises a string to lowercase alphanumeric only — for filename / candidate-name comparisons.
+const _normalizeForResume = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// SpreadsheetML / OOXML maximum characters per cell.
+const _XML_CELL_MAX = 32767;
+
+// Escapes XML-special characters for SpreadsheetML cell/attribute content.
+// Single-pass replace avoids creating four intermediate strings.
+const _XML_ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+const _xmlEscape = s => String(s ?? '').replace(/[&<>"]/g, c => _XML_ESC_MAP[c]);
+
+// Truncates a value to the SpreadsheetML per-cell character limit.
+const _xmlCellStr = v => { const s = v == null ? '' : String(v); return s.length > _XML_CELL_MAX ? s.slice(0, _XML_CELL_MAX) : s; };
+
+// Returns true when a required candidate field is blank / missing.
+const _isBlankField = v => !v || !String(v).trim();
+
 /* ========================= LOGIN COMPONENT ========================= */
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState('');
@@ -2629,6 +2654,14 @@ function CandidatesTable({
   // Step 3 (analytic mode) — Role & Skillset Confirmation
   const [dockInRoleTagPairs, setDockInRoleTagPairs] = useState([]); // [{roleTag, jskillset}] unique pairs from DB Copy
   const [dockInSelectedPair, setDockInSelectedPair] = useState(null); // {roleTag, jskillset} confirmed by user
+  // Value-based pair comparison — defined once as a callback to avoid duplicate
+  // inline definitions in the two wizard render blocks (inline + modal).
+  const isPairSelected = useCallback(
+    pair => dockInSelectedPair !== null &&
+      dockInSelectedPair.roleTag === pair.roleTag &&
+      dockInSelectedPair.jskillset === pair.jskillset,
+    [dockInSelectedPair]
+  );
 
   // Track newly-added candidate IDs for the "New" badge
   const [newCandidateIds, setNewCandidateIds] = useState(new Set());
@@ -4174,20 +4207,14 @@ function CandidatesTable({
     });
   };
 
-  // ── Resume name matching helper ──
-  // Returns the largest numeric id found in an array of row objects.
-  const getMaxDbId = rows => rows.reduce((max, row) => {
-    const v = parseInt(row.id || 0, 10);
-    return !isNaN(v) && v > max ? v : max;
-  }, 0);
+  // getMaxDbId is a module-level pure helper (see top of file).
 
   // ── Resume name matching helper ──
   // Strips extension and normalises punctuation/case before comparing.
   // Requires an exact normalized match or that one fully contains the other (min 5 chars).
   const resumeMatchesRecord = (file, candidateName) => {
-    const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const fn = normalize(file.name.replace(/\.[^.]+$/, ''));
-    const cn = normalize(candidateName);
+    const fn = _normalizeForResume(file.name.replace(/\.[^.]+$/, ''));
+    const cn = _normalizeForResume(candidateName);
     if (!fn || !cn) return false;
     if (fn === cn) return true;
     // Substring check: only if the shorter key is ≥5 chars to avoid false positives (e.g. 'john' in 'johnson')
@@ -4649,14 +4676,10 @@ function CandidatesTable({
     // vskillset/assessment data written asynchronously by bulk_assess after Dock In).
     // Falls back to the in-memory allCandidates prop for non-Dock-Out callers.
     const exportCandidates = freshCandidates !== null ? freshCandidates : allCandidates;
-    // Max cell length (SpreadsheetML / OOXML spec).
-    const MAX_LEN = 32767;
-    const cellStr = v => {
-      const s = v == null ? '' : String(v);
-      return s.length > MAX_LEN ? s.slice(0, MAX_LEN) : s;
-    };
-    // Escape special XML characters in cell content.
-    const ex = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    // Use module-level _xmlEscape for XML attribute/element escaping,
+    // and _xmlCellStr for cell-value truncation (both enforce the 32 767-char limit).
+    const ex = _xmlEscape;
+    const cellStr = _xmlCellStr;
 
     // Fetch the per-user protection key from the server (derived from stored password hash).
     // This key is used as the worksheet protection password for all non-candidate sheets.
@@ -4727,6 +4750,7 @@ function CandidatesTable({
     // "Item1","Item2","Item3" is incorrect (multiple quoted items = "Bad Value" in Excel).
     // Double quotes within an item are doubled ("") per Excel formula convention.
     // & < > are XML-encoded; double quotes are literal in XML text content.
+    // xmlSafe: XML-escape for DataValidation list values (no &quot; – quotes are doubled instead).
     const xmlSafe = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const makeValidation = (col1, vals) => {
       if (!col1 || !vals || !vals.length) return '';
@@ -4763,7 +4787,7 @@ function CandidatesTable({
     };
     // Only include candidates that have all 10 required fields populated.
     // Records missing any of these fields are excluded from the DB Copy sheet.
-    const _isBlankField = v => !v || !String(v).trim();
+    // _isBlankField is a module-level helper.
     const dockOutEligible = (exportCandidates || []).filter(c =>
       !_isBlankField(c.name) &&
       !_isBlankField(c.company || c.organisation) &&
@@ -4782,7 +4806,7 @@ function CandidatesTable({
     // Keep JSON rows as individual strings for Blob part streaming (avoids extra string concat).
     const jsonRowArr = rawJsonStrings.map(s => {
       const chunks = [];
-      for (let i = 0; i < s.length; i += MAX_LEN) chunks.push(s.slice(i, i + MAX_LEN));
+      for (let i = 0; i < s.length; i += _XML_CELL_MAX) chunks.push(s.slice(i, i + _XML_CELL_MAX));
       const cells = chunks.map(ch => `<Cell><Data ss:Type="String">${ex(ch)}</Data></Cell>`).join('');
       return `<Row>${cells}</Row>`;
     });
@@ -4952,9 +4976,6 @@ hiddenProtectedOptions() +
           : ['Choose Mode', 'Select File', 'Deploy'];
         const resumeStep = isAnalyticWiz ? 4 : -1;
         const deployStep = isAnalyticWiz ? 6 : 3;
-        // Helper: value-based pair comparison to avoid stale object-reference issues
-        const isPairSelected = (pair) => dockInSelectedPair !== null &&
-          dockInSelectedPair.roleTag === pair.roleTag && dockInSelectedPair.jskillset === pair.jskillset;
         const needsPairSelection = dockInRoleTagPairs.length > 1 && !dockInSelectedPair;
         return (
         <div className="app-card" style={{ width: '100%', maxWidth: 640, margin: '40px auto', padding: '36px 40px' }}>
@@ -5850,9 +5871,7 @@ hiddenProtectedOptions() +
           : ['Choose Mode', 'Select File', 'Deploy'];
         const resumeStep = isAnalyticWiz ? 4 : -1;
         const deployStep = isAnalyticWiz ? 6 : 3;
-        // Helper: value-based pair comparison to avoid stale object-reference issues
-        const isPairSelected = (pair) => dockInSelectedPair !== null &&
-          dockInSelectedPair.roleTag === pair.roleTag && dockInSelectedPair.jskillset === pair.jskillset;
+        // isPairSelected is a useCallback defined at the top of the component.
         const needsPairSelection = dockInRoleTagPairs.length > 1 && !dockInSelectedPair;
         return (
         <div style={{
@@ -6958,28 +6977,32 @@ hiddenProtectedOptions() +
 }
 
 /* ========================= ORG CHART CORE ========================= */
+// ── Org-chart tree helpers — hoisted to module level to avoid re-creation on each render ──
+const _ORG_LAYERS = ['Executive','Sr Director','Director','Sr Manager','Manager','Lead','Expert','Senior','Mid','Junior'];
+const _rankOfTier = tier => { const t = normalizeTier(tier); const i = _ORG_LAYERS.indexOf(t); return i === -1 ? _ORG_LAYERS.length : i; };
+const _ORG_ALLOWED_PARENTS = {
+  'Junior':     ['Lead','Manager','Sr Manager','Director','Sr Director'],
+  'Mid':        ['Lead','Manager','Sr Manager','Director','Sr Director'],
+  'Senior':     ['Lead','Manager','Sr Manager','Director','Sr Director'],
+  'Expert':     ['Lead','Manager','Sr Manager','Director','Sr Director'],
+  'Lead':       ['Manager','Sr Manager','Director','Sr Director','Lead'],
+  'Manager':    ['Director','Sr Director'],
+  'Sr Manager': ['Director','Sr Director'],
+  'Director':   ['Sr Director','Executive'],
+  'Sr Director':['Executive'],
+  'Executive':  []
+};
+const _allowedParentsFor = tier => _ORG_ALLOWED_PARENTS[normalizeTier(tier)] || [];
+const _orgStableKey      = n => `${String(n.name||'').toLowerCase()}|${n.id}`;
+const _orgSameCountry    = (a, b) => a.country && b.country && a.country.toLowerCase() === b.country.toLowerCase();
+const _orgSameGeo        = (a, b) => a.geographic && b.geographic && a.geographic.toLowerCase() === b.geographic.toLowerCase();
+const _orgCanEqualTier   = tier => normalizeTier(tier) === 'Lead';
+const _orgIsEqualTier    = (a, b) => normalizeTier(a) === normalizeTier(b);
+
 // ... (OrgChart logic unchanged, just applying styles via classes implicitly) ...
 function buildOrgChartTrees(candidates, manualParentOverrides, editingLayout, draggingId, onManualDrop) {
   // Logic mostly identical, ensuring consistent styling
-  const LAYERS = ['Executive','Sr Director','Director','Sr Manager','Manager','Lead','Expert','Senior','Mid','Junior'];
-  const rankOf = tier => {
-    const t = normalizeTier(tier);
-    const i = LAYERS.indexOf(t);
-    return i === -1 ? LAYERS.length : i;
-  };
-  const ALLOWED_PARENTS = {
-    'Junior': ['Lead','Manager','Sr Manager','Director','Sr Director'],
-    'Mid': ['Lead','Manager','Sr Manager','Director','Sr Director'],
-    'Senior': ['Lead','Manager','Sr Manager','Director','Sr Director'],
-    'Expert': ['Lead','Manager','Sr Manager','Director','Sr Director'],
-    'Lead': ['Manager','Sr Manager','Director','Sr Director','Lead'],
-    'Manager': ['Director','Sr Director'],
-    'Sr Manager': ['Director','Sr Director'],
-    'Director': ['Sr Director','Executive'],
-    'Sr Director': ['Executive'],
-    'Executive': []
-  };
-  const allowedParentsFor = tier => ALLOWED_PARENTS[normalizeTier(tier)] || [];
+  // LAYERS, rankOf, ALLOWED_PARENTS, allowedParentsFor are now module-level constants above.
 
   const grouped = new Map();
   (candidates||[]).forEach(c=>{
@@ -7006,7 +7029,7 @@ function buildOrgChartTrees(candidates, manualParentOverrides, editingLayout, dr
           jobFamily:p.job_family||'',
           country:(p.country||'').trim(),
           geographic:(p.geographic||'').trim(),
-          rank:rankOf(tier),
+          rank:_rankOfTier(tier),
           raw:p
         };
       }).filter(n=> n.id!=null && n.name && n.seniority);
@@ -7023,34 +7046,30 @@ function buildOrgChartTrees(candidates, manualParentOverrides, editingLayout, dr
         continue;
       }
 
-      const stableKey=n=>`${String(n.name||'').toLowerCase()}|${n.id}`;
-      nodes.sort((a,b)=> a.rank - b.rank || stableKey(a).localeCompare(stableKey(b)));
+      // stableKey, sameCountry, sameGeo, canEqualTier, isEqual are now module-level helpers
+      // (_orgStableKey, _orgSameCountry, _orgSameGeo, _orgCanEqualTier, _orgIsEqualTier).
+      nodes.sort((a,b)=> a.rank - b.rank || _orgStableKey(a).localeCompare(_orgStableKey(b)));
 
       const byId=new Map(nodes.map(n=>[n.id,n]));
       const parent=new Map();
       const children=new Map(nodes.map(n=>[n.id,[]]));
       const load=new Map(nodes.map(n=>[n.id,0]));
 
-      const sameCountry=(a,b)=> a.country && b.country && a.country.toLowerCase()===b.country.toLowerCase();
-      const sameGeo=(a,b)=> a.geographic && b.geographic && a.geographic.toLowerCase()===b.geographic.toLowerCase();
-      const canEqualTier=tier=> normalizeTier(tier)==='Lead';
-      const isEqual=(a,b)=> normalizeTier(a)===normalizeTier(b);
-
       function chooseParent(child,buckets){
-        const allowed=allowedParentsFor(child.seniority);
+        const allowed=_allowedParentsFor(child.seniority);
         for(const bucket of buckets){
           for(const pref of allowed){
             let subset=bucket.filter(c=> normalizeTier(c.seniority)===pref);
-            if(isEqual(child.seniority,pref)){
-              if(!canEqualTier(child.seniority)) subset=[];
-              else subset=subset.filter(c=> stableKey(c) < stableKey(child));
+            if(_orgIsEqualTier(child.seniority,pref)){
+              if(!_orgCanEqualTier(child.seniority)) subset=[];
+              else subset=subset.filter(c=> _orgStableKey(c) < _orgStableKey(child));
             }
             if(!subset.length) continue;
             subset.sort((a,b)=>{
               const la=load.get(a.id)||0, lb=load.get(b.id)||0;
               if(la!==lb) return la-lb;
               if(a.rank!==b.rank) return a.rank - b.rank;
-              return stableKey(a).localeCompare(stableKey(b));
+              return _orgStableKey(a).localeCompare(_orgStableKey(b));
             });
             return subset[0];
           }
@@ -7061,15 +7080,15 @@ function buildOrgChartTrees(candidates, manualParentOverrides, editingLayout, dr
       for(const child of nodes){
         const eligible=nodes.filter(c=>{
           if(c.id===child.id) return false;
-          return allowedParentsFor(child.seniority).includes(normalizeTier(c.seniority));
+          return _allowedParentsFor(child.seniority).includes(normalizeTier(c.seniority));
         });
         const sameRole=eligible.filter(e=> (e.roleTag||'')===(child.roleTag||''));
-        const sr_country=sameRole.filter(e=> sameCountry(child,e));
-        const sr_geo=sameRole.filter(e=> !sameCountry(child,e)&&sameGeo(child,e));
+        const sr_country=sameRole.filter(e=> _orgSameCountry(child,e));
+        const sr_geo=sameRole.filter(e=> !_orgSameCountry(child,e)&&_orgSameGeo(child,e));
         const sr_any=sameRole;
         const otherRole=eligible.filter(e=> (e.roleTag||'')!==(child.roleTag||''));
-        const or_country=otherRole.filter(e=> sameCountry(child,e));
-        const or_geo=otherRole.filter(e=> !sameCountry(child,e)&&sameGeo(child,e));
+        const or_country=otherRole.filter(e=> _orgSameCountry(child,e));
+        const or_geo=otherRole.filter(e=> !_orgSameCountry(child,e)&&_orgSameGeo(child,e));
         const or_any=otherRole;
         const buckets=[sr_country,sr_geo,sr_any,or_country,or_geo,or_any];
         const chosen=chooseParent(child,buckets);
