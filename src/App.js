@@ -2892,6 +2892,13 @@ function CandidatesTable({
 
       const payload = await res.json().catch(() => ({}));
 
+      // Handle async 202 response: server accepted the job and will notify via SSE when done.
+      if (res.status === 202) {
+        verifyDataPendingRef.current = true;
+        setSyncMessage(payload?.message || `Syncing ${rows.length} rows in background\u2026`);
+        return; // finally block clears syncLoading
+      }
+
       if (!res.ok) {
         throw new Error(payload?.error || 'Sync request failed.');
       }
@@ -7988,6 +7995,9 @@ export default function App() {
   // Tracks candidate IDs whose calculate-unmatched job is processing in the background (202 response).
   // When the matching `candidate_updated` SSE event arrives the ref is cleared and loading ends.
   const _pendingUnmatchedCalcRef = React.useRef(new Set());
+  // Tracks whether a background verify-data (Sync Entries) job is in flight.
+  // Set to true on 202 response; cleared by the `verify_data_complete` SSE listener.
+  const verifyDataPendingRef = React.useRef(false);
 
   // State for skillset management
   const [newSkillInput, setNewSkillInput] = useState('');
@@ -8590,7 +8600,65 @@ export default function App() {
           }
         });
 
-        eventSource.onerror = (err) => {
+        // Delivers the result of a background verify-data (Sync Entries) job started when the
+        // server returned 202. Applies the corrected[] array exactly as the synchronous path does.
+        eventSource.addEventListener('verify_data_complete', (e) => {
+          try {
+            if (!verifyDataPendingRef.current) return;
+            verifyDataPendingRef.current = false;
+            const ssePayload = JSON.parse(e.data);
+            const corrected = Array.isArray(ssePayload?.corrected) ? ssePayload.corrected : [];
+            if (!corrected.length) {
+              setSyncMessage('No corrections returned.');
+              return;
+            }
+            setEditRows(prev => {
+              const next = { ...prev };
+              corrected.forEach(row => {
+                if (row?.id == null) return;
+                const id = row.id;
+                const entry = { ...(next[id] ?? {}) };
+                const newOrg = (row.organisation ?? row.company ?? null);
+                if (newOrg != null && String(newOrg).trim() !== '') {
+                  entry.organisation = String(newOrg).trim();
+                } else if (newOrg === null) {
+                  entry.organisation = '';
+                }
+                // Job title is completely immutable — Sync Entries never changes job title values.
+                if (row.seniority !== null && row.seniority !== undefined) entry.seniority  = String(row.seniority).trim();
+                if (row.country   !== null && row.country   !== undefined) entry.country    = String(row.country).trim();
+                if (row.sector    != null && String(row.sector).trim())    entry.sector     = String(row.sector).trim();
+                if (row.jobfamily != null && String(row.jobfamily).trim()) entry.job_family = String(row.jobfamily).trim();
+                next[id] = entry;
+              });
+              return next;
+            });
+            // Persist synced changes to the DB (fire-and-forget, non-fatal).
+            const bulkUpdatePayload = corrected
+              .map(row => {
+                const update = { id: row.id };
+                const org = row.organisation ?? row.company ?? null;
+                if (org != null && String(org).trim()) update.organisation = String(org).trim();
+                if (row.seniority != null && String(row.seniority).trim()) update.seniority = String(row.seniority).trim();
+                if (row.country   != null && String(row.country).trim())   update.country   = String(row.country).trim();
+                if (row.sector    != null && String(row.sector).trim())    update.sector    = String(row.sector).trim();
+                if (row.jobfamily != null && String(row.jobfamily).trim()) update.job_family = String(row.jobfamily).trim();
+                return update;
+              })
+              .filter(u => Object.keys(u).length > 1);
+            if (bulkUpdatePayload.length) {
+              fetch(`http://localhost:${API_PORT}/candidates/bulk-update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ rows: bulkUpdatePayload }),
+                credentials: 'include',
+              }).catch(err => { console.warn('[Sync] background bulk-update persistence failed (non-fatal):', err && err.message); });
+            }
+            setSyncMessage(`Synced ${corrected.length} row(s).`);
+          } catch (err) {
+            console.warn('[SSE] Error parsing verify_data_complete:', err);
+          }
+        });
           console.warn('[SSE] connection error', err);
           eventSource.close();
 

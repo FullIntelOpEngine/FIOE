@@ -32,6 +32,14 @@ const _RE_CODE_FENCE = /```json|```/g;
 // cached results and run the LLM call in the background (fire-and-forget + SSE notify).
 const _AI_COMP_ASYNC_THRESHOLD = parseInt(process.env.AI_COMP_ASYNC_THRESHOLD, 10) || 10;
 
+// verify-data: when row count exceeds this threshold, respond 202 immediately and run
+// LLM normalisation in the background; result delivered via `verify_data_complete` SSE.
+const _VERIFY_DATA_ASYNC_THRESHOLD = parseInt(process.env.VERIFY_DATA_ASYNC_THRESHOLD, 10) || 30;
+
+// assess-unmatched: when the (already-capped) unmatched list exceeds this threshold,
+// respond 202 immediately and run the LLM call in the background.
+const _ASSESS_UM_ASYNC_THRESHOLD = parseInt(process.env.ASSESS_UM_ASYNC_THRESHOLD, 10) || 20;
+
 module.exports = function registerRoutes(app, ctx) {
   const {
     pool,
@@ -219,6 +227,13 @@ app.post('/candidates/:id/assess-unmatched', requireLogin, async (req, res) => {
       console.warn(`[ASSESS_UNMATCHED] input truncated: ${unmatched.length} → ${batchedUnmatched.length} items`);
     }
 
+    // For large batches, respond 202 immediately and complete the LLM call in the background.
+    // Result is delivered via the `skill_assessment_result` SSE event.
+    const _isAsyncAssess = batchedUnmatched.length > _ASSESS_UM_ASYNC_THRESHOLD;
+    if (_isAsyncAssess) {
+      res.status(202).json({ pending: batchedUnmatched.length, message: `Assessing ${batchedUnmatched.length} skills in background\u2026` });
+    }
+
     // Build an instruction telling the LLM to compare the two lists and classify each unmatched token
     const instruction = `
 You are a skill matching assistant. Inputs:
@@ -245,6 +260,10 @@ Return JSON only:
     }
     if (!parsed || !Array.isArray(parsed.suggestions)) {
       // Fallback if parsing fails or structure is wrong
+      if (_isAsyncAssess) {
+        console.error('[ASSESS_UNMATCHED] background: AI response parse failed', text && text.slice(0, 200));
+        return;
+      }
       return res.status(500).json({ error: 'AI response parse failed.', raw: text });
     }
 
@@ -263,10 +282,20 @@ Return JSON only:
       parsed.processedCount = batchedUnmatched.length;
     }
 
-    res.json(parsed);
+    if (_isAsyncAssess) {
+      broadcastSSE('skill_assessment_result', {
+        candidateId: id,
+        suggestions: parsed.suggestions,
+        ...(wasTruncated ? { truncated: true, totalProvided: unmatched.length, processedCount: batchedUnmatched.length } : {}),
+      });
+    } else {
+      res.json(parsed);
+    }
   } catch (err) {
     console.error('/assess-unmatched error', err);
-    res.status(500).json({ error: 'Assessment failed' });
+    if (!_isAsyncAssess) {
+      res.status(500).json({ error: 'Assessment failed' });
+    }
   }
 });
 
@@ -452,6 +481,14 @@ app.post('/verify-data', requireLogin, async (req, res) => {
   const { rows, mlProfile } = req.body;
   if (!rows || !Array.isArray(rows) || rows.length === 0) {
     return res.status(400).json({ error: 'No rows provided.' });
+  }
+
+  // For large batches, respond 202 immediately so the HTTP connection is freed.
+  // The LLM call and normalisation continue in the background; the result is
+  // delivered to all connected clients via the `verify_data_complete` SSE event.
+  const _isAsync = rows.length > _VERIFY_DATA_ASYNC_THRESHOLD;
+  if (_isAsync) {
+    res.status(202).json({ pending: rows.length, message: `Syncing ${rows.length} rows in background\u2026` });
   }
 
   // Build a map of id → original job title from the request input.
@@ -883,11 +920,17 @@ app.post('/verify-data', requireLogin, async (req, res) => {
       return result;
     });
 
-    res.json({ corrected: normalized, mlDefaults: Object.keys(mlDefaults).length ? mlDefaults : undefined });
+    if (_isAsync) {
+      broadcastSSE('verify_data_complete', { corrected: normalized });
+    } else {
+      res.json({ corrected: normalized, mlDefaults: Object.keys(mlDefaults).length ? mlDefaults : undefined });
+    }
 
   } catch (err) {
     console.error('/verify-data error:', err);
-    res.status(500).json({ error: 'Verification failed', detail: err.message });
+    if (!_isAsync) {
+      res.status(500).json({ error: 'Verification failed', detail: err.message });
+    }
   }
 });
 
