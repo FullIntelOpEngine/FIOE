@@ -1143,6 +1143,7 @@ const FEATURES = [
   { key: 'analytic_cv_limit',   label: 'Analytic DB CV Upload Limit',  tab: 'talent',       priority: 'mid'  },
   { key: 'candidates',          label: 'Candidates List',              tab: 'cms',          priority: 'mid'  },
   { key: 'bulk_delete',         label: 'Bulk Delete',                  tab: 'cms',          priority: 'low'  },
+  { key: 'gemini_model',        label: 'Gemini Model Settings',        tab: 'cms',          priority: 'mid'  },
   { key: 'dashboard',           label: 'Dashboard (static)',           tab: 'dashboard',    priority: 'high' },
   { key: 'admin_endpoints',     label: 'Admin Endpoints (all)',        tab: 'dashboard',    priority: 'mid'  },
 ];
@@ -7712,6 +7713,19 @@ const TM_SUITES = [
     ],
   },
   {
+    id: 'client_rl', name: 'Client-Side Rate Limiting (App.js / Dashboard)', priority: 'critical',
+    file: 'ui/e2e/rate_limit_client.spec.js',
+    impactedFiles: ['src/App.js', 'src/LookerDashboard.html', 'rate-limit-enforcer.js', 'ui/rate-limit-enforcer.js', 'rate_limits.json'],
+    tests: [
+      { id: 'enforcer_init',          name: 'RateLimitEnforcer.init() called on DOMContentLoaded; /user/rate-limits prefetched',       autoCheck: _tE2E('ui/e2e/rate_limit_client.spec.js', 'enforcer init') },
+      { id: 'enforcer_check_blocks',  name: 'RateLimitEnforcer.check(): over-limit request shows overlay and blocks action',           autoCheck: _tE2E('ui/e2e/rate_limit_client.spec.js', 'enforcer check blocks') },
+      { id: 'enforcer_refresh_on_config', name: 'fioe_api_config api-config-changed: RateLimitEnforcer.refresh() clears cache and re-fetches /user/rate-limits', autoCheck: _tE2E('ui/e2e/rate_limit_client.spec.js', 'enforcer refresh') },
+      { id: 'server_429_overlay',     name: 'Server 429 on /candidates: fetch interceptor surfaces rate-limit overlay with feature + window_seconds', autoCheck: _tE2E('ui/e2e/rate_limit_client.spec.js', '429 overlay') },
+      { id: 'app_config_listener',    name: 'App.js fioe_api_config listener: api-config-changed triggers service config refresh and token re-fetch', autoCheck: _tE2E('ui/e2e/rate_limit_client.spec.js', 'app config listener') },
+      { id: 'user_rate_limits_api',   name: 'GET /user/rate-limits returns {ok:true, limits:{}} with per-feature config',              autoCheck: _tAPI('/user/rate-limits', 200) },
+    ],
+  },
+  {
     id: 'db', name: 'DB Connectivity & Schema Migration Guards', priority: 'critical',
     file: 'tests/test_db.py',
     impactedFiles: ['webbridge.py'],
@@ -7892,7 +7906,7 @@ const TM_SUITES = [
   {
     id: 'frontend', name: 'Frontend UI Flows', priority: 'high',
     file: 'ui/e2e/login.spec.js',
-    impactedFiles: ['webbridge_client.js', 'webbridge.py', 'admin_rate_limits.html'],
+    impactedFiles: ['webbridge_client.js', 'webbridge.py', 'admin_rate_limits.html', 'src/App.js', 'src/LookerDashboard.html'],
     tests: [
       { id: 'login_success',   name: 'Login page: success/error displays, session persistence',                           autoCheck: _tE2E('ui/e2e/login.spec.js', 'login') },
       { id: 'weight_sliders',  name: 'Weight sliders: valid 100% locks weights; invalid totals rejected',                 autoCheck: _tE2E('ui/e2e/login.spec.js', 'weight sliders') },
