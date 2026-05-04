@@ -2444,6 +2444,9 @@ function CandidatesTable({
   setManualParentOverrides, // Setter to update manualParentOverrides (used by dock-in restore)
   lastSavedOverrides = {}, // Last persisted overrides (to detect unsaved changes before dock-out)
   setLastSavedOverrides, // Setter to update lastSavedOverrides after auto-save
+  syncMessage = '', // Sync status message (lifted to App to allow SSE listeners to update it)
+  setSyncMessage, // Setter for syncMessage
+  verifyDataPendingRef, // Ref tracking whether a background verify-data job is in flight
 }) {
   const DEFAULT_WIDTH = 140;
   const MIN_WIDTH = 90;
@@ -2573,7 +2576,7 @@ function CandidatesTable({
   
   // Sync Entries State
   const [syncLoading, setSyncLoading] = useState(false);
-  const [syncMessage, setSyncMessage] = useState('');
+  // syncMessage/setSyncMessage and verifyDataPendingRef are passed as props from App
 
   // Advanced-fields toggle: Product, Job Family, Skillset, Geographic, Total Years, Tenure, Education, Office
   const [showAdvancedFields, setShowAdvancedFields] = useState(false);
@@ -7943,6 +7946,7 @@ export default function App() {
   const [type, setType] = useState('Console');
   const [page, setPage] = useState(1);
   const [editRows, setEditRows] = useState({});
+  const [syncMessage, setSyncMessage] = useState('');
   const [skillsetMapping, setSkillsetMapping] = useState(null);
 
   // org chart state – restore manual overrides from localStorage so the layout
@@ -9985,6 +9989,9 @@ export default function App() {
                 setManualParentOverrides={setManualParentOverrides}
                 lastSavedOverrides={lastSavedOverrides}
                 setLastSavedOverrides={setLastSavedOverrides}
+                syncMessage={syncMessage}
+                setSyncMessage={setSyncMessage}
+                verifyDataPendingRef={verifyDataPendingRef}
               />
           }
         </div>
