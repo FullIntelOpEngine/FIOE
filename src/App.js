@@ -8671,6 +8671,8 @@ export default function App() {
             console.warn('[SSE] Error parsing verify_data_error:', err);
           }
         });
+
+        eventSource.onerror = (err) => {
           console.warn('[SSE] connection error', err);
           eventSource.close();
 
