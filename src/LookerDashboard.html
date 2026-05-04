@@ -1315,9 +1315,12 @@
     }
 
     // ================= SKILL MAP LOGIC =================
-    function updateSkillMap() {
+    async function updateSkillMap() {
         const containerId = 'skillMapContainer';
         if (!document.getElementById(containerId)) return;
+
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
 
         // Init Skill Map Instance if missing
         if (!skillMapInstance) {
@@ -1539,8 +1542,10 @@
 
     // Renders a skill-frequency map (country-based hotspots) into an arbitrary container
     // element.  Used for slide-tile clones so each gets its own independent Leaflet instance.
-    function renderSkillMapForTile(mapDiv, legendDiv) {
+    async function renderSkillMapForTile(mapDiv, legendDiv) {
         if (!mapDiv) return;
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
         // Destroy any previous Leaflet map in this div
         if (mapDiv._leafletRO) { mapDiv._leafletRO.disconnect(); delete mapDiv._leafletRO; }
         if (mapDiv._leafletMap) { mapDiv._leafletMap.remove(); }
@@ -1950,9 +1955,11 @@
 
     // Country centroids for tile-level Leaflet map charts (extends the COUNTRY_COORDS defined above)
     // Render a Leaflet bubble map inside a tile's chart-container for 'map' chart type
-    function renderLeafletMapForTile(canvasId, dimension, metric) {
+    async function renderLeafletMapForTile(canvasId, dimension, metric) {
         const canvas = document.getElementById(canvasId);
         if (!canvas) return;
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
         const container = canvas.parentElement;
         if (!metric) {
             const card = canvas.closest('.card');
