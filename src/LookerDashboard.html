@@ -907,14 +907,114 @@
             btn.innerHTML = '<span class="pdf-btn-spinner"></span>Generating…';
         }
 
-        // Cache the background colour before the async html2canvas calls
+        // Cache the background colour before any DOM mutations
         const bgColor = getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa';
+
+        // Track DOM mutations so we can fully restore after export
+        const _layoutRestores = [];
+        const _mapRestores    = [];
 
         try {
             const SCALE = 2;
 
-            // Record card positions relative to the grid BEFORE any capture.
-            // All positions are in canvas pixels (CSS px × SCALE).
+            // ── Step 1: Pre-expand scrollable table wrappers ──────────────────────────
+            // html2canvas only captures the *visible* portion of an overflow:auto element.
+            // Removing the overflow constraint (and any fixed height) before we measure
+            // the grid ensures the full table content is included in every page slice.
+            const _expandedCards = new Set();
+            grid.querySelectorAll('.table-wrapper').forEach(wrapper => {
+                const ws = wrapper.style;
+                _layoutRestores.push({ el: wrapper, overflow: ws.overflow, height: ws.height, maxHeight: ws.maxHeight });
+                ws.overflow  = 'visible';
+                ws.height    = 'auto';
+                ws.maxHeight = 'none';
+                // Also expand the parent card so the extra rows aren't clipped by it
+                const card = wrapper.closest('.card');
+                if (card && !_expandedCards.has(card)) {
+                    _expandedCards.add(card);
+                    const cs = card.style;
+                    _layoutRestores.push({ el: card, overflow: cs.overflow, height: cs.height, maxHeight: cs.maxHeight });
+                    cs.overflow  = 'visible';
+                    cs.height    = 'auto';
+                    cs.maxHeight = 'none';
+                }
+            });
+
+            // One animation-frame so the browser can reflow the expanded content
+            await new Promise(r => requestAnimationFrame(r));
+
+            // ── Step 2: Pre-render Leaflet maps to static canvases ────────────────────
+            // html2canvas does not support CSS 3D transforms (translate3d), so Leaflet
+            // markers end up at (0,0) in the capture.  We bypass this entirely by using
+            // Leaflet's own coordinate system to draw markers onto a plain <canvas> at
+            // their exact pixel positions, then temporarily replacing the map container
+            // contents with that canvas for the duration of the html2canvas call.
+            function _snapshotLeafletMap(mapInst, markers) {
+                if (!mapInst) return;
+                const container = mapInst.getContainer();
+                if (!container) return;
+                const w = container.offsetWidth;
+                const h = container.offsetHeight;
+                if (!w || !h) return;
+
+                const cvs = document.createElement('canvas');
+                cvs.width  = w * SCALE;
+                cvs.height = h * SCALE;
+                cvs.style.cssText = `width:${w}px;height:${h}px;display:block;`;
+                const ctx = cvs.getContext('2d');
+                ctx.scale(SCALE, SCALE);
+
+                // Fill with Leaflet's default ocean colour (tiles won't load via html2canvas)
+                ctx.fillStyle = '#b0c4de';
+                ctx.fillRect(0, 0, w, h);
+
+                // Draw each marker at its exact container-pixel position
+                for (const m of markers) {
+                    try {
+                        const pt = mapInst.latLngToContainerPoint(m.getLatLng());
+                        const r  = m.options.radius || 6;
+                        ctx.globalAlpha = m.options.fillOpacity ?? 0.7;
+                        ctx.beginPath();
+                        ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+                        ctx.fillStyle = m.options.fillColor || '#1a73e8';
+                        ctx.fill();
+                        ctx.globalAlpha = 1;
+                        ctx.strokeStyle = m.options.color || '#fff';
+                        ctx.lineWidth   = m.options.weight ?? 1;
+                        ctx.stroke();
+                        // Render permanent tooltip text (e.g. count labels on clustered markers)
+                        const tip = m._tooltip;
+                        if (tip && tip.options && tip.options.permanent) {
+                            const txt = String(tip._content || '').replace(/<[^>]*>/g, '').trim();
+                            if (txt) {
+                                const fs = Math.max(Math.round(r * 1.1), 8);
+                                ctx.font         = `bold ${fs}px Arial`;
+                                ctx.fillStyle    = '#fff';
+                                ctx.textAlign    = 'center';
+                                ctx.textBaseline = 'middle';
+                                ctx.fillText(txt, pt.x, pt.y);
+                            }
+                        }
+                    } catch (_) { /* skip any marker that can't be projected */ }
+                }
+
+                // Swap the live Leaflet DOM for our canvas snapshot
+                const origNodes = Array.from(container.childNodes).map(n => container.removeChild(n));
+                container.appendChild(cvs);
+                _mapRestores.push({ container, origNodes });
+            }
+
+            _snapshotLeafletMap(mapInstance,      mapMarkers);
+            _snapshotLeafletMap(skillMapInstance,  skillMapMarkers);
+            grid.querySelectorAll('[id^="tilemap-"]').forEach(mapDiv => {
+                if (mapDiv._leafletMap) {
+                    const ms = [];
+                    mapDiv._leafletMap.eachLayer(l => { if (l.getLatLng) ms.push(l); });
+                    _snapshotLeafletMap(mapDiv._leafletMap, ms);
+                }
+            });
+
+            // ── Step 3: Measure grid dimensions (after expansions + map snapshots) ────
             const gridRect  = grid.getBoundingClientRect();
             const gridH_css = grid.scrollHeight; // total scrollable height in CSS px
             const gridW_css = grid.scrollWidth;
@@ -970,30 +1070,8 @@
 
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
-            // onclone: convert Leaflet map-pane CSS translate3d transforms into left/top
-            // so html2canvas renders markers at the correct geographic positions regardless
-            // of the slice y-offset.
-            function _fixLeafletTransforms(clonedDoc) {
-                clonedDoc.querySelectorAll(
-                    '.leaflet-map-pane, .leaflet-tile-pane, .leaflet-objects-pane, ' +
-                    '.leaflet-overlay-pane, .leaflet-shadow-pane, .leaflet-marker-pane, ' +
-                    '.leaflet-tooltip-pane, .leaflet-popup-pane'
-                ).forEach(pane => {
-                    const tx = pane.style.transform || getComputedStyle(pane).transform;
-                    if (!tx || tx === 'none') return;
-                    try {
-                        const m = new DOMMatrix(tx);
-                        if (m.m41 === 0 && m.m42 === 0) return;
-                        const origLeft = parseFloat(pane.style.left) || 0;
-                        const origTop  = parseFloat(pane.style.top)  || 0;
-                        pane.style.left      = (origLeft + m.m41) + 'px';
-                        pane.style.top       = (origTop  + m.m42) + 'px';
-                        pane.style.transform = 'none';
-                    } catch (_) { /* DOMMatrix parse failure — leave as-is */ }
-                });
-            }
-
-            // Capture each page slice independently — avoids allocating one huge canvas
+            // Capture each page slice — no onclone needed; maps and tables are already
+            // in their final render state in the live DOM
             const h2cBase = {
                 scale:       SCALE,
                 useCORS:     true,
@@ -1002,8 +1080,7 @@
                 scrollX:     0,
                 scrollY:     0,
                 windowWidth:  gridW_css,
-                windowHeight: gridH_css,
-                onclone:     (clonedDoc) => _fixLeafletTransforms(clonedDoc)
+                windowHeight: gridH_css
             };
 
             for (let i = 0; i < slices.length; i++) {
@@ -1028,6 +1105,17 @@
             console.error('[PDF] Export failed:', e);
             alert('PDF export failed: ' + e.message);
         } finally {
+            // Restore Leaflet map containers
+            for (const { container, origNodes } of _mapRestores) {
+                container.innerHTML = '';
+                origNodes.forEach(n => container.appendChild(n));
+            }
+            // Restore expanded table wrappers and cards
+            for (const { el, overflow, height, maxHeight } of _layoutRestores) {
+                el.style.overflow  = overflow  != null ? overflow  : '';
+                el.style.height    = height    != null ? height    : '';
+                el.style.maxHeight = maxHeight != null ? maxHeight : '';
+            }
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = origHTML || 'Export PDF';
