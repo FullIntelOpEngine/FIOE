@@ -728,7 +728,10 @@
             box-shadow: var(--shadow);
             overflow: hidden;
             position: relative; /* for tile controls */
-            contain: layout paint; /* isolate repaint to card bounds */
+            contain: layout paint; /* isolate repaint to card bounds;
+                                     NOTE: exportToPDF() temporarily sets contain:none on
+                                     cards that contain a .table-wrapper so that contain:paint
+                                     does not clip overflow table rows during html2canvas capture */
         }
         
         .card-header {
