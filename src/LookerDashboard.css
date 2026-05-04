@@ -1403,11 +1403,11 @@
             transition: transform 0.2s ease;
             overflow: hidden;
             position: relative;
+            will-change: transform; /* promote compositor layer before hover so animation doesn't trigger a new layer promotion mid-frame */
         }
         .template-box:hover {
             transform: translateY(-2px);
             border-color: var(--primary);
-            will-change: transform; /* promote compositor layer only during active hover */
         }
         .template-header {
             padding: 12px;
