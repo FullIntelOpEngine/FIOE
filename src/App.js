@@ -9458,18 +9458,24 @@ export default function App() {
             // Map original emails to their per-email probabilities before filtering duplicates
             const emailToProbMap = {};
             data.emails.forEach((e, i) => { emailToProbMap[e] = perProbs[i] != null ? perProbs[i] : null; });
-            const newEntries = newEmails.map((e, idx) => {
-               const prob = emailToProbMap[e];
-               let conf;
-               if (isVerified) {
-                 const pct = prob != null ? prob + '%' : (data.confidence != null ? Math.round(data.confidence * 100) + '%' : '');
-                 conf = 'FIOE' + (pct ? ' · ' + pct : '');
-               } else {
-                 const geminiLabels = ['High', 'Medium', 'Low'];
-                 conf = geminiLabels[idx] || 'Low';
-               }
-               return { value: e, checked: false, confidence: conf };
-            });
+            let newEntries;
+            if (isVerified) {
+               // FIOE path: rank emails by relative probability (strongest→High, next→Medium, weakest→Low)
+               const probs = newEmails.map(e => {
+                 const p = emailToProbMap[e];
+                 return p != null ? p : (data.confidence != null ? Math.round(data.confidence * 100) : 0);
+               });
+               const order = probs.map((p, i) => ({ p, i })).sort((a, b) => b.p - a.p);
+               const rankLabel = new Array(newEmails.length);
+               order.forEach(({ i }, rank) => {
+                 rankLabel[i] = rank === 0 ? 'High' : rank === order.length - 1 ? 'Low' : 'Medium';
+               });
+               newEntries = newEmails.map((e, idx) => ({ value: e, checked: false, confidence: 'FIOE · ' + rankLabel[idx] }));
+            } else {
+               // Gemini fallback: unchanged – positional High/Medium/Low labels
+               const geminiLabels = ['High', 'Medium', 'Low'];
+               newEntries = newEmails.map((e, idx) => ({ value: e, checked: false, confidence: geminiLabels[idx] || 'Low' }));
+            }
             setResumeEmailList(prev => [...prev, ...newEntries]);
          } else {
             alert('No new emails were generated (duplicates found).');
@@ -10309,11 +10315,18 @@ export default function App() {
                                     <label style={{ display: 'block', fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Email</label>
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                                         {resumeEmailList.map((item, idx) => {
-                                            // Determine Color Style based on Confidence text
+                                            // Determine badge style: FIOE emails use FIOE color scheme; others keep original colors
                                             let badgeStyle = { bg: 'rgba(109,234,249,0.10)', color: 'var(--azure-dragon)', border: '#6deaf9' };
-                                            if (item.confidence && item.confidence.includes('High')) badgeStyle = { bg: '#dcfce7', color: '#15803d', border: '#bbf7d0' };
-                                            else if (item.confidence && item.confidence.includes('Medium')) badgeStyle = { bg: '#fef9c3', color: '#a16207', border: '#fde047' };
-                                            else if (item.confidence && item.confidence.includes('Low')) badgeStyle = { bg: '#fee2e2', color: '#b91c1c', border: '#fecaca' };
+                                            const isFioeConf = item.confidence && item.confidence.startsWith('FIOE');
+                                            if (isFioeConf) {
+                                              if (item.confidence.includes('High')) badgeStyle = { bg: '#073679', color: '#fff', border: '#073679' };
+                                              else if (item.confidence.includes('Medium')) badgeStyle = { bg: 'rgba(76,130,184,0.15)', color: '#073679', border: '#4c82b8' };
+                                              else if (item.confidence.includes('Low')) badgeStyle = { bg: 'rgba(109,234,249,0.10)', color: '#073679', border: '#6deaf9' };
+                                            } else {
+                                              if (item.confidence && item.confidence.includes('High')) badgeStyle = { bg: '#dcfce7', color: '#15803d', border: '#bbf7d0' };
+                                              else if (item.confidence && item.confidence.includes('Medium')) badgeStyle = { bg: '#fef9c3', color: '#a16207', border: '#fde047' };
+                                              else if (item.confidence && item.confidence.includes('Low')) badgeStyle = { bg: '#fee2e2', color: '#b91c1c', border: '#fecaca' };
+                                            }
 
                                             return (
                                                 <div key={idx} style={{ 
