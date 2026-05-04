@@ -1,356 +1,306 @@
 /**
  * rate-limit-enforcer.js
- * Client-side rate-limit enforcement helper.
  *
- * Usage:
- *   <script src="ui/rate-limit-enforcer.js"></script>
- *   <script>
- *     // Initialise once (fetches /user/rate-limits).
- *     RateLimitEnforcer.init();
+ * Client-side rate-limit enforcement that mirrors the admin-configured limits
+ * stored in rate_limits.json and managed via admin_rate_limits.html.
  *
- *     // Before a rate-limited action, call check().
- *     // Returns true if allowed, shows a pop-up and returns false when the
- *     // user has hit the limit.
- *     if (!await RateLimitEnforcer.check('upload_multiple_cvs')) return;
- *     // … proceed with the action …
- *   </script>
+ * Exposes window.RateLimitEnforcer with:
+ *   init({ prefetch })  – installs fetch interceptor; pre-loads limits when prefetch:true
+ *   check(feature)      – async; returns true (allowed) or false (blocked + shows overlay)
+ *   getLimits()         – async; returns cached per-feature limits object
+ *   refresh()           – async; clears cache and re-fetches from /user/rate-limits
  *
- * The message shown in the pop-up is dynamically derived from the admin-set
- * quantity and window, so it automatically reflects any override saved in the
- * admin panel.
- *
- * Per-user overrides (if any) take precedence over global defaults; the
- * module is transparent to this — it simply uses whatever /user/rate-limits
- * returns.
+ * Usage in LookerDashboard.html:
+ *   RateLimitEnforcer.init({ prefetch: true });
+ *   if (!(await RateLimitEnforcer.check('candidates'))) return;
  */
-(function (global) {
+
+/* global sessionStorage, document */
+
+(function (win) {
   'use strict';
 
-  // ── CSS ──────────────────────────────────────────────────────────────────
-  const CSS = `
-#rle-overlay {
-  position: fixed; inset: 0; z-index: 99000;
-  background: rgba(0,0,0,.55);
-  display: flex; align-items: center; justify-content: center;
-}
-#rle-box {
-  background: #fff; color: #1a1a2e;
-  width: min(94vw, 480px);
-  border-radius: 14px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.35);
-  padding: 28px 28px 22px;
-  font-family: system-ui, "Segoe UI", sans-serif;
-  position: relative;
-}
-#rle-box h3 {
-  margin: 0 0 10px;
-  font-size: 17px; font-weight: 700; color: #b91c1c;
-  display: flex; align-items: center; gap: 8px;
-}
-#rle-box p  { margin: 0 0 16px; font-size: 14px; line-height: 1.6; color: #374151; }
-#rle-close  {
-  position: absolute; top: 12px; right: 16px;
-  background: none; border: none; font-size: 20px;
-  color: #6b7280; cursor: pointer; line-height: 1;
-}
-#rle-close:hover { color: #1a1a2e; }
-#rle-dismiss-row {
-  display: flex; align-items: center; gap: 8px;
-  margin: 0 0 16px;
-}
-#rle-dismiss-chk {
-  width: 15px; height: 15px; cursor: pointer; flex-shrink: 0;
-  accent-color: #b91c1c;
-}
-#rle-dismiss-row label {
-  font-size: 13px; color: #6b7280; cursor: pointer; user-select: none;
-}
-#rle-ok {
-  display: block; width: 100%; padding: 10px;
-  background: #b91c1c; color: #fff; border: none;
-  border-radius: 8px; font-size: 14px; font-weight: 600;
-  cursor: pointer; text-align: center;
-}
-#rle-ok:hover { background: #991b1b; }
-`;
+  // ── Human-readable labels for each rate-limit feature key ─────────────────
+  var FEATURE_LABELS = {
+    admin_endpoints:        'Admin Endpoints',
+    analytic_batch_size:    'Analytic Batch Size',
+    analytic_cv_limit:      'Analytic CV Limit',
+    bulk_assess:            'Bulk Assess',
+    bulk_assess_status:     'Bulk Assess Status',
+    bulk_delete:            'Bulk Delete',
+    candidates:             'Candidates',
+    dashboard:              'Dashboard',
+    gemini:                 'Gemini AI',
+    geography:              'Geography',
+    highlight_talent_pools: 'Talent Pools',
+    login:                  'Login',
+    preview_target:         'Preview Target',
+    register:               'Register',
+    start_job:              'Start Job',
+    upload_cv:              'CV Upload',
+    upload_multiple_cvs:    'Bulk CV Upload',
+    vskillset_infer:        'Skillset Inference',
+  };
 
-  // ── State ────────────────────────────────────────────────────────────────
-  let _limits = null;         // fetched from /user/rate-limits
-  let _fetchPromise = null;   // deduplicate concurrent fetches
-  const _counters = {};       // feature -> [timestamp, …]
+  // ── Module state ────────────────────────────────────────────────────────────
+  var _limits      = null;  // cached { feature: { requests, window_seconds }, ... }
+  var _fetchProm   = null;  // in-flight /user/rate-limits promise
+  var _windows     = {};    // per-feature sliding window: { resetAt, count }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  function _injectCSS() {
-    if (document.getElementById('rle-styles')) return;
-    const s = document.createElement('style');
-    s.id = 'rle-styles';
-    s.textContent = CSS;
-    document.head.appendChild(s);
+  // ── Internal helpers ────────────────────────────────────────────────────────
+
+  function _suppressKey(feature) {
+    return 'rle_suppress_' + feature;
   }
 
-  function _featureLabel(feature) {
-    const MAP = {
-      upload_multiple_cvs: 'Bulk CV Upload',
-      upload_cv:           'CV Upload',
-      gemini:              'Gemini AI',
-      vskillset_infer:     'Skill Inference (AI)',
-      start_job:           'Start Sourcing Job',
-      candidates:          'Candidates List',
-      bulk_delete:         'Bulk Delete',
-      login:               'Login',
-      register:            'Register',
-      geography:           'Geography Lookup',
-    };
-    return MAP[feature] || feature;
-  }
-
-  // ── Session-level suppression (per feature) ──────────────────────────────
-  function _suppressKey(feature) { return 'rle_suppress_' + (feature || 'generic'); }
   function _isSuppressed(feature) {
-    try { return !!sessionStorage.getItem(_suppressKey(feature)); } catch (_) { return false; }
-  }
-  function _setSuppressed(feature) {
-    try { sessionStorage.setItem(_suppressKey(feature), '1'); } catch (_) {}
-  }
-
-  async function _fetchLimits() {
-    if (_limits) return _limits;
-    if (_fetchPromise) return _fetchPromise;
-    _fetchPromise = fetch('/user/rate-limits', { credentials: 'same-origin' })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        _limits = (data && data.ok) ? (data.limits || {}) : {};
-        _fetchPromise = null;
-        return _limits;
-      })
-      .catch(() => {
-        _limits = {};
-        _fetchPromise = null;
-        return _limits;
-      });
-    return _fetchPromise;
+    try {
+      return (typeof sessionStorage !== 'undefined') &&
+             sessionStorage.getItem(_suppressKey(feature)) === '1';
+    } catch (_) { return false; }
   }
 
-  function _showPopup(feature, maxReq, windowSec) {
-    if (_isSuppressed(feature)) return;
-    _injectCSS();
-    const existing = document.getElementById('rle-overlay');
+  function _suppress(feature) {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem(_suppressKey(feature), '1');
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  /** Build and inject the rate-limit overlay into document.body. */
+  function _showOverlay(feature, requests, windowSeconds) {
+    var existing = document.getElementById('rle-overlay');
     if (existing) existing.remove();
 
-    const label   = _featureLabel(feature);
-    const winTxt  = (windowSec % 3600 === 0 && windowSec >= 3600)
-      ? `${windowSec / 3600} hour${windowSec / 3600 !== 1 ? 's' : ''}`
-      : (windowSec % 60 === 0 && windowSec >= 60)
-        ? `${windowSec / 60} minute${windowSec / 60 !== 1 ? 's' : ''}`
-        : `${windowSec} second${windowSec !== 1 ? 's' : ''}`;
+    var label = FEATURE_LABELS[feature] || feature;
 
-    const overlay = document.createElement('div');
+    var overlay = document.createElement('div');
     overlay.id = 'rle-overlay';
-    overlay.innerHTML = `
-<div id="rle-box" role="alertdialog" aria-modal="true" aria-labelledby="rle-title">
-  <button id="rle-close" aria-label="Close">✕</button>
-  <h3 id="rle-title">⚠️ Rate Limit Reached</h3>
-  <p>
-    <strong>${label}</strong> requests are limited to
-    <strong>${maxReq}</strong> per <strong>${winTxt}</strong>.<br><br>
-    You have used all ${maxReq} allowed requests in this window.
-    Please wait for <strong>${winTxt}</strong> before trying again.
-  </p>
-  <div id="rle-dismiss-row">
-    <input type="checkbox" id="rle-dismiss-chk">
-    <label for="rle-dismiss-chk">Do not show again this session</label>
-  </div>
-  <button id="rle-ok">OK, I Understand</button>
-</div>`;
-    document.body.appendChild(overlay);
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:99999',
+      'background:rgba(0,0,0,0.55)', 'display:flex',
+      'align-items:center', 'justify-content:center',
+    ].join(';');
 
-    function _close() {
-      if (document.getElementById('rle-dismiss-chk') && document.getElementById('rle-dismiss-chk').checked) {
-        _setSuppressed(feature);
-      }
+    var box = document.createElement('div');
+    box.style.cssText = [
+      'background:#1e1e2e', 'color:#e0e0e0', 'border-radius:10px',
+      'padding:28px 32px', 'max-width:420px', 'width:90%',
+      'box-shadow:0 8px 32px rgba(0,0,0,0.6)',
+      'font-family:Inter,system-ui,sans-serif',
+    ].join(';');
+
+    var title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 10px;font-size:17px;color:#e88;';
+    title.textContent = 'Rate Limit Reached';
+
+    var msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 16px;font-size:14px;line-height:1.5;';
+    if (requests != null) {
+      msg.textContent = label + ': limit of ' + requests +
+        ' request' + (requests !== 1 ? 's' : '') + ' per ' + windowSeconds + 's reached.';
+    } else {
+      msg.textContent = 'Rate limit reached. Please slow down and try again.';
+    }
+
+    var chkWrap = document.createElement('div');
+    chkWrap.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:18px;';
+
+    var chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.id = 'rle-dismiss-chk';
+
+    var lbl = document.createElement('label');
+    lbl.htmlFor = 'rle-dismiss-chk';
+    lbl.style.cssText = 'font-size:13px;cursor:pointer;';
+    lbl.textContent = 'Do not show again this session';
+
+    chkWrap.appendChild(chk);
+    chkWrap.appendChild(lbl);
+
+    var okBtn = document.createElement('button');
+    okBtn.id = 'rle-ok';
+    okBtn.textContent = 'OK';
+    okBtn.style.cssText = [
+      'padding:8px 24px', 'background:#6c63ff', 'color:#fff',
+      'border:none', 'border-radius:6px', 'font-size:14px',
+      'cursor:pointer',
+    ].join(';');
+
+    okBtn.addEventListener('click', function () {
+      if (chk.checked) _suppress(feature);
       overlay.remove();
-    }
-    document.getElementById('rle-close').onclick = _close;
-    document.getElementById('rle-ok').onclick = _close;
-    overlay.addEventListener('click', e => { if (e.target === overlay) _close(); });
+    });
+
+    box.appendChild(title);
+    box.appendChild(msg);
+    box.appendChild(chkWrap);
+    box.appendChild(okBtn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  /** Generic overlay used when a server 429 body cannot be parsed as JSON. */
+  function _showGenericOverlay() {
+    var existing = document.getElementById('rle-overlay');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'rle-overlay';
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:99999',
+      'background:rgba(0,0,0,0.55)', 'display:flex',
+      'align-items:center', 'justify-content:center',
+    ].join(';');
+
+    var box = document.createElement('div');
+    box.style.cssText = [
+      'background:#1e1e2e', 'color:#e0e0e0', 'border-radius:10px',
+      'padding:28px 32px', 'max-width:420px', 'width:90%',
+      'box-shadow:0 8px 32px rgba(0,0,0,0.6)',
+      'font-family:Inter,system-ui,sans-serif',
+    ].join(';');
+
+    var title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 10px;font-size:17px;color:#e88;';
+    title.textContent = 'Rate Limit Reached';
+
+    var msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 18px;font-size:14px;line-height:1.5;';
+    msg.textContent = 'Server rate limit reached. Please wait a moment and try again.';
+
+    var okBtn = document.createElement('button');
+    okBtn.id = 'rle-ok';
+    okBtn.textContent = 'OK';
+    okBtn.style.cssText = [
+      'padding:8px 24px', 'background:#6c63ff', 'color:#fff',
+      'border:none', 'border-radius:6px', 'font-size:14px',
+      'cursor:pointer',
+    ].join(';');
+    okBtn.addEventListener('click', function () { overlay.remove(); });
+
+    box.appendChild(title);
+    box.appendChild(msg);
+    box.appendChild(okBtn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+
+  // ── Core API ─────────────────────────────────────────────────────────────────
 
   /**
-   * Initialise the module.  Optionally pass `{ prefetch: true }` to start
-   * fetching rate limits immediately (default: lazy).
-   *
-   * Always installs the global fetch interceptor so 429 responses from the
-   * server are caught and surfaced as a pop-up automatically.
+   * Fetch effective rate limits for the current user from the server.
+   * Results are cached in _limits until refresh() is called.
    */
-  function init(opts) {
-    opts = opts || {};
-    _installFetchInterceptor();
-    if (opts.prefetch) _fetchLimits();
+  function getLimits() {
+    if (_limits !== null) return Promise.resolve(_limits);
+    if (_fetchProm)       return _fetchProm;
+
+    _fetchProm = fetch('/user/rate-limits', { credentials: 'include' })
+      .then(function (res) {
+        if (!res.ok) return {};
+        return res.json();
+      })
+      .then(function (body) {
+        var limits = (body && body.ok && body.limits) ? body.limits : {};
+        _limits    = limits;
+        _fetchProm = null;
+        return limits;
+      })
+      .catch(function () {
+        _limits    = {};
+        _fetchProm = null;
+        return {};
+      });
+
+    return _fetchProm;
   }
 
   /**
-   * Check whether the current user is allowed to make a request for `feature`.
-   *
-   * - Returns `true`  → proceed normally.
-   * - Returns `false` → user has hit the client-side limit; a pop-up is shown.
-   *
-   * The check is purely client-side and mirrors the server-side sliding-window
-   * logic.  The server will still enforce the real limit; this provides an
-   * early, friendly warning.
-   *
-   * @param {string} feature  Rate-limit feature key (e.g. 'upload_multiple_cvs')
-   * @returns {Promise<boolean>}
-   */
-  async function check(feature) {
-    const limits = await _fetchLimits();
-    const cfg = limits[feature];
-    if (!cfg) return true; // no config → not limited
-
-    const maxReq    = parseInt(cfg.requests, 10) || 999999;
-    const windowSec = parseInt(cfg.window_seconds, 10) || 60;
-    const windowMs  = windowSec * 1000;
-    const now = Date.now();
-
-    const history = (_counters[feature] || []).filter(t => now - t < windowMs);
-    _counters[feature] = history;
-
-    if (history.length >= maxReq) {
-      _showPopup(feature, maxReq, windowSec);
-      return false;
-    }
-
-    history.push(now);
-    _counters[feature] = history;
-    return true;
-  }
-
-  /**
-   * Force-refresh the cached rate limits from the server.
-   * @returns {Promise<object>}
+   * Re-fetch limits from the server (called when admin saves changes).
+   * Clears cached limits and all per-feature window state.
    */
   function refresh() {
-    _limits = null;
-    return _fetchLimits();
+    _limits    = null;
+    _fetchProm = null;
+    _windows   = {};
+    return getLimits();
   }
 
   /**
-   * Install a global fetch interceptor that catches 429 responses from the
-   * server and shows the rate-limit pop-up automatically — even when the
-   * request was not pre-checked via RateLimitEnforcer.check().
-   *
-   * This covers:
-   *  • Server-side per-user rate limits (webbridge.py / server.js)
-   *  • Flask-Limiter IP-based limits (process_geography, etc.)
-   *
-   * The response body is cloned before reading so the original response is
-   * not consumed (callers can still read res.json() normally).
+   * Check whether the current user is within the rate limit for `feature`.
+   * Returns a Promise<boolean>: true = allowed, false = blocked.
+   * When blocked and the overlay is not suppressed, shows a modal.
+   */
+  function check(feature) {
+    return getLimits().then(function (limits) {
+      var cfg = limits[feature];
+      if (!cfg) return true;
+
+      var maxReq    = parseInt(cfg.requests, 10);
+      if (!maxReq || maxReq <= 0) return true;
+
+      var windowMs  = (parseInt(cfg.window_seconds, 10) || 60) * 1000;
+      var now       = Date.now();
+      var entry     = _windows[feature];
+
+      if (!entry || now >= entry.resetAt) {
+        entry = { count: 0, resetAt: now + windowMs };
+      }
+      entry.count++;
+      _windows[feature] = entry;
+
+      if (entry.count > maxReq) {
+        if (!_isSuppressed(feature)) {
+          _showOverlay(feature, maxReq, cfg.window_seconds);
+        }
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Wrap the global fetch so every 429 response surfaces an overlay.
+   * Called once by init(); guards against double-patching.
    */
   function _installFetchInterceptor() {
-    if (global.__rleFetchPatched) return;
-    global.__rleFetchPatched = true;
-    const _origFetch = global.fetch;
-    global.fetch = async function (...args) {
-      const res = await _origFetch.apply(this, args);
-      if (res.status === 429) {
-        // Clone so the original response body can still be read by callers
-        res.clone().json().then(body => {
-          const feature    = (body && body.feature) || _guessFeatureFromUrl(args[0]);
-          const maxReq     = (body && body.requests) ? parseInt(body.requests, 10) : null;
-          const windowSec  = (body && body.window_seconds) ? parseInt(body.window_seconds, 10) : null;
-          if (maxReq && windowSec) {
-            _showPopup(feature, maxReq, windowSec);
-          } else if (feature) {
-            // Fallback: look up cached limits, or show generic message
-            const cfg = (_limits || {})[feature];
-            if (cfg) {
-              _showPopup(feature, parseInt(cfg.requests, 10), parseInt(cfg.window_seconds, 10));
+    if (typeof fetch !== 'function' || win.__rleFetchPatched) return;
+    var _orig = fetch; // capture before replacement
+    win.fetch = function () {
+      var args = arguments;
+      return _orig.apply(this, args).then(function (res) {
+        if (res.status === 429) {
+          var clone = res.clone();
+          clone.json().then(function (body) {
+            if (body && body.feature) {
+              _showOverlay(body.feature, body.requests, body.window_seconds);
             } else {
-              _showPopupGeneric(feature);
+              _showGenericOverlay();
             }
-          } else {
-            _showPopupGeneric('');
-          }
-        }).catch(() => {
-          // Body was not JSON (e.g. flask-limiter plain-text 429) — show generic
-          const feature = _guessFeatureFromUrl(args[0]);
-          _showPopupGeneric(feature);
-        });
-      }
-      return res;
+          }).catch(function () {
+            _showGenericOverlay();
+          });
+        }
+        return res;
+      });
     };
-  }
-
-  /** Derive a feature name from a request URL string. */
-  function _guessFeatureFromUrl(url) {
-    if (!url) return '';
-    const s = String(url);
-    if (s.includes('upload_multiple_cvs')) return 'upload_multiple_cvs';
-    if (s.includes('upload_cv'))           return 'upload_cv';
-    if (s.includes('start_job'))           return 'start_job';
-    if (s.includes('candidates/bulk'))     return 'candidates';
-    if (s.includes('/candidates'))         return 'candidates';
-    if (s.includes('gemini'))              return 'gemini';
-    if (s.includes('vskillset'))           return 'vskillset_infer';
-    if (s.includes('process/geography'))   return 'geography';
-    return '';
-  }
-
-  /** Show a generic rate-limit pop-up when we don't have limit numbers. */
-  function _showPopupGeneric(feature) {
-    if (_isSuppressed(feature)) return;
-    _injectCSS();
-    const existing = document.getElementById('rle-overlay');
-    if (existing) existing.remove();
-    const label = feature ? _featureLabel(feature) : 'This action';
-    // Try to get window_seconds from cached limits for a more accurate message
-    const _cfg = (_limits || {})[feature];
-    let _waitTxt = 'before trying again';
-    if (_cfg && _cfg.window_seconds) {
-      const _ws = parseInt(_cfg.window_seconds, 10);
-      const _wt = (_ws % 3600 === 0 && _ws >= 3600)
-        ? `${_ws / 3600} hour${_ws / 3600 !== 1 ? 's' : ''}`
-        : (_ws % 60 === 0 && _ws >= 60)
-          ? `${_ws / 60} minute${_ws / 60 !== 1 ? 's' : ''}`
-          : `${_ws} second${_ws !== 1 ? 's' : ''}`;
-      _waitTxt = `for <strong>${_wt}</strong> before trying again`;
-    }
-    const overlay = document.createElement('div');
-    overlay.id = 'rle-overlay';
-    overlay.innerHTML = `
-<div id="rle-box" role="alertdialog" aria-modal="true" aria-labelledby="rle-title">
-  <button id="rle-close" aria-label="Close">✕</button>
-  <h3 id="rle-title">⚠️ Rate Limit Reached</h3>
-  <p>
-    <strong>${label}</strong> — you have exceeded the allowed request rate.<br><br>
-    Please wait ${_waitTxt}.
-  </p>
-  <div id="rle-dismiss-row">
-    <input type="checkbox" id="rle-dismiss-chk">
-    <label for="rle-dismiss-chk">Do not show again this session</label>
-  </div>
-  <button id="rle-ok">OK, I Understand</button>
-</div>`;
-    document.body.appendChild(overlay);
-    function _close() {
-      if (document.getElementById('rle-dismiss-chk') && document.getElementById('rle-dismiss-chk').checked) {
-        _setSuppressed(feature);
-      }
-      overlay.remove();
-    }
-    document.getElementById('rle-close').onclick = _close;
-    document.getElementById('rle-ok').onclick     = _close;
-    overlay.addEventListener('click', e => { if (e.target === overlay) _close(); });
+    win.__rleFetchPatched = true;
   }
 
   /**
-   * Return the cached limits object (fetch from server if not yet loaded).
-   * @returns {Promise<object>}  e.g. { upload_multiple_cvs: { requests: 10, window_seconds: 60 }, … }
+   * Initialise the enforcer.
+   * @param {Object} [opts]
+   * @param {boolean} [opts.prefetch=false]  Pre-load limits in the background.
    */
-  async function getLimits() {
-    return _fetchLimits();
+  function init(opts) {
+    var options = opts || {};
+    _installFetchInterceptor();
+    if (options.prefetch) getLimits();
   }
 
-  global.RateLimitEnforcer = { init, check, refresh, getLimits };
+  // ── Attach to window ─────────────────────────────────────────────────────────
+  win.RateLimitEnforcer = { init: init, check: check, getLimits: getLimits, refresh: refresh };
+
 }(window));
