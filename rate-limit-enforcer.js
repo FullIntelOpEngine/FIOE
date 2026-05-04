@@ -303,4 +303,4 @@
   // ── Attach to window ─────────────────────────────────────────────────────────
   win.RateLimitEnforcer = { init: init, check: check, getLimits: getLimits, refresh: refresh };
 
-}(typeof window !== 'undefined' ? window : global));
+}(window));
