@@ -2244,6 +2244,9 @@
                     grid: { color: gridColor }
                 }
             };
+            // Reduce sector fill opacity to 50% (hex 80) so the concentric grid rings
+            // are clearly visible through the fills in all themes (was 80% / 'cc')
+            config.data.datasets[0].backgroundColor = activeColors.map(c => c + '80');
         } else if (chartJsType === 'radar') {
             config.options.scales = {
                 r: {
