@@ -1283,7 +1283,7 @@
             top10.forEach(c => {
                 const item = document.createElement('div');
                 item.className = 'legend-item'; // Add class for flex alignment
-                item.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${colorMap[c]}; margin-right:6px; border-radius:2px; box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${c}</strong>`;
+                item.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${colorMap[c]}; border-radius:2px; box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${c}</strong>`;
                 legendItems.appendChild(item);
             });
             legend.style.display = top10.length > 0 ? 'block' : 'none';
@@ -1635,7 +1635,7 @@
             top10Skills.forEach(skill => {
                 const item = document.createElement('div');
                 item.className = 'legend-item';
-                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${skillColorMap[skill]};margin-right:6px;border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${skill}</strong>`;
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${skillColorMap[skill]};border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${skill}</strong>`;
                 legendDiv.appendChild(item);
             });
             legendDiv.style.display = 'block';
@@ -2043,7 +2043,7 @@
             top10Labels.forEach((label, i) => {
                 const item = document.createElement('div');
                 item.className = 'legend-item';
-                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};margin-right:6px;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
                 tileLegend.appendChild(item);
             });
             tileLegend.style.display = 'block';
@@ -2233,9 +2233,17 @@
         };
 
         // Adjust scales visibility
-        if(chartJsType === 'pie' || chartJsType === 'doughnut' || chartJsType === 'polarArea') {
+        if(chartJsType === 'pie' || chartJsType === 'doughnut') {
             delete config.options.scales;
             if(chartJsType === 'doughnut') config.options.cutout = '50%';
+        } else if (chartJsType === 'polarArea') {
+            // Keep the radial scale but theme it properly so ticks are readable in all themes
+            config.options.scales = {
+                r: {
+                    ticks: { backdropColor: 'transparent', color: textColor },
+                    grid: { color: gridColor }
+                }
+            };
         } else if (chartJsType === 'radar') {
             config.options.scales = {
                 r: {
@@ -5800,22 +5808,32 @@ stateXml +
             for (let i = 0; i < slides.length; i++) {
                 currentSlideIndex = i;
                 renderCurrentSlide();
-                // Check if this slide has any map tiles; maps need more time to load tiles
+                // Check if this slide has any map tiles (geo or skill-map); maps need more time to load tiles
                 const slideGrid = getSlideGrid();
-                const hasMap = slideGrid && slideGrid.querySelector('[data-chart-type="map"]') !== null;
+                const hasMap = slideGrid && (
+                    slideGrid.querySelector('[data-chart-type="map"]') !== null ||
+                    slideGrid.querySelector('[data-chart-type="skill-map"]') !== null
+                );
                 const paintDelay = hasMap ? 1200 : 300;
                 await new Promise(resolve => setTimeout(resolve, paintDelay));
-                // For map slides, ensure Leaflet maps are fully re-rendered before capture
+                // For map slides, reset to world view and ensure Leaflet maps are fully re-rendered before capture
                 if (hasMap) {
-                    const mapTiles = slideGrid.querySelectorAll('[data-chart-type="map"]');
-                    mapTiles.forEach(t => {
+                    slideGrid.querySelectorAll('[data-chart-type="map"]').forEach(t => {
                         const mapDiv = t.querySelector('[id^="tilemap-"]');
                         if (mapDiv && mapDiv._leafletMap) {
+                            try { mapDiv._leafletMap.setView([20, 0], 2); } catch (e) { /* ignore */ }
                             try { mapDiv._leafletMap.invalidateSize(true); } catch (e) { /* ignore */ }
                         }
                     });
-                    // Extra paint pause after invalidateSize
-                    await new Promise(resolve => setTimeout(resolve, 400));
+                    slideGrid.querySelectorAll('[data-chart-type="skill-map"]').forEach(t => {
+                        const mapDiv = t.querySelector('[id^="skillmap-slide-"]');
+                        if (mapDiv && mapDiv._leafletMap) {
+                            try { mapDiv._leafletMap.setView([20, 0], 2); } catch (e) { /* ignore */ }
+                            try { mapDiv._leafletMap.invalidateSize(true); } catch (e) { /* ignore */ }
+                        }
+                    });
+                    // Extra paint pause after invalidateSize so tiles can finish loading
+                    await new Promise(resolve => setTimeout(resolve, 800));
                 }
 
                 const canvas = await html2canvas(content, {
@@ -5828,8 +5846,20 @@ stateXml +
                 });
                 const imgData = canvas.toDataURL('image/png');
 
+                // Preserve the captured content's aspect ratio so it is not stretched to fill the slide
                 const pptSlide = pptx.addSlide();
-                pptSlide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%' });
+                const slideW = 13.33, slideH = 7.5;
+                const imgAspect = canvas.width / canvas.height;
+                const slideAspect = slideW / slideH;
+                let imgX, imgY, imgW, imgH;
+                if (imgAspect >= slideAspect) {
+                    imgW = slideW; imgH = slideW / imgAspect;
+                    imgX = 0;     imgY = (slideH - imgH) / 2;
+                } else {
+                    imgH = slideH; imgW = slideH * imgAspect;
+                    imgX = (slideW - imgW) / 2; imgY = 0;
+                }
+                pptSlide.addImage({ data: imgData, x: imgX, y: imgY, w: imgW, h: imgH });
             }
 
             await pptx.writeFile({ fileName: 'Slides.pptx' });
