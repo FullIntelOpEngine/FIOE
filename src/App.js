@@ -240,17 +240,17 @@ function normalizeVskillArray(raw) {
 }
 
 // Small FIFO cache — avoids re-splitting the same skillset string on every render.
-const _parseSkillsetCache = new Map();
-const _PARSE_SKILLSET_CACHE_MAX = 300;
+const _sharedSkillsetCache = new Map();
+const _SHARED_SKILLSET_CACHE_MAX = 300;
 function parseSkillsetString(skillsetStr) {
   if (!skillsetStr) return [];
   const key = String(skillsetStr);
-  if (_parseSkillsetCache.has(key)) return _parseSkillsetCache.get(key);
+  if (_sharedSkillsetCache.has(key)) return _sharedSkillsetCache.get(key);
   const result = key.split(/[;,|]+/).map(s => s.trim()).filter(Boolean);
-  if (_parseSkillsetCache.size >= _PARSE_SKILLSET_CACHE_MAX) {
-    _parseSkillsetCache.delete(_parseSkillsetCache.keys().next().value);
+  if (_sharedSkillsetCache.size >= _SHARED_SKILLSET_CACHE_MAX) {
+    _sharedSkillsetCache.delete(_sharedSkillsetCache.keys().next().value);
   }
-  _parseSkillsetCache.set(key, result);
+  _sharedSkillsetCache.set(key, result);
   return result;
 }
 
@@ -2556,6 +2556,14 @@ function CandidatesTable({
   const [bulletinPublicPost, setBulletinPublicPost] = useState(false); // external publish checkbox
   const [bulletinPublishCompany, setBulletinPublishCompany] = useState(false); // publish company name checkbox
 
+  // Reusable helper: revoke the current bulletin image Object URL and clear all related refs/state.
+  // Centralises cleanup so that callers don't duplicate the revoke + ref-clear sequence.
+  const _clearBulletinImage = useCallback(() => {
+    setBulletinImageObjUrl(prev => { if (prev) URL.revokeObjectURL(prev); return ''; });
+    _bulletinImgBlobRef.current = null;
+    _bulletinImgFilenameRef.current = '';
+  }, []);
+
   // Bulletin AI draft: generates headline + description using Gemini
   const handleBulletinAiDraft = async (context) => {
     if (!bulletinAiPrompt.trim()) return;
@@ -2594,10 +2602,7 @@ function CandidatesTable({
     setBulletinDescription('');
     setBulletinAiPrompt('');
     setBulletinShowAi(false);
-    if (bulletinImageObjUrl) URL.revokeObjectURL(bulletinImageObjUrl);
-    _bulletinImgBlobRef.current = null;
-    _bulletinImgFilenameRef.current = '';
-    setBulletinImageObjUrl('');
+    _clearBulletinImage();
     setBulletinImageGallery([]);
     setBulletinImageGalleryOpen(false);
     setBulletinPublicPost(false);
@@ -3266,9 +3271,10 @@ function CandidatesTable({
   ]);
   function prettifySkillset(raw) {
     // Fast path for string inputs — most common case (cell values already serialized).
+    // 'pfy:' prefix namespaces prettifySkillset entries in the shared cache (distinct from 'parseSkillsetString' entries).
     const origKey = typeof raw === 'string' ? raw : null;
     if (origKey !== null) {
-      if (_parseSkillsetCache.has('pfy:' + origKey)) return _parseSkillsetCache.get('pfy:' + origKey);
+      if (_sharedSkillsetCache.has('pfy:' + origKey)) return _sharedSkillsetCache.get('pfy:' + origKey);
     }
     if (raw == null) return '';
     if (Array.isArray(raw)) {
@@ -3312,10 +3318,10 @@ function CandidatesTable({
     const result = deduped.join(', ');
     // Cache the result keyed on the original string input.
     if (origKey !== null) {
-      if (_parseSkillsetCache.size >= _PARSE_SKILLSET_CACHE_MAX) {
-        _parseSkillsetCache.delete(_parseSkillsetCache.keys().next().value);
+      if (_sharedSkillsetCache.size >= _SHARED_SKILLSET_CACHE_MAX) {
+        _sharedSkillsetCache.delete(_sharedSkillsetCache.keys().next().value);
       }
-      _parseSkillsetCache.set('pfy:' + origKey, result);
+      _sharedSkillsetCache.set('pfy:' + origKey, result);
     }
     return result;
   }
@@ -4617,7 +4623,7 @@ function CandidatesTable({
           setBulletinDescription('');
           setBulletinAiPrompt('');
           setBulletinShowAi(false);
-          if (_bulletinImgBlobRef.current) { URL.revokeObjectURL(bulletinImageObjUrl); _bulletinImgBlobRef.current = null; _bulletinImgFilenameRef.current = ''; setBulletinImageObjUrl(''); }
+          _clearBulletinImage();
           setBulletinImageGallery([]);
           setBulletinImageGalleryOpen(false);
           setBulletinPublicPost(false);
@@ -6698,7 +6704,7 @@ hiddenProtectedOptions() +
                             <img src={bulletinImageObjUrl} alt="preview" style={{ height: 40, width: 64, objectFit: 'cover', borderRadius: 4, border: '1px solid var(--border)' }} />
                             <button
                               type="button"
-                              onClick={() => { URL.revokeObjectURL(bulletinImageObjUrl); _bulletinImgBlobRef.current = null; _bulletinImgFilenameRef.current = ''; setBulletinImageObjUrl(''); }}
+                            onClick={() => _clearBulletinImage()}
                               style={{ padding: '3px 8px', borderRadius: 4, border: '1px solid var(--border)', background: '#fff', cursor: 'pointer', fontSize: 11, color: 'var(--argent)' }}
                             >✕ Remove</button>
                           </span>
@@ -6728,7 +6734,7 @@ hiddenProtectedOptions() +
                                       fetch(`http://localhost:${API_PORT}/bulletin/image/${encodeURIComponent(fname)}`, { credentials: 'include' })
                                         .then(r => r.blob())
                                         .then(blob => {
-                                          if (bulletinImageObjUrl) URL.revokeObjectURL(bulletinImageObjUrl);
+                                          _clearBulletinImage();
                                           _bulletinImgBlobRef.current = blob;
                                           _bulletinImgFilenameRef.current = fname;
                                           setBulletinImageObjUrl(URL.createObjectURL(blob));
