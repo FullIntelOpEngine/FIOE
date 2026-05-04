@@ -295,6 +295,8 @@ Return JSON only:
     console.error('/assess-unmatched error', err);
     if (!_isAsyncAssess) {
       res.status(500).json({ error: 'Assessment failed' });
+    } else {
+      try { broadcastSSE('skill_assessment_error', { candidateId: id, message: err.message }); } catch (_) {}
     }
   }
 });
@@ -930,6 +932,8 @@ app.post('/verify-data', requireLogin, async (req, res) => {
     console.error('/verify-data error:', err);
     if (!_isAsync) {
       res.status(500).json({ error: 'Verification failed', detail: err.message });
+    } else {
+      try { broadcastSSE('verify_data_error', { message: err.message }); } catch (_) {}
     }
   }
 });

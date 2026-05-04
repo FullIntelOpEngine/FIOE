@@ -8659,6 +8659,18 @@ export default function App() {
             console.warn('[SSE] Error parsing verify_data_complete:', err);
           }
         });
+
+        // Clears pending verify-data state when a background sync job fails.
+        eventSource.addEventListener('verify_data_error', (e) => {
+          try {
+            if (!verifyDataPendingRef.current) return;
+            verifyDataPendingRef.current = false;
+            const errPayload = JSON.parse(e.data);
+            setSyncMessage(`Sync failed: ${errPayload?.message || 'Unknown error'}`);
+          } catch (err) {
+            console.warn('[SSE] Error parsing verify_data_error:', err);
+          }
+        });
           console.warn('[SSE] connection error', err);
           eventSource.close();
 
