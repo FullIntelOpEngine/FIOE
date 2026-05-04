@@ -4,2023 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Talent Intelligence Dashboard</title>
-    <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Roboto:wght@300;400;500;700&family=Orbitron:wght@400;500;700;900&display=swap" rel="stylesheet">
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Leaflet for Map -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <!-- html2pdf.js for PDF Export -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-    <!-- html2canvas for PNG export of slides -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <!-- jsPDF for multi-page PDF export — loaded from local node_modules via /vendor route;
-         falls back to jsDelivr CDN if the local file is unavailable. -->
-    <script src="/vendor/jspdf.umd.min.js" onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js';document.head.appendChild(s);"></script>
-    <!-- PptxGenJS for PPTX export of slides -->
-    <script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
+    <!-- Fonts: limited weights + font-display:swap for non-blocking render -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Orbitron:wght@400;700&family=Roboto+Condensed:wght@400;700&display=swap" rel="stylesheet">
     <!-- Left Column Navigation -->
     <link rel="stylesheet" href="nav-sidebar.css">
     <script src="nav-sidebar.js" defer></script>
 
-    <style>
-        :root {
-            /* Default Theme (Clean/Google-ish) */
-            --primary: #1a73e8;
-            --bg-body: #f8f9fa;
-            --bg-card: #ffffff;
-            --text-main: #202124;
-            --text-sub: #5f6368;
-            --border: #dadce0;
-            --hover: #f1f3f4;
-            --shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
-            
-            /* App.js Specific Vars for consistent design */
-            --azure-dragon: #073679;
-            --cool-blue: #4c82b8;
-            --muted: #222529;
-            --danger: #ea4335;
-            --danger-border: #d93025;
-            --desired-dawn: #d8d8d8;
-            --black-beauty: #222529;
-
-            /* Org Chart Vars */
-            --oc-line: #cbd5e1;
-            --oc-card-bg: #fff;
-            --oc-card-border: #e2e8f0;
-            --oc-gap: 34px;
-            --oc-thick: 2px;
-        }
-
-        /* Cyberpunk Theme Overrides */
-        body.theme-cyberpunk {
-            --primary: #0ea5e9; /* Cyan */
-            --bg-body: #0f172a; /* Slate 900 */
-            --bg-card: #1e293b; /* Slate 800 */
-            --text-main: #e2e8f0; /* Slate 200 */
-            --text-sub: #94a3b8; /* Slate 400 */
-            --border: #334155; /* Slate 700 */
-            --hover: #334155;
-            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
-            --oc-line: #475569;
-            --oc-card-bg: #1e293b;
-            --oc-card-border: #475569;
-            --azure-dragon: #38bdf8; /* Adjust for dark mode visibility */
-            --cool-blue: #0ea5e9;
-        }
-
-        /* FIOE Brand Theme — Desired Dawn bg, Black Beauty text, Azure Dragon subheaders */
-        body.theme-fioe {
-            --primary: #6deaf9;       /* Robin's Egg — primary accent */
-            --bg-body: #ffffff;       /* White — overall dashboard background */
-            --bg-card: #ebebeb;       /* Lighter Desired Dawn — tile/card background */
-            --text-main: #222529;     /* Black Beauty — strong text contrast */
-            --text-sub: #073679;      /* Azure Dragon — subheaders & hierarchy */
-            --border: #87888a;        /* Argent — subtle tile borders */
-            --hover: #d8d8d8;         /* Desired Dawn — hover state */
-            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.12), 0 1px 2px 0 rgba(0, 0, 0, 0.08);
-            --oc-line: #87888a;
-            --oc-card-bg: #ebebeb;
-            --oc-card-border: #87888a;
-            --azure-dragon: #073679;  /* Azure Dragon */
-            --cool-blue: #4c82b8;
-        }
-
-        /* FIOE theme: h3 subheaders use Azure Dragon + Orbitron font (matches App.js brand font) */
-        body.theme-fioe .card h3,
-        body.theme-fioe .card-header h3 {
-            color: var(--azure-dragon, #073679);
-            font-family: 'Orbitron', sans-serif;
-        }
-
-        /* FIOE theme: only PRIMARY action buttons are Azure Dragon filled;
-           secondary buttons retain the base outlined style.
-           Reference: adac3f9b — Load State/Save State/Refresh/Export PDF/Port = filled;
-           Add Tile/Reset Layout/Create Slides = outlined. */
-        body.theme-fioe .nav-actions button.primary {
-            background: var(--azure-dragon, #073679);
-            color: #ffffff;
-            border-color: var(--azure-dragon, #073679);
-        }
-        body.theme-fioe .nav-actions button.primary:hover:not(:disabled) {
-            background: var(--cool-blue, #4c82b8);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        /* Slide toolbar add-tile-btn keeps Azure Dragon (it's a primary action) */
-        body.theme-fioe .add-tile-btn,
-        body.theme-fioe .slideshow-toolbar .add-tile-btn {
-            background: var(--azure-dragon, #073679);
-            color: #d8d8d8;
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .add-tile-btn:hover:not(:disabled),
-        body.theme-fioe .slideshow-toolbar .add-tile-btn:hover:not(:disabled) {
-            background: var(--cool-blue, #4c82b8);
-            color: #ffffff;
-        }
-        /* FIOE theme: tabs are plain-text underline (no button-box).
-           Active tab shows Azure Dragon colour + bottom border. */
-        body.theme-fioe .tab-btn {
-            color: var(--text-main, #222529);
-        }
-        body.theme-fioe .tab-btn:hover {
-            color: var(--azure-dragon, #073679);
-        }
-        body.theme-fioe .tab-btn.active {
-            color: var(--azure-dragon, #073679);
-            border-bottom-color: var(--azure-dragon, #073679);
-            background: transparent;
-        }
-
-        /* FIOE theme: nav/header sections (banner, tabs, toolbar) use white bg to match clean theme */
-        body.theme-fioe .session-banner,
-        body.theme-fioe .nav-tabs-container,
-        body.theme-fioe .action-toolbar {
-            background: #ffffff;
-        }
-
-        /* FIOE theme: session banner border + nav-brand uses Robin's Egg */
-        body.theme-fioe .session-banner {
-            border-bottom-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .nav-brand {
-            color: var(--azure-dragon, #073679);
-            font-family: 'Orbitron', sans-serif;
-        }
-        body.theme-fioe .user-handle {
-            color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .user-avatar {
-            background: var(--azure-dragon, #073679);
-            border: 2px solid var(--cool-blue, #4c82b8);
-        }
-
-        /* FIOE theme: metric values & labels use Azure Dragon / Cool Blue accents */
-        body.theme-fioe .metric-value {
-            color: var(--azure-dragon, #073679);
-            font-family: 'Orbitron', sans-serif;
-        }
-        body.theme-fioe .metric-label {
-            color: var(--argent, #87888a);
-            font-family: 'Roboto Condensed', sans-serif;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        /* FIOE theme: card headers and borders get Cool Blue accents */
-        body.theme-fioe .card {
-            border-color: var(--argent, #87888a);
-        }
-        body.theme-fioe .card-header {
-            border-bottom: 1px solid var(--desired-dawn, #d8d8d8);
-            padding-bottom: 10px;
-            margin-bottom: 14px;
-        }
-
-        /* FIOE theme: filter bar & buttons */
-        body.theme-fioe .filter-bar-wrapper,
-        body.theme-fioe .filter-bar {
-            background-color: #ffffff;
-            border-bottom-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .filter-bar-toggle-title {
-            color: var(--azure-dragon, #073679);
-            font-family: 'Orbitron', sans-serif;
-        }
-        body.theme-fioe .filter-btn {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--desired-dawn, #d8d8d8);
-            font-family: 'Roboto Condensed', sans-serif;
-        }
-        body.theme-fioe .filter-btn:hover {
-            background: var(--desired-dawn, #d8d8d8);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .filter-btn.active {
-            background: rgba(7,54,121,0.08);
-            color: var(--azure-dragon, #073679);
-            border-color: var(--azure-dragon, #073679);
-        }
-        body.theme-fioe .filter-dropdown {
-            background: #ffffff;
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .filter-search {
-            background: #ffffff;
-            border-color: var(--desired-dawn, #d8d8d8);
-            color: var(--black-beauty, #222529);
-        }
-        body.theme-fioe .filter-option:hover {
-            background: var(--desired-dawn, #d8d8d8);
-        }
-
-        /* FIOE theme: action toolbar */
-        body.theme-fioe .action-toolbar {
-            border-bottom-color: var(--desired-dawn, #d8d8d8);
-        }
-
-        /* FIOE theme: nav-actions secondary buttons (outlined Azure Dragon) */
-        body.theme-fioe .nav-actions button:not(.primary):not(.warning) {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .nav-actions button:not(.primary):not(.warning):hover {
-            background: rgba(7,54,121,0.06);
-            border-color: var(--azure-dragon, #073679);
-        }
-        body.theme-fioe .nav-actions select {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-
-        /* FIOE theme: editable h3 outline uses Cool Blue instead of generic primary */
-        body.theme-fioe .card h3[contenteditable="true"]:hover,
-        body.theme-fioe .metric-value[contenteditable="true"]:hover,
-        body.theme-fioe .metric-label[contenteditable="true"]:hover {
-            background-color: rgba(7,54,121,0.05);
-            outline: 1px dashed var(--cool-blue, #4c82b8);
-        }
-
-        /* FIOE theme: chart-type-select */
-        body.theme-fioe .chart-type-select {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--desired-dawn, #d8d8d8);
-        }
-
-        /* FIOE theme: table */
-        body.theme-fioe th {
-            color: var(--azure-dragon, #073679);
-            background: var(--bg-card, #ebebeb);
-            border-bottom-color: var(--cool-blue, #4c82b8);
-            font-family: 'Orbitron', sans-serif;
-            font-size: 11px;
-        }
-        body.theme-fioe td {
-            color: var(--black-beauty, #222529);
-            border-bottom-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe tr:hover td {
-            background-color: var(--desired-dawn, #d8d8d8);
-        }
-
-        /* FIOE theme: resize handles use Cool Blue glow */
-        body.theme-fioe .tile-resize-e,
-        body.theme-fioe .tile-resize-w { background: linear-gradient(to left, rgba(76,130,184,0.4), transparent); }
-        body.theme-fioe .tile-resize-w { background: linear-gradient(to right, rgba(76,130,184,0.4), transparent); }
-        body.theme-fioe .tile-resize-n,
-        body.theme-fioe .tile-resize-s { background: linear-gradient(transparent, rgba(76,130,184,0.4)); }
-        body.theme-fioe .tile-resize-se,
-        body.theme-fioe .tile-resize-sw,
-        body.theme-fioe .tile-resize-ne,
-        body.theme-fioe .tile-resize-nw {
-            background: radial-gradient(circle at center, rgba(76,130,184,0.55), transparent 70%);
-        }
-
-        /* FIOE theme: tile controls */
-        body.theme-fioe .tile-controls {
-            background: #ffffff;
-            border-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .tile-controls button {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .tile-controls button:hover {
-            background: var(--desired-dawn, #d8d8d8);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .tile-controls button.active {
-            border-color: var(--azure-dragon, #073679);
-            color: var(--azure-dragon, #073679);
-        }
-
-        /* FIOE theme: active-tags */
-        body.theme-fioe .active-tag {
-            background: rgba(7,54,121,0.07);
-            color: var(--azure-dragon, #073679);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .tag-remove-btn {
-            color: var(--argent, #87888a);
-        }
-        body.theme-fioe .tag-remove-btn:hover {
-            color: var(--danger, #ea4335);
-        }
-
-        /* FIOE theme: card-placeholder */
-        body.theme-fioe .card-placeholder {
-            border-color: var(--cool-blue, #4c82b8);
-            background: rgba(7,54,121,0.04);
-        }
-
-        /* FIOE theme: drop target on slide tabs */
-        body.theme-fioe .slide-tab.drop-target {
-            box-shadow: 0 0 0 2px var(--azure-dragon, #073679);
-            background: var(--azure-dragon, #073679) !important;
-        }
-
-        /* FIOE theme: org chart nodes */
-        body.theme-fioe .org-node {
-            background: #ffffff;
-            border-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .org-node:hover {
-            border-color: var(--cool-blue, #4c82b8);
-            box-shadow: 0 6px 18px rgba(7,54,121,0.12);
-        }
-        body.theme-fioe .org-name {
-            color: var(--azure-dragon, #073679);
-        }
-        body.theme-fioe .org-title {
-            color: var(--argent, #87888a);
-        }
-        body.theme-fioe .org-meta {
-            color: var(--argent, #87888a);
-        }
-        body.theme-fioe .org-node-header {
-            border-bottom-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .org-group-container {
-            background: var(--bg-card, #ebebeb);
-            border-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .org-group-title {
-            color: var(--azure-dragon, #073679);
-            border-bottom-color: var(--cool-blue, #4c82b8);
-        }
-
-        /* FIOE theme: org chart badge palette */
-        body.theme-fioe .badge-manager   { background: rgba(7,54,121,0.12);  color: var(--azure-dragon, #073679); }
-        body.theme-fioe .badge-senior    { background: rgba(76,130,184,0.15); color: var(--cool-blue, #4c82b8); }
-        body.theme-fioe .badge-mid       { background: rgba(109,234,249,0.2); color: #086980; }
-        body.theme-fioe .badge-junior    { background: rgba(135,136,138,0.12); color: var(--argent, #87888a); }
-        body.theme-fioe .badge-expert    { background: rgba(7,54,121,0.18);   color: var(--azure-dragon, #073679); }
-        body.theme-fioe .badge-lead      { background: rgba(76,130,184,0.22); color: var(--cool-blue, #4c82b8); }
-        body.theme-fioe .badge-director  { background: rgba(34,37,41,0.10);   color: var(--black-beauty, #222529); }
-        body.theme-fioe .badge-executive { background: rgba(34,37,41,0.18);   color: var(--black-beauty, #222529); }
-
-        /* FIOE theme: loader spinner */
-        body.theme-fioe .spinner {
-            border-top-color: var(--cool-blue, #4c82b8);
-        }
-
-        /* FIOE theme: slideshow nav */
-        body.theme-fioe .slideshow-nav {
-            background: #ffffff;
-            border-top-color: var(--desired-dawn, #d8d8d8);
-        }
-        body.theme-fioe .slideshow-nav button {
-            background: #ffffff;
-            color: var(--azure-dragon, #073679);
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .slideshow-nav button:hover:not(:disabled) {
-            background: var(--desired-dawn, #d8d8d8);
-        }
-
-        /* FIOE theme: text-tile editor */
-        body.theme-fioe .text-tile-editor {
-            background: #ffffff;
-            color: var(--black-beauty, #222529);
-        }
-
-        /* FIOE theme: login card */
-        body.theme-fioe .login-input {
-            border-color: var(--cool-blue, #4c82b8);
-        }
-        body.theme-fioe .login-input:focus {
-            border-color: var(--azure-dragon, #073679);
-            box-shadow: 0 0 0 3px rgba(7,54,121,0.12);
-        }
-
-        body {
-            font-family: 'Inter', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background-color: var(--bg-body);
-            color: var(--text-main);
-            margin: 0;
-            padding: 0;
-            transition: background-color 0.3s, color 0.3s;
-        }
-
-        /* Typography - Cyberpunk Style when active */
-        body.theme-cyberpunk, 
-        body.theme-cyberpunk h1, 
-        body.theme-cyberpunk h2, 
-        body.theme-cyberpunk h3, 
-        body.theme-cyberpunk .nav-brand, 
-        body.theme-cyberpunk .metric-value, 
-        body.theme-cyberpunk .filter-btn,
-        body.theme-cyberpunk .app-btn,
-        body.theme-cyberpunk input {
-            font-family: 'Orbitron', sans-serif;
-        }
-
-        /* === APP.JS COMPATIBILITY STYLES === */
-        
-        /* Buttons matching App.js design */
-        button {
-            cursor: pointer;
-            border-radius: 10px;
-            font-family: "Orbitron", sans-serif;
-            font-weight: 700;
-            letter-spacing: 0.2px;
-            transition: all 0.12s ease;
-        }
-        
-        .btn-primary {
-            background: var(--azure-dragon);
-            border: 1px solid var(--cool-blue);
-            color: #fff;
-            box-shadow: 0 8px 30px rgba(7,54,121,0.16), 0 0 18px rgba(109,234,249,0.06);
-            padding: 10px;
-        }
-        .btn-primary:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 12px 40px rgba(7,54,121,0.22), 0 0 26px rgba(109,234,249,0.12);
-        }
-
-        .btn-danger {
-            background: var(--danger);
-            border: 1px solid var(--danger-border);
-            color: #fff;
-            padding: 8px 16px;
-        }
-
-        .app-card-style {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            box-shadow: var(--shadow);
-        }
-
-        /* Login Screen */
-        #loginContainer {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            background: #f1f5f9;
-            position: fixed;
-            top: 0; left: 0; width: 100%;
-            z-index: 9999;
-        }
-
-        .login-card {
-            padding: 32px;
-            width: 360px;
-            background: #ffffff;
-            border-radius: 12px;
-            box-shadow: 0 6px 18px rgba(34,34,34,0.08);
-            border: 1px solid #e0e0e0;
-        }
-
-        .login-input {
-            width: 100%;
-            padding: 8px 12px;
-            box-sizing: border-box;
-            font-family: "Orbitron", sans-serif;
-            border-radius: 6px;
-            border: 1px solid var(--desired-dawn);
-            margin-bottom: 16px;
-        }
-        .login-input:focus {
-            outline: none;
-            border-color: var(--cool-blue);
-            box-shadow: 0 0 0 3px rgba(76,130,184,0.15);
-        }
-
-        .login-label {
-            display: block;
-            margin-bottom: 6px;
-            font-weight: 700;
-            font-size: 13px;
-            color: var(--muted);
-        }
-
-        /* Session Banner (Replacing Top Nav when logged in) */
-        .session-banner {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 12px 18px;
-            border-bottom: 1px solid var(--border);
-            background: var(--bg-card);
-            box-shadow: var(--shadow);
-            margin-bottom: 0;
-            /* Ensure it stays at top */
-            position: relative; 
-            z-index: 10;
-        }
-
-        /* NEW: Action Toolbar below banner */
-        .action-toolbar {
-            background-color: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            padding: 12px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 12px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            flex-shrink: 0;
-        }
-
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }
-
-        .user-avatar {
-            width: 52px; height: 52px;
-            border-radius: 14px;
-            background: var(--azure-dragon);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #fff;
-            font-size: 17px;
-            font-weight: 700;
-            box-shadow: 0 4px 10px -4px rgba(7,54,121,.35);
-            letter-spacing: .5px;
-            font-family: "Orbitron", sans-serif;
-        }
-
-        .user-details {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-
-        .user-name {
-            font-weight: 700;
-            font-size: 1rem;
-            color: var(--black-beauty);
-            font-family: 'Inter', 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        }
-        
-        .user-handle {
-            font-size: 12.5px;
-            color: var(--cool-blue);
-            font-family: 'Orbitron', sans-serif;
-        }
-
-        /* === END APP.JS COMPATIBILITY === */
-
-        /* Top Navigation Bar */
-        .top-nav {
-            background-color: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            height: 64px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            flex-shrink: 0;
-        }
-
-        .nav-brand {
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--primary);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            letter-spacing: 1px;
-        }
-
-        .nav-actions {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
-        .nav-actions button, .nav-actions select {
-            background: var(--bg-body);
-            color: var(--text-main);
-            border: 1px solid var(--border);
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-family: inherit;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .nav-actions button.primary {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        /* Warning/Reset button style */
-        .nav-actions button.warning {
-            background: transparent;
-            color: var(--text-sub);
-            border-color: var(--border);
-        }
-        .nav-actions button.warning:hover {
-            border-color: #d93025;
-            color: #d93025;
-        }
-
-        .nav-actions button:hover { opacity: 0.9; }
-
-        /* Main Filter Bar */
-        .filter-bar-wrapper {
-            background-color: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            flex-shrink: 0;
-        }
-        .filter-bar-toggle {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 24px;
-            cursor: pointer;
-            user-select: none;
-            border-bottom: 1px solid transparent;
-            transition: border-color 0.2s;
-        }
-        .filter-bar-toggle:hover { background: var(--hover); }
-        .filter-bar-toggle-title {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-sub);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .filter-bar-toggle-arrow {
-            font-size: 11px;
-            color: var(--text-sub);
-            transition: transform 0.2s ease;
-        }
-        .filter-bar-toggle.expanded .filter-bar-toggle-arrow { transform: rotate(90deg); }
-        .filter-bar-wrapper.expanded .filter-bar-toggle { border-bottom-color: var(--border); }
-        .filter-bar {
-            background-color: var(--bg-card);
-            padding: 12px 24px 16px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            align-items: center;
-            flex-shrink: 0;
-            overflow: hidden;
-            max-height: 0;
-            transition: max-height 0.3s ease, padding 0.3s ease;
-            padding-top: 0;
-            padding-bottom: 0;
-        }
-        .filter-bar-wrapper.expanded .filter-bar {
-            max-height: 600px;
-            padding-top: 12px;
-            padding-bottom: 16px;
-        }
-
-        .filter-item { position: relative; display: inline-block; }
-
-        .filter-btn {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 4px; 
-            padding: 6px 14px;
-            font-size: 12px;
-            color: var(--text-main);
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.2s;
-            text-transform: uppercase;
-            font-weight: 600;
-        }
-
-        .filter-btn:hover { background-color: var(--hover); }
-        .filter-btn.active { 
-            background-color: rgba(26, 115, 232, 0.1); 
-            color: var(--primary); 
-            border-color: var(--primary);
-        }
-
-        .filter-dropdown {
-            display: none;
-            position: absolute;
-            top: 110%;
-            left: 0;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            box-shadow: var(--shadow);
-            width: 250px;
-            z-index: 1000;
-            padding: 10px;
-        }
-        .filter-dropdown.show { display: block; }
-        .filter-search {
-            width: 100%; padding: 8px; border: 1px solid var(--border);
-            border-radius: 4px; margin-bottom: 8px; box-sizing: border-box;
-            background: var(--bg-body); color: var(--text-main);
-            font-family: inherit;
-        }
-        .filter-options { max-height: 200px; overflow-y: auto; }
-        .filter-option {
-            padding: 6px 8px; cursor: pointer; font-size: 13px; border-radius: 4px; color: var(--text-main);
-        }
-        .filter-option:hover { background-color: var(--hover); }
-
-        /* Dashboard Content */
-        .dashboard-container {
-            flex: 1;
-            padding: 24px;
-            overflow-y: auto;
-            min-height: 0;
-            display: grid;
-            grid-template-columns: repeat(8, 1fr);
-            gap: 24px;
-            grid-auto-rows: auto;
-            /* NEW: allow packing gaps created by resizes/reorders */
-            grid-auto-flow: dense;
-        }
-
-        /* Generic Card Style */
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            box-shadow: var(--shadow);
-            overflow: hidden;
-            position: relative; /* for tile controls */
-        }
-        
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-        }
-
-        .card-header-controls {
-            display: flex;
-            gap: 8px;
-        }
-
-        .card h3 {
-            margin: 0;
-            font-size: 14px;
-            color: var(--text-sub);
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        /* NEW: Editable styles */
-        .card h3[contenteditable="true"]:hover, 
-        .metric-value[contenteditable="true"]:hover,
-        .metric-label[contenteditable="true"]:hover {
-            background-color: rgba(26, 115, 232, 0.05);
-            outline: 1px dashed var(--primary);
-            cursor: text;
-        }
-
-        .chart-type-select {
-            padding: 4px 8px;
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            font-size: 11px;
-            color: var(--text-sub);
-            background: var(--bg-body);
-            cursor: pointer;
-            font-family: inherit;
-        }
-
-        /* Metric Cards */
-        .metric-card { 
-            grid-column: span 2; 
-            min-height: 120px;
-            justify-content: center;
-        }
-        .metric-value { font-size: 2.625rem; font-weight: 700; color: var(--text-main); margin: 8px 0; }
-        .metric-label { font-size: 0.8125rem; color: var(--text-sub); }
-
-        /* Chart Cards */
-        .chart-card { 
-            grid-column: span 4; 
-            height: 450px; 
-            position: relative;
-        }
-        .chart-card.full-width { grid-column: span 8; }
-        .chart-container { position: relative; flex: 1; width: 100%; height: 100%; min-height: 0; overflow: hidden; z-index: 0; }
-
-        /* Map Card */
-        /* Updated: Ensuring Map and Org Chart share identical height sizing */
-        .map-card { grid-column: span 8; height: 500px; }
-        #mapContainer { width: 100%; height: 100%; border-radius: 4px; z-index: 1; background: #aadaff; }
-        
-        /* Updated Map Label Style */
-        .map-count-label {
-            background: transparent !important;
-            border: none !important;
-            box-shadow: none !important;
-            color: #fff !important; /* High contrast text */
-            font-weight: 900;
-            font-size: 13px;
-            text-shadow: 0 1px 3px rgba(0,0,0,0.8); /* Shadow for readability against map colors */
-            text-align: center;
-        }
-        /* Override leaflet default tooltip pane positioning if needed */
-        .leaflet-tooltip-pane .map-count-label {
-            margin-top: -1px; 
-        }
-
-        /* Org Chart Section - Horizontal Tree CSS */
-        .org-chart-card {
-            grid-column: span 8;
-            height: 500px; /* Aligned with map-card */
-            overflow: hidden;
-            background: var(--bg-body); 
-        }
-        .org-chart-scroll {
-            overflow: auto;
-            padding: 40px;
-            height: 100%;
-            text-align: center;
-            /* Enable zoom-like scaling on the content */
-            transform-origin: top center;
-            transition: transform 0.3s ease;
-        }
-        /* Inner wrapper to hold content for scaling */
-        #orgChartContent {
-             display: inline-block;
-             white-space: nowrap;
-        }
-
-        /* Horizontal Tree CSS Structure */
-        .org-tree ul {
-            padding-top: 20px; 
-            position: relative;
-            transition: all 0.5s;
-            display: flex;
-            justify-content: center;
-        }
-
-        .org-tree li {
-            float: left; text-align: center;
-            list-style-type: none;
-            position: relative;
-            padding: 20px 5px 0 5px;
-            transition: all 0.5s;
-        }
-
-        /* Connectors */
-        .org-tree li::before, .org-tree li::after {
-            content: ''; position: absolute; top: 0; right: 50%;
-            border-top: 2px solid var(--oc-line);
-            width: 50%; height: 20px;
-        }
-        .org-tree li::after {
-            right: auto; left: 50%;
-            border-left: 2px solid var(--oc-line);
-        }
-
-        .org-tree li:only-child::after, .org-tree li:only-child::before {
-            display: none;
-        }
-        .org-tree li:only-child { padding-top: 0; }
-
-        .org-tree li:first-child::before, .org-tree li:last-child::after {
-            border: 0 none;
-        }
-        .org-tree li:last-child::before{
-            border-right: 2px solid var(--oc-line);
-            border-radius: 0 5px 0 0;
-        }
-        .org-tree li:first-child::after{
-            border-radius: 5px 0 0 0;
-        }
-
-        .org-tree ul::before{
-            content: ''; position: absolute; top: 0; left: 50%;
-            border-left: 2px solid var(--oc-line);
-            width: 0; height: 20px;
-        }
-
-        /* Node Box */
-        .org-node {
-            display: inline-block;
-            background: var(--oc-card-bg);
-            border: 1px solid var(--oc-card-border);
-            padding: 10px;
-            border-radius: 8px;
-            text-decoration: none;
-            color: var(--text-main);
-            font-family: inherit;
-            font-size: 12px;
-            min-width: 150px;
-            max-width: 260px; /* a bit wider to contain long department names */
-            position: relative;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            transition: all 0.3s;
-            z-index: 2;
-            overflow-wrap: anywhere; /* keep long text inside */
-            word-break: break-word;
-        }
-        .org-node:hover {
-            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
-            transform: translateY(-3px);
-            border-color: var(--primary);
-        }
-
-        .org-node-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 6px;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 6px;
-        }
-        .org-name { font-weight: 700; color: var(--text-main); font-size: 13px; }
-        .org-badge {
-            font-size: 10px; padding: 2px 6px; border-radius: 10px;
-            font-weight: 700; text-transform: uppercase;
-        }
-        /* Badge Colors */
-        .badge-manager { background: #e0f2fe; color: #0369a1; }
-        .badge-senior { background: #dcfce7; color: #15803d; }
-        .badge-mid { background: #fef9c3; color: #a16207; }
-        .badge-junior { background: #f3f4f6; color: #475569; }
-        .badge-expert { background: #fae8ff; color: #86198f; }
-        .badge-lead { background: #ffedd5; color: #9a3412; }
-        .badge-director { background: #fce7f3; color: #831843; }
-        .badge-executive { background: #fee2e2; color: #991b1b; }
-
-        .org-title { display: block; font-weight: 500; color: var(--text-sub); margin-bottom: 4px; white-space: normal; }
-        .org-meta { display: block; font-size: 10px; color: var(--text-sub); opacity: 0.8; }
-
-        /* Group Headers */
-        .org-group-container {
-            margin-bottom: 40px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            background: var(--bg-card);
-            display: inline-block;
-            margin-right: 40px;
-            vertical-align: top;
-            /* Allow container to fit content properly */
-            max-width: 100%;
-        }
-        .org-group-title {
-            text-align: center;
-            font-weight: 700;
-            color: var(--text-main);
-            margin-bottom: 20px;
-            font-size: 16px;
-            border-bottom: 2px solid var(--primary);
-            display: inline-block;
-            padding-bottom: 4px;
-        }
-
-        /* Data Grid */
-        .data-grid-card { 
-            grid-column: span 8; 
-            height: auto; 
-            min-height: 400px; 
-            max-height: 800px;
-            overflow: hidden; 
-        }
-        .table-wrapper { overflow: auto; width: 100%; height: 100%; }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { text-align: left; padding: 12px; border-bottom: 2px solid var(--border); color: var(--text-sub); position: sticky; top: 0; background: var(--bg-card); z-index: 2; font-family: inherit; font-size: 12px; }
-        td { padding: 12px; border-bottom: 1px solid var(--border); color: var(--text-main); }
-        tr:hover td { background-color: var(--hover); }
-
-        /* Media Queries */
-        @media (max-width: 1200px) {
-            .metric-card { grid-column: span 4; }
-            .chart-card { grid-column: span 8; }
-        }
-        @media (max-width: 768px) {
-            .metric-card { grid-column: span 8; }
-        }
-
-        /* Loader */
-        .loader-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.7); z-index: 2000;
-            display: flex; justify-content: center; align-items: center;
-            opacity: 0; pointer-events: none; transition: opacity 0.3s;
-        }
-        .loader-overlay.active { opacity: 1; pointer-events: all; }
-        .spinner {
-            border: 4px solid rgba(255,255,255,0.1); border-top: 4px solid var(--primary);
-            border-radius: 50%; width: 40px; height: 40px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-        /* PDF export spinner — inline indicator on the Export PDF button */
-        .pdf-btn-spinner {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border: 2px solid rgba(255,255,255,0.35);
-            border-top-color: #fff;
-            border-radius: 50%;
-            animation: spin 0.75s linear infinite;
-            vertical-align: middle;
-            margin-right: 5px;
-        }
-
-        /* ============ NEW: Resizable + Draggable tiles ============ */
-        /* Map number-of-columns to data-span */
-        .card[data-span="8"]  { grid-column: span 8; }
-        .card[data-span="7"]  { grid-column: span 7; }
-        .card[data-span="6"]  { grid-column: span 6; }
-        .card[data-span="5"]  { grid-column: span 5; }
-        .card[data-span="4"]  { grid-column: span 4; }
-        .card[data-span="3"]  { grid-column: span 3; }
-        .card[data-span="2"]  { grid-column: span 2; }
-        .card[data-span="1"]  { grid-column: span 1; }
-        /* Legacy span values (>8) from older saves map to full-width on 8-col grid */
-        .card[data-span="9"],
-        .card[data-span="10"],
-        .card[data-span="11"],
-        .card[data-span="12"] { grid-column: span 8; }
-
-        /* Map row-span enum to grid-row — enables vertical jigsaw auto-placement */
-        .card[data-row-span="1"]  { grid-row: span 1; }
-        .card[data-row-span="2"]  { grid-row: span 2; }
-        .card[data-row-span="3"]  { grid-row: span 3; }
-        .card[data-row-span="4"]  { grid-row: span 4; }
-        .card[data-row-span="5"]  { grid-row: span 5; }
-        .card[data-row-span="6"]  { grid-row: span 6; }
-        .card[data-row-span="7"]  { grid-row: span 7; }
-        .card[data-row-span="8"]  { grid-row: span 8; }
-        .card[data-row-span="9"]  { grid-row: span 9; }
-        .card[data-row-span="10"] { grid-row: span 10; }
-
-        /* Padding enum classes — map JSON "padding" values to consistent CSS spacing.
-           Uses higher specificity (.dashboard-container .card.tile-padding-*) to override
-           the default .card padding without requiring !important. */
-        .dashboard-container .card.tile-padding-small  { padding: 0.5rem; }
-        .dashboard-container .card.tile-padding-medium { padding: 1.25rem; }
-        .dashboard-container .card.tile-padding-large  { padding: 2rem; }
-
-        .tile-controls {
-            position: absolute;
-            bottom: 8px;
-            right: 8px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            opacity: 0;
-            transition: opacity .2s ease;
-            z-index: 1000;
-            background: var(--bg-body, #fff);
-            border: 1px solid var(--border, #e5e7eb);
-            border-radius: 8px;
-            padding: 4px 8px;
-        }
-        .card:hover .tile-controls { opacity: 1; }
-        .tile-controls button {
-            background: var(--bg-body);
-            border: 1px solid var(--border);
-            color: var(--text-sub);
-            font-size: 11px;
-            padding: 4px 6px;
-            border-radius: 6px;
-            cursor: pointer;
-            min-width: 24px;
-        }
-        .tile-controls button.active {
-            border-color: var(--primary);
-            color: var(--primary);
-            font-weight: 700;
-        }
-        /* Right-edge border drag-to-resize handle */
-        .tile-resize-e {
-            position: absolute;
-            top: 16px;
-            right: 0;
-            width: 8px;
-            bottom: 16px;
-            cursor: e-resize;
-            z-index: 20;
-            opacity: 0;
-            background: linear-gradient(to left, rgba(59,130,246,0.35), transparent);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-e,
-        .tile-resize-e.dragging { opacity: 1; }
-        /* Left-edge border drag-to-resize handle */
-        .tile-resize-w {
-            position: absolute;
-            top: 16px;
-            left: 0;
-            width: 8px;
-            bottom: 16px;
-            cursor: w-resize;
-            z-index: 20;
-            opacity: 0;
-            background: linear-gradient(to right, rgba(59,130,246,0.35), transparent);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-w,
-        .tile-resize-w.dragging { opacity: 1; }
-        /* Top-edge border drag-to-resize handle */
-        .tile-resize-n {
-            position: absolute;
-            top: 0;
-            left: 16px;
-            right: 16px;
-            height: 8px;
-            cursor: n-resize;
-            z-index: 20;
-            opacity: 0;
-            background: linear-gradient(transparent, rgba(59,130,246,0.35));
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-n,
-        .tile-resize-n.dragging { opacity: 1; }
-        /* SE corner handle (width+height simultaneously) */
-        .tile-resize-se {
-            position: absolute;
-            right: 0;
-            bottom: 0;
-            width: 16px;
-            height: 16px;
-            cursor: se-resize;
-            z-index: 21;
-            opacity: 0;
-            background: radial-gradient(circle at bottom right, rgba(59,130,246,0.6), transparent 70%);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-se,
-        .tile-resize-se.dragging { opacity: 1; }
-        /* SW corner handle */
-        .tile-resize-sw {
-            position: absolute;
-            left: 0;
-            bottom: 0;
-            width: 16px;
-            height: 16px;
-            cursor: sw-resize;
-            z-index: 21;
-            opacity: 0;
-            background: radial-gradient(circle at bottom left, rgba(59,130,246,0.6), transparent 70%);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-sw,
-        .tile-resize-sw.dragging { opacity: 1; }
-        /* NE corner handle */
-        .tile-resize-ne {
-            position: absolute;
-            right: 0;
-            top: 0;
-            width: 16px;
-            height: 16px;
-            cursor: ne-resize;
-            z-index: 21;
-            opacity: 0;
-            background: radial-gradient(circle at top right, rgba(59,130,246,0.6), transparent 70%);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-ne,
-        .tile-resize-ne.dragging { opacity: 1; }
-        /* NW corner handle */
-        .tile-resize-nw {
-            position: absolute;
-            left: 0;
-            top: 0;
-            width: 16px;
-            height: 16px;
-            cursor: nw-resize;
-            z-index: 21;
-            opacity: 0;
-            background: radial-gradient(circle at top left, rgba(59,130,246,0.6), transparent 70%);
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-nw,
-        .tile-resize-nw.dragging { opacity: 1; }
-        /* Tile drag-to-slide: glow when dragging over a slide tab */
-        .slide-tab.drop-target {
-            box-shadow: 0 0 0 2px var(--primary, #3b82f6);
-            background: var(--primary, #3b82f6) !important;
-            color: #fff !important;
-        }
-
-        .card.dragging { opacity: .5; }
-        /* Map/org-chart tiles contain canvas/DOM elements that look washed-out at 0.5 opacity.
-           Keep them visually solid while dragging — the drag ghost is a browser-rendered snapshot. */
-        .map-card.dragging,
-        .org-chart-card.dragging { opacity: 0.85; }
-        /* Slide map chart tiles (data-chart-type=map) stay fully opaque while being dragged;
-           indicate drag state with a primary-color outline instead of fading the map. */
-        #slideGrid .card.dragging[data-chart-type="map"] { opacity: 1; box-shadow: 0 0 0 3px var(--primary, #3b82f6); }
-        #slideGrid .card.swap-target { outline: 2px dashed var(--primary, #3b82f6); }
-        /* Auto-hide chart type selector and tags in slide mode; reveal on hover */
-        #slideGrid .card .chart-type-select { opacity: 0; pointer-events: none; transition: opacity .2s ease; }
-        #slideGrid .card:hover .chart-type-select { opacity: 1; pointer-events: auto; }
-        #slideGrid .card .active-tags { opacity: 0; transition: opacity .2s ease; }
-        #slideGrid .card:hover .active-tags { opacity: 1; }
-        /* Prevent horizontal scrollbar on metric/chart tiles when resized small */
-        #slideGrid .metric-card,
-        #slideGrid .chart-card { overflow: hidden; }
-        /* Header in metric tiles should sit directly above the value with minimal gap */
-        #slideGrid .metric-card h3 { margin-bottom: 2px; }
-        #slideGrid .metric-card .metric-value { margin-top: 0; }
-        .card-placeholder {
-            border: 2px dashed var(--border);
-            background: var(--hover);
-            border-radius: 8px;
-            min-height: 60px;
-        }
-
-        /* NEW: Empty Tile Style */
-        .empty-tile-content {
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            height: 100%; 
-            color: var(--text-sub); 
-            border: 2px dashed var(--border); 
-            border-radius: 4px;
-            margin-top: 10px;
-        }
-        /* Highlight when filter dragged over */
-        .empty-tile.drag-over {
-            border-color: var(--primary);
-            background-color: var(--hover);
-        }
-        /* Dropped tags indicators in metric card */
-        .active-tags {
-            position: absolute;
-            bottom: 8px;
-            left: 8px;
-            display: flex;
-            gap: 4px;
-            flex-wrap: wrap;
-        }
-        .active-tag {
-            font-size: 10px;
-            background: var(--hover);
-            color: var(--text-sub);
-            padding: 2px 6px;
-            border-radius: 4px;
-            border: 1px solid var(--border);
-            display: inline-flex;
-            align-items: center;
-            gap: 3px;
-        }
-        .tag-remove-btn {
-            background: none;
-            border: none;
-            color: var(--text-sub);
-            cursor: pointer;
-            font-size: 11px;
-            line-height: 1;
-            padding: 0 1px;
-            opacity: 0.6;
-        }
-        .tag-remove-btn:hover {
-            color: #ef4444;
-            opacity: 1;
-        }
-        /* Bottom border drag-to-resize handle */
-        .tile-resize-s {
-            position: absolute;
-            bottom: 0;
-            left: 16px;
-            right: 16px;
-            height: 8px;
-            cursor: s-resize;
-            z-index: 20;
-            opacity: 0;
-            background: linear-gradient(transparent, rgba(59,130,246,0.35));
-            transition: opacity 0.15s;
-        }
-        .card:hover .tile-resize-s,
-        .tile-resize-s.dragging { opacity: 1; }
-        /* Text tile */
-        .text-tile {
-            min-height: 80px;
-            padding: 16px;
-            font-size: 14px;
-            color: var(--text-main);
-        }
-        .text-tile-editor {
-            width: 100%;
-            box-sizing: border-box;
-            flex: 1;
-            min-height: 80px;
-            resize: none;
-            border: 1px solid transparent;
-            border-radius: 6px;
-            padding: 8px;
-            font-size: 14px;
-            color: var(--text-main);
-            background: var(--bg-body);
-            outline: none;
-            font-family: inherit;
-        }
-        .text-tile-editor:hover { border-color: var(--border); }
-        .text-tile-editor:focus { border-color: var(--primary); }
-        
-        /* Updated Legend Style for Cyberpunk */
-        .skill-legend {
-            display:none; 
-            position:absolute; 
-            bottom:20px; 
-            left:20px; 
-            background:white; 
-            padding:10px; 
-            border-radius:8px; 
-            box-shadow:0 2px 6px rgba(0,0,0,0.2); 
-            font-size:11px; 
-            z-index:1000; 
-            border:1px solid var(--border);
-        }
-        
-        body.theme-cyberpunk .skill-legend {
-            background: rgba(15, 23, 42, 0.95); /* Darker background */
-            border: 1px solid var(--cool-blue); /* Neon border */
-            box-shadow: 0 0 15px rgba(14, 165, 233, 0.4); /* Glow effect */
-            color: var(--text-main);
-        }
-        body.theme-cyberpunk .skill-legend strong {
-            color: var(--primary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: none; /* REMOVED LINE */
-            padding-bottom: 4px;
-            margin-bottom: 8px;
-            display: block;
-        }
-        
-        /* UPDATED: Flex alignment for legend items (ensures icon & text align like Image 3) */
-        .skill-legend .legend-item {
-            display: flex;
-            align-items: center; /* Correct vertical alignment */
-            margin-bottom: 6px;
-            gap: 8px;
-        }
-        /* Legend swatch styling - first span is treated as swatch */
-        .skill-legend .legend-item span:first-child {
-            display:inline-block;
-            width:12px;
-            height:12px;
-            border-radius:3px;
-            flex:0 0 12px;
-            box-shadow: 0 0 2px rgba(0,0,0,0.25);
-        }
-
-        /* === REPORT TEMPLATE TAB STYLES === */
-        /* NEW: Container for Tabs below banner */
-        .nav-tabs-container {
-            background: var(--bg-card);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            display: flex;
-            gap: 24px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-        }
-
-        .tab-btn {
-            background: transparent;
-            border: none;
-            border-bottom: 3px solid transparent;
-            color: var(--text-sub);
-            font-size: 14px;
-            font-weight: 600;
-            padding: 12px 4px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        .tab-btn:hover { color: var(--primary); }
-        .tab-btn.active { 
-            color: var(--primary); 
-            border-bottom-color: var(--primary);
-        }
-
-        /* Hide tabs by default */
-        .tab-content { display: none; width: 100%; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
-        .tab-content.active { display: flex; }
-
-        /* Template Grid */
-        .template-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 24px;
-            padding: 24px;
-            overflow-y: auto;
-        }
-        .template-box {
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            height: 380px; /* Increased from 300px to avoid image cropping */
-            display: flex;
-            flex-direction: column;
-            cursor: pointer;
-            transition: all 0.2s;
-            overflow: hidden;
-            position: relative;
-        }
-        .template-box:hover {
-            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
-            transform: translateY(-2px);
-            border-color: var(--primary);
-        }
-        .template-header {
-            padding: 12px;
-            font-weight: 700;
-            border-bottom: 1px solid var(--border);
-            background: var(--hover);
-            color: var(--text-main);
-            text-align: center;
-        }
-        .template-preview {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #eef2f6;
-            color: var(--text-sub);
-            font-size: 13px;
-        }
-        .template-preview img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain; /* Changed from cover to contain so the full image shows */
-            object-position: center;
-        }
-
-        /* ============ Create Slides feature ============ */
-        /* Checkbox overlay on tiles when in selection mode */
-        .slide-check-overlay {
-            position: absolute;
-            top: 8px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1010;
-            background: rgba(0,0,0,0.55);
-            color: #fff;
-            padding: 4px 10px;
-            border-radius: 20px;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-        .slide-check-overlay input[type="checkbox"] {
-            width: 14px;
-            height: 14px;
-            cursor: pointer;
-        }
-        /* Highlight selected tiles */
-        .card.slide-selected {
-            outline: 2px solid var(--primary);
-            outline-offset: 2px;
-        }
-
-        /* ---- Slideshow overlay ---- */
-        #slideshowViewer {
-            position: fixed;
-            inset: 0;
-            z-index: 9000;
-            background: var(--bg-body, #f8f9fa);
-            display: none;
-            flex-direction: column;
-        }
-        #slideshowViewer.active { display: flex; }
-
-        /* Minimize mode: hide all controls, keep only title bar and navigation */
-        #slideshowViewer.minimize-mode .tile-controls { display: none !important; }
-        #slideshowViewer.minimize-mode .slideshow-toolbar .add-tile-btn { display: none !important; }
-        #slideshowViewer.minimize-mode .slideshow-toolbar .topn-controls { display: none !important; }
-        #slideshowViewer.minimize-mode .slideshow-toolbar .slide-tabs { display: none !important; }
-        #slideshowViewer.minimize-mode #exportSlidePngBtn,
-        #slideshowViewer.minimize-mode #exportPptxBtn,
-        #slideshowViewer.minimize-mode #saveSlidesBtn,
-        #slideshowViewer.minimize-mode #deleteProjectBtn { display: none !important; }
-        #slideshowViewer.minimize-mode .slideshow-toolbar label:not(.minimize-mode-label) { display: none !important; }
-        #slideshowViewer.minimize-mode .chart-type-select { display: none !important; }
-        #slideshowViewer.minimize-mode .active-tags { display: none !important; }
-        #slideshowViewer.minimize-mode #slideLayoutSelect,
-        #slideshowViewer.minimize-mode #slideThemeSelect { display: none !important; }
-
-        .slideshow-header {
-            flex-shrink: 0;
-            background: var(--bg-card, #fff);
-            border-bottom: 1px solid var(--border, #e2e8f0);
-            padding: 0 16px 8px;
-        }
-        .slideshow-toolbar {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 0 4px;
-            flex-wrap: wrap;
-        }
-        .slideshow-toolbar .slide-title {
-            font-weight: 700;
-            font-size: 14px;
-            color: var(--text-main);
-            flex: 1;
-        }
-        .slideshow-toolbar button {
-            padding: 6px 14px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--bg-card);
-            color: var(--text-main);
-            font-size: 13px;
-            cursor: pointer;
-        }
-        .slideshow-toolbar button:hover { background: var(--hover); }
-        .slideshow-toolbar button.close-btn {
-            background: #fee2e2;
-            color: #dc2626;
-            border-color: #fca5a5;
-        }
-        .slideshow-toolbar button.add-tile-btn {
-            background: var(--primary, #3b82f6);
-            color: #fff;
-            border-color: transparent;
-        }
-        /* Top N controls */
-        .topn-controls {
-            display: flex;
-            align-items: center;
-            gap: 3px;
-            background: var(--bg-card);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 2px 6px;
-        }
-        .topn-btn {
-            background: none !important;
-            border: none !important;
-            color: var(--primary, #3b82f6) !important;
-            font-size: 12px;
-            padding: 2px 4px !important;
-            cursor: pointer;
-            line-height: 1;
-        }
-        .topn-btn:hover { background: var(--hover) !important; border-radius: 4px; }
-        .topn-label {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-main);
-            min-width: 32px;
-            text-align: center;
-        }
-        /* Per-tile top-N mini control inside .tile-controls */
-        .tile-topn {
-            display: flex;
-            align-items: center;
-            gap: 2px;
-        }
-        .tile-topn-btn {
-            background: none;
-            border: none;
-            color: var(--primary, #3b82f6);
-            font-size: 10px;
-            padding: 1px 3px;
-            cursor: pointer;
-            line-height: 1;
-            min-width: unset !important;
-        }
-        .tile-topn-btn:hover { background: var(--hover) !important; border-radius: 3px; }
-        .tile-topn-label {
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--text-main);
-            min-width: 28px;
-            text-align: center;
-        }
-        .tile-metric-select {
-            max-width: 90px;
-        }
-
-        .slideshow-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 0;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-        }
-        /* slide-specific grid lives permanently inside the slideshow overlay */
-        #slideGrid {
-            padding: 16px;
-            min-height: 200px;
-            flex: 1;
-        }
-        /* Layout variants for #slideGrid */
-        #slideGrid.slide-layout-2col { grid-template-columns: repeat(2, 1fr) !important; }
-        #slideGrid.slide-layout-3col { grid-template-columns: repeat(3, 1fr) !important; }
-        #slideGrid.slide-layout-4col { grid-template-columns: repeat(4, 1fr) !important; }
-        /* Freeform: fill full viewport height so tiles can use the entire canvas */
-        /* 130px accounts for ~80px slideshow-header + ~50px slideshow-nav */
-        #slideGrid.slide-layout-freeform { display: block !important; position: relative; min-height: calc(100vh - 130px); padding: 8px; }
-        #slideGrid.slide-layout-freeform .card {
-            position: absolute;
-            resize: both;
-            overflow: auto;
-            min-width: 120px;
-            min-height: 80px;
-            cursor: grab;
-        }
-        #slideGrid.slide-layout-freeform .card:active { cursor: grabbing; }
-        /* Theme overrides scoped to the slide grid */
-        #slideGrid.slide-theme-light { background: #ffffff; color: #1e293b; --bg-card:#ffffff; --text-main:#1e293b; --border:#e2e8f0; }
-        #slideGrid.slide-theme-dark { background: #1e293b; color: #f1f5f9; --bg-card:#334155; --text-main:#f1f5f9; --border:#475569; }
-        #slideGrid.slide-theme-cyberpunk { background: #0f172a; color: #e2e8f0; --bg-card:#1e293b; --text-main:#94a3b8; --border:#334155; font-family:'Orbitron',sans-serif; }
-        /* FIOE slide theme: white bg, Desired Dawn cards, Black Beauty text */
-        #slideGrid.slide-theme-fioe { background: #ffffff; color: #222529; --bg-card:#ebebeb; --text-main:#222529; --text-sub:#073679; --border:#87888a; --primary:#6deaf9; }
-
-        /* Dark themes: enforce light text on dark card backgrounds */
-        #slideGrid.slide-theme-dark .card,
-        #slideGrid.slide-theme-cyberpunk .card {
-            background: var(--bg-card);
-            border-color: var(--border);
-            color: var(--text-main);
-        }
-        #slideGrid.slide-theme-dark .card h3,
-        #slideGrid.slide-theme-dark .card .metric-value,
-        #slideGrid.slide-theme-dark .card .metric-label,
-        #slideGrid.slide-theme-dark .card p,
-        #slideGrid.slide-theme-dark .card span,
-        #slideGrid.slide-theme-dark .card label {
-            color: var(--text-main) !important;
-        }
-        #slideGrid.slide-theme-cyberpunk .card h3,
-        #slideGrid.slide-theme-cyberpunk .card .metric-value,
-        #slideGrid.slide-theme-cyberpunk .card .metric-label,
-        #slideGrid.slide-theme-cyberpunk .card p,
-        #slideGrid.slide-theme-cyberpunk .card span,
-        #slideGrid.slide-theme-cyberpunk .card label {
-            color: var(--text-main) !important;
-        }
-        /* Active tag text in dark/cyberpunk slide themes */
-        #slideGrid.slide-theme-dark .active-tag,
-        #slideGrid.slide-theme-cyberpunk .active-tag {
-            color: var(--text-main) !important;
-            background: rgba(255,255,255,0.12) !important;
-            border-color: rgba(255,255,255,0.2) !important;
-        }
-        /* Select controls in dark/cyberpunk slide themes */
-        #slideGrid.slide-theme-dark select,
-        #slideGrid.slide-theme-cyberpunk select {
-            background: var(--bg-card);
-            color: var(--text-main);
-            border-color: var(--border);
-        }
-        /* Light themes: enforce dark text on light card backgrounds */
-        #slideGrid.slide-theme-light .card,
-        #slideGrid.slide-theme-fioe .card {
-            background: var(--bg-card);
-            border-color: var(--border);
-            color: var(--text-main);
-        }
-        #slideGrid.slide-theme-light .card h3,
-        #slideGrid.slide-theme-light .card .metric-value,
-        #slideGrid.slide-theme-light .card .metric-label {
-            color: var(--text-main) !important;
-        }
-        /* FIOE slide theme: Azure Dragon + Orbitron for card h3 subheaders; Black Beauty for all other text */
-        #slideGrid.slide-theme-fioe .card h3 {
-            color: #073679 !important;
-            font-family: 'Orbitron', sans-serif;
-        }
-        #slideGrid.slide-theme-fioe .card .metric-value,
-        #slideGrid.slide-theme-fioe .card .metric-label,
-        #slideGrid.slide-theme-fioe .card p,
-        #slideGrid.slide-theme-fioe .card span,
-        #slideGrid.slide-theme-fioe .card label {
-            color: var(--text-main) !important;
-        }
-        /* FIOE active-tags: dark text on muted light bg */
-        #slideGrid.slide-theme-fioe .active-tag {
-            color: var(--text-main) !important;
-            background: rgba(0,0,0,0.06) !important;
-            border-color: var(--border) !important;
-        }
-        /* FIOE selects: white bg, Black Beauty text */
-        #slideGrid.slide-theme-fioe select {
-            background: var(--bg-card);
-            color: var(--text-main);
-            border-color: var(--border);
-        }
-        /* text-tile contrast in dark/cyberpunk themes */
-        #slideGrid.slide-theme-dark .text-tile-editor,
-        #slideGrid.slide-theme-cyberpunk .text-tile-editor {
-            background: var(--bg-card);
-            color: var(--text-main);
-        }
-        /* FIOE text-tile: white bg, Black Beauty text */
-        #slideGrid.slide-theme-fioe .text-tile-editor {
-            background: var(--bg-card);
-            color: var(--text-main);
-        }
-        /* Tile controls in dark/cyberpunk slide themes */
-        #slideGrid.slide-theme-dark .tile-controls,
-        #slideGrid.slide-theme-cyberpunk .tile-controls {
-            background: var(--bg-card) !important;
-            border-color: var(--border) !important;
-        }
-        #slideGrid.slide-theme-dark .tile-controls button,
-        #slideGrid.slide-theme-dark .tile-topn-label,
-        #slideGrid.slide-theme-cyberpunk .tile-controls button,
-        #slideGrid.slide-theme-cyberpunk .tile-topn-label {
-            color: var(--text-main) !important;
-            background: var(--bg-card) !important;
-            border-color: var(--border) !important;
-        }
-        #slideGrid.slide-theme-dark .tile-metric-select,
-        #slideGrid.slide-theme-cyberpunk .tile-metric-select {
-            background: var(--bg-card) !important;
-            color: var(--text-main) !important;
-            border-color: var(--border) !important;
-        }
-        /* FIOE tile controls: white bg, Black Beauty text, Argent border */
-        #slideGrid.slide-theme-fioe .tile-controls {
-            background: var(--bg-card) !important;
-            border-color: var(--border) !important;
-        }
-        #slideGrid.slide-theme-fioe .tile-controls button,
-        #slideGrid.slide-theme-fioe .tile-topn-label {
-            color: var(--text-main) !important;
-            background: var(--bg-card) !important;
-            border-color: var(--border) !important;
-        }
-        #slideGrid.slide-theme-fioe .tile-metric-select {
-            background: var(--bg-card) !important;
-            color: var(--text-main) !important;
-            border-color: var(--border) !important;
-        }
-
-        .slideshow-nav {
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 20px;
-            padding: 10px 16px;
-            background: var(--bg-card, #fff);
-            border-top: 1px solid var(--border, #e2e8f0);
-        }
-        .slideshow-nav button {
-            padding: 7px 18px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--bg-card);
-            color: var(--text-main);
-            font-size: 14px;
-            cursor: pointer;
-            min-width: 100px;
-        }
-        .slideshow-nav button:hover:not(:disabled) { background: var(--hover); }
-        .slideshow-nav button:disabled { opacity: 0.35; cursor: default; }
-        #slideshowCounter {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-main);
-            min-width: 100px;
-            text-align: center;
-        }
-
-        /* Drop zone for blank slides */
-        #slideDropZone {
-            margin: 40px auto;
-            max-width: 600px;
-            min-height: 200px;
-            border: 2px dashed var(--border, #e2e8f0);
-            border-radius: 12px;
-            display: none;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            color: var(--text-sub);
-            font-size: 14px;
-            padding: 40px 24px;
-            text-align: center;
-            transition: border-color 0.2s, background 0.2s;
-        }
-        #slideDropZone.drag-over {
-            border-color: var(--primary, #3b82f6);
-            background: rgba(59,130,246,0.06);
-            color: var(--primary, #3b82f6);
-        }
-        #slideDropZone .drop-icon {
-            font-size: 36px;
-            opacity: 0.5;
-        }
-
-        /* Slide tabs row */
-        .slide-tabs {
-            display: flex;
-            gap: 6px;
-            padding: 6px 0 0;
-            flex-wrap: wrap;
-            overflow-x: auto;
-        }
-        .slide-tab {
-            padding: 4px 10px 4px 14px;
-            border-radius: 20px;
-            border: 1px solid var(--border);
-            background: var(--hover);
-            color: var(--text-sub);
-            font-size: 12px;
-            cursor: pointer;
-            transition: all 0.15s;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .slide-tab.active-tab {
-            background: var(--primary, #3b82f6);
-            color: #fff;
-            border-color: transparent;
-        }
-        .slide-tab-delete {
-            font-size: 11px;
-            line-height: 1;
-            opacity: 0.6;
-            padding: 0 2px;
-            border-radius: 50%;
-            cursor: pointer;
-        }
-        .slide-tab-delete:hover { opacity: 1; }
-
-        /* Editable slide title in toolbar */
-        .slide-title[contenteditable="true"] {
-            outline: none;
-            border-bottom: 1px dashed var(--primary, #3b82f6);
-            cursor: text;
-            min-width: 60px;
-        }
-    </style>
-    <!-- Nav-sidebar base styles (embedded for self-contained rendering) -->
-    <style>
-      /* Page shell */
-      html:has(.page-shell), body:has(.page-shell) { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-      .page-shell { display: flex; height: 100vh; overflow: hidden; }
-
-      /* Sidebar */
-      .nav-sidebar {
-        width: 180px; min-width: 180px;
-        background: #222529;
-        color: #d8d8d8;
-        display: flex; flex-direction: column;
-        position: sticky; top: 0; height: 100vh;
-        overflow-y: auto; z-index: 200;
-        border-right: 1px solid rgba(255,255,255,0.06);
-        flex-shrink: 0;
-      }
-
-      /* Brand */
-      .nav-sidebar__brand {
-        display: flex; align-items: center;
-        padding: 14px 12px;
-        text-decoration: none;
-        border-bottom: 1px solid rgba(255,255,255,0.07);
-        white-space: nowrap;
-      }
-      .nav-sidebar__logo { width: 30px; height: auto; display: block; }
-      .nav-sidebar__brand::after { content: "›"; color: #6deaf9; font-size: 16px; margin-left: 4px; }
-
-      /* Nav list */
-      .nav-sidebar__list { list-style: none; margin: 0; padding: 8px 0; flex: 1; }
-      .nav-sidebar__item { position: relative; }
-
-      /* Links */
-      .nav-sidebar__link {
-        display: flex; align-items: center; gap: 9px;
-        padding: 10px 16px; color: #87888a;
-        text-decoration: none;
-        font-family: "Roboto Condensed", "Inter", sans-serif;
-        font-size: 13px; font-weight: 500; letter-spacing: 0.2px;
-        cursor: pointer; background: none; border: none;
-        width: 100%; text-align: left;
-        transition: background 0.15s ease, color 0.12s ease;
-        box-sizing: border-box; border-radius: 0;
-      }
-      .nav-sidebar__link:hover, .nav-sidebar__link:focus-visible {
-        background: rgba(255,255,255,0.05); color: #d8d8d8; outline: none;
-      }
-      .nav-sidebar__link.active {
-        background: rgba(109,234,249,0.10); color: #6deaf9; font-weight: 600;
-      }
-
-      /* Icons */
-      .nav-sidebar__icon { width: 16px; height: 16px; flex-shrink: 0; display: block; }
-
-      /* Submenu */
-      .nav-sidebar__item--has-sub .nav-sidebar__submenu {
-        list-style: none; margin: 0; padding: 0;
-        max-height: 0; overflow: hidden;
-        background: rgba(7,54,121,0.25);
-        transition: max-height 0.28s ease;
-      }
-      .nav-sidebar__item--has-sub:hover .nav-sidebar__submenu,
-      .nav-sidebar__item--has-sub:focus-within .nav-sidebar__submenu { max-height: 300px; }
-      .nav-sidebar__submenu-link {
-        display: block; padding: 8px 16px 8px 40px; color: #87888a;
-        text-decoration: none;
-        font-family: "Roboto Condensed", "Inter", sans-serif;
-        font-size: 12px; font-weight: 400;
-        transition: background 0.15s ease, color 0.12s ease;
-        box-sizing: border-box;
-      }
-      .nav-sidebar__submenu-link:hover, .nav-sidebar__submenu-link:focus-visible {
-        background: rgba(255,255,255,0.05); color: #d8d8d8; outline: none;
-      }
-      .nav-sidebar__submenu-link.active { color: #6deaf9; font-weight: 600; }
-
-      /* Chevron */
-      .nav-sidebar__chevron {
-        margin-left: auto; flex-shrink: 0;
-        color: #4c82b8; transition: transform 0.2s ease;
-      }
-      .nav-sidebar__item--has-sub:hover .nav-sidebar__chevron,
-      .nav-sidebar__item--has-sub:focus-within .nav-sidebar__chevron {
-        transform: rotate(90deg); color: #6deaf9;
-      }
-
-      /* Divider */
-      .nav-sidebar__divider { height: 1px; background: rgba(255,255,255,0.06); margin: 6px 12px; }
-
-      /* Main content area */
-      .page-main { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
-    </style>
-    <!-- Hover-triggered sidebar overrides (LookerDashboard only) -->
-    <style>
-      /* ── Icon-rail collapsed / hover-expand sidebar (LookerDashboard) ── */
-
-      /* Collapsed: narrow 48 px icon rail — matches nav-sidebar.css mobile rail */
-      .page-shell--hover-sidebar .nav-sidebar {
-        position: fixed;
-        top: 0;
-        left: 0;
-        height: 100vh;
-        width: 48px;
-        min-width: 48px;
-        overflow: hidden;
-        z-index: 200;
-        transition: width 0.28s cubic-bezier(0.4, 0, 0.2, 1),
-                    box-shadow 0.28s ease;
-        box-shadow: none;
-      }
-
-      /* Expanded: hover or keyboard-focus widens to full sidebar */
-      .page-shell--hover-sidebar .nav-sidebar:hover,
-      .page-shell--hover-sidebar .nav-sidebar:focus-within {
-        width: 180px;
-        min-width: 180px;
-        box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
-      }
-
-      /* Collapsed: hide brand, text labels, chevron and submenus */
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__brand,
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__link > span,
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__chevron,
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__submenu {
-        display: none;
-      }
-
-      /* Collapsed: center icons and enlarge them for easy click targets */
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__link {
-        justify-content: center;
-        padding: 12px 0;
-      }
-      .page-shell--hover-sidebar .nav-sidebar:not(:hover):not(:focus-within) .nav-sidebar__icon {
-        width: 18px;
-        height: 18px;
-        flex-shrink: 0;
-      }
-
-      /* Main content: leave exactly 48 px for the fixed icon rail */
-      .page-shell--hover-sidebar .page-main {
-        margin-left: 48px;
-        width: calc(100% - 48px);
-      }
-    </style>
+    <link rel="stylesheet" href="LookerDashboard.css">
 <!-- Rate-limit enforcement (client-side guard matching admin-configured limits) -->
-<script src="ui/rate-limit-enforcer.js"></script>
-<script>RateLimitEnforcer.init({ prefetch: true });</script>
+<script src="ui/rate-limit-enforcer.js" defer></script>
 </head>
 <body class="theme-fioe">
 <!-- ===== Page Shell: sidebar + main ===== -->
@@ -2433,6 +425,89 @@
         window.location.replace(API_BASE + '/LookerDashboard.html');
     }
 
+    // ================= LAZY SCRIPT / LINK LOADERS =================
+    // Tracks in-flight (and completed) loads so concurrent callers share the same Promise.
+    // Failed loads are evicted so they can be retried.
+    const _scriptLoading = {};
+    function _loadScript(src, opts = {}) {
+        if (_scriptLoading[src]) return _scriptLoading[src];
+        if (document.querySelector(`script[src="${src}"]`)) return (_scriptLoading[src] = Promise.resolve());
+        _scriptLoading[src] = new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            if (opts.integrity)   { s.integrity   = opts.integrity; }
+            if (opts.crossorigin) { s.crossOrigin  = opts.crossorigin; }
+            s.onload  = resolve;
+            s.onerror = (err) => {
+                // Evict so a future call can retry the load
+                delete _scriptLoading[src];
+                reject(err);
+            };
+            document.head.appendChild(s);
+        });
+        return _scriptLoading[src];
+    }
+    const _linkLoading = {};
+    function _loadLink(href, opts = {}) {
+        if (_linkLoading[href]) return _linkLoading[href];
+        if (document.querySelector(`link[href="${href}"]`)) return (_linkLoading[href] = Promise.resolve());
+        _linkLoading[href] = new Promise((resolve, reject) => {
+            const l = document.createElement('link');
+            l.rel  = 'stylesheet';
+            l.href = href;
+            if (opts.integrity)   { l.integrity   = opts.integrity; }
+            if (opts.crossorigin) { l.crossOrigin  = opts.crossorigin; }
+            l.onload  = resolve;
+            l.onerror = (err) => {
+                console.warn('[Dashboard] Failed to load stylesheet:', href, err);
+                delete _linkLoading[href];
+                reject(err);
+            };
+            document.head.appendChild(l);
+        });
+        return _linkLoading[href];
+    }
+    // Ensure Chart.js is available; resolves immediately if already loaded.
+    async function _ensureChartJs() {
+        if (typeof Chart === 'undefined') {
+            await _loadScript('https://cdn.jsdelivr.net/npm/chart.js');
+        }
+    }
+    // Ensure Leaflet CSS + JS are available; resolves immediately if already loaded.
+    async function _ensureLeaflet() {
+        if (typeof L === 'undefined') {
+            await _loadLink('https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', {
+                integrity:   'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=',
+                crossorigin: 'anonymous'
+            });
+            await _loadScript('https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', {
+                integrity:   'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=',
+                crossorigin: 'anonymous'
+            });
+        }
+    }
+    // Ensure html2canvas is available.
+    async function _ensureHtml2canvas() {
+        if (typeof html2canvas === 'undefined') {
+            await _loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+        }
+    }
+    // Ensure jsPDF is available (local vendor first, CDN fallback).
+    async function _ensureJsPDF() {
+        if ((window.jspdf && window.jspdf.jsPDF) || window.jsPDF) return;
+        try {
+            await _loadScript('/vendor/jspdf.umd.min.js');
+        } catch (_) {
+            await _loadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+        }
+    }
+    // Ensure PptxGenJS is available.
+    async function _ensurePptxGenJS() {
+        if (typeof PptxGenJS === 'undefined') {
+            await _loadScript('https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js');
+        }
+    }
+
     let currentUser = null;
     let eventSource = null;
     let isPorting = false; // Flag to track porting process
@@ -2470,6 +545,31 @@
     let skillMapInstance = null;
     let skillMapMarkers = [];
     let skillMapDataCache = null; // Cache for zoom handling
+    let _skillMapDirty = true;    // set true when filtered data changes; cleared after calculateSkillMapData
+
+    // Memoized getFilteredData — invalidated whenever globalData or activeFilters change
+    let _filteredDataCache = null;
+    let _filteredDataCacheKey = '';
+
+    // Per-field filter option cache — invalidated when globalData changes
+    const _filterOptionsCache = new Map(); // field → sorted string[]
+
+    // Map update cache — skip full marker rebuild when counts are unchanged
+    let _mapLastCountryKey = '';
+
+    // Skill-map render dedup — skip marker clear/re-add when zoom+data are unchanged
+    let _lastSkillMapRenderKey = '';
+
+    // Table render dedup — skip tbody rebuild when top-50 row ids are unchanged
+    let _lastTableKey = '';
+
+    // Global-data fingerprint — skip updateAllVisuals on SSE no-ops (data didn't change)
+    let _globalDataFingerprint = '';
+
+    // Lazy chart init — defer off-screen chart builds on the initial dashboard load
+    let _dashboardInitialized = false;
+    const _pendingChartUpdates = new Map(); // canvasId → update function
+    let _chartViewObserver = null;
 
     const COUNTRY_COORDS = {
         'Singapore': [1.3521, 103.8198], 'United States': [37.0902, -95.7129], 'USA': [37.0902, -95.7129],
@@ -2594,12 +694,20 @@
         window.location.href = 'http://localhost:8091/login.html?next=' + encodeURIComponent(window.location.href);
     }
 
+    // Debounce timer lives outside initSocket so it survives EventSource reconnections
+    let _sseRefreshTimer = null;
+    function _debouncedRefresh() {
+        clearTimeout(_sseRefreshTimer);
+        _sseRefreshTimer = setTimeout(() => refreshDashboard(), 300);
+    }
+
     function initSocket() {
         if(eventSource) eventSource.close();
         eventSource = new EventSource(`${API_BASE}/api/events`, { withCredentials: true });
         eventSource.addEventListener('connected', () => console.log('Connected to realtime updates'));
-        eventSource.addEventListener('candidates_changed', () => refreshDashboard());
-        eventSource.addEventListener('candidate_updated', () => refreshDashboard());
+        // Coalesce rapid SSE events (e.g. bulk updates) into a single refresh call
+        eventSource.addEventListener('candidates_changed', _debouncedRefresh);
+        eventSource.addEventListener('candidate_updated',  _debouncedRefresh);
         eventSource.onerror = () => {
             eventSource.close();
             // Reconnect after 5 seconds
@@ -2609,6 +717,30 @@
 
     // ================= INITIALIZATION =================
     document.addEventListener('DOMContentLoaded', async () => {
+        // Init rate-limit enforcer now that deferred script is executed
+        if (typeof RateLimitEnforcer !== 'undefined') {
+            RateLimitEnforcer.init({ prefetch: true });
+        } else {
+            console.warn('[Dashboard] RateLimitEnforcer not loaded — rate-limit enforcement is inactive.');
+        }
+
+        // Set up a shared IntersectionObserver used by updateAllVisuals({ defer: true })
+        // to build off-screen chart cards lazily as they scroll into view.
+        if (typeof IntersectionObserver !== 'undefined') {
+            _chartViewObserver = new IntersectionObserver(entries => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    const id = entry.target.id;
+                    const fn = _pendingChartUpdates.get(id);
+                    if (fn) {
+                        _pendingChartUpdates.delete(id);
+                        _chartViewObserver.unobserve(entry.target);
+                        fn();
+                    }
+                });
+            }, { threshold: 0.05 });
+        }
+
         // Start with Auth Check
         checkAuthOnLoad();
     });
@@ -2619,8 +751,20 @@
         // Restore filters from save state before fetching/filtering data
         restoreFilters(); 
         
-        // Init map (using saved position if present)
-        initMap();
+        // Defer map init until #mapContainer enters the viewport
+        const mapContainerEl = document.getElementById('mapContainer');
+        if (mapContainerEl && typeof IntersectionObserver !== 'undefined') {
+            const _mapObserver = new IntersectionObserver(entries => {
+                if (entries.some(e => e.isIntersecting)) {
+                    _mapObserver.disconnect();
+                    initMap().catch(e => console.warn('[Dashboard] lazy initMap failed:', e));
+                }
+            }, { threshold: 0.01 });
+            _mapObserver.observe(mapContainerEl);
+        } else if (mapContainerEl) {
+            // Fallback for browsers without IntersectionObserver
+            initMap().catch(e => console.warn('[Dashboard] initMap failed:', e));
+        }
 
         // Load org chart manual overrides from server before first render
         await loadOrgChartOverrides();
@@ -2663,6 +807,18 @@
                 buildOrgChart();
             });
         } catch (bcErr) { console.warn('[Dashboard] orgchart BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
+
+        // Refresh client-side rate-limit cache when the admin saves new limits
+        // via admin_rate_limits.html (which broadcasts on 'fioe_api_config').
+        try {
+            const _rlCfgChannel = new BroadcastChannel('fioe_api_config');
+            _rlCfgChannel.addEventListener('message', e => {
+                if (!e || !e.data || e.data.type !== 'api-config-changed') return;
+                if (typeof RateLimitEnforcer !== 'undefined') {
+                    RateLimitEnforcer.refresh();
+                }
+            });
+        } catch (bcErr) { console.warn('[Dashboard] rate-limit BroadcastChannel init failed (non-fatal):', bcErr && bcErr.message); }
     }
 
     // ================= THEME LOGIC =================
@@ -2685,10 +841,12 @@
         
         // If switching to dashboard, ensure map/charts resize correctly
         if(tabId === 'dashboard') {
-            setTimeout(() => {
+            // Use rAF (two frames) so the browser has painted the newly-visible tab
+            // before we ask Leaflet/Chart.js to measure their containers.
+            requestAnimationFrame(() => requestAnimationFrame(() => {
                 if(mapInstance) { try { mapInstance.invalidateSize(); } catch (_) {} }
                 Object.values(charts).forEach(c => c.resize());
-            }, 100);
+            }));
         }
     }
     
@@ -2729,7 +887,14 @@
     async function exportToPDF() {
         const grid = document.getElementById('dashboardGrid');
         if (!grid || !grid.querySelectorAll('.card').length) { alert('No tiles to export.'); return; }
-        if (typeof html2canvas === 'undefined') { alert('html2canvas not loaded — please check your connection.'); return; }
+
+        // Lazy-load html2canvas and jsPDF on first use
+        try {
+            await Promise.all([_ensureHtml2canvas(), _ensureJsPDF()]);
+        } catch (loadErr) {
+            alert('Failed to load PDF export libraries — please check your connection.');
+            return;
+        }
 
         const jsPDFCtor = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
         if (!jsPDFCtor) { alert('jsPDF not available — please check your connection.'); return; }
@@ -2742,21 +907,165 @@
             btn.innerHTML = '<span class="pdf-btn-spinner"></span>Generating…';
         }
 
-        // Cache the background colour before the async html2canvas call
+        // Cache the background colour before any DOM mutations
         const bgColor = getComputedStyle(document.body).getPropertyValue('--bg-body').trim() || '#f8f9fa';
 
+        // Track DOM mutations so we can fully restore after export
+        const _layoutRestores = [];
+        const _mapRestores    = [];
+
         try {
-            // Capture the entire dashboard grid as one screenshot so the PDF layout
-            // exactly mirrors the on-screen arrangement (column spans, card sizes, gaps).
-            const cvs = await html2canvas(grid, {
-                scale: 2,
-                useCORS: true,
-                backgroundColor: bgColor,
-                logging: false,
-                scrollX: 0,
-                scrollY: 0,
-                windowWidth:  grid.scrollWidth,
-                windowHeight: grid.scrollHeight
+            const SCALE = 2;
+
+            // ── Step 1: Pre-expand scrollable table wrappers ──────────────────────────
+            // html2canvas only captures the *visible* portion of an overflow:auto element.
+            // Removing the overflow constraint (and any fixed height) before we measure
+            // the grid ensures the full table content is included in every page slice.
+            const _expandedCards = new Set();
+            grid.querySelectorAll('.table-wrapper').forEach(wrapper => {
+                const ws = wrapper.style;
+                _layoutRestores.push({ el: wrapper, overflow: ws.overflow, height: ws.height, maxHeight: ws.maxHeight });
+                ws.overflow  = 'visible';
+                ws.height    = 'auto';
+                ws.maxHeight = 'none';
+                // Also expand the parent card so the extra rows aren't clipped by it.
+                // contain:paint (set on .card in CSS) clips descendants to the border-box
+                // regardless of overflow, so we must clear it as well.
+                const card = wrapper.closest('.card');
+                if (card && !_expandedCards.has(card)) {
+                    _expandedCards.add(card);
+                    const cs = card.style;
+                    _layoutRestores.push({ el: card, overflow: cs.overflow, height: cs.height, maxHeight: cs.maxHeight, contain: cs.contain });
+                    cs.overflow  = 'visible';
+                    cs.height    = 'auto';
+                    cs.maxHeight = 'none';
+                    cs.contain   = 'none';
+                }
+            });
+
+            // One animation-frame so the browser can reflow the expanded content
+            await new Promise(r => requestAnimationFrame(r));
+
+            // ── Step 2: Pre-render Leaflet maps to static canvases ────────────────────
+            // html2canvas does not support CSS 3D transforms (translate3d), so Leaflet
+            // markers end up at (0,0) in the capture.  We bypass this entirely by using
+            // Leaflet's own coordinate system to draw markers onto a plain <canvas> at
+            // their exact pixel positions, then temporarily replacing the map container
+            // contents with that canvas for the duration of the html2canvas call.
+            function _snapshotLeafletMap(mapInst, markers) {
+                if (!mapInst) return;
+                const container = mapInst.getContainer();
+                if (!container) return;
+                const w = container.offsetWidth;
+                const h = container.offsetHeight;
+                if (!w || !h) return;
+
+                const cvs = document.createElement('canvas');
+                cvs.width  = w * SCALE;
+                cvs.height = h * SCALE;
+                cvs.style.cssText = `width:${w}px;height:${h}px;display:block;`;
+                const ctx = cvs.getContext('2d');
+                ctx.scale(SCALE, SCALE);
+
+                // Fill with Leaflet's default ocean colour as background
+                ctx.fillStyle = '#b0c4de';
+                ctx.fillRect(0, 0, w, h);
+
+                // ── Draw actual tile images ────────────────────────────────────────────
+                // OSM tiles are served with Access-Control-Allow-Origin:* and Leaflet
+                // now requests them with crossOrigin:'anonymous', so the <img> elements
+                // are CORS-clean and can be drawn onto a canvas without tainting it.
+                // We probe one tile first; if the probe canvas stays clean we draw all
+                // tiles via getBoundingClientRect() (which correctly accounts for all
+                // CSS transforms that Leaflet applies to the tile pane).
+                (function _drawTiles() {
+                    const tileImgs = Array.from(container.querySelectorAll('img.leaflet-tile'));
+                    const readyTile = tileImgs.find(t => t.complete && t.naturalWidth > 0);
+                    if (!readyTile) return;
+                    // Safety probe: draw one pixel on a throwaway canvas; toDataURL() throws
+                    // a SecurityError if the image is CORS-tainted.
+                    try {
+                        const probe = document.createElement('canvas');
+                        probe.width = probe.height = 1;
+                        probe.getContext('2d').drawImage(readyTile, 0, 0, 1, 1);
+                        probe.toDataURL(); // throws if tainted
+                    } catch (_) {
+                        return; // tiles are CORS-tainted – keep the solid background
+                    }
+                    const containerRect = container.getBoundingClientRect();
+                    for (const tile of tileImgs) {
+                        if (!tile.complete || !tile.naturalWidth) continue;
+                        try {
+                            const tr = tile.getBoundingClientRect();
+                            ctx.drawImage(
+                                tile,
+                                tr.left - containerRect.left,
+                                tr.top  - containerRect.top,
+                                tr.width, tr.height
+                            );
+                        } catch (_) { /* skip individual un-drawable tile */ }
+                    }
+                })();
+
+                // Draw each marker at its exact container-pixel position
+                for (const m of markers) {
+                    try {
+                        const pt = mapInst.latLngToContainerPoint(m.getLatLng());
+                        const r  = m.options.radius || 6;
+                        ctx.globalAlpha = m.options.fillOpacity ?? 0.7;
+                        ctx.beginPath();
+                        ctx.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+                        ctx.fillStyle = m.options.fillColor || '#1a73e8';
+                        ctx.fill();
+                        ctx.globalAlpha = 1;
+                        ctx.strokeStyle = m.options.color || '#fff';
+                        ctx.lineWidth   = m.options.weight ?? 1;
+                        ctx.stroke();
+                        // Render permanent tooltip text (e.g. count labels on clustered markers)
+                        const tip = m._tooltip;
+                        if (tip && tip.options && tip.options.permanent) {
+                                // Use DOM parsing to safely extract text content (avoids regex-based HTML stripping)
+                            const _tmp = document.createElement('span');
+                            _tmp.innerHTML = String(tip._content || '');
+                            const txt = (_tmp.textContent || _tmp.innerText || '').trim();
+                            if (txt) {
+                                const fs = Math.max(Math.round(r * 1.1), 8);
+                                ctx.font         = `bold ${fs}px Arial`;
+                                ctx.fillStyle    = '#fff';
+                                ctx.textAlign    = 'center';
+                                ctx.textBaseline = 'middle';
+                                ctx.fillText(txt, pt.x, pt.y);
+                            }
+                        }
+                    } catch (_) { /* skip any marker that can't be projected */ }
+                }
+
+                // Swap the live Leaflet DOM for our canvas snapshot
+                const origNodes = Array.from(container.childNodes).map(n => container.removeChild(n));
+                container.appendChild(cvs);
+                _mapRestores.push({ container, origNodes });
+            }
+
+            _snapshotLeafletMap(mapInstance,      mapMarkers);
+            _snapshotLeafletMap(skillMapInstance,  skillMapMarkers);
+            grid.querySelectorAll('[id^="tilemap-"]').forEach(mapDiv => {
+                if (mapDiv._leafletMap) {
+                    const ms = [];
+                    mapDiv._leafletMap.eachLayer(l => { if (l.getLatLng) ms.push(l); });
+                    _snapshotLeafletMap(mapDiv._leafletMap, ms);
+                }
+            });
+
+            // ── Step 3: Measure grid dimensions (after expansions + map snapshots) ────
+            const gridRect  = grid.getBoundingClientRect();
+            const gridH_css = grid.scrollHeight; // total scrollable height in CSS px
+            const gridW_css = grid.scrollWidth;
+            const cardRects = Array.from(grid.querySelectorAll('.card')).map(c => {
+                const r = c.getBoundingClientRect();
+                return {
+                    top:    (r.top    - gridRect.top) * SCALE,
+                    bottom: (r.bottom - gridRect.top) * SCALE
+                };
             });
 
             // Letter landscape: 279.4 × 215.9 mm
@@ -2765,37 +1074,72 @@
             const contentW = PAGE_W - 2 * MARGIN; // printable width in mm
             const contentH = PAGE_H - 2 * MARGIN; // printable height in mm
 
-            // Map canvas pixels → mm using the printable width
-            const mmPerPx = contentW / cvs.width;
+            // Total canvas height in pixels (same as what a full-grid capture would produce)
+            const totalH_px = Math.round(gridH_css * SCALE);
+            const totalW_px = Math.round(gridW_css * SCALE);
 
             // How many canvas pixels fit on one PDF page (height)
+            const mmPerPx   = contentW / totalW_px;
             const pxPerPage = Math.floor(contentH / mmPerPx);
+
+            // Find the best page-break height — prefer cuts below a card's bottom edge
+            function findBreak(pxOffset, maxPx) {
+                const candidates = [];
+                for (const r of cardRects) {
+                    if (r.bottom > pxOffset && r.bottom <= pxOffset + maxPx) {
+                        candidates.push(r.bottom);
+                    }
+                }
+                candidates.sort((a, b) => b - a);
+                for (const cutAbs of candidates) {
+                    const straddles = cardRects.some(r => r.top < cutAbs && r.bottom > cutAbs);
+                    if (!straddles) return cutAbs - pxOffset;
+                }
+                return maxPx;
+            }
+
+            // Pre-compute all page slice offsets/heights
+            const slices = [];
+            let pxOffset = 0;
+            while (pxOffset < totalH_px) {
+                const remaining = totalH_px - pxOffset;
+                const slicePx = remaining <= pxPerPage
+                    ? remaining
+                    : findBreak(pxOffset, pxPerPage);
+                slices.push({ offset: pxOffset, height: slicePx });
+                pxOffset += slicePx;
+            }
 
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
-            let pxOffset = 0;
-            let firstPage = true;
+            // Capture each page slice — no onclone needed; maps and tables are already
+            // in their final render state in the live DOM
+            const h2cBase = {
+                scale:       SCALE,
+                useCORS:     true,
+                backgroundColor: bgColor,
+                logging:     false,
+                scrollX:     0,
+                scrollY:     0,
+                windowWidth:  gridW_css,
+                windowHeight: gridH_css
+            };
 
-            while (pxOffset < cvs.height) {
-                if (!firstPage) pdf.addPage();
-                firstPage = false;
+            for (let i = 0; i < slices.length; i++) {
+                const { offset, height: slicePx } = slices[i];
+                if (i > 0) pdf.addPage();
 
-                const slicePx = Math.min(pxPerPage, cvs.height - pxOffset);
+                // html2canvas x/y/width/height clip the capture to this rect (CSS px)
+                const sliceCvs = await html2canvas(grid, {
+                    ...h2cBase,
+                    x:      0,
+                    y:      Math.round(offset / SCALE),
+                    width:  gridW_css,
+                    height: Math.round(slicePx / SCALE)
+                });
 
-                // Draw only the current page's slice onto a temporary canvas
-                const pageCanvas = document.createElement('canvas');
-                pageCanvas.width  = cvs.width;
-                pageCanvas.height = slicePx;
-                pageCanvas.getContext('2d').drawImage(
-                    cvs,
-                    0, pxOffset, cvs.width, slicePx,
-                    0, 0,        cvs.width, slicePx
-                );
-
-                const sliceH = slicePx * mmPerPx; // height of this slice in mm
-                pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH);
-
-                pxOffset += pxPerPage;
+                const sliceH_mm = slicePx * mmPerPx;
+                pdf.addImage(sliceCvs.toDataURL('image/jpeg', 0.92), 'JPEG', MARGIN, MARGIN, contentW, sliceH_mm);
             }
 
             pdf.save('dashboard_export.pdf');
@@ -2803,6 +1147,18 @@
             console.error('[PDF] Export failed:', e);
             alert('PDF export failed: ' + e.message);
         } finally {
+            // Restore Leaflet map containers
+            for (const { container, origNodes } of _mapRestores) {
+                container.innerHTML = '';
+                origNodes.forEach(n => container.appendChild(n));
+            }
+            // Restore expanded table wrappers and cards
+            for (const item of _layoutRestores) {
+                item.el.style.overflow  = item.overflow  != null ? item.overflow  : '';
+                item.el.style.height    = item.height    != null ? item.height    : '';
+                item.el.style.maxHeight = item.maxHeight != null ? item.maxHeight : '';
+                if ('contain' in item) item.el.style.contain = item.contain != null ? item.contain : '';
+            }
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = origHTML || 'Export PDF';
@@ -2907,9 +1263,14 @@
     }
 
     function loadFilterOptions(field) {
-        const listContainer = document.getElementById(`options-${field}`);
-        const uniqueValues = new Set();
+        // Return immediately if the options for this field are already cached
+        if (_filterOptionsCache.has(field)) {
+            renderOptionsList(field, _filterOptionsCache.get(field));
+            return;
+        }
+
         const dataKey = FIELD_MAPPING[field] || field;
+        const uniqueValues = new Set();
 
         globalData.forEach(row => {
             const val = row[dataKey];
@@ -2931,6 +1292,7 @@
         });
 
         const sortedOptions = Array.from(uniqueValues).sort();
+        _filterOptionsCache.set(field, sortedOptions);
         renderOptionsList(field, sortedOptions);
     }
 
@@ -2982,6 +1344,9 @@
         } else {
             delete activeFilters[field];
         }
+        // Invalidate memoized results that depend on activeFilters
+        _filteredDataCache = null;
+        _skillMapDirty = true;
         updateFilterButtonState(field, value);
         updateAllVisuals();
     }
@@ -3009,7 +1374,8 @@
     }
 
     // ================= MAP LOGIC =================
-    function initMap() {
+    async function initMap() {
+        await _ensureLeaflet();
         // Check for saved state
         let center = [20, 0];
         let zoom = 2;
@@ -3052,8 +1418,14 @@
             maxZoom: 18,
             minZoom: 2,
             noWrap: true,
-            bounds: [[-90, -180], [90, 180]]
+            bounds: [[-90, -180], [90, 180]],
+            crossOrigin: 'anonymous'
         }).addTo(mapInstance);
+
+        // Render markers now that the instance is ready (handles race where
+        // updateMap() ran before initMap() completed and returned early).
+        _mapLastCountryKey = '';
+        updateMap();
     }
 
     // NEW: Reset Map Function
@@ -3065,8 +1437,6 @@
 
     function updateMap() {
         if (!mapInstance) return;
-        mapMarkers.forEach(m => mapInstance.removeLayer(m));
-        mapMarkers = [];
 
         const filtered = getFilteredData();
         const countryCounts = {};
@@ -3080,6 +1450,15 @@
             if (country.toLowerCase() === 'uk') country = 'United Kingdom';
             countryCounts[country] = (countryCounts[country] || 0) + 1;
         });
+
+        // Skip full rebuild if counts haven't changed since last render
+        const countryKey = JSON.stringify(countryCounts);
+        if (countryKey === _mapLastCountryKey) return;
+        _mapLastCountryKey = countryKey;
+
+        // Remove stale markers
+        mapMarkers.forEach(m => mapInstance.removeLayer(m));
+        mapMarkers = [];
 
         // 2. Top 10 Logic & Colors
         const sortedCountries = Object.entries(countryCounts).sort((a,b) => b[1]-a[1]);
@@ -3104,7 +1483,7 @@
             top10.forEach(c => {
                 const item = document.createElement('div');
                 item.className = 'legend-item'; // Add class for flex alignment
-                item.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${colorMap[c]}; margin-right:6px; border-radius:2px; box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${c}</strong>`;
+                item.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${colorMap[c]}; border-radius:2px; box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${c}</strong>`;
                 legendItems.appendChild(item);
             });
             legend.style.display = top10.length > 0 ? 'block' : 'none';
@@ -3141,9 +1520,12 @@
     }
 
     // ================= SKILL MAP LOGIC =================
-    function updateSkillMap() {
+    async function updateSkillMap() {
         const containerId = 'skillMapContainer';
         if (!document.getElementById(containerId)) return;
+
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
 
         // Init Skill Map Instance if missing
         if (!skillMapInstance) {
@@ -3157,7 +1539,8 @@
                 attribution: '',
                 maxZoom: 18,
                 minZoom: 1,
-                noWrap: true
+                noWrap: true,
+                crossOrigin: 'anonymous'
             }).addTo(skillMapInstance);
 
             const container = document.getElementById(containerId);
@@ -3165,14 +1548,22 @@
             container.addEventListener('mouseenter', () => { if(card) card.setAttribute('draggable', 'false'); });
             container.addEventListener('mouseleave', () => { if(card) card.setAttribute('draggable', 'true'); });
             
-            // Add zoom handler to toggle clutter reduction
+            // Throttle zoomend: reuse cached data — only rebuild markers, no reaggregation
+            let _zoomRafId = null;
             skillMapInstance.on('zoomend', () => {
-                renderSkillMapMarkers();
+                if (_zoomRafId) cancelAnimationFrame(_zoomRafId);
+                _zoomRafId = requestAnimationFrame(() => {
+                    _zoomRafId = null;
+                    renderSkillMapMarkers();
+                });
             });
         }
 
-        // Cache calculations for render function
-        calculateSkillMapData();
+        // Only recompute aggregates when data has changed
+        if (_skillMapDirty) {
+            calculateSkillMapData();
+            _skillMapDirty = false;
+        }
         renderSkillMapMarkers();
     }
 
@@ -3288,12 +1679,17 @@
 
     function renderSkillMapMarkers() {
         if(!skillMapInstance || !skillMapDataCache) return;
+
+        const zoom = skillMapInstance.getZoom();
+        // Skip the expensive clear-and-rebuild when zoom level and data haven't changed.
+        const renderKey = zoom + ':' + skillMapDataCache.countries.map(c => c.name + c.totalCount).join(',');
+        if (renderKey === _lastSkillMapRenderKey) return;
+        _lastSkillMapRenderKey = renderKey;
         
         // Clear existing markers
         skillMapMarkers.forEach(m => skillMapInstance.removeLayer(m));
         skillMapMarkers = [];
 
-        const zoom = skillMapInstance.getZoom();
         const thresholdZoom = 4; // Zoom level to switch between aggregate and detailed view
 
         skillMapDataCache.countries.forEach(c => {
@@ -3357,8 +1753,10 @@
 
     // Renders a skill-frequency map (country-based hotspots) into an arbitrary container
     // element.  Used for slide-tile clones so each gets its own independent Leaflet instance.
-    function renderSkillMapForTile(mapDiv, legendDiv) {
+    async function renderSkillMapForTile(mapDiv, legendDiv) {
         if (!mapDiv) return;
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
         // Destroy any previous Leaflet map in this div
         if (mapDiv._leafletRO) { mapDiv._leafletRO.disconnect(); delete mapDiv._leafletRO; }
         if (mapDiv._leafletMap) { mapDiv._leafletMap.remove(); }
@@ -3403,7 +1801,7 @@
             .setView([20, 0], 1);
         mapDiv._leafletMap = map;
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap', maxZoom: 18, minZoom: 1, noWrap: true
+            attribution: '© OpenStreetMap', maxZoom: 18, minZoom: 1, noWrap: true, crossOrigin: 'anonymous'
         }).addTo(map);
 
         // Add one marker per country using the dominant (top) skill colour
@@ -3443,7 +1841,7 @@
             top10Skills.forEach(skill => {
                 const item = document.createElement('div');
                 item.className = 'legend-item';
-                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${skillColorMap[skill]};margin-right:6px;border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${skill}</strong>`;
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${skillColorMap[skill]};border-radius:50%;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${skill}</strong>`;
                 legendDiv.appendChild(item);
             });
             legendDiv.style.display = 'block';
@@ -3454,8 +1852,12 @@
         const loader = document.getElementById('globalLoader');
         loader.classList.add('active');
         try {
-            await fetchGlobalData();
-            updateAllVisuals();
+            const changed = await fetchGlobalData();
+            // Skip a full re-render when SSE fires but the data hasn't actually changed.
+            if (changed !== false) {
+                updateAllVisuals({ defer: !_dashboardInitialized });
+                _dashboardInitialized = true;
+            }
         } catch (e) {
             console.error("Dashboard Refresh Error", e);
         } finally {
@@ -3465,7 +1867,7 @@
 
     async function fetchGlobalData() {
         // Client-side rate-limit check before fetching candidates
-        if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('candidates'))) return;
+        if (typeof RateLimitEnforcer !== 'undefined' && !(await RateLimitEnforcer.check('candidates'))) return false;
         const res = await fetch(`${API_BASE}/candidates`, {
             method: 'GET',
             headers: { 'Content-Type': 'application/json' },
@@ -3474,12 +1876,42 @@
         if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data)) {
+                // Build a cheap fingerprint: length + first/last id. If unchanged, skip re-render.
+                const fp = data.length + ':' + (data[0]?.id ?? '') + ':' + (data[data.length - 1]?.id ?? '');
+                if (fp === _globalDataFingerprint) return false;
+                _globalDataFingerprint = fp;
+
                 globalData = data;
+                // Invalidate all per-data caches
+                _filteredDataCache = null;
+                _filterOptionsCache.clear();
+                _mapLastCountryKey = '';
+                _lastTableKey = '';
+                _lastSkillMapRenderKey = '';
+                _skillMapDirty = true;
             }
         }
     }
 
-    function updateAllVisuals() {
+    function updateAllVisuals(opts) {
+        // Mark skill-map data as dirty so next render recomputes aggregates
+        _skillMapDirty = true;
+
+        // On the very first load (opts.defer === true), chart cards that are outside the
+        // viewport are queued for lazy rendering via _chartViewObserver. All subsequent
+        // calls (filter changes, SSE refreshes) render immediately so interactivity stays sharp.
+        const shouldDefer = !!(opts && opts.defer) && !!_chartViewObserver;
+        function _runOrDefer(canvasId, fn) {
+            if (!shouldDefer) { fn(); return; }
+            const el = document.getElementById(canvasId);
+            if (!el) { fn(); return; }
+            const rect = el.getBoundingClientRect();
+            const visible = rect.top < window.innerHeight && rect.bottom > 0;
+            if (visible) { fn(); return; }
+            _pendingChartUpdates.set(canvasId, fn);
+            _chartViewObserver.observe(el);
+        }
+
         // Only reset charts to defaults if they weren't restored by load state
         // The charts state restoration is handled by direct calls or localstorage checks
         // But here we need to be careful not to overwrite user selections if they are active
@@ -3489,38 +1921,38 @@
         
         // Geo Chart
         const geoSelect = document.querySelector('select[onchange^="updateChartType(\'geoChart\'"]');
-        if(geoSelect) updateChartType('geoChart', 'country', geoSelect.value);
+        if(geoSelect) _runOrDefer('geoChart', () => updateChartType('geoChart', 'country', geoSelect.value));
         
         // Family Chart
         const familySelect = document.querySelector('select[onchange^="updateChartType(\'familyChart\'"]');
-        if(familySelect) updateChartType('familyChart', 'jobfamily', familySelect.value);
+        if(familySelect) _runOrDefer('familyChart', () => updateChartType('familyChart', 'jobfamily', familySelect.value));
         
         // Seniority Chart
         const senioritySelect = document.querySelector('select[onchange^="updateChartType(\'seniorityChart\'"]');
-        if(senioritySelect) updateChartType('seniorityChart', 'seniority', senioritySelect.value);
+        if(senioritySelect) _runOrDefer('seniorityChart', () => updateChartType('seniorityChart', 'seniority', senioritySelect.value));
         
         // Skill Chart
         const skillSelect = document.querySelector('select[onchange^="updateChartType(\'skillChart\'"]');
         if(skillSelect) {
-             updateChartType('skillChart', 'skillset', skillSelect.value);
+             _runOrDefer('skillChart', () => updateChartType('skillChart', 'skillset', skillSelect.value));
         } else {
-             updateChartType('skillChart', 'skillset', 'map'); 
+             _runOrDefer('skillChart', () => updateChartType('skillChart', 'skillset', 'map'));
         }
         
         // Gap Chart
         const gapSelect = document.querySelector('select[onchange^="updateChartType(\'gapChart\'"]');
-        if(gapSelect) updateChartType('gapChart', 'lskillset', gapSelect.value);
+        if(gapSelect) _runOrDefer('gapChart', () => updateChartType('gapChart', 'lskillset', gapSelect.value));
         
         // Product Chart
         const prodSelect = document.querySelector('select[onchange^="updateChartType(\'productChart\'"]');
-        if(prodSelect) updateChartType('productChart', 'product', prodSelect.value);
+        if(prodSelect) _runOrDefer('productChart', () => updateChartType('productChart', 'product', prodSelect.value));
         
         // Location Chart
         const locSelect = document.querySelector('select[onchange^="updateChartType(\'locationChart\'"]');
         if(locSelect) {
-             updateChartType('locationChart', 'country', locSelect.value);
+             _runOrDefer('locationChart', () => updateChartType('locationChart', 'country', locSelect.value));
         } else {
-             updateChartType('locationChart', 'country', 'map'); 
+             _runOrDefer('locationChart', () => updateChartType('locationChart', 'country', 'map'));
         }
 
         updateKPIS();
@@ -3530,7 +1962,11 @@
     }
 
     function getFilteredData() {
-        return globalData.filter(row => {
+        // Memoize: return cached result if filters and dataset are unchanged
+        const cacheKey = JSON.stringify(activeFilters) + ':' + globalData.length;
+        if (_filteredDataCache && cacheKey === _filteredDataCacheKey) return _filteredDataCache;
+        _filteredDataCacheKey = cacheKey;
+        _filteredDataCache = globalData.filter(row => {
             return Object.entries(activeFilters).every(([field, filterVal]) => {
                 const dataKey = FIELD_MAPPING[field] || field;
                 let rowVal;
@@ -3542,6 +1978,7 @@
                 return rowVal.toLowerCase().includes(filterVal.toLowerCase());
             });
         });
+        return _filteredDataCache;
     }
 
     // Helper: count the number of skillsets encoded in a raw skillset string.
@@ -3755,9 +2192,11 @@
 
     // Country centroids for tile-level Leaflet map charts (extends the COUNTRY_COORDS defined above)
     // Render a Leaflet bubble map inside a tile's chart-container for 'map' chart type
-    function renderLeafletMapForTile(canvasId, dimension, metric) {
+    async function renderLeafletMapForTile(canvasId, dimension, metric) {
         const canvas = document.getElementById(canvasId);
         if (!canvas) return;
+        // Ensure Leaflet is loaded before any L.* usage
+        await _ensureLeaflet();
         const container = canvas.parentElement;
         if (!metric) {
             const card = canvas.closest('.card');
@@ -3836,7 +2275,7 @@
             top10Labels.forEach((label, i) => {
                 const item = document.createElement('div');
                 item.className = 'legend-item';
-                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};margin-right:6px;border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
+                item.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${colorMap[label]};border-radius:2px;box-shadow:0 0 2px rgba(0,0,0,0.3);"></span><strong>${label}</strong>`;
                 tileLegend.appendChild(item);
             });
             tileLegend.style.display = 'block';
@@ -3873,7 +2312,7 @@
         if (metricDisplay) metricDisplay.remove();
     }
 
-    function updateChart(canvasId, dimension, type, metric) {
+    async function updateChart(canvasId, dimension, type, metric) {
         // Handle map type with Leaflet
         if (type === 'map') { renderLeafletMapForTile(canvasId, dimension, metric); return; }
         // If no metric given, try to read from tile's dataset
@@ -4012,6 +2451,9 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                // Reduce Chart.js default animation from 1 s to 300 ms to cut render-thread
+                // CPU cost on initial draw and theme switches
+                animation: { duration: 300 },
                 indexAxis: (type === 'horizontalBar' || (dimension === 'skillset' && chartJsType === 'bar')) ? 'y' : 'x',
                 plugins: {
                     legend: {
@@ -4020,15 +2462,26 @@
                         labels: { boxWidth: 12, font: { family: isCyber?'Orbitron':'Inter' }, color: textColor }
                     }
                 },
-                layout: { padding: 10 },
+                layout: { padding: isRadial ? 30 : 10 },
                 scales: {}
             }
         };
 
         // Adjust scales visibility
-        if(chartJsType === 'pie' || chartJsType === 'doughnut' || chartJsType === 'polarArea') {
+        if(chartJsType === 'pie' || chartJsType === 'doughnut') {
             delete config.options.scales;
             if(chartJsType === 'doughnut') config.options.cutout = '50%';
+        } else if (chartJsType === 'polarArea') {
+            // Keep the radial scale but theme it properly so ticks are readable in all themes
+            config.options.scales = {
+                r: {
+                    ticks: { backdropColor: 'transparent', color: textColor },
+                    grid: { color: gridColor }
+                }
+            };
+            // Reduce sector fill opacity to 30% (hex 4D) so concentric grid rings and
+            // tick labels are readable through the fills in all themes (was 50% / '80')
+            config.data.datasets[0].backgroundColor = activeColors.map(c => c + '4D');
         } else if (chartJsType === 'radar') {
             config.options.scales = {
                 r: {
@@ -4054,6 +2507,8 @@
             }
         }
 
+        // Ensure Chart.js is available before constructing the instance
+        await _ensureChartJs();
         charts[canvasId] = new Chart(ctx, config);
     }
 
@@ -4103,10 +2558,17 @@
 
     function updateTable() {
         const filtered = getFilteredData();
+        const top50 = filtered.slice(0, 50);
+
+        // Skip a full DOM rebuild when the top-50 visible rows haven't changed.
+        const newKey = top50.map(r => (r.id ?? r.name ?? '')).join('\x00');
+        if (newKey === _lastTableKey) return;
+        _lastTableKey = newKey;
+
         const tbody = document.querySelector('#dataTable tbody');
         tbody.innerHTML = '';
 
-        filtered.slice(0, 50).forEach(row => {
+        top50.forEach(row => {
             const tr = document.createElement('tr');
             let score = extractRatingScore(row.rating) || '-';
             const nameHtml = row.linkedinurl 
@@ -6846,7 +5308,7 @@ stateXml +
             chart.data.datasets.forEach(ds => {
                 ds.data = ds._origData.slice(0, clampedN);
             });
-            try { chart.update(); } catch(err) { console.warn('Chart update failed:', err); }
+            try { chart.update('none'); } catch(err) { console.warn('Chart update failed:', err); }
         });
     }
 
@@ -6904,7 +5366,7 @@ stateXml +
             chart.data.datasets.forEach(ds => { ds.data = ds._origData.slice(0, newN); });
             labelEl.textContent = `T${newN}`;
         }
-        try { chart.update(); } catch(err) { console.warn('Chart update failed:', err); }
+        try { chart.update('none'); } catch(err) { console.warn('Chart update failed:', err); }
     }
 
     // Save configured slides to localStorage
@@ -7542,17 +6004,20 @@ stateXml +
     };
 
     // Export the current slide content as a PNG image download
-    function exportSlideAsPNG() {
+    async function exportSlideAsPNG() {
         const content = document.getElementById('slideshowContent');
         if (!content) return;
-        if (typeof html2canvas === 'undefined') {
+        const exportBtn = document.getElementById('exportSlidePngBtn');
+        if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = '⏳ Exporting…'; }
+        try {
+            await _ensureHtml2canvas();
+        } catch (_) {
             alert('html2canvas not loaded — please check your internet connection.');
+            if (exportBtn) { exportBtn.disabled = false; exportBtn.textContent = '📷 Export PNG'; }
             return;
         }
         const slide = slides[currentSlideIndex];
         const slideName = (slide && slide.name) ? slide.name : `Slide ${currentSlideIndex + 1}`;
-        const exportBtn = document.getElementById('exportSlidePngBtn');
-        if (exportBtn) { exportBtn.disabled = true; exportBtn.textContent = '⏳ Exporting…'; }
         html2canvas(content, { scale: 2, useCORS: true, backgroundColor: '#ffffff' }).then(canvas => {
             const link = document.createElement('a');
             link.download = slideName.replace(/[^a-z0-9]/gi, '_') + '.png';
@@ -7569,12 +6034,10 @@ stateXml +
     // Export all slides as a PPTX file — each slide becomes a 16:9 PPTX slide image
     async function exportSlidesAsPPTX() {
         if (slides.length === 0) { alert('No slides to export.'); return; }
-        if (typeof html2canvas === 'undefined') {
-            alert('html2canvas not loaded — please check your internet connection.');
-            return;
-        }
-        if (typeof PptxGenJS === 'undefined') {
-            alert('PptxGenJS not loaded — please check your internet connection.');
+        try {
+            await Promise.all([_ensureHtml2canvas(), _ensurePptxGenJS()]);
+        } catch (_) {
+            alert('Export libraries not loaded — please check your internet connection.');
             return;
         }
 
@@ -7590,22 +6053,32 @@ stateXml +
             for (let i = 0; i < slides.length; i++) {
                 currentSlideIndex = i;
                 renderCurrentSlide();
-                // Check if this slide has any map tiles; maps need more time to load tiles
+                // Check if this slide has any map tiles (geo or skill-map); maps need more time to load tiles
                 const slideGrid = getSlideGrid();
-                const hasMap = slideGrid && slideGrid.querySelector('[data-chart-type="map"]') !== null;
+                const hasMap = slideGrid && (
+                    slideGrid.querySelector('[data-chart-type="map"]') !== null ||
+                    slideGrid.querySelector('[data-chart-type="skill-map"]') !== null
+                );
                 const paintDelay = hasMap ? 1200 : 300;
                 await new Promise(resolve => setTimeout(resolve, paintDelay));
-                // For map slides, ensure Leaflet maps are fully re-rendered before capture
+                // For map slides, reset to world view and ensure Leaflet maps are fully re-rendered before capture
                 if (hasMap) {
-                    const mapTiles = slideGrid.querySelectorAll('[data-chart-type="map"]');
-                    mapTiles.forEach(t => {
+                    slideGrid.querySelectorAll('[data-chart-type="map"]').forEach(t => {
                         const mapDiv = t.querySelector('[id^="tilemap-"]');
                         if (mapDiv && mapDiv._leafletMap) {
+                            try { mapDiv._leafletMap.setView([20, 0], 2); } catch (e) { /* ignore */ }
                             try { mapDiv._leafletMap.invalidateSize(true); } catch (e) { /* ignore */ }
                         }
                     });
-                    // Extra paint pause after invalidateSize
-                    await new Promise(resolve => setTimeout(resolve, 400));
+                    slideGrid.querySelectorAll('[data-chart-type="skill-map"]').forEach(t => {
+                        const mapDiv = t.querySelector('[id^="skillmap-slide-"]');
+                        if (mapDiv && mapDiv._leafletMap) {
+                            try { mapDiv._leafletMap.setView([20, 0], 2); } catch (e) { /* ignore */ }
+                            try { mapDiv._leafletMap.invalidateSize(true); } catch (e) { /* ignore */ }
+                        }
+                    });
+                    // Extra paint pause after invalidateSize so tiles can finish loading
+                    await new Promise(resolve => setTimeout(resolve, 800));
                 }
 
                 const canvas = await html2canvas(content, {
@@ -7618,8 +6091,20 @@ stateXml +
                 });
                 const imgData = canvas.toDataURL('image/png');
 
+                // Preserve the captured content's aspect ratio so it is not stretched to fill the slide
                 const pptSlide = pptx.addSlide();
-                pptSlide.addImage({ data: imgData, x: 0, y: 0, w: '100%', h: '100%' });
+                const slideW = 13.33, slideH = 7.5;
+                const imgAspect = canvas.width / canvas.height;
+                const slideAspect = slideW / slideH;
+                let imgX, imgY, imgW, imgH;
+                if (imgAspect >= slideAspect) {
+                    imgW = slideW; imgH = slideW / imgAspect;
+                    imgX = 0;     imgY = (slideH - imgH) / 2;
+                } else {
+                    imgH = slideH; imgW = slideH * imgAspect;
+                    imgX = (slideW - imgW) / 2; imgY = 0;
+                }
+                pptSlide.addImage({ data: imgData, x: imgX, y: imgY, w: imgW, h: imgH });
             }
 
             await pptx.writeFile({ fileName: 'Slides.pptx' });
