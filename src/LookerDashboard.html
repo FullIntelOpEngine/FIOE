@@ -2219,6 +2219,9 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                // Reduce Chart.js default animation from 1 s to 300 ms to cut render-thread
+                // CPU cost on initial draw and theme switches
+                animation: { duration: 300 },
                 indexAxis: (type === 'horizontalBar' || (dimension === 'skillset' && chartJsType === 'bar')) ? 'y' : 'x',
                 plugins: {
                     legend: {
@@ -2244,9 +2247,9 @@
                     grid: { color: gridColor }
                 }
             };
-            // Reduce sector fill opacity to 50% (hex 80) so the concentric grid rings
-            // are clearly visible through the fills in all themes (was 80% / 'cc')
-            config.data.datasets[0].backgroundColor = activeColors.map(c => c + '80');
+            // Reduce sector fill opacity to 30% (hex 4D) so concentric grid rings and
+            // tick labels are readable through the fills in all themes (was 50% / '80')
+            config.data.datasets[0].backgroundColor = activeColors.map(c => c + '4D');
         } else if (chartJsType === 'radar') {
             config.options.scales = {
                 r: {
@@ -5066,7 +5069,7 @@ stateXml +
             chart.data.datasets.forEach(ds => {
                 ds.data = ds._origData.slice(0, clampedN);
             });
-            try { chart.update(); } catch(err) { console.warn('Chart update failed:', err); }
+            try { chart.update('none'); } catch(err) { console.warn('Chart update failed:', err); }
         });
     }
 
@@ -5124,7 +5127,7 @@ stateXml +
             chart.data.datasets.forEach(ds => { ds.data = ds._origData.slice(0, newN); });
             labelEl.textContent = `T${newN}`;
         }
-        try { chart.update(); } catch(err) { console.warn('Chart update failed:', err); }
+        try { chart.update('none'); } catch(err) { console.warn('Chart update failed:', err); }
     }
 
     // Save configured slides to localStorage
