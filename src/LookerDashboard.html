@@ -970,6 +970,29 @@
 
             const pdf = new jsPDFCtor({ orientation: 'landscape', unit: 'mm', format: 'letter' });
 
+            // onclone: convert Leaflet map-pane CSS translate3d transforms into left/top
+            // so html2canvas renders markers at the correct geographic positions regardless
+            // of the slice y-offset.
+            function _fixLeafletTransforms(clonedDoc) {
+                clonedDoc.querySelectorAll(
+                    '.leaflet-map-pane, .leaflet-tile-pane, .leaflet-objects-pane, ' +
+                    '.leaflet-overlay-pane, .leaflet-shadow-pane, .leaflet-marker-pane, ' +
+                    '.leaflet-tooltip-pane, .leaflet-popup-pane'
+                ).forEach(pane => {
+                    const tx = pane.style.transform || getComputedStyle(pane).transform;
+                    if (!tx || tx === 'none') return;
+                    try {
+                        const m = new DOMMatrix(tx);
+                        if (m.m41 === 0 && m.m42 === 0) return;
+                        const origLeft = parseFloat(pane.style.left) || 0;
+                        const origTop  = parseFloat(pane.style.top)  || 0;
+                        pane.style.left      = (origLeft + m.m41) + 'px';
+                        pane.style.top       = (origTop  + m.m42) + 'px';
+                        pane.style.transform = 'none';
+                    } catch (_) { /* DOMMatrix parse failure — leave as-is */ }
+                });
+            }
+
             // Capture each page slice independently — avoids allocating one huge canvas
             const h2cBase = {
                 scale:       SCALE,
@@ -979,7 +1002,8 @@
                 scrollX:     0,
                 scrollY:     0,
                 windowWidth:  gridW_css,
-                windowHeight: gridH_css
+                windowHeight: gridH_css,
+                onclone:     (clonedDoc) => _fixLeafletTransforms(clonedDoc)
             };
 
             for (let i = 0; i < slices.length; i++) {
